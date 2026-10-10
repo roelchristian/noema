@@ -275,3 +275,31 @@ public enum BlockDocumentCodec {
         return document
     }
 }
+
+
+extension EditorBlock {
+    public var isAISummary: Bool { metadata.semantic == "summary" && metadata.extra["aiGenerated"] == "true" }
+}
+
+extension BlockDocument {
+    public var aiSummary: EditorBlock? { blocks.first(where: \.isAISummary) }
+    public var withoutAISummary: BlockDocument {
+        var copy = self
+        copy.blocks.removeAll(where: \.isAISummary)
+        if copy.blocks.isEmpty { copy.blocks = [EditorBlock()] }
+        return copy
+    }
+    @discardableResult public mutating func removeAISummary() -> Bool {
+        guard !unsupportedVersion, aiSummary != nil else { return false }
+        self = withoutAISummary; originalSource = nil
+        return true
+    }
+    public mutating func setAISummary(_ text: String) {
+        guard !unsupportedVersion else { return }
+        var metadata = BlockMetadata()
+        metadata.semantic = "summary"; metadata.extra["aiGenerated"] = "true"
+        let summary = EditorBlock(id: aiSummary?.id ?? UUID(), runs: [RichRun(text)], metadata: metadata)
+        blocks.removeAll(where: \.isAISummary)
+        blocks.insert(summary, at: 0); originalSource = nil
+    }
+}

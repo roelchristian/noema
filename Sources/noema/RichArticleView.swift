@@ -15,6 +15,7 @@ struct RichArticleView: NSViewRepresentable {
     var onWikiQuery: (String?) -> Void = { _ in }
     var noteID: UUID? = nil
     var onBlockLink: (URL) -> Void = { _ in }
+    var onScrollOffset: (CGFloat) -> Void = { _ in }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
@@ -29,6 +30,7 @@ struct RichArticleView: NSViewRepresentable {
         view.registerForDraggedTypes([ArticleTextView.dragType])
         view.delegate = context.coordinator; context.coordinator.view = view; scroll.documentView = view
         context.coordinator.load(text)
+        context.coordinator.observeScrolling(in: scroll)
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -55,7 +57,97 @@ struct RichArticleView: NSViewRepresentable {
         }
     }
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        NotificationCenter.default.removeObserver(coordinator, name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         coordinator.suggestions.close()
         coordinator.view?.delegate = nil
     }
+}
+
+
+struct SummarizedArticleView: View {
+    @Bindable var model: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var disclosure = SummaryDisclosureState()
+    private var document: BlockDocument { BlockDocumentCodec.decode(model.body) }
+    var editorText: Binding<String> {
+        Binding(get: {
+            let document = BlockDocumentCodec.decode(model.body)
+            return document.aiSummary == nil ? model.body : BlockDocumentCodec.encode(document.withoutAISummary)
+        }, set: { text in
+            let summary = BlockDocumentCodec.decode(model.body).aiSummary
+            if let summary {
+                var edited = BlockDocumentCodec.decode(text)
+                edited.blocks.insert(summary, at: 0)
+                model.body = BlockDocumentCodec.encode(edited)
+            } else { model.body = text }
+        })
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if model.generatingAISummary {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.mini)
+                    Text("Generating AI Summary...")
+                        .font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.horizontal, 80).padding(.vertical, 8)
+            }
+            if let summary = document.aiSummary {
+                Group {
+                    if disclosure.collapsed {
+                        HStack(spacing: 8) {
+                            Image(systemName: "sparkles").accessibilityLabel("AI-generated summary")
+                            Text(summary.text.replacingOccurrences(of: "\n", with: " "))
+                                .lineLimit(1).truncationMode(.tail)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Button("Show") { disclosure.toggle() }.buttonStyle(.link).fixedSize()
+                                .accessibilityLabel("Show AI-generated summary")
+                            deleteSummaryButton
+                        }.font(.caption).foregroundStyle(.secondary)
+                            .transition(.opacity)
+                    } else {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Label("Summary", systemImage: "list.bullet.rectangle").font(.headline)
+                                Spacer()
+                                Button("Hide") { disclosure.toggle() }.buttonStyle(.link).font(.caption)
+                                    .accessibilityLabel("Hide AI-generated summary")
+                                deleteSummaryButton
+                            }
+                            Text("AI-generated summary").font(.caption).foregroundStyle(.secondary)
+                            Text(summary.text).textSelection(.enabled)
+                        }
+                        .transition(.opacity)
+                    }
+                }
+                .padding(.horizontal, 80).padding(.vertical, disclosure.collapsed ? 16 : 24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.ultraThinMaterial)
+                Divider()
+            }
+            RichArticleView(text: editorText, reading: model.reading, locked: model.editingLocked, action: model.editorAction, onBegin: model.beginEditing, onEnd: model.finishEditing, onWikiLink: model.followWikiLink, onWikiQuery: { model.wikiQuery = $0 }, noteID: model.currentNote?.id, onBlockLink: model.openBlockURL, onScrollOffset: { disclosure.scrolled(to: $0) })
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: disclosure.collapsed)
+    }
+    private var deleteSummaryButton: some View {
+        Button("Delete", role: .destructive) { model.deleteAISummary() }
+        .buttonStyle(.link).font(.caption).fixedSize()
+        .accessibilityLabel("Delete AI-generated summary")
+        .help("Delete AI-generated summary")
+        .disabled(model.editingLocked || model.generatingAISummary)
+    }
+
+}
+
+
+struct SummaryDisclosureState {
+    private(set) var collapsed = false
+    private(set) var scrolledDown = false
+    mutating func scrolled(to offset: CGFloat) {
+        // Separate thresholds avoid layout changes repeatedly toggling the summary.
+        if !scrolledDown, offset > 24 { scrolledDown = true; collapsed = true }
+        else if scrolledDown, offset <= 1 { scrolledDown = false; collapsed = false }
+    }
+    mutating func toggle() { collapsed.toggle() }
 }

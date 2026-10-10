@@ -22,4 +22,4 @@ Vault manifests have an explicit format version. Reject unsupported versions ins
 - **Additional importers:** put PDF/web extraction behind an importer service; retain the original and treat extracted text as derived content. Extend source schema deliberately.
 - **Mobile:** share VaultCore, build a separate UI, and test coordinated edits across platforms before claiming sync compatibility.
 
-Start with one extension at a time. There is deliberately no server, AI SDK, vector store, or runtime plugin system in v1.
+Start with one extension at a time. There is no server, remote AI provider, vector store, or runtime plugin system in v1. `OnDeviceSummary` uses Apple Foundation Models asynchronously in a dedicated actor. Summaries use existing semantic block metadata (`summary`, `extra.aiGenerated`) without a schema version change. The native SwiftUI summary is rendered above the editable document; the binding retains it across edits. Generation only applies to the same unchanged, unlocked page and vault.

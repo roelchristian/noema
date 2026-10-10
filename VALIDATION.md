@@ -226,3 +226,66 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 - Added Trash below Sources, backed by the existing `.Trash` folder and showing Restore and Delete permanently controls and context-menu actions. Permanent deletion requires a named-page confirmation. Storage uses coordinated access, checks stale hashes and path containment, and preserves bytes on restore. Active UUID/title collisions block restore; unresolved cloud versions block permanent deletion. Vault format remains v1.
 - `./scripts/build.sh debug` packaged the app and archive successfully. `./scripts/test.sh` passed all 43 entries (optional benchmark not executed), including new restore identity/byte preservation, permanent deletion, stale-file rejection, and path/duplicate safety checks. `git diff --check` passed.
 - Native checks used the isolated UI-check app and temporary Test Vault in current Dark appearance: verified sidebar placement, Trash count, visible actions/context menu, Restore returning a disposable page to Pages, and the named-page permanent-deletion confirmation. Final permanent deletion was covered automatically; no agent UI confirmation was submitted. No demo content was changed. Appearance/accent switching, full VoiceOver, accessibility preferences, and two-Mac iCloud checks remain unverified.
+
+
+## On-device AI summaries — 2026-10-10
+
+- Added an opt-in Apple Intelligence setting, manual Summarize action, native progress indicator, and a persisted semantic Summary rendered above the editable article with an AI-generated label.
+- Full regression suite passed: 48 tests, including summary metadata round-trip/replacement and preservation when editable content is replaced. Restricted first run encountered file-coordination and paste access failures; rerunning with macOS access passed.
+- Debug compilation and app packaging/signing passed with macOS access. Restricted packaging encountered an iconutil access error. Generated brand assets have no tracked changes.
+- Foundation Models availability probe returned available. A synthetic live-generation probe was started but did not finish within the four-minute timebox; end-to-end AI output remains unverified.
+- Native UI interaction was attempted but the vault chooser did not respond. Manual summary/progress/settings/relaunch, appearance/accent/accessibility, and two-Mac iCloud checks remain outstanding. Existing demo-vault changes were not edited by this task.
+
+
+## AI summary loading position — 2026-10-10
+
+- Moved the native summary progress indicator from the page header into the article area, immediately below the title/header divider, using the summary text margins.
+- `./scripts/build.sh debug` compiled, packaged, and signed the app successfully; `git diff --check` passed. No regression rerun or new tests for this localized layout-only change. Generated brand assets were unchanged.
+- Native UI validation used the isolated `local.noema.spinner-check` app and `/tmp/noema-ai-vault` synthetic content. Enabled summaries through Settings, clicked Summarize, and verified the native spinner and Generating AI Summary... text below the title in the article area, with Summarize disabled while generating. Current Dark appearance only; appearance/accent switching and accessibility preference combinations were not exercised. End-to-end generated output was not checked in this follow-up. The user's running app and demo content were not edited.
+
+
+## Centered summary loading and scroll collapse — 2026-10-10
+
+- Centered the native Generating AI Summary... spinner in its summary-area container. Scrolling beyond 24 points collapses the pinned summary to one caption-sized truncated line with Show; Hide collapses manually. Manual Show stays expanded during further scrolling, and returning to the top expands it. Separate thresholds avoid repeated layout toggles. No animation is introduced.
+- `./scripts/test.sh` passed all 49 tests, including scroll/manual disclosure transitions. `./scripts/build.sh debug` compiled, packaged, and signed the app; `git diff --check` passed. Generated brand assets were unchanged.
+- Native checks used the isolated `local.noema.collapse-check` app and `/tmp/noema-summary-scroll-vault`: verified automatic collapse on a 45-paragraph page, a small single-line excerpt with ellipsis, Show remaining expanded during continued scrolling, Hide and return-to-top expansion, and centered loading indicator during generation. Current Dark appearance only; alternate widths, appearance/accent switching, full VoiceOver, and accessibility preference combinations were not manually checked within the three-minute timebox. No user demo content was edited.
+
+
+## Summary loading line, deletion, and clear glass — 2026-10-10
+
+- Loading now uses a centered native spinner and text in one horizontal line. Expanded and collapsed summaries use native clear Liquid Glass; both expose an accessible trash action. Deletion uses the existing autosave path, preserves written/nested blocks, rejects future formats, and is disabled while locked or generating.
+- `./scripts/build.sh debug` compiled, packaged, and signed the app. `./scripts/test.sh` passed all 50 tests, including summary deletion/content preservation and a summary-only document. The initial new test failed to compile because Swift Testing cannot expand a mutating call inside its expectation; fixed by evaluating the result first. `git diff --check` passed and generated brand assets were unchanged.
+- An isolated native validation app launched, but summary interaction/visual verification did not fit within the two-minute timebox. Spinner layout, both glass states, deletion, appearance/accent changes, Reduce Transparency/increased contrast, and full VoiceOver remain manually unverified for this change. No demo content was edited.
+
+
+## Full-width frosted summary and Delete label — 2026-10-10
+
+- Replaced the rounded Liquid Glass card with native ultra-thin material covering the full summary width and padding between the dividers in expanded and collapsed states. Replaced the trash icon with a caption-sized Delete text control, retaining its accessible name and lock/generation guards.
+- `./scripts/build.sh debug` compiled, packaged, and signed the app successfully; `git diff --check` passed. Generated brand assets were unchanged. No new tests or regression rerun for this localized styling/copy change.
+- Native visual, alternate appearance/accent, Reduce Transparency, increased contrast, and VoiceOver checks were not performed within the one-minute timebox. Demo content was not edited.
+
+
+## Compact AI summary loading line — 2026-10-10
+
+- Removed the loading row's 96-point minimum height and reduced vertical padding to 8 points. The centered spinner/label uses its natural single-line height; no empty result block is reserved. The existing summary rendering remains conditional on persisted generated content, so a new Summary block appears only after successful generation.
+- `./scripts/build.sh debug` compiled, packaged, and signed the app successfully; `git diff --check` passed. Generated brand assets were unchanged. No new tests or regression rerun for this localized spacing-only change.
+- Native visual and appearance/accessibility checks were not performed within this one-minute task. Demo content was not edited.
+
+
+## Smooth summary disclosure — 2026-10-10
+
+- Summary collapse/expansion now uses a 250 ms ease-in/ease-out layout animation and opacity transitions for the expanded text and compact excerpt. Both scrolling and Show/Hide share the transition. macOS Reduce Motion disables the animation.
+- `./scripts/build.sh debug` compiled, packaged, and signed the app; `git diff --check` passed. Generated brand assets were unchanged. No new tests or regression rerun for this localized animation-only change.
+- Native motion, scroll position during animation, appearance/accessibility checks, and Reduce Motion toggling were not visually exercised within the one-minute timebox. Demo content was not edited.
+
+
+## Smaller, muted summary loading indicator — 2026-10-10
+
+- Changed the native spinner to mini control size and its label to callout typography with the adaptive secondary foreground color. The existing single-line centered layout is retained.
+- `./scripts/build.sh debug` compiled, packaged, and signed the app successfully; `git diff --check` passed. Generated brand assets were unchanged. No new tests or regression rerun for this typography-only change.
+- Native visual, appearance/accent, increased contrast, and VoiceOver checks were not performed within the one-minute timebox. Demo content was not edited.
+
+
+## Final AI summary regression before commit — 2026-10-10
+
+- Reran `./scripts/test.sh` against the final smaller indicator, compact loading, frosted summary, and smooth disclosure changes: all 50 tests passed with native macOS access. `git diff --check` passed. Manual visual/accessibility limitations recorded above remain outstanding. Demo-vault edits are excluded from the feature commit.

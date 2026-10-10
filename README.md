@@ -39,7 +39,7 @@ For a quick tour, open `Examples/Demo Vault`. Its pages contain illustrative per
 
 **⌘S** saves immediately, **⌘P / ⇧⌘F** focuses vault search, **⌘B / ⌘I / ⌘U** toggles bold/italic/underline, and **⌘K** edits a hyperlink, and **⇧⌘I** imports sources. Editing saves after 500 ms of inactivity. Page title changes keep the filename stable and add the old title as an alias, so links continue working.
 
-Sources and wiki pages are independent in v1. No AI provider is contacted. Raw data stays distinguishable from your interpretation.
+Sources and wiki pages are independent in v1. No remote AI provider is contacted. Optional on-device Apple Intelligence summaries are available in **Noema → Settings… → Apple Intelligence**. Enable them, then click **Summarize** on an unlocked page. **Generating AI Summary...** appears as one compact centered line below the page title while working, without reserving space for the result. The new Summary block appears only after generation succeeds. The generated semantic Summary block is pinned above the editor and labeled **AI-generated summary**; regenerate it after edits. Scrolling down a long page smoothly collapses the summary to a small, single-line excerpt; Reduce Motion disables the animation. Both summary states use a subtle native frosted background across the full area between the dividers. Use Delete to delete the generated summary without deleting your writing. Use Show/Hide to expand or collapse it; returning to the top expands it again. It is saved in the portable block document. Apple Intelligence must be enabled and its model ready; failures leave the page unchanged. Raw data stays distinguishable from your interpretation.
 
 ## Block editing
 

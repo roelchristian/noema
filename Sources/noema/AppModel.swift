@@ -41,6 +41,8 @@ struct EditorAction: Equatable {
     var editingHint: String?
     var editorReadOnly = false
     var pendingBlockURL: URL?
+    var generatingAISummary = false
+    var aiSummaryNotice: String?
     var busy = false
     var saveStatus = "Saved locally"
     var errorMessage: String?
@@ -81,6 +83,43 @@ struct EditorAction: Equatable {
     var linkSuggestions: [NoteRecord] {
         guard let wikiQuery else { return [] }
         return Array(notes.filter { wikiQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(wikiQuery) }.sorted { $0.title < $1.title }.prefix(6))
+    }
+
+    func deleteAISummary() {
+        guard currentNote != nil, !editingLocked, !generatingAISummary else { return }
+        var document = BlockDocumentCodec.decode(body)
+        guard document.removeAISummary() else { return }
+        body = BlockDocumentCodec.encode(document); aiSummaryNotice = nil; edited()
+    }
+
+    func summarizePage() {
+        guard UserDefaults.standard.bool(forKey: EditorPreferences.aiSummariesKey),
+              currentNote != nil, !editingLocked, !generatingAISummary else { return }
+        if let reason = OnDeviceSummary.unavailabilityReason { aiSummaryNotice = reason; return }
+        let capturedBody = body, capturedID = currentNote?.id, capturedGeneration = generation
+        let content = BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(body).withoutAISummary))
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            aiSummaryNotice = "Add page content before generating a summary."; return
+        }
+        generatingAISummary = true; aiSummaryNotice = nil
+        Task {
+            defer { generatingAISummary = false }
+            do {
+                let summary = try await OnDeviceSummary().summarize(content)
+                guard currentNote?.id == capturedID, generation == capturedGeneration else { return }
+                guard body == capturedBody, !editingLocked, !externalChange,
+                      UserDefaults.standard.bool(forKey: EditorPreferences.aiSummariesKey) else {
+                    aiSummaryNotice = "The page changed during generation. Generate the summary again."; return
+                }
+                guard !summary.isEmpty else { aiSummaryNotice = "No summary was returned. Try again."; return }
+                var document = BlockDocumentCodec.decode(body)
+                document.setAISummary(summary)
+                body = BlockDocumentCodec.encode(document); edited()
+            } catch {
+                guard currentNote?.id == capturedID, generation == capturedGeneration else { return }
+                aiSummaryNotice = "Could not generate an AI summary: " + error.localizedDescription
+            }
+        }
     }
 
     func restore() async {
@@ -226,6 +265,7 @@ struct EditorAction: Equatable {
     }
     private func apply(_ note: NoteRecord) {
         editingHint = nil
+        aiSummaryNotice = nil
         editorAction = nil
         currentNote = note; title = note.title; body = note.body; tagInput = note.tags.joined(separator: ", ")
         let document = BlockDocumentCodec.decode(note.body)

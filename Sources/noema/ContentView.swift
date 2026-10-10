@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var trashPageID: UUID?
     @State private var permanentDeletion: TrashedPage?
     @State private var sourceOriginal = false
+    @AppStorage(EditorPreferences.aiSummariesKey) private var aiSummaries = false
     var body: some View {
         Group {
             if model.root == nil { welcome }
@@ -25,6 +26,11 @@ struct ContentView: View {
             if model.root != nil {
                 if model.currentNote != nil {
                     ToolbarItemGroup(placement: .primaryAction) {
+                        if aiSummaries {
+                            Button { model.summarizePage() } label: { Label("Summarize", systemImage: "sparkles") }
+                                .disabled(model.editingLocked || model.generatingAISummary)
+                                .help("Generate an on-device AI summary")
+                        }
                         Button { if model.reading { model.beginEditing() } else { model.finishEditing() } } label: {
                             Label(model.reading ? "Edit" : "Done", systemImage: model.reading ? "pencil" : "checkmark")
                         }.disabled(model.editingLocked)
@@ -298,7 +304,7 @@ struct ContentView: View {
                     if let source = model.currentSource, sourceOriginal || source.metadata.storedFilename.hasSuffix(".txt") {
                         MarkdownEditor(text: .constant(model.body), action: nil, onWikiQuery: { _ in }, editable: false)
                     } else if model.currentNote != nil {
-                        RichArticleView(text: $model.body, reading: model.reading, locked: model.editingLocked, action: model.editorAction, onBegin: model.beginEditing, onEnd: model.finishEditing, onWikiLink: model.followWikiLink, onWikiQuery: { model.wikiQuery = $0 }, noteID: model.currentNote?.id, onBlockLink: model.openBlockURL)
+                        SummarizedArticleView(model: model)
                             .id(model.selectedID)
                     } else { MarkdownPreview(blocks: model.preview, onWikiLink: model.followWikiLink) }
                     if !model.reading, model.currentNote != nil, model.wikiQuery != nil, !model.linkSuggestions.isEmpty {
@@ -334,6 +340,7 @@ struct ContentView: View {
     }
     private var pageHeader: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if let notice = model.aiSummaryNotice { Text(notice).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
             if model.currentSource != nil || model.editingHint != nil {
                 HStack {
                     if model.currentSource != nil {

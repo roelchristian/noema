@@ -111,3 +111,45 @@ import Testing
     #expect(document.blocks[0].metadata.semantic == "question")
     #expect(document.blocks[1].metadata.semantic == "idea")
 }
+
+
+@Test func aiSummaryStaysAboveEditableContentAndRoundTrips() {
+    let original = EditorBlock(runs: [RichRun("User content")], children: [EditorBlock(runs: [RichRun("Nested content")])])
+    var document = BlockDocument(blocks: [original])
+    document.setAISummary("Generated overview")
+    let id = document.aiSummary?.id
+    #expect(document.blocks.first?.isAISummary == true)
+    #expect(document.withoutAISummary.blocks == [original])
+    #expect(BlockDocumentCodec.decode(BlockDocumentCodec.encode(document)) == document)
+    document.setAISummary("Updated overview")
+    #expect(document.aiSummary?.id == id)
+    #expect(document.blocks.count == 2)
+    #expect(document.blocks.last == original)
+    document.unsupportedVersion = true
+    document.setAISummary("Must not write")
+    #expect(document.aiSummary?.text == "Updated overview")
+}
+
+
+@Test func deletingAISummaryPreservesUserBlocksAndFutureFormats() {
+    let user = EditorBlock(runs: [RichRun("User writing")], children: [EditorBlock(runs: [RichRun("Nested writing")])])
+    var document = BlockDocument(blocks: [user])
+    document.setAISummary("AI overview")
+    document.unsupportedVersion = true
+    let rejected = document.removeAISummary()
+    #expect(!rejected)
+    #expect(document.aiSummary != nil)
+    document.unsupportedVersion = false
+    let removed = document.removeAISummary()
+    #expect(removed)
+    #expect(document.blocks == [user])
+    #expect(BlockDocumentCodec.decode(BlockDocumentCodec.encode(document)).blocks == [user])
+    let absent = document.removeAISummary()
+    #expect(!absent)
+    var summaryOnly = BlockDocument(blocks: [])
+    summaryOnly.setAISummary("Summary only")
+    let removedOnly = summaryOnly.removeAISummary()
+    #expect(removedOnly)
+    #expect(summaryOnly.blocks.count == 1)
+    #expect(summaryOnly.blocks[0].text.isEmpty)
+}

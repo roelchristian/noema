@@ -376,3 +376,40 @@ import VaultCore
         #expect(view.string == "Previous\nA\n")
     }
 }
+
+
+@Test @MainActor func pinnedAISummaryIsExcludedFromEditingAndRetainedAfterReplacement() {
+    let model = AppModel()
+    var document = BlockDocument(blocks: [EditorBlock(runs: [RichRun("Original content")])])
+    document.setAISummary("Generated overview")
+    model.body = BlockDocumentCodec.encode(document)
+    let article = SummarizedArticleView(model: model)
+    let editable = BlockDocumentCodec.decode(article.editorText.wrappedValue)
+    #expect(editable.aiSummary == nil)
+    #expect(editable.blocks.first?.text == "Original content")
+    article.editorText.wrappedValue = "Replacement content"
+    let saved = BlockDocumentCodec.decode(model.body)
+    #expect(saved.blocks.first == document.aiSummary)
+    #expect(saved.withoutAISummary.blocks.first?.text == "Replacement content")
+}
+
+
+@Test func summaryDisclosureCollapsesOnScrollAndHonorsManualShowHide() {
+    var state = SummaryDisclosureState()
+    state.scrolled(to: 0)
+    #expect(!state.collapsed)
+    state.scrolled(to: 25)
+    #expect(state.collapsed)
+    state.toggle()
+    #expect(!state.collapsed)
+    state.scrolled(to: 200)
+    #expect(!state.collapsed)
+    state.toggle()
+    #expect(state.collapsed)
+    state.scrolled(to: 10)
+    #expect(state.collapsed)
+    state.scrolled(to: 0)
+    #expect(!state.collapsed)
+    state.scrolled(to: 40)
+    #expect(state.collapsed)
+}

@@ -21,6 +21,15 @@ extension RichArticleView {
             suggestions.dismiss = { [weak self] in self?.dismissPalette() }
             palette.choose = { [weak self] in self?.apply($0, removingQuery: true) }
         }
+        func observeScrolling(in scroll: NSScrollView) {
+            scroll.contentView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(scrollBoundsChanged(_:)), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        }
+        @objc private func scrollBoundsChanged(_ notification: Notification) {
+            guard let clip = notification.object as? NSClipView else { return }
+            let offset = clip.bounds.minY
+            Task { @MainActor [weak self] in self?.parent.onScrollOffset(offset) }
+        }
         func load(_ source: String) {
             document = BlockDocumentCodec.decode(source); lastText = source
             suggestions.close(); render(selection: view?.selectedRange() ?? NSRange(location: 0, length: 0))
