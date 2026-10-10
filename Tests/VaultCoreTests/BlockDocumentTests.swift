@@ -2,6 +2,27 @@ import Foundation
 import Testing
 @testable import VaultCore
 
+@Test func semanticGroupsIncludeNestedAndUnknownTagsInDocumentOrder() {
+    var idea = BlockMetadata(); idea.semantic = "idea"; idea.collapsed = true
+    var future = BlockMetadata(); future.semantic = "future-tag"
+    let child = EditorBlock(runs: [RichRun("Nested\nidea")], metadata: idea)
+    let parent = EditorBlock(runs: [RichRun("First idea")], metadata: idea, children: [child])
+    let unknown = EditorBlock(metadata: future)
+    var document = BlockDocument(blocks: [parent, EditorBlock(), unknown])
+    #expect(document.semanticGroups.map(\.tag) == ["future-tag", "idea"])
+    #expect(document.semanticGroups[1].blocks.map(\.id) == [parent.id, child.id])
+    #expect(document.semanticGroups[0].blocks.first?.text == "")
+    _ = document.apply(.semantic(nil), to: child.id)
+    #expect(document.semanticGroups[1].blocks.map(\.id) == [parent.id])
+    #expect(BlockDocument().semanticGroups.isEmpty)
+    var manualSummary = BlockMetadata(); manualSummary.semantic = "summary"
+    let manual = EditorBlock(runs: [RichRun("Manual summary")], metadata: manualSummary)
+    document.blocks.append(manual)
+    document.setAISummary("Generated summary")
+    #expect(document.semanticGroups.first(where: { $0.tag == "summary" })?.blocks.map(\.id) == [manual.id])
+    #expect(!document.semanticGroups.flatMap(\.blocks).contains { $0.isAISummary })
+}
+
 @Test func blockModelRoundTripsRichTextAndNestedMetadata() throws {
     var style = InlineStyle(); style.bold = true; style.italic = true; style.underline = true; style.strike = true; style.highlight = true; style.link = "https://example.com"
     var metadata = BlockMetadata(); metadata.semantic = "question"; metadata.status = "answered"; metadata.extra["future"] = "kept"

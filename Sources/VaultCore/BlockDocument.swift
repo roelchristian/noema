@@ -108,6 +108,11 @@ public struct BlockDocument: Codable, Equatable, Sendable {
         func walk(_ list: [EditorBlock]) -> [EditorBlock] { list.flatMap { [$0] + walk($0.children) } }
         return walk(blocks)
     }
+    public var semanticGroups: [(tag: String, blocks: [EditorBlock])] {
+        let tagged = flattened.filter { !$0.isAISummary && !($0.metadata.semantic ?? "").isEmpty }
+        let groups = Dictionary(grouping: tagged) { $0.metadata.semantic! }
+        return groups.keys.sorted().map { (tag: $0, blocks: groups[$0] ?? []) }
+    }
     @discardableResult public mutating func update(_ id: UUID, _ change: (inout EditorBlock) -> Void) -> Bool {
         func visit(_ list: inout [EditorBlock]) -> Bool {
             for index in list.indices {

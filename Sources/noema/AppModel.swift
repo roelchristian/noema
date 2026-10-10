@@ -4,7 +4,28 @@ import UniformTypeIdentifiers
 import VaultCore
 import PDFKit
 
-enum LibraryScope: Hashable { case wiki, sources, trash, tag(String) }
+enum LibraryScope: Hashable { case wiki, sources, semantic, trash, tag(String) }
+
+struct SemanticBlockHit: Identifiable, Sendable {
+    var pageID: UUID
+    var blockID: UUID
+    var pageTitle: String
+    var semantic: String
+    var preview: String
+    var id: String { "\(pageID):\(blockID)" }
+    static func search(_ notes: [NoteRecord], query: String) -> [Self] {
+        let terms = query.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        return notes.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }.flatMap { note in
+            BlockDocumentCodec.decode(note.body).semanticGroups.flatMap(\.blocks).compactMap { block in
+                let tag = block.metadata.semantic ?? ""
+                let preview = block.text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+                let searchable = "\(tag) \(preview) \(note.title)"
+                guard terms.allSatisfy({ searchable.localizedCaseInsensitiveContains($0) }) else { return nil }
+                return Self(pageID: note.id, blockID: block.id, pageTitle: note.title, semantic: tag, preview: preview)
+            }
+        }
+    }
+}
 struct LibraryRow: Identifiable {
     var id: UUID
     var title: String
@@ -70,6 +91,8 @@ struct EditorAction: Equatable {
 
     var trashedPages: [TrashedPage] = []
     var rows: [LibraryRow] = []
+    var semanticRows: [SemanticBlockHit] = []
+    var selectedSemanticID: String?
     var tags: [String] = []
     var wordCount = 0
     var scope: LibraryScope = .wiki
@@ -135,7 +158,7 @@ struct EditorAction: Equatable {
         return title != note.title || body != note.body || editedTags != note.tags
     }
     var scopeTitle: String {
-        switch scope { case .wiki: "Pages"; case .sources: "Sources"; case .trash: "Trash"; case .tag(let tag): "#" + tag }
+        switch scope { case .wiki: "Pages"; case .sources: "Sources"; case .semantic: "Semantic Blocks"; case .trash: "Trash"; case .tag(let tag): "#" + tag }
     }
     var linkSuggestions: [NoteRecord] {
         guard let wikiQuery else { return [] }
@@ -302,6 +325,18 @@ struct EditorAction: Equatable {
         Task { if await finishCurrentPage() { self.scope = scope; queryChanged() } }
     }
     private func updateRows() async {
+        if scope == .semantic {
+            let query = searchText, ticket = generation
+            var snapshot = notes
+            if let currentNote, let i = snapshot.firstIndex(where: { $0.id == currentNote.id }) {
+                snapshot[i].body = body; snapshot[i].title = title
+            }
+            let capturedNotes = snapshot
+            let hits = await Task.detached { SemanticBlockHit.search(capturedNotes, query: query) }.value
+            guard scope == .semantic, searchText == query, generation == ticket, !Task.isCancelled else { return }
+            semanticRows = hits
+            return
+        }
         guard let index else { return }
         let capturedScope = scope, capturedQuery = searchText
         let kind: EntryKind = scope == .sources ? .source : .wiki
@@ -318,7 +353,7 @@ struct EditorAction: Equatable {
             }
         } catch { errorMessage = error.localizedDescription }
     }
-    func select(_ id: UUID?, scope targetScope: LibraryScope? = nil) {
+    func select(_ id: UUID?, scope targetScope: LibraryScope? = nil, block blockID: UUID? = nil) {
         Task {
             await waitForSave()
             if !(await finishCurrentPage()) { return }
@@ -333,6 +368,11 @@ struct EditorAction: Equatable {
             else if let source = sources.first(where: { $0.id == id }) {
                 currentSource = source; title = source.title; body = source.body; reading = true
                 generatePreview(); backlinks = []
+            }
+            selectedSemanticID = nil
+            if let blockID, let note = currentNote, BlockDocumentCodec.decode(body).block(blockID) != nil {
+                selectedSemanticID = "\(note.id):\(blockID)"
+                editorAction = EditorAction(operation: .block(blockID))
             }
             await updateBacklinks()
         }

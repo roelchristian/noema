@@ -53,6 +53,10 @@ Sources and wiki pages are independent in v1. No remote AI provider is contacted
 
 ## Block editing
 
+**Semantic Blocks**, below Sources, searches tagged blocks across every page by block text, semantic type, and page title. Each result shows its colored icon, type, one-line preview, and owning page. Select a result to open the existing article viewer and page details sidebar at that block. Nested blocks are included; AI-generated summaries stay in their separate section. Results update after edits and vault refreshes.
+
+The page details sidebar automatically gathers semantic tags in their own section. Every tagged block, including nested blocks, has a one-line preview with its colored semantic icon that updates as you edit. The AI-generated summary stays in its separate section. Hover reveals a right arrow; click the row to jump to the block, expanding collapsed ancestors as needed. Rows also support keyboard navigation.
+
 Reading and editing use compact 80-point side margins, retaining a gutter for block icons and handles.
 
 Type `/` in an empty paragraph or after whitespace to search block commands. The compact menu opens directly above or below the caret within the visible editor, scrolls to fit the available space, separates basic and semantic blocks, and shows semantic icon colors. Aliases such as `/h2` and `/ques` and fuzzy matching are supported; use arrows and Return, or Escape to dismiss. Paragraphs, three heading levels, bullets, numbering, tasks, quotes, code, dividers, callouts, and nested toggles share the same command layer.

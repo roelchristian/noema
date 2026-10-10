@@ -4,6 +4,26 @@ import Testing
 import VaultCore
 @testable import noema
 
+@Test func globalSemanticSearchIncludesNestedBlocksAndPageTitles() throws {
+    var note = try NoteCodec.decode(Data("# Fixture".utf8), path: "Wiki/Fixture.md", vaultID: UUID())
+    note.title = "Astronomy"
+    var metadata = BlockMetadata(); metadata.semantic = "question"
+    let child = EditorBlock(runs: [RichRun("Why\n do stars shine?")], metadata: metadata)
+    var document = BlockDocument(blocks: [EditorBlock(children: [child])])
+    document.setAISummary("Generated summary")
+    note.body = BlockDocumentCodec.encode(document)
+    let hits = SemanticBlockHit.search([note], query: "QUESTION astronomy stars")
+    #expect(hits.count == 1)
+    #expect(hits.first?.blockID == child.id)
+    #expect(hits.first?.pageID == note.id)
+    #expect(hits.first?.preview == "Why do stars shine?")
+    #expect(SemanticBlockHit.search([note], query: "summary").isEmpty)
+    #expect(SemanticBlockHit.search([note], query: "missing").isEmpty)
+    var other = note; other.id = UUID(); other.title = "Other page"
+    let all = SemanticBlockHit.search([note, other], query: "")
+    #expect(Set(all.map(\.id)).count == 2)
+}
+
 @Test func libraryPreviewPrefersPersistedAISummaryAndFallsBackToContent() throws {
     var note = try NoteCodec.decode(Data("# Opening\n\nFirst **content** line.\nSecond line.".utf8), path: "Wiki/Preview.md", vaultID: UUID())
     note.updatedAt = "2026-10-10T08:30:00Z"
@@ -152,6 +172,23 @@ import VaultCore
     window.isReleasedWhenClosed = false
     window.contentView = view; window.makeFirstResponder(view); view.undoManager?.groupsByEvent = false; view.delegate = coordinator; coordinator.view = view; coordinator.load(source)
     return (coordinator, view, window)
+}
+
+@Test @MainActor func sidebarBlockNavigationRevealsNestedBlockWhileLocked() {
+    var metadata = BlockMetadata(); metadata.collapsed = true
+    let child = EditorBlock(runs: [RichRun("Nested destination")])
+    let parent = EditorBlock(kind: .toggle, runs: [RichRun("Collapsed parent")], metadata: metadata, children: [child])
+    let source = BlockDocumentCodec.encode(BlockDocument(blocks: [parent]))
+    let (coordinator, view, window) = editor(source)
+    defer { window.close() }
+    view.locked = true; view.isEditable = false
+    #expect(!view.string.contains("Nested destination"))
+    coordinator.perform(.block(child.id))
+    #expect(view.string.contains("Nested destination"))
+    #expect(coordinator.current()?.0.id == child.id)
+    #expect(!view.isEditable)
+    #expect(coordinator.lastText == source)
+    #expect(view.undoManager?.canUndo == false)
 }
 
 @Test @MainActor func slashPaletteUsesCompactSectionsAndSemanticSymbols() {

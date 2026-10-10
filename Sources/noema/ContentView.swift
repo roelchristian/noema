@@ -89,6 +89,8 @@ struct ContentView: View {
                  : "Permanently delete ‘\(deletingSource?.title ?? "")’ and its imported original from the vault? This cannot be undone.")
         }
         .onChange(of: model.searchText) { model.queryChanged() }
+        .onChange(of: model.body) { if model.scope == .semantic { model.queryChanged() } }
+        .onChange(of: model.title) { if model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.searchFocusToken) { searchFocused = true }
         .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false }
         .onChange(of: model.externalChange) { dismissedExternalChange = false }
@@ -119,6 +121,7 @@ struct ContentView: View {
             Section("Library") {
                 navigationLabel("Pages", symbol: "book.closed").badge(model.notes.count).tag(LibraryScope.wiki)
                 navigationLabel("Sources", symbol: "tray.full").badge(model.sources.count).tag(LibraryScope.sources)
+                navigationLabel("Semantic Blocks", symbol: "tag").tag(LibraryScope.semantic)
                 navigationLabel("Trash", symbol: "trash").badge(model.trashedPages.count).tag(LibraryScope.trash)
             }
             if !model.tags.isEmpty {
@@ -161,6 +164,8 @@ struct ContentView: View {
         VStack(spacing: 0) {
             if model.scope == .sources {
                 sourceTable
+            } else if model.scope == .semantic {
+                semanticBlockList
             } else if model.rows.isEmpty {
                 ContentUnavailableView(model.searchText.isEmpty ? "\(model.scopeTitle) is empty" : "No matches", systemImage: model.scope == .sources ? "tray" : "doc.text.magnifyingglass", description: Text(model.searchText.isEmpty ? (model.scope == .sources ? "Import a text file or paste a source to begin." : "Create a page to start building your wiki.") : "Try another word or topic."))
                     .frame(maxHeight: .infinity)
@@ -255,10 +260,10 @@ struct ContentView: View {
                     Image(systemName: "magnifyingglass").foregroundStyle(theme.text())
                     ZStack(alignment: .leading) {
                         TextField("", text: $model.searchText)
-                            .accessibilityLabel("Search \(model.scope == .sources ? "sources" : "pages")")
+                            .accessibilityLabel("Search \(model.scope == .semantic ? "semantic blocks" : model.scope == .sources ? "sources" : "pages")")
                             .textFieldStyle(.plain).focused($searchFocused)
                         if model.searchText.isEmpty {
-                            Text("Search \(model.scope == .sources ? "sources" : "pages")")
+                            Text("Search \(model.scope == .semantic ? "semantic blocks" : model.scope == .sources ? "sources" : "pages")")
                                 .foregroundStyle(theme.text()).allowsHitTesting(false).accessibilityHidden(true)
                         }
                     }
@@ -423,7 +428,8 @@ struct ContentView: View {
         .accessibilityLabel("Source details")
     }
     private func pageInspector(_ note: NoteRecord) -> some View {
-        let summary = BlockDocumentCodec.decode(model.body).aiSummary
+        let document = BlockDocumentCodec.decode(model.body)
+        let summary = document.aiSummary
         return ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .top) {
@@ -445,6 +451,20 @@ struct ContentView: View {
                     LabeledContent("Editing", value: model.editingLocked ? "Locked" : "Unlocked")
                 }.font(.callout)
                 sourceReferences(note)
+                Divider()
+                Label("Semantic tags", systemImage: "tag").font(.headline)
+                if document.semanticGroups.isEmpty {
+                    Text("No semantic tags on this page.").font(.caption).foregroundStyle(.secondary)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(document.semanticGroups, id: \.tag) { group in
+                        ForEach(group.blocks) { block in
+                            SemanticBlockSidebarRow(block: block) {
+                                model.editorAction = EditorAction(operation: .block(block.id))
+                            }
+                        }
+                    }
+                }
                 Divider()
                 Label("AI-generated summary", systemImage: "sparkles").font(.headline)
                 Button(summary == nil ? "Generate AI Summary" : "Regenerate AI Summary") {
@@ -569,7 +589,37 @@ struct ContentView: View {
                 .safeAreaBar(edge: .top) { HStack { Spacer(); headerActions }.padding(.horizontal, 28).padding(.vertical, 8) }
         }
     }
+    private var semanticBlockList: some View {
+        Group {
+            if model.semanticRows.isEmpty {
+                ContentUnavailableView(model.searchText.isEmpty ? "No semantic blocks" : "No matches",
+                    systemImage: "tag", description: Text("Search block text, semantic type, or page title."))
+                    .frame(maxHeight: .infinity)
+            } else {
+                List(selection: Binding(get: { model.selectedSemanticID }, set: { id in
+                    if let hit = model.semanticRows.first(where: { $0.id == id }) {
+                        model.select(hit.pageID, block: hit.blockID)
+                    }
+                })) {
+                    ForEach(model.semanticRows) { hit in
+                        let presentation = SemanticPresentation.find(hit.semantic)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label {
+                                Text(presentation?.title ?? hit.semantic.capitalized).font(.headline)
+                            } icon: {
+                                Image(systemName: presentation?.symbol ?? "tag")
+                                    .foregroundStyle(Color(nsColor: presentation?.accent ?? .secondaryLabelColor))
+                            }
+                            Text(hit.preview.isEmpty ? "Empty block" : hit.preview).lineLimit(1)
+                            Text(hit.pageTitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }.padding(.horizontal, 12).padding(.vertical, 8).tag(hit.id)
+                    }
+                }.listStyle(.plain).scrollContentBackground(.hidden)
+            }
+        }
+    }
     private var libraryCount: String {
+        if model.scope == .semantic { return "\(model.semanticRows.count) semantic blocks" }
         let count = model.rows.count
         let noun = model.scope == .sources ? (count == 1 ? "source" : "sources") : (count == 1 ? "page" : "pages")
         return "\(count) \(noun)"
@@ -776,6 +826,34 @@ struct PasteSourceSheet: View {
     }
 }
 
+
+private struct SemanticBlockSidebarRow: View {
+    let block: EditorBlock
+    let navigate: () -> Void
+    @State private var hovered = false
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        let presentation = SemanticPresentation.find(block.metadata.semantic)
+        let preview = block.text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        Button(action: navigate) {
+            HStack(spacing: 8) {
+                Image(systemName: presentation?.symbol ?? "tag")
+                    .foregroundStyle(Color(nsColor: presentation?.accent ?? .secondaryLabelColor))
+                    .frame(width: 20)
+                    .accessibilityHidden(true)
+                Text(preview.isEmpty ? "Empty block" : preview)
+                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "arrow.right")
+                    .opacity(hovered || focused ? 1 : 0).accessibilityHidden(true)
+            }.font(.body).contentShape(Rectangle())
+        }.buttonStyle(.borderless).focused($focused)
+            .onHover { hovered = $0 }
+            .help(block.text)
+            .accessibilityLabel("Go to \(presentation?.title ?? block.metadata.semantic ?? "tagged") block: \(preview.isEmpty ? "Empty block" : preview)")
+    }
+}
 
 private struct SidebarAISummary: View {
     let text: String

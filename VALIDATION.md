@@ -1,5 +1,28 @@
 # Validation — 10 October 2026
 
+## Global semantic block search — 11 October 2026, two-minute timebox
+
+- Added Semantic Blocks below Sources. Native selectable list rows show semantic type/color/icon, one-line block preview, and owning page. Search matches all whitespace-separated terms across block text, semantic type, and page title, case-insensitively. Includes nested blocks and current editor content; omits generated summaries. Snapshot parsing/search runs off the main actor, with query/vault/cancellation checks before publishing. Selection uses existing save-before-navigation and block-jump actions, rendering the same article viewer and page inspector used by Pages.
+- Final `./scripts/test.sh` passed all 75 tests with macOS service access, including new global search coverage for nested blocks, whitespace previews, multi-term case-insensitive type/text/page matching, generated-summary exclusion, no matches, and page-qualified row identity. `./scripts/build.sh debug` compiled, packaged, and signed successfully. Changed source/test/documentation whitespace checks passed; brand assets were unchanged. Existing edits and demo content were preserved.
+- Manual global-list selection/search/edit flows in a temporary vault, appearance/accent/accessibility/VoiceOver checks, and the optional 5,000-entry benchmark were not performed within the timebox. No persisted schema or index changes.
+
+## Semantic sidebar sizing and spacing — 11 October 2026
+
+- Increased semantic previews and icons from native caption to body size, aligned icons in a 20-point column, and placed all rows in one stack with four-point spacing. This removes the outer inspector's 18-point gap between different semantic tags while retaining one-line previews and hover navigation.
+- `./scripts/build.sh debug` compiled, packaged, and signed successfully. Whitespace checks passed for the changed UI and validation files; generated brand assets were unchanged. No regression suite rerun for this layout-only adjustment. Manual visual, appearance/accent, and accessibility checks were not performed.
+
+## Compact semantic rows and block navigation — 11 October 2026, two-minute follow-up
+
+- Excluded AI-generated Summary blocks from semantic rows while retaining manually tagged Summary blocks. Removed tag title headings; each block has one preview line with its colored semantic icon. A right arrow appears on row hover or keyboard focus; the native button jumps to the block using the existing editor action, including revealing collapsed ancestors in locked/read-only views.
+- Final `./scripts/test.sh` passed all 74 tests with native macOS service access. Coverage checks generated-summary exclusion/manual-summary retention and locked nested-block navigation without publishing content changes or adding undo actions. One initial assertion hit a Swift Testing key-path macro compile error; the corrected assertion passed. `./scripts/build.sh debug` compiled, packaged, and signed successfully. Diff whitespace checks passed for changed source/test/documentation files; unrelated live demo edits include trailing whitespace and were preserved. Generated brand assets were unchanged.
+- Manual hover/keyboard presentation, sidebar layout, appearance/accent changes, accessibility settings, and VoiceOver checks were not performed within the timebox.
+
+## Page sidebar semantic tags — 11 October 2026, two-minute timebox
+
+- Page details automatically groups all semantic-tagged blocks by tag with one-line whitespace-normalized previews and full-text hover help. Includes nested/collapsed blocks, empty tagged blocks, unknown future tags, and Summary blocks; derives from the current editor body so edits update the list. No persistence or format changes.
+- `./scripts/test.sh` passed all 73 tests with macOS service access, including new nested/unknown-tag, ordering, empty-block, and tag-removal coverage. `./scripts/build.sh debug` compiled, packaged, and signed successfully with icon-service access. Initial restricted checks failed on file coordination/pasteboard and icon packaging; service-enabled reruns passed. `git diff --check` passed; generated brand assets were unchanged. Existing edits and demo-vault content were preserved.
+- Native sidebar layout and editing interaction in a temporary vault, appearance/accent switching, accessibility settings, and full VoiceOver checks were not performed within the explicit timebox.
+
 Environment: Apple Silicon Mac, macOS 27.0; Swift 6.2.4; macOS SDK 26.2.
 
 ## Source summary metadata and context-menu icons — 11 October 2026
