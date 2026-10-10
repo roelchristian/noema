@@ -1,5 +1,12 @@
 # Validation — 10 October 2026
 
+## Theme dropdown swatches and hover previews — 2026-10-11
+
+- The native NSPopUpButton shows six semantic palette swatches beside every theme. Native menu highlighting previews the theme throughout theme-aware windows, in the current full-palette/accent-only mode.
+- Hover state is transient and separate from UserDefaults. Explicit selection is committed after menu tracking ends; cancelling clears the preview and retains the saved preference. Keyboard highlighting uses the same preview path.
+- `./scripts/test.sh` compiled the app and passed all 94 tests outside the automation sandbox, including preview cancellation and deferred-selection coverage. `git diff --check` passed.
+- No native UI validation was performed, as requested. Live hover repaint during native menu tracking, keyboard menu interaction, swatch rendering, and VoiceOver remain unverified. Packaging was not rerun; the prior Invalid Iconset limitation remains recorded below.
+
 ## Theme palettes and application modes — 2026-10-11
 
 - Settings now offers System, Midnight Iris, Forest, Amber, and Rose, with a persisted full-palette checkbox. Unchecked palettes use their main color as an accent with native surfaces and text; palettes follow macOS Light/Dark appearance.

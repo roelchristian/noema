@@ -56,7 +56,7 @@ private struct SystemNoemaThemeModifier: ViewModifier {
     @State private var revision = 0
     func body(content: Content) -> some View {
         var theme = NoemaTheme(dark: scheme == .dark, increasedContrast: contrast == .increased); theme.revision = revision
-        theme.preference = ThemePreference(rawValue: preference) ?? .system
+        theme.preference = ThemePreviewState.shared.preference ?? ThemePreference(rawValue: preference) ?? .system
         theme.fullPalette = fullPalette
         return content.environment(\.noemaTheme, theme)
             .tint(theme.accent)

@@ -54,11 +54,12 @@ struct NoemaSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Appearance") {
-                Picker("Theme", selection: $themePreference) {
-                    ForEach(ThemePreference.allCases) { theme in
-                        Text(theme.title).tag(theme.rawValue)
-                    }
+                LabeledContent("Theme") {
+                    ThemePalettePicker(selection: $themePreference)
+                        .frame(width: 245, height: 24)
                 }
+                Text("Hover over a theme to preview its colors. Select to save when the dropdown closes; Escape cancels.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Apply full palette to the app", isOn: $fullPalette)
                     .toggleStyle(.checkbox)
                     .disabled(themePreference == ThemePreference.system.rawValue)

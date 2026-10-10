@@ -24,3 +24,21 @@ import NoemaBrand
     #expect(system.accent == nil)
     #expect(system.native(.accentPrimary) == NSColor.controlAccentColor)
 }
+
+@Test @MainActor func themeHoverPreviewCommitsOnlyExplicitSelectionAfterClosing() {
+    let preview = ThemePreviewState()
+    preview.begin()
+    preview.highlight(.forest)
+    #expect(preview.preference == .forest)
+    preview.highlight(.rose)
+    #expect(preview.preference == .rose)
+    #expect(preview.finish() == nil)
+    #expect(preview.preference == nil)
+    #expect(!preview.isTracking)
+    preview.begin()
+    preview.highlight(.amber)
+    preview.select(.amber)
+    #expect(preview.isTracking)
+    #expect(preview.finish() == .amber)
+    #expect(preview.preference == nil)
+}
