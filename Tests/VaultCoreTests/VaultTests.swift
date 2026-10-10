@@ -616,25 +616,13 @@ private func temporaryFolder() throws -> URL {
     }
 }
 
-@Test func wikipediaMainExtractionExcludesChromeAndRejectsMissingContainer() throws {
-    let url = try WebSourceFetcher.validatedURL("https://en.wikipedia.org/wiki/Article")
-    let main = "<MAIN id=\"content\" data-test=\"a > b\"><h1>Article</h1><p>Knowledge</p></MAIN>"
-    let html = "<!-- <main>Comment</main> --><script>const example='<main>Script</main>';</script><nav>Navigation</nav>" + main + "<footer>Footer</footer>"
-    #expect(try WebSourceFetcher.readableHTML(Data(html.utf8), from: url) == Data(main.utf8))
-    for missing in ["<nav>No article</nav>", "<main>Unclosed", "<mainland>Wrong tag</mainland>"] {
-        #expect(throws: (any Error).self) { try WebSourceFetcher.readableHTML(Data(missing.utf8), from: url) }
-    }
-    for address in ["https://example.com", "https://wikipedia.org.example.com"] {
-        #expect(try WebSourceFetcher.readableHTML(Data(html.utf8), from: WebSourceFetcher.validatedURL(address)) == Data(html.utf8))
-    }
-}
-
-@Test func wikipediaCapturePreservesOriginalAndDerivesOnlyMain() async throws {
+@Test(arguments: ["<html><nav>Navigation</nav><main><p>Article only</p></main><footer>Footer</footer></html>", "<html><body>Article without main</body></html>"])
+func wikipediaCaptureUsesFullHTML(html: String) async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
     let repo = try FileVaultRepository.open(root: folder, create: true)
-    let bytes = Data("<html><nav>Navigation</nav><main><p>Article only</p></main><footer>Footer</footer></html>".utf8)
+    let bytes = Data(html.utf8)
     let source = try await repo.importURLSource("https://en.wikipedia.org/wiki/Article", fetch: { _ in WebSourceFetch(data: bytes, filename: "page.html") })
-    #expect(source.body == "<main><p>Article only</p></main>")
+    #expect(source.body == html)
     #expect(try await repo.scan().sources.first?.body == source.body)
     #expect(try Data(contentsOf: folder.appendingPathComponent("Sources/\(source.id.uuidString.lowercased())/original.html")) == bytes)
     #expect(source.metadata.sha256 == digest(bytes))

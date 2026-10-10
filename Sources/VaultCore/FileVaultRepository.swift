@@ -112,7 +112,7 @@ public actor FileVaultRepository: VaultRepository {
                 }
                 guard metadata.isLinked || digest(data) == metadata.sha256 else { throw VaultError.invalid("Original source has changed; its checksum does not match. Restore the original or import a new copy.") }
                 metadata.fileSize = data.count
-                let body = try Self.sourceText(Self.readableSourceData(data, metadata: metadata), filename: metadata.originalFilename)
+                let body = try Self.sourceText(data, filename: metadata.originalFilename)
                 let source = SourceRecord(metadata: metadata, body: body, availabilityIssue: metadata.webAvailabilityIssue)
                 result.sources.append(source); chunk.sources.append(source)
                 if chunk.sources.count >= 128 { progress?(chunk); chunk = ScanBatch() }
@@ -331,11 +331,7 @@ public actor FileVaultRepository: VaultRepository {
     private func publishSource(data: Data, filename: String, title: String, originURL: String?, isURLSource: Bool) throws -> SourceRecord {
         guard data.count <= Self.maximumImportBytes else { throw VaultError.invalid("Files larger than 2 MB must be linked instead of imported.") }
         try rejectDuplicateSource(checksum: digest(data))
-        let content: Data
-        if isURLSource, let address = originURL, let url = URL(string: address), ["html", "htm"].contains(URL(fileURLWithPath: filename).pathExtension.lowercased()) {
-            content = try WebSourceFetcher.readableHTML(data, from: url)
-        } else { content = data }
-        let body = try Self.sourceText(content, filename: filename)
+        let body = try Self.sourceText(data, filename: filename)
         let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
         let storedExtension = ext.isEmpty ? "bin" : ext
         if let originURL, !originURL.isEmpty {
@@ -363,12 +359,6 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public static let maximumImportBytes = 2_000_000
-
-    public static func readableSourceData(_ data: Data, metadata: SourceMetadata) throws -> Data {
-        guard metadata.isURLSource == true, ["html", "htm"].contains(URL(fileURLWithPath: metadata.originalFilename).pathExtension.lowercased()),
-              let address = metadata.originURL, let url = URL(string: address) else { return data }
-        return try WebSourceFetcher.readableHTML(data, from: url)
-    }
 
     private static func sourceText(_ data: Data, filename: String) throws -> String {
         let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
