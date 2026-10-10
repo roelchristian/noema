@@ -8,6 +8,8 @@ The interface uses native macOS Liquid Glass navigation and toolbars, glass sear
 
 **System appearance:** App chrome, controls, writing surfaces, selection, and previews follow macOS Light/Dark appearance, accent and highlight colors, and accessibility settings. Appearance settings are managed in System Settings; Noema no longer overrides them. Midnight Iris colors are confined to the orbital identity and icon exports.
 
+The middle page/source list starts at 385 points wide, about 1.75 times the sidebar's default 220 points. Native split-view dividers remain resizable.
+
 ## Build and run
 
 Requires macOS 26+, Apple’s Swift 6 command-line tools, and internet access for the first dependency download. Full Xcode is optional. The tested development machine runs macOS 27 with Swift 6.2.4 and the macOS 26.2 SDK.
@@ -81,6 +83,8 @@ The app uses user-selected folder bookmarks, coordinated file reads/writes, and 
 If another editor changes a page while your draft is open, the app compares its content hash before saving. It keeps the disk version and preserves your competing draft in `Conflicts` and local recovery storage. Reload the disk version or save the draft as a new page. Detected iCloud conflict versions are copied before being marked resolved. Never use the index as your only backup; iCloud sync also propagates deletions.
 
 Interrupted source imports remain in a hidden `.import-<uuid>` directory; completed sources are published only after both original and metadata exist. Removed pages remain in `.Trash`. Select **Trash** below Sources to restore a page or permanently delete it after confirmation. Restore preserves the file bytes and persisted identity, uses an available filename in Wiki, and refuses an existing identity or title collision; rename the active page first to resolve a title collision.
+
+If the empty `.Trash` folder is removed externally, Noema recreates it when refreshing Trash or moving a page there, so page creation and refresh can continue.
 
 ## Testing
 

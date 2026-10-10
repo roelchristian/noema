@@ -332,6 +332,7 @@ struct EditorAction: Equatable {
             do {
                 let body = template ? "## Overview\n\n\n## Personal context\n\nWhy does this matter to me?\n\n## Connections\n\n" : ""
                 let note = try await repository.create(title: name, body: body)
+                errorMessage = nil
                 notes.insert(note, at: 0); scope = .wiki; reading = false
                 selectedID = note.id; currentSource = nil; apply(note)
                 await refresh()

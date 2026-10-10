@@ -178,6 +178,7 @@ public actor FileVaultRepository: VaultRepository {
 
     public func trash(note: NoteRecord) throws {
         let url = try checkedWikiURL(note.relativePath)
+        try ensureTrashDirectory()
         var operationError: Error?, coordinatorError: NSError?
         NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: .forDeleting, error: &coordinatorError) { coordinatedURL in
             do {
@@ -193,6 +194,8 @@ public actor FileVaultRepository: VaultRepository {
 
     public func trashedPages() throws -> [TrashedPage] {
         let directory = root.appendingPathComponent(".Trash")
+        // Empty folders can disappear externally, including during vault sync.
+        try ensureTrashDirectory()
         return try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension.lowercased() == "md" }
             .map { url in
@@ -231,6 +234,12 @@ public actor FileVaultRepository: VaultRepository {
             } catch { failure = error }
         }
         if let failure { throw failure }; if let coordinationError { throw coordinationError }
+    }
+    private func ensureTrashDirectory() throws {
+        let directory = root.appendingPathComponent(".Trash")
+        if !fm.fileExists(atPath: directory.path) {
+            try fm.createDirectory(at: directory, withIntermediateDirectories: false)
+        }
     }
     private func checkedTrashURL(_ path: String) throws -> URL {
         let url = root.appendingPathComponent(path).standardizedFileURL

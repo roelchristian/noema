@@ -16,7 +16,7 @@ struct ContentView: View {
                 NavigationSplitView {
                     sidebar.navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
                 } content: {
-                    library.navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 400)
+                    library.navigationSplitViewColumnWidth(min: 385, ideal: 385, max: 490)
                 } detail: { detail }
                 .navigationSplitViewStyle(.balanced)
             }

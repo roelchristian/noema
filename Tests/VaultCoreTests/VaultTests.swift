@@ -243,6 +243,23 @@ private func temporaryFolder() throws -> URL {
     #expect(edited.body == "Changed")
 }
 
+@Test func missingTrashDoesNotBlockPageCreationOrRecovery() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let trash = folder.appendingPathComponent(".Trash")
+    try FileManager.default.removeItem(at: trash)
+    let note = try await repo.create(title: "New page", body: "Original")
+    #expect(try await repo.trashedPages().isEmpty)
+    #expect(try await repo.scan().notes.map(\.id) == [note.id])
+    let saved = try await repo.save(note: note, title: note.title, body: "Saved body", tags: [])
+    let bytes = try Data(contentsOf: folder.appendingPathComponent(saved.relativePath))
+    try FileManager.default.removeItem(at: trash)
+    try await repo.trash(note: saved)
+    let page = try #require(await repo.trashedPages().first)
+    try await repo.restore(page)
+    #expect(try Data(contentsOf: folder.appendingPathComponent(saved.relativePath)) == bytes)
+}
+
 @Test func trashLockedPagePreservesBytesAndOtherPages() async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
     let repo = try FileVaultRepository.open(root: folder, create: true)

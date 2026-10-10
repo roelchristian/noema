@@ -2,6 +2,18 @@
 
 Environment: Apple Silicon Mac, macOS 27.0; Swift 6.2.4; macOS SDK 26.2.
 
+## Wider middle pane
+
+- The page/source/Trash list uses a 385-point minimum and ideal width, with a 490-point maximum. The sidebar retains its 220-point ideal width, giving approximately the requested 1.75 ratio at the default sidebar width. Native split-view resizing remains available.
+- `./scripts/build.sh debug` compiled and packaged successfully; `git diff --check` passed. Native inspection in the isolated UI-check app and temporary Test Vault confirmed sidebar width 220 and middle width 384.5 points, plus readable page selection, editor, and toolbar layout in current Dark appearance. No content was edited; generated brand assets were unchanged.
+- No regression suite was run for this width-only change. Appearance/accent switching, minimum-window sizing, accessibility preferences, and full VoiceOver interaction were not exercised.
+
+## Missing Trash folder — three-minute fix
+
+- Recreate `.Trash` if it disappears while the vault is open, before listing trash or moving a page there. This prevents the new Trash refresh from aborting page-list/search reconciliation after page creation. Successful page creation also clears an earlier error banner. Existing demo edits were preserved.
+- `./scripts/test.sh` passed all 44 entries (optional benchmark not executed), including a temporary-vault regression that removes `.Trash`, creates/saves a page, removes the folder again, then trashes/restores the page with its bytes preserved. The final `./scripts/build.sh debug` packaged the app and archive successfully; `git diff --check` passed. Initial restricted runs lacked macOS file-coordination, pasteboard, and icon-service access; final validation used service access.
+- Live native UI, appearance/accessibility, and two-Mac iCloud checks were not performed within this timebox. The running app must be reopened to load the rebuilt binary.
+
 ## Page header cleanup — one-minute timebox
 
 - Removed the Personal wiki label and its icon. The header starts with the page title unless an editing reminder is present; source labels and read-only indicators remain.
