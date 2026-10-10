@@ -3,6 +3,7 @@ import VaultCore
 
 @MainActor final class ArticleTextView: NSTextView {
     var begin: (() -> Void)?
+    var lockedClick: (() -> Void)?
     var end: (() -> Void)?
     var locked = false
     var theme = NoemaTheme()
@@ -30,14 +31,39 @@ import VaultCore
         return (storage.attribute(.blockID, at: index, effectiveRange: nil) as? String).flatMap(UUID.init(uuidString:))
     }
     func rect(for range: NSRange) -> NSRect {
-        guard let layoutManager, let textContainer else { return .zero }
-        // A block terminator can occupy the next line after insertion. Decorations
-        // follow the block's content, rather than that trailing empty line.
-        var content = range
-        if content.length > 1, let storage = textStorage,
-           (storage.string as NSString).substring(with: content).hasSuffix("\n") { content.length -= 1 }
+        guard let layoutManager, let storage = textStorage, range.length > 0 else { return .zero }
+        // Preserve all stored text, but don't draw an accent across trailing blank
+        // lines or paragraph/line spacing. Empty blocks still get one text line.
+        let text = (storage.string as NSString).substring(with: range) as NSString
+        let lastContent = text.rangeOfCharacter(from: .whitespacesAndNewlines.inverted, options: .backwards)
+        let content = NSRange(location: range.location, length: lastContent.location == NSNotFound ? 1 : NSMaxRange(lastContent))
         let glyphs = layoutManager.glyphRange(forCharacterRange: content, actualCharacterRange: nil)
-        return layoutManager.boundingRect(forGlyphRange: glyphs, in: textContainer).offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+        if text.isEqual(to: "\n"), glyphs.length > 0 {
+            // A newline glyph sits lower than the first typed glyph. Keep empty
+            // block decoration on the native insertion line so it won't jump.
+            let line = layoutManager.lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+            let used = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+            let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont ?? NSFont.systemFont(ofSize: 16)
+            let paragraph = storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle
+            // The newline's fragment omits leading paragraph spacing after the first block.
+            let leadingSpace = range.location > 0 ? (paragraph?.paragraphSpacingBefore ?? 0) : 0
+            return NSRect(x: used.minX + textContainerOrigin.x, y: line.minY + textContainerOrigin.y + leadingSpace,
+                          width: used.width, height: font.ascender - font.descender)
+        }
+        var bounds = NSRect.null
+        layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { line, used, _, lineGlyphs, _ in
+            let included = NSIntersectionRange(lineGlyphs, glyphs)
+            guard included.length > 0 else { return }
+            let baseline = line.minY + layoutManager.location(forGlyphAt: included.location).y
+            var ascender: CGFloat = 0, descender: CGFloat = 0
+            let characters = layoutManager.characterRange(forGlyphRange: included, actualGlyphRange: nil)
+            storage.enumerateAttribute(.font, in: characters) { value, _, _ in
+                let font = value as? NSFont ?? NSFont.systemFont(ofSize: 16)
+                ascender = max(ascender, font.ascender); descender = max(descender, -font.descender)
+            }
+            bounds = bounds.union(NSRect(x: used.minX, y: baseline - ascender, width: used.width, height: ascender + descender))
+        }
+        return bounds.isNull ? .zero : bounds.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
     }
     override func mouseMoved(with event: NSEvent) { hoverID = blockAt(convert(event.locationInWindow, from: nil)); needsDisplay = true }
     override func mouseExited(with event: NSEvent) { hoverID = nil; needsDisplay = true }
@@ -100,8 +126,13 @@ import VaultCore
         }
         tinted.draw(in: rect)
     }
+    func requestEditingFromClick() {
+        if locked { lockedClick?(); return }
+        if !isEditable { isEditable = true; begin?(); window?.makeFirstResponder(self) }
+    }
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if locked { requestEditingFromClick(); super.mouseDown(with: event); return }
         if !locked, let id = blockAt(point), let storage = textStorage,
            let (_, range) = BlockTextStorage.ranges(storage).first(where: { $0.0 == id }) {
             if point.x < 29, isEditable { dragStart = (id, point); setSelectedRange(NSRange(location: range.location, length: 0)); return }
@@ -115,7 +146,7 @@ import VaultCore
                 }
             }
         }
-        if event.clickCount == 2, !locked, !isEditable { isEditable = true; begin?(); window?.makeFirstResponder(self) }
+        requestEditingFromClick()
         super.mouseDown(with: event)
     }
     override func mouseUp(with event: NSEvent) {

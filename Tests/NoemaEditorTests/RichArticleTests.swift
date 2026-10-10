@@ -68,17 +68,67 @@ import VaultCore
 
 @Test @MainActor func slashPaletteUsesCompactSectionsAndSemanticSymbols() {
     let palette = BlockPalette(); palette.update(BlockCommand.matching(""))
-    #expect(palette.preferredContentSize.width <= 280)
+    #expect(palette.preferredContentSize.width == 240)
+    #expect(palette.preferredContentSize.height == 405)
     #expect(palette.stack.arrangedSubviews.compactMap { $0 as? NSBox }.count == 1)
     let headings = palette.stack.arrangedSubviews.compactMap { ($0 as? NSTextField)?.stringValue }
     #expect(headings == ["Basic blocks", "Semantic blocks"])
     let buttons = palette.stack.arrangedSubviews.compactMap { $0 as? NSButton }
     #expect(buttons.count == BlockCommand.all.count)
+    #expect(palette.stack.spacing == 0)
+    #expect(buttons.allSatisfy { button in
+        abs((button.constraints.first(where: { $0.firstAttribute == .height })?.constant ?? 0) - 24) < 0.01
+    })
     #expect(buttons.first(where: { $0.title == "Idea" })?.image != nil)
+    for width in [CGFloat(200), 236] {
+        let bounds = NSRect(x: 0, y: 0, width: width, height: 24)
+        let cells = buttons.compactMap { $0.cell as? NSButtonCell }
+        let titles = cells.map { $0.titleRect(forBounds: bounds) }
+        #expect(Set(titles.map(\.minX)).count == 1)
+        for cell in cells {
+            #expect(cell.titleRect(forBounds: bounds).minX - cell.imageRect(forBounds: bounds).maxX >= 8)
+            #expect(bounds.contains(cell.titleRect(forBounds: bounds)))
+        }
+    }
     palette.move(12)
     #expect(palette.commands[palette.selected].id == "question")
     palette.update(BlockCommand.matching("ques"))
     #expect(palette.commands.first?.id == "question")
+}
+
+@Test @MainActor func slashPaletteAlwaysFitsAboveOrBelowCaret() {
+    let available = NSRect(x: 100, y: 100, width: 500, height: 600)
+    let desired = NSSize(width: 260, height: 480)
+    for caretY in [CGFloat(120), 350, 650] {
+        let caret = NSRect(x: 200, y: caretY, width: 1, height: 21)
+        let frame = BlockSuggestionPanel.frame(caret: caret, available: available, desired: desired)
+        #expect(available.contains(frame))
+        #expect(frame.maxY <= caret.minY - 6 || frame.minY >= caret.maxY + 6)
+        #expect(frame.minX == caret.minX)
+        #expect(frame.height <= desired.height)
+    }
+    let nearBottom = BlockSuggestionPanel.frame(caret: NSRect(x: 590, y: 120, width: 1, height: 21), available: available, desired: desired)
+    #expect(nearBottom.minY == 147)
+    #expect(nearBottom.maxX == available.maxX)
+    let nearTop = BlockSuggestionPanel.frame(caret: NSRect(x: 200, y: 650, width: 1, height: 21), available: available, desired: desired)
+    #expect(nearTop.maxY == 644)
+    let narrow = BlockSuggestionPanel.frame(caret: NSRect(x: 120, y: 300, width: 1, height: 21), available: NSRect(x: 100, y: 100, width: 200, height: 400), desired: desired)
+    #expect(narrow.width == 200)
+}
+
+@Test @MainActor func articleClickStartsEditingAndLockedClickShowsHint() {
+    let view = ArticleTextView(); view.isEditable = false
+    var starts = 0, lockedNotices = 0
+    view.begin = { starts += 1 }; view.lockedClick = { lockedNotices += 1 }
+    view.requestEditingFromClick()
+    #expect(view.isEditable); #expect(starts == 1)
+    view.requestEditingFromClick()
+    #expect(starts == 1)
+    view.isEditable = false; view.locked = true
+    view.requestEditingFromClick()
+    #expect(!view.isEditable); #expect(starts == 1); #expect(lockedNotices == 1)
+    view.locked = false; view.requestEditingFromClick()
+    #expect(view.isEditable); #expect(starts == 2)
 }
 
 @Test @MainActor func semanticDecorationExcludesBlockTerminatorAfterSplit() {
@@ -214,4 +264,49 @@ import VaultCore
     coordinator.mutate(.transform(.heading2), name: "Heading")
     #expect(coordinator.document.blocks[0].metadata.status == "answered")
     #expect(coordinator.document.blocks[0].runs.last?.style.bold == true)
+}
+
+@Test @MainActor func semanticAccentsExcludeTrailingBlankLinesAndSpacing() {
+    let (coordinator, view, window) = editor("Initial")
+    defer { window.close() }
+    for kind in [BlockKind.paragraph, .heading2, .quote, .code] {
+        var metadata = BlockMetadata(); metadata.semantic = "idea"
+        let block = EditorBlock(kind: kind, runs: [RichRun("One line\n \n\n")], metadata: metadata)
+        coordinator.document = BlockDocument(blocks: [block, EditorBlock(runs: [RichRun("Next block")])])
+        coordinator.render(selection: NSRange(location: 0, length: 0))
+        view.layoutManager?.ensureLayout(for: view.textContainer!)
+        let range = BlockTextStorage.ranges(view.textStorage!)[0].1
+        let bounds = view.rect(for: range)
+        let font = view.textStorage!.attribute(.font, at: 0, effectiveRange: nil) as! NSFont
+        #expect(abs(bounds.height - (font.ascender - font.descender)) < 0.01)
+        #expect(BlockTextStorage.capture(view.textStorage!, previous: coordinator.document).blocks == coordinator.document.blocks)
+        #expect(coordinator.document.blocks[0].text == "One line\n \n\n")
+    }
+}
+
+@Test @MainActor func convertedBlockCaretKeepsBaselineWhenTypingBegins() {
+    let (coordinator, view, window) = editor("Initial")
+    defer { window.close() }
+    for (kind, semantic) in [(BlockKind.paragraph, false), (.heading2, false), (.bullet, false), (.quote, false), (.code, false), (.paragraph, true)] {
+        var metadata = BlockMetadata(); if semantic { metadata.semantic = "idea" }
+        coordinator.document = BlockDocument(blocks: [EditorBlock(runs: [RichRun("Previous")]), EditorBlock(kind: kind, metadata: metadata)])
+        coordinator.render(selection: NSRange(location: 0, length: 0))
+        let start = BlockTextStorage.ranges(view.textStorage!)[1].1.location
+        view.setSelectedRange(NSRange(location: start, length: 0))
+        view.layoutManager?.ensureLayout(for: view.textContainer!)
+        let bounds = view.rect(for: NSRange(location: start, length: 1))
+        let nativeBefore = view.firstRect(forCharacterRange: NSRange(location: start, length: 0), actualRange: nil)
+        let localBefore = view.convert(window.convertFromScreen(nativeBefore), from: nil)
+        #expect(abs(bounds.minY - localBefore.minY) < 1)
+        view.undoManager?.beginUndoGrouping()
+        view.insertText("A", replacementRange: NSRange(location: start, length: 0))
+        view.undoManager?.endUndoGrouping()
+        view.layoutManager?.ensureLayout(for: view.textContainer!)
+        let nativeAfter = view.firstRect(forCharacterRange: NSRange(location: start + 1, length: 0), actualRange: nil)
+        let localAfter = view.convert(window.convertFromScreen(nativeAfter), from: nil)
+        let typed = view.rect(for: NSRange(location: start, length: 1))
+        #expect(abs(localAfter.minY - localBefore.minY) < 0.5)
+        #expect(abs(typed.minY - localAfter.minY) < 1)
+        #expect(view.string == "Previous\nA\n")
+    }
 }

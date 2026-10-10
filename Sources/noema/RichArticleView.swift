@@ -23,7 +23,7 @@ struct RichArticleView: NSViewRepresentable {
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         view.isAutomaticQuoteSubstitutionEnabled = false; view.isAutomaticDashSubstitutionEnabled = false
         view.setAccessibilityLabel("Article block editor")
-        view.setAccessibilityHelp("Double click to edit. Slash opens block commands. Use the Block context menu for structure, tags, and status. Command Option A selects the document.")
+        view.setAccessibilityHelp("Click to edit. Unlock a locked article first. Slash opens block commands. Use the Block context menu for structure, tags, and status. Command Option A selects the document.")
         view.registerForDraggedTypes([ArticleTextView.dragType])
         view.delegate = context.coordinator; context.coordinator.view = view; scroll.documentView = view
         context.coordinator.load(text)
@@ -35,6 +35,7 @@ struct RichArticleView: NSViewRepresentable {
         view.locked = locked || coordinator.document.unsupportedVersion
         view.isEditable = !reading && !view.locked; view.theme = theme
         view.begin = onBegin; view.end = onEnd
+        view.lockedClick = onBegin
         view.handleKey = { [weak coordinator] in coordinator?.handleKey($0) ?? false }
         view.blockMenu = { [weak coordinator] in coordinator?.contextMenu() ?? NSMenu() }
         view.activateBlock = { [weak coordinator] id, command in coordinator?.mutate(command, id: id, name: "Change block") }
@@ -48,5 +49,9 @@ struct RichArticleView: NSViewRepresentable {
             if case .block = action.operation { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
             else if view.isEditable { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
         }
+    }
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        coordinator.suggestions.close()
+        coordinator.view?.delegate = nil
     }
 }

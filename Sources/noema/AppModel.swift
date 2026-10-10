@@ -37,6 +37,7 @@ struct EditorAction: Equatable {
     var backlinks: [NoteRecord] = []
     var reading = true
     var editorNotice: String?
+    var editingHint: String?
     var editorReadOnly = false
     var pendingBlockURL: URL?
     var busy = false
@@ -222,6 +223,7 @@ struct EditorAction: Equatable {
         }
     }
     private func apply(_ note: NoteRecord) {
+        editingHint = nil
         editorAction = nil
         currentNote = note; title = note.title; body = note.body; tagInput = note.tags.joined(separator: ", ")
         let document = BlockDocumentCodec.decode(note.body)
@@ -242,7 +244,14 @@ struct EditorAction: Equatable {
         }
     }
     var editingLocked: Bool { currentNote?.isEditingLocked == true || editorReadOnly }
-    func beginEditing() { guard currentNote != nil, !editingLocked else { return }; reading = false }
+    func beginEditing() {
+        guard currentNote != nil else { return }
+        guard !editingLocked else {
+            editingHint = editorReadOnly ? "This article is read-only." : "Article locked. Unlock it to edit."
+            return
+        }
+        editingHint = nil; reading = false
+    }
     func finishEditing() { wikiQuery = nil; editorAction = nil; saveNow(); reading = true }
     func toggleEditingLock() {
         Task {

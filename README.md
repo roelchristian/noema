@@ -32,7 +32,7 @@ For a quick tour, open `Examples/Demo Vault`. Its pages contain illustrative per
 1. Click **Create a vault**. Create or choose a dedicated folder, locally or in iCloud Drive. Keep your content vault separate from this source-code folder.
 2. Use **New personal page** for optional Overview / Personal context / Connections headings, or create a blank page with ⌘N.
 3. Add topics in the comma-separated field or write inline `#history` tags. Type `[[` for page suggestions. A link such as `[[Pertinax|my reading]]` can show a friendly label.
-4. Click **Edit** or double-click the article to start native block editing; click **Done** or press Escape to finish. The lock control prevents article edits.
+4. Click **Edit** or click the article text area once to start native block editing; click **Done** or press Escape to finish. The lock control prevents article edits; clicking a locked article shows an unlock reminder beside the lock.
 5. Select **Sources** to import UTF-8 `.txt` / `.md` files or paste text with an optional original URL. Originals cannot be edited in the app. Imported Markdown also has an Original view.
 
 **⌘S** saves immediately, **⌘P / ⇧⌘F** focuses vault search, **⌘B / ⌘I / ⌘U** toggles bold/italic/underline, and **⌘K** edits a hyperlink, and **⇧⌘I** imports sources. Editing saves after 500 ms of inactivity. Page title changes keep the filename stable and add the old title as an alias, so links continue working.
@@ -41,7 +41,9 @@ Sources and wiki pages are independent in v1. No AI provider is contacted. Raw d
 
 ## Block editing
 
-Type `/` in an empty paragraph or after whitespace to search block commands. The compact menu opens above or below the caret according to available space, separates basic and semantic blocks, and shows semantic icon colors. Aliases such as `/h2` and `/ques` and fuzzy matching are supported; use arrows and Return, or Escape to dismiss. Paragraphs, three heading levels, bullets, numbering, tasks, quotes, code, dividers, callouts, and nested toggles share the same command layer.
+Type `/` in an empty paragraph or after whitespace to search block commands. The compact menu opens directly above or below the caret within the visible editor, scrolls to fit the available space, separates basic and semantic blocks, and shows semantic icon colors. Aliases such as `/h2` and `/ques` and fuzzy matching are supported; use arrows and Return, or Escape to dismiss. Paragraphs, three heading levels, bullets, numbering, tasks, quotes, code, dividers, callouts, and nested toggles share the same command layer.
+
+The caret and block accent stay aligned when you start typing in an empty block after choosing a command.
 
 Question, Idea, Important, Starred, Definition, Example, Insight, Warning, Reference, and Summary add editable semantic icons outside the article margin without replacing a heading or list structure. Bullets, numbering, checkboxes, and toggle arrows sit inside the margin. Semantic blocks, quotes, callouts, and code have extra vertical spacing. Semantic names and statuses remain available to VoiceOver and **Block Actions**; Question and Idea have optional statuses there. Use **⇧⌘B** or the native context menu for conversion, tags, status, duplication, Markdown copy, block links, moving, indentation, deletion, and inline formatting. Hover at the left margin to reveal a drag handle and click it for block actions. Native drag/drop remains an outstanding acceptance issue; use Move up/down or ⌥⌘↑/↓ to reorder a subtree. Tab/Shift Tab explicitly changes nesting.
 

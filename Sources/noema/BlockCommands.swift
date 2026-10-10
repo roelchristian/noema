@@ -93,6 +93,19 @@ struct BlockCommand: Identifiable, Equatable {
     }
 }
 
+// Keep native button drawing/interaction, with a shared icon column and title inset.
+@MainActor final class BlockCommandButtonCell: NSButtonCell {
+    override func imageRect(forBounds rect: NSRect) -> NSRect {
+        NSRect(x: rect.minX + 7, y: rect.midY - 8, width: 16, height: 16)
+    }
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        var title = super.titleRect(forBounds: rect)
+        title.origin.x = rect.minX + 31
+        title.size.width = max(0, rect.maxX - 8 - title.minX)
+        return title
+    }
+}
+
 @MainActor final class BlockPalette: NSViewController {
     let stack = NSStackView()
     let scroll = NSScrollView()
@@ -100,9 +113,9 @@ struct BlockCommand: Identifiable, Equatable {
     var commands: [BlockCommand] = []
     var selected = 0
     override func loadView() {
-        let material = NSVisualEffectView(); material.material = .popover; material.state = .active
+        let material = NSVisualEffectView(); material.material = .menu; material.state = .active
         view = material
-        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 3
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
         scroll.translatesAutoresizingMaskIntoConstraints = false; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         material.addSubview(scroll); scroll.documentView = stack
@@ -120,6 +133,16 @@ struct BlockCommand: Identifiable, Equatable {
     func move(_ delta: Int) {
         guard !commands.isEmpty else { return }
         selected = (selected + delta + commands.count) % commands.count; drawRows()
+        revealSelection()
+    }
+    func revealSelection() {
+        view.layoutSubtreeIfNeeded(); stack.layoutSubtreeIfNeeded()
+        if selected == 0 {
+            let y = stack.isFlipped ? 0 : max(0, stack.bounds.height - scroll.contentView.bounds.height)
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            return
+        }
         if let button = stack.arrangedSubviews.compactMap({ $0 as? NSButton }).first(where: { $0.tag == selected }) { stack.scrollToVisible(button.frame) }
     }
     func execute() { if commands.indices.contains(selected) { choose?(commands[selected]) } }
@@ -130,15 +153,23 @@ struct BlockCommand: Identifiable, Equatable {
             if command.category != category {
                 category = command.category
                 if index > 0 {
+                    if let previous = stack.arrangedSubviews.last { stack.setCustomSpacing(8, after: previous) }
                     let separator = NSBox(); separator.boxType = .separator
                     stack.addArrangedSubview(separator)
                     separator.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+                    stack.setCustomSpacing(7, after: separator)
                 }
-                let label = NSTextField(labelWithString: category); label.font = .systemFont(ofSize: 12, weight: .semibold); label.textColor = .labelColor
+                let label = NSTextField(labelWithString: category); label.font = .systemFont(ofSize: 11, weight: .semibold); label.textColor = .secondaryLabelColor
                 stack.addArrangedSubview(label)
+                stack.setCustomSpacing(6, after: label)
             }
             let button = NSButton(title: command.title, target: self, action: #selector(clicked(_:)))
+            button.cell = BlockCommandButtonCell(textCell: command.title)
+            button.target = self; button.action = #selector(clicked(_:))
             button.tag = index; button.bezelStyle = .recessed; button.isBordered = index == selected
+            button.font = .systemFont(ofSize: 14)
+            button.attributedTitle = NSAttributedString(string: command.title, attributes: [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor])
+            button.imageScaling = .scaleProportionallyDown
             let presentation = SemanticPresentation.find(command.semantic)
             let image = NSImage(systemSymbolName: presentation?.symbol ?? command.symbol, accessibilityDescription: command.title)
             if let presentation {
@@ -149,9 +180,67 @@ struct BlockCommand: Identifiable, Equatable {
             button.setAccessibilityLabel(command.title + ". " + command.detail)
             stack.addArrangedSubview(button)
             button.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 24).isActive = true
         }
         if commands.isEmpty { stack.addArrangedSubview(NSTextField(labelWithString: "No matching commands")) }
-        preferredContentSize = NSSize(width: 260, height: min(420, CGFloat(max(1, commands.count)) * 27 + 62))
+        let sections = commands.enumerated().filter { index, command in index == 0 || commands[index - 1].category != command.category }.count
+        let rowHeight = CGFloat(max(1, commands.count) * 24)
+        let sectionHeight = CGFloat(sections * 21 + max(0, sections - 1) * 15)
+        preferredContentSize = NSSize(width: 240, height: min(405, rowHeight + sectionHeight + 20))
     }
     @objc private func clicked(_ button: NSButton) { selected = button.tag; execute() }
+}
+
+// A nonactivating native panel keeps the editor's keyboard focus and gives us
+// deterministic vertical placement, without NSPopover's sideways fallback.
+@MainActor final class BlockSuggestionPanel: NSPanel {
+    var dismiss: (() -> Void)?
+    private var eventMonitor: Any?
+    private var windowObservers: [NSObjectProtocol] = []
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+    var isShown: Bool { isVisible }
+    init(palette: BlockPalette) {
+        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        isReleasedWhenClosed = false; hasShadow = true; isOpaque = false
+        backgroundColor = .clear; hidesOnDeactivate = true
+        contentViewController = palette
+        palette.loadViewIfNeeded(); palette.view.wantsLayer = true
+        palette.view.layer?.cornerRadius = 10; palette.view.layer?.masksToBounds = true
+        setAccessibilityLabel("Block suggestions")
+    }
+    func show(frame: NSRect, of parent: NSWindow) {
+        if self.parent !== parent {
+            close(); parent.addChildWindow(self, ordered: .above)
+        }
+        setFrame(frame, display: true); orderFront(nil)
+        (contentViewController as? BlockPalette)?.revealSelection()
+        if eventMonitor == nil {
+            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .scrollWheel]) { [weak self] event in
+                if let self, event.window !== self { self.dismiss?() }
+                return event
+            }
+            for name in [NSWindow.willCloseNotification, NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
+                windowObservers.append(NotificationCenter.default.addObserver(forName: name, object: parent, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.dismiss?() }
+                })
+            }
+        }
+    }
+    override func close() {
+        if let eventMonitor { NSEvent.removeMonitor(eventMonitor); self.eventMonitor = nil }
+        for observer in windowObservers { NotificationCenter.default.removeObserver(observer) }
+        windowObservers.removeAll(); parent?.removeChildWindow(self)
+        super.close()
+    }
+    static func frame(caret: NSRect, available: NSRect, desired: NSSize) -> NSRect {
+        let gap: CGFloat = 6
+        let below = max(0, caret.minY - available.minY - gap)
+        let above = max(0, available.maxY - caret.maxY - gap)
+        let placeBelow = below >= desired.height || below >= above
+        let height = min(desired.height, placeBelow ? below : above)
+        let width = min(desired.width, available.width)
+        let x = max(available.minX, min(caret.minX, available.maxX - width))
+        return NSRect(x: x, y: placeBelow ? caret.minY - gap - height : caret.maxY + gap, width: width, height: height)
+    }
 }

@@ -266,6 +266,9 @@ struct ContentView: View {
                     .font(.caption.weight(.medium)).foregroundStyle(theme.text())
                 Spacer()
                 if model.currentNote != nil {
+                    if let hint = model.editingHint {
+                        Text(hint).font(.caption).foregroundStyle(.secondary)
+                    }
                     Button { model.toggleEditingLock() } label: {
                         Image(systemName: model.editingLocked ? "lock.fill" : "lock.open")
                     }.buttonStyle(.plain).foregroundStyle(theme.text())

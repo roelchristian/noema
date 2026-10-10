@@ -12,18 +12,18 @@ extension RichArticleView {
         var lastAction: UUID?
         var changing = false
         let palette = BlockPalette()
-        let popover = NSPopover()
+        lazy var suggestions = BlockSuggestionPanel(palette: palette)
         var slashRange: NSRange?
         var dismissedSlash: Int?
         var pendingSingleBlock: (UUID, Int)?
         init(_ parent: RichArticleView) {
             self.parent = parent; super.init()
-            popover.contentViewController = palette; popover.behavior = .applicationDefined; popover.animates = false
+            suggestions.dismiss = { [weak self] in self?.dismissPalette() }
             palette.choose = { [weak self] in self?.apply($0, removingQuery: true) }
         }
         func load(_ source: String) {
             document = BlockDocumentCodec.decode(source); lastText = source
-            popover.close(); render(selection: view?.selectedRange() ?? NSRange(location: 0, length: 0))
+            suggestions.close(); render(selection: view?.selectedRange() ?? NSRange(location: 0, length: 0))
         }
         func render(selection: NSRange) {
             guard let view else { return }
@@ -135,30 +135,27 @@ extension RichArticleView {
         func updatePalette() {
             guard let view, view.isEditable, !view.locked, current()?.0.kind != .code,
                   let range = BlockCommand.slashRange(in: view.string, selection: view.selectedRange()) else {
-                popover.close(); slashRange = nil; dismissedSlash = nil; return
+                suggestions.close(); slashRange = nil; dismissedSlash = nil; return
             }
             let changed = slashRange != range; slashRange = range
             guard dismissedSlash != range.location else { return }
-            if changed || !popover.isShown { palette.update(BlockCommand.matching(String((view.string as NSString).substring(with: range).dropFirst()))) }
-            if !popover.isShown {
-                guard let storage = view.textStorage, let window = view.window else { return }
+            if changed || !suggestions.isShown { palette.update(BlockCommand.matching(String((view.string as NSString).substring(with: range).dropFirst()))) }
+            do {
+                guard let window = view.window else { return }
                 view.layoutManager?.ensureLayout(for: view.textContainer!)
-                let location = min(view.selectedRange().location, max(0, storage.length - 1))
                 var actualRange = NSRange()
-                let screenRect = view.firstRect(forCharacterRange: NSRange(location: location, length: 0), actualRange: &actualRange)
-                let rect = view.convert(window.convertFromScreen(screenRect), from: nil)
-                let available = window.screen?.visibleFrame ?? window.frame
-                let below = screenRect.minY - available.minY
-                let above = available.maxY - screenRect.maxY
-                let placeBelow = below >= palette.preferredContentSize.height + 16 || below >= above
-                let edge: NSRectEdge = placeBelow ? (view.isFlipped ? .maxY : .minY) : (view.isFlipped ? .minY : .maxY)
-                // Anchor across the menu width so its leading edge lines up with the caret.
-                let x = min(rect.minX, max(view.visibleRect.minX, view.visibleRect.maxX - palette.preferredContentSize.width))
-                popover.show(relativeTo: NSRect(x: x, y: rect.minY, width: palette.preferredContentSize.width, height: max(18, rect.height)), of: view, preferredEdge: edge)
+                // Keep suggestions aligned with the slash, even as the query grows,
+                // wraps, or changes the menu height.
+                let screenRect = view.firstRect(forCharacterRange: NSRange(location: range.location, length: 0), actualRange: &actualRange)
+                let viewport = window.convertToScreen(view.convert(view.visibleRect, to: nil))
+                let available = viewport.intersection(window.screen?.visibleFrame ?? window.frame)
+                guard !available.isEmpty else { suggestions.close(); return }
+                let frame = BlockSuggestionPanel.frame(caret: screenRect, available: available, desired: palette.preferredContentSize)
+                suggestions.show(frame: frame, of: window)
                 window.makeFirstResponder(view)
             }
         }
-        func dismissPalette() { dismissedSlash = slashRange?.location; popover.close() }
+        func dismissPalette() { dismissedSlash = slashRange?.location; suggestions.close() }
         func apply(_ command: BlockCommand, removingQuery: Bool) {
             guard let view, let (block, range) = current() else { return }
             var offset = view.selectedRange().location - range.location
@@ -178,7 +175,7 @@ extension RichArticleView {
         }
         func handleKey(_ event: NSEvent) -> Bool {
             guard let view, view.isEditable, !view.locked, let (block, range) = current() else { return false }
-            if popover.isShown {
+            if suggestions.isShown {
                 switch event.keyCode {
                 case 125: palette.move(1); return true
                 case 126: palette.move(-1); return true

@@ -4,6 +4,40 @@ Environment: Apple Silicon Mac, macOS 27.0; Swift 6.2.4; macOS SDK 26.2.
 
 ## Block spacing and icon alignment — 3-minute UI timebox
 
+### Follow-up: first-character caret stability
+
+- Removed the custom insertion-point drawing that placed an empty block's caret lower than the native typing line. Empty block accents and backgrounds now use the native line position, accounting for paragraph spacing when the block follows other content.
+- `./scripts/test.sh` passed all 40 entries (optional benchmark not executed). Focused coverage checks native insertion and decoration bounds before and after typing the first character in basic paragraph, heading, bullet, quote, code, and semantic blocks after an existing paragraph. `./scripts/build.sh debug` packaged the app and archive; `git diff --check` passed.
+- Native Light appearance inspection in the separate `/tmp/Noema-Suggestion-Acceptance/Test Vault` showed the empty semantic accent and caret level with each other, then still level after typing the first character. Basic block typing was covered automatically; native Dark appearance, accent changes, and VoiceOver remain unverified for this change.
+
+### Follow-up: compact slash menu from reference image
+
+- The slash menu is 240 points wide, with 24-point command rows, aligned 16-point icon slots, native menu material, readable native label color, tighter section spacing, and a 405-point maximum height with scrolling. The initial menu still shows the basic/semantic divider and the first semantic commands.
+- `./scripts/test.sh` passed all 40 entries (optional benchmark not executed), including width, maximum height, row spacing, icon/title clearance, section structure, and command selection. `./scripts/build.sh debug` packaged the app and archive successfully; `git diff --check` passed.
+- Native Light appearance checks used the separate `/tmp/Noema-Suggestion-Acceptance/Test Vault` and verified the narrower menu, denser rows, title alignment, readable text, divider, and colored semantic icons. The final 405-point trim follows that visual check; Dark appearance, appearance/accent changes, and full VoiceOver interaction remain unverified.
+
+### Follow-up: empty semantic caret — 2-minute timebox
+
+- Empty semantic blocks draw the insertion caret at the same text bounds as their accent, excluding paragraph padding from its vertical position and height. Native caret color, blinking, horizontal position, and drawing are retained; populated blocks and ordinary empty paragraphs use their existing caret geometry.
+- `./scripts/test.sh` passed all 40 entries (optional benchmark not executed), including empty semantic caret alignment for paragraph, heading, quote, and code presentations and unchanged ordinary paragraph geometry. `./scripts/build.sh debug` packaged the app and archive successfully; `git diff --check` passed.
+- Live visual inspection, appearance changes, and VoiceOver checks for this adjustment were not performed within the timebox.
+
+### Follow-up: command icon/text alignment — 2-minute timebox
+
+- Native command button cells use a shared 20-point icon column with an 8-point gap before titles, keeping every title's leading edge aligned regardless of symbol width.
+- `./scripts/test.sh` passed all 39 entries (optional benchmark not executed), including title alignment, icon clearance, and bounds containment at two row widths. `./scripts/build.sh debug` packaged the app and archive successfully; `git diff --check` passed.
+- Live visual inspection and appearance/accessibility checks for this final spacing adjustment were not performed within the timebox.
+
+### Current follow-up: vertical-only suggestions and trailing accent bounds
+
+- Replaced the slash popover with a native nonactivating `NSPanel`, preserving editor keyboard focus. Its frame uses the visible editor's screen rectangle, chooses above/below the slash according to available room, and reduces height with scrolling when neither side fits the full menu. It has no lateral fallback. Initial selection reveals the section heading; outside clicks, editor scrolling, window moves/resizes, and view teardown dismiss it.
+- Accent/background bounds now use the font ascender/descender on each occupied line, excluding trailing blank lines and layout spacing. Empty blocks still get a single-line accent. Stored text, including deliberate trailing whitespace/newlines, is retained without migration or removal.
+- Final `./scripts/test.sh`: 39 entries passed (optional benchmark not executed). New coverage checks vertical placement and containment near the top/middle/bottom and in narrow views, plus content-bound accents for paragraph/heading/quote/code blocks with trailing blank lines and lossless capture. `./scripts/build.sh debug` packaged the app and archive; `git diff --check` passed. Brand assets were unchanged.
+- Native acceptance used a separate bundle identity and `/tmp/Noema-Suggestion-Acceptance/Test Vault`. Confirmed a full menu below the text near the top, above it near the bottom, leading alignment, the initial Basic blocks heading/selection, filtering with colored semantic icons, Return execution while retaining editor focus, and a single-line semantic accent after adding a following block. The test app was closed after verification; the user's open demo vault was not used for mutations.
+- These native checks used the current Light appearance. Dark appearance, system accent/appearance changes during editing, full VoiceOver navigation, and accessibility-preference combinations remain unverified for this follow-up.
+
+### Initial spacing change
+
 - Semantic presentations now show icons without visible name/status labels outside the article margin. Basic list/task/toggle markers sit inside the margin, with matching click positions. Semantic blocks, quotes, callouts, and code receive increased top/bottom spacing; callout/code backgrounds receive increased vertical padding. Accessibility names and statuses are retained.
 - `./scripts/test.sh` passed all 34 test entries (the optional benchmark entry skipped its benchmark). Rendering coverage checks extra spacing, nested marker clearance, wrapped-text indentation, and semantic metadata retention in both theme variants.
 - `./scripts/build.sh debug` successfully packaged `dist/noema.app` and `dist/noema.zip`; `git diff --check` passed. Initial restricted runs were blocked by macOS file coordination/pasteboard and icon services; the successful runs had access to those services.
@@ -15,6 +49,24 @@ Environment: Apple Silicon Mac, macOS 27.0; Swift 6.2.4; macOS SDK 26.2.
 - Slash palette width reduced to 260 points; rows show command titles with details in tooltips/accessibility labels. Basic/semantic headings have a native separator, and semantic symbols/colors come from the shared registry. The anchor uses the caret rectangle, menu width, and available screen space to choose above or below.
 - Final `./scripts/test.sh` passed all 36 entries (optional benchmark not executed), including semantic split/capture/decorative bounds and compact palette sections, matching, and keyboard selection. `./scripts/build.sh debug` packaged the app and archive successfully. `git diff --check` passed; generated brand assets had no changes.
 - Live menu positioning near screen edges, native icon-color appearance, and VoiceOver interaction remain unverified within the under-3-minute timebox.
+
+### Follow-up: suggestion alignment while typing — under 2 minutes
+
+- The slash menu now anchors to the slash's insertion rectangle and updates its content size and positioning rectangle as the query changes. It reopens on the opposite edge when available space requires it; horizontal clamping keeps the anchor within the editor's leading edge even in narrow views.
+- `./scripts/test.sh` passed all 37 entries (optional benchmark not executed), including a new anchor geometry regression covering leading alignment, line height, right-edge clamping, and narrow editor bounds. Live visual typing and appearance/accessibility interaction remain unverified in this timebox.
+- `./scripts/build.sh debug` successfully packaged the app and archive; `git diff --check` passed. Generated brand assets were unchanged.
+
+### Follow-up: click to edit and lock reminder — under 2 minutes
+
+- A single article-area click starts editing; native mouse handling still places the caret/selects text. A locked click keeps editing disabled and shows a caption beside the lock: “Article locked. Unlock it to edit.” A future-format read-only article gets a read-only message instead. The reminder clears when a note is loaded/unlocked or editing starts. Recovery notices remain separate.
+- `./scripts/test.sh` passed all 38 entries (optional benchmark not executed), including edit activation, repeated-click idempotence, locked feedback without edit activation, and activation after unlocking. `./scripts/build.sh debug` packaged the app and archive successfully; `git diff --check` passed. Brand assets were unchanged.
+- Live single-click caret placement, lock-reminder appearance, appearance/accent changes, and VoiceOver interaction remain unverified within this timebox.
+
+### Follow-up: slash-menu spacing — under 2 minutes
+
+- Command rows have 32-point height with 5-point gaps, 12-point horizontal and 14-point vertical outer padding, and extra space around section headings and separators. Menu height accounts for the larger rows/sections and caps at 480 points with scrolling; width stays 260 points.
+- `./scripts/test.sh` passed all 38 entries (optional benchmark not executed), including palette section, filtering, keyboard-selection, and anchor regressions. `git diff --check` passed. Live visual spacing and appearance/accessibility checks remain unverified within this timebox.
+- `./scripts/build.sh debug` packaged the app and archive successfully; generated brand assets were unchanged.
 
 ## Block editor — current validation
 
