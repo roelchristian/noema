@@ -56,6 +56,11 @@ struct EditorAction: Equatable {
     var vaultName = "Noema"
     var notes: [NoteRecord] = []
     var sources: [SourceRecord] = []
+    var sourceAvailability: [UUID: String] = [:]
+    var checkingSourceAvailability: Set<UUID> = []
+    private var sourceAvailabilityQueue: [SourceRecord] = []
+    private var sourceAvailabilityTask: Task<Void, Never>?
+    var generatingSourceSummaries: Set<UUID> = []
     var generatingSourceTitles: Set<UUID> = []
     var sourceRenameCompleted = 0
     var sourceRenameTotal = 0
@@ -211,6 +216,9 @@ struct EditorAction: Equatable {
             if let scopeURL { scopeURL.stopAccessingSecurityScopedResource() }
             self.scopeURL = hasScope ? url : nil
             sourceNamingTask?.cancel(); sourceNamingTask = nil; sourceNamingQueue = []
+            sourceAvailabilityTask?.cancel(); sourceAvailabilityTask = nil; sourceAvailabilityQueue = []
+            sourceAvailability = [:]; checkingSourceAvailability = []
+            generatingSourceSummaries = []
             generatingSourceTitles = []; sourceRenameCompleted = 0; sourceRenameTotal = 0
             generation = UUID(); repository = repo; index = searchIndex; recovery = journal
             unseenRenamedPages.removeAll()
@@ -626,6 +634,63 @@ struct EditorAction: Equatable {
             }
         }
     }
+    func availabilityLabel(_ id: UUID) -> String {
+        sourceAvailability[id] ?? sources.first(where: { $0.id == id })?.availabilityIssue ?? "Available"
+    }
+    func checkSourceAvailability(_ requested: [SourceRecord]) {
+        guard let root else { return }
+        for source in requested where !checkingSourceAvailability.contains(source.id) {
+            checkingSourceAvailability.insert(source.id); sourceAvailabilityQueue.append(source)
+        }
+        guard sourceAvailabilityTask == nil, !sourceAvailabilityQueue.isEmpty else { return }
+        let ticket = generation
+        sourceAvailabilityTask = Task {
+            defer { if generation == ticket { sourceAvailabilityTask = nil; checkingSourceAvailability = []; sourceAvailabilityQueue = [] } }
+            while !sourceAvailabilityQueue.isEmpty {
+                guard generation == ticket, !Task.isCancelled else { return }
+                let source = sourceAvailabilityQueue.removeFirst()
+                let status = await Task.detached { FileVaultRepository.checkSourceAvailability(source, root: root) }.value
+                guard generation == ticket else { return }
+                if sources.contains(where: { $0.id == source.id }) { sourceAvailability[source.id] = status }
+                checkingSourceAvailability.remove(source.id)
+            }
+        }
+    }
+    private func sourceSummaryContent(_ source: SourceRecord, root: URL) async throws -> String {
+        return try await Task.detached {
+            if !source.body.isEmpty {
+                let ext = URL(fileURLWithPath: source.metadata.originalFilename).pathExtension.lowercased()
+                let content = ["html", "htm"].contains(ext) ? source.body.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression) : source.body
+                return BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(content).withoutAISummary))
+            }
+            let url = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased()).appendingPathComponent(source.metadata.storedFilename)
+            let data = try source.metadata.linkedBookmark.map(FileVaultRepository.readLinkedSource) ?? FileVaultRepository.coordinatedRead(url)
+            if source.metadata.originalFilename.lowercased().hasSuffix(".pdf"), let pdf = PDFDocument(data: data) { return pdf.string ?? "" }
+            return ""
+        }.value
+    }
+    func generateSourceSummary(_ source: SourceRecord) {
+        guard !generatingSourceTitles.contains(source.id), !generatingSourceSummaries.contains(source.id),
+              let repository, let root else { return }
+        if let reason = OnDeviceSummary.unavailabilityReason { errorMessage = reason; return }
+        let ticket = generation
+        generatingSourceSummaries.insert(source.id)
+        Task {
+            defer { if generation == ticket { generatingSourceSummaries.remove(source.id) } }
+            do {
+                let text = try await sourceSummaryContent(source, root: root)
+                guard generation == ticket else { return }
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw VaultError.unavailable("No readable text for an AI summary.")
+                }
+                let summary = try await OnDeviceSummary().summarize(String(text.prefix(6000)))
+                guard generation == ticket else { return }
+                _ = try await repository.renameSource(source, title: source.title, summary: summary)
+                guard generation == ticket else { return }
+                await refresh()
+            } catch { if generation == ticket { errorMessage = "Source summary: " + error.localizedDescription } }
+        }
+    }
     private func enqueueSourceTitle(_ source: SourceRecord) {
         if sourceNamingTask == nil { sourceRenameCompleted = 0; sourceRenameTotal = 0 }
         sourceNamingQueue.append(source); generatingSourceTitles.insert(source.id); sourceRenameTotal += 1
@@ -643,17 +708,7 @@ struct EditorAction: Equatable {
                 }
                 do {
                     if let reason = OnDeviceSummary.unavailabilityReason { throw VaultError.unavailable(reason) }
-                    let text = try await Task.detached {
-                        if !source.body.isEmpty {
-                            let ext = URL(fileURLWithPath: source.metadata.originalFilename).pathExtension.lowercased()
-                            let content = ["html", "htm"].contains(ext) ? source.body.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression) : source.body
-                            return BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(content).withoutAISummary))
-                        }
-                        let url = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased()).appendingPathComponent(source.metadata.storedFilename)
-                        let data = try source.metadata.linkedBookmark.map(FileVaultRepository.readLinkedSource) ?? FileVaultRepository.coordinatedRead(url)
-                        if source.metadata.originalFilename.lowercased().hasSuffix(".pdf"), let pdf = PDFDocument(data: data) { return pdf.string ?? "" }
-                        return ""
-                    }.value
+                    let text = try await sourceSummaryContent(source, root: root)
                     guard generation == ticket else { return }
                     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw VaultError.unavailable("No readable text for automatic naming and summary. Original file name retained.") }
                     async let generatedTitle = OnDeviceSummary().pageTitle(text)

@@ -39,6 +39,7 @@ public struct SourceMetadata: Codable, Identifiable, Sendable, Equatable {
 public struct SourceRecord: Codable, Identifiable, Sendable, Equatable {
     public var metadata: SourceMetadata
     public var body: String
+    public var availabilityIssue: String? = nil
     public var id: UUID { metadata.id }
     public var title: String { metadata.title }
 }

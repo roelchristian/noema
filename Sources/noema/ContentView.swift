@@ -21,7 +21,14 @@ struct ContentView: View {
             else if model.scope == .sources {
                 NavigationSplitView {
                     sidebar.navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
-                } detail: { library }
+                } detail: {
+                    HSplitView {
+                        library.frame(minWidth: 520)
+                        if let source = model.sources.first(where: { $0.id == sourceSelection }) {
+                            sourceInspector(source).frame(minWidth: 260, idealWidth: 320, maxWidth: 460)
+                        }
+                    }
+                }
                 .navigationSplitViewStyle(.balanced)
             } else {
                 NavigationSplitView {
@@ -222,7 +229,13 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text(model.scopeTitle).font(.title2.bold()); Spacer()
-                    if model.scope == .sources { Button("Add Source…") { model.addSource() } }
+                    if model.scope == .sources {
+                        Menu {
+                            Button("Check Availability of All Sources") { model.checkSourceAvailability(model.sources) }
+                                .disabled(model.sources.isEmpty || !model.checkingSourceAvailability.isEmpty)
+                        } label: { Label("Source Actions", systemImage: "ellipsis.circle") }
+                        Button("Add Source…") { model.addSource() }
+                    }
                     if model.busy { ProgressView().controlSize(.small) }
                 }
                 if model.scope == .sources, let error = model.errorMessage {
@@ -249,7 +262,7 @@ struct ContentView: View {
     }
     private var sourceTable: some View {
         Table(model.rows.sorted(using: sourceSortOrder),
-              selection: Binding(get: { sourceSelection }, set: { sourceSelection = $0; model.openSource($0) }),
+              selection: $sourceSelection,
               sortOrder: $sourceSortOrder) {
             TableColumn("File Name", value: \.title) { row in
                 if model.generatingSourceTitles.contains(row.id) {
@@ -266,6 +279,9 @@ struct ContentView: View {
                 Label(row.sourceLocation, systemImage: row.sourceLocation == "Linked" ? "link" : "tray.full")
                     .help(row.sourceLocation == "Linked" ? "Read-only linked original" : "Original stored in vault")
             }.width(min: 85, ideal: 95)
+            TableColumn("Availability") { row in
+                sourceAvailabilityStatus(row.id)
+            }.width(min: 150, ideal: 180)
             TableColumn("Kind", value: \.fileKind)
                 .width(min: 80, ideal: 90)
             TableColumn("Size", value: \.fileSize) { row in
@@ -281,11 +297,82 @@ struct ContentView: View {
         .contextMenu(forSelectionType: UUID.self) { ids in
             if ids.count == 1, let id = ids.first, let source = model.sources.first(where: { $0.id == id }) {
                 Button("Open Preview") { model.openSource(id) }
+                sourceSummaryButton(source)
+                Button("Check Availability") { model.checkSourceAvailability([source]) }
+                    .disabled(model.checkingSourceAvailability.contains(id))
                 Button { sourceName = source.title; renamingSource = source } label: { Label("Rename", systemImage: "pencil") }
                 Button(role: .destructive) { deletingSource = source } label: { Label("Delete", systemImage: "trash") }
             }
         } primaryAction: { ids in if let id = ids.first { model.openSource(id) } }
         .accessibilityLabel("Sources table")
+    }
+    @ViewBuilder private func sourceAvailabilityStatus(_ id: UUID) -> some View {
+        if model.checkingSourceAvailability.contains(id) {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("Checking availability…").foregroundStyle(.secondary)
+            }
+        } else {
+            Text(model.availabilityLabel(id)).lineLimit(1).help(model.availabilityLabel(id))
+        }
+    }
+    private func sourceSummaryButton(_ source: SourceRecord) -> some View {
+        let hasSummary = source.metadata.aiSummary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        return Button(hasSummary ? "Regenerate AI Summary" : "Generate AI Summary") {
+            model.generateSourceSummary(source)
+        }
+        .disabled(model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id))
+    }
+    private func sourceInspector(_ source: SourceRecord) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top) {
+                    Text(source.title).font(.title2.bold())
+                    Spacer()
+                    Button { sourceSelection = nil } label: {
+                        Label("Close source details", systemImage: "xmark").labelStyle(.iconOnly)
+                    }.buttonStyle(.borderless).help("Close source details")
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Metadata").font(.headline)
+                    LabeledContent("Availability") { sourceAvailabilityStatus(source.id) }
+                    Button("Check Availability") { model.checkSourceAvailability([source]) }
+                        .disabled(model.checkingSourceAvailability.contains(source.id))
+                    LabeledContent("Original file", value: source.metadata.originalFilename)
+                    LabeledContent("Location", value: source.metadata.isLinked ? "Linked" : "In vault")
+                    LabeledContent("Kind", value: URL(fileURLWithPath: source.metadata.originalFilename).pathExtension.uppercased())
+                    if let size = source.metadata.fileSize {
+                        LabeledContent("Size", value: ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+                    }
+                    LabeledContent("Captured", value: source.metadata.capturedAt)
+                    if let origin = source.metadata.originURL, !origin.isEmpty {
+                        LabeledContent("Origin", value: origin)
+                    }
+                }.font(.callout)
+                Divider()
+                Label("AI-generated summary", systemImage: "sparkles").font(.headline)
+                sourceSummaryButton(source)
+                if model.generatingSourceSummaries.contains(source.id) {
+                    HStack {
+                        ProgressView().controlSize(.mini)
+                        Text("Generating AI summary…").foregroundStyle(.secondary)
+                    }
+                }
+                if let summary = source.metadata.aiSummary, !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(summary).frame(maxWidth: .infinity, alignment: .leading)
+                } else if model.generatingSourceTitles.contains(source.id) {
+                    HStack {
+                        ProgressView().controlSize(.mini)
+                        Text("Generating AI summary…").foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("No AI summary available.").foregroundStyle(.secondary)
+                }
+            }.textSelection(.enabled).padding(20)
+        }
+        .frame(maxHeight: .infinity)
+        .background(theme.color(.background))
+        .accessibilityLabel("Source details")
     }
     private var trashLibrary: some View {
         VStack(spacing: 0) {

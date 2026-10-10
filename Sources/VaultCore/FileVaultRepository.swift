@@ -98,7 +98,17 @@ public actor FileVaultRepository: VaultRepository {
                 guard metadata.id.uuidString.lowercased() == directory.lastPathComponent.lowercased(),
                       metadata.storedFilename == URL(fileURLWithPath: metadata.storedFilename).lastPathComponent,
                       !metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Invalid source metadata.") }
-                let data = try metadata.linkedBookmark.map(Self.readLinkedSource) ?? Self.coordinatedRead(directory.appendingPathComponent(metadata.storedFilename))
+                let data: Data
+                do {
+                    data = try metadata.linkedBookmark.map(Self.readLinkedSource) ?? Self.coordinatedRead(directory.appendingPathComponent(metadata.storedFilename))
+                } catch {
+                    guard metadata.isLinked else { throw error }
+                    let issue = Self.sourceAvailabilityMessage(error, linked: true)
+                    let source = SourceRecord(metadata: metadata, body: "", availabilityIssue: issue)
+                    result.sources.append(source); chunk.sources.append(source)
+                    result.issues.append("Source \(metadata.title): \(issue)")
+                    continue
+                }
                 guard metadata.isLinked || digest(data) == metadata.sha256 else { throw VaultError.invalid("Original source has changed; its checksum does not match. Restore the original or import a new copy.") }
                 metadata.fileSize = data.count
                 let body = try Self.sourceText(data, filename: metadata.originalFilename)
@@ -291,6 +301,28 @@ public actor FileVaultRepository: VaultRepository {
         }
         if ext == "pdf", !data.starts(with: Data("%PDF-".utf8)) { throw VaultError.invalid("This file is not a PDF document.") }
         return ""
+    }
+
+    public static func sourceAvailabilityMessage(_ error: Error, linked: Bool) -> String {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain,
+           [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(nsError.code) {
+            return linked ? "Linked file not found" : "File not found"
+        }
+        return "Unavailable: " + error.localizedDescription
+    }
+
+    public static func checkSourceAvailability(_ source: SourceRecord, root: URL) -> String {
+        do {
+            guard source.metadata.storedFilename == URL(fileURLWithPath: source.metadata.storedFilename).lastPathComponent,
+                  !source.metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Invalid source path.") }
+            let access = root.startAccessingSecurityScopedResource()
+            defer { if access { root.stopAccessingSecurityScopedResource() } }
+            let url = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased()).appendingPathComponent(source.metadata.storedFilename)
+            let data = try source.metadata.linkedBookmark.map(readLinkedSource) ?? coordinatedRead(url)
+            guard source.metadata.isLinked || digest(data) == source.metadata.sha256 else { throw VaultError.invalid("Original checksum does not match.") }
+            return "Available"
+        } catch { return sourceAvailabilityMessage(error, linked: source.metadata.isLinked) }
     }
 
     public static func readLinkedSource(_ bookmark: Data) throws -> Data {

@@ -447,3 +447,55 @@ private func temporaryFolder() throws -> URL {
     await #expect(throws: VaultError.self) { try await repository.renameSource(manual, title: "Bad", summary: "  ") }
     #expect(try await repository.scan().sources[0].title == "My Starter")
 }
+
+@Test func sourceSummaryRegenerationPreservesTitleAndRejectsStaleSummary() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repository = try FileVaultRepository.open(root: folder, create: true)
+    let bytes = Data("Source content".utf8)
+    let source = try await repository.importSource(data: bytes, filename: "source.txt", title: "My title", originURL: nil)
+    let generated = try await repository.renameSource(source, title: source.title, summary: "First summary")
+    let regenerated = try await repository.renameSource(generated, title: generated.title, summary: "Updated summary")
+    #expect(regenerated.title == source.title)
+    #expect(regenerated.metadata.aiSummary == "Updated summary")
+    #expect(regenerated.metadata.sha256 == source.metadata.sha256)
+    await #expect(throws: VaultError.self) {
+        try await repository.renameSource(generated, title: generated.title, summary: "Stale summary")
+    }
+    #expect(try await repository.scan().sources[0].metadata.aiSummary == "Updated summary")
+    let original = folder.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/original.txt")
+    #expect(try Data(contentsOf: original) == bytes)
+}
+
+@Test func availabilityChecksRetainBrokenLinkedSourcesAndRecover() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let file = folder.appendingPathComponent("External.txt")
+    let bytes = Data("External source".utf8); try bytes.write(to: file)
+    let root = folder.appendingPathComponent("Vault")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let repository = try FileVaultRepository.open(root: root, create: true)
+    let source = try await repository.linkSources(at: file, maximumFiles: 1)[0]
+    #expect(FileVaultRepository.checkSourceAvailability(source, root: root) == "Available")
+    try FileManager.default.removeItem(at: file)
+    #expect(FileVaultRepository.checkSourceAvailability(source, root: root) != "Available")
+    let broken = try await repository.scan()
+    #expect(broken.sources.first?.id == source.id)
+    #expect(broken.sources.first?.availabilityIssue != nil)
+    #expect(broken.sources.first?.body == "")
+    try bytes.write(to: file)
+    // Replacing the deleted file invalidates the old security bookmark; relinking restores access.
+    #expect(FileVaultRepository.checkSourceAvailability(source, root: root).contains("stale"))
+    let relinked = try await repository.linkSources(at: file, maximumFiles: 1)[0]
+    #expect(FileVaultRepository.checkSourceAvailability(relinked, root: root) == "Available")
+    #expect(try await repository.scan().sources.first(where: { $0.id == relinked.id })?.availabilityIssue == nil)
+}
+@Test func importedAvailabilityRejectsMissingAndChangedOriginals() async throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try FileVaultRepository.open(root: root, create: true)
+    let source = try await repository.importSource(data: Data("Original".utf8), filename: "source.txt", title: "Source", originURL: nil)
+    #expect(FileVaultRepository.checkSourceAvailability(source, root: root) == "Available")
+    let file = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/original.txt")
+    try Data("Changed".utf8).write(to: file)
+    #expect(FileVaultRepository.checkSourceAvailability(source, root: root) != "Available")
+    try FileManager.default.removeItem(at: file)
+    #expect(FileVaultRepository.checkSourceAvailability(source, root: root) == "File not found")
+}
