@@ -28,7 +28,8 @@ extension RichArticleView {
         func render(selection: NSRange) {
             guard let view else { return }
             changing = true
-            view.textStorage?.setAttributedString(BlockTextStorage.render(document, theme: parent.theme))
+            view.textStorage?.setAttributedString(BlockTextStorage.render(document, theme: parent.theme, showSemanticHeadings: view.showSemanticHeadings))
+            view.updateSemanticHeadingTopInset()
             let location = min(selection.location, max(0, view.string.utf16.count - 1))
             view.setSelectedRange(NSRange(location: location, length: min(selection.length, max(0, view.string.utf16.count - 1 - location))))
             lastTheme = parent.theme; changing = false; updateTypingAttributes(); view.needsDisplay = true
@@ -94,6 +95,10 @@ extension RichArticleView {
                 } else { capture() }
             } else { capture() }
             pendingSingleBlock = nil
+            if view.showSemanticHeadings, let storage = view.textStorage {
+                changing = true; BlockTextStorage.updateSemanticHeadingSpacing(storage, in: current()?.1); changing = false
+            }
+            view.updateSemanticHeadingTopInset()
             if let (block, _) = current(), block.kind != .code, let command = BlockCommand.shortcut(block.text) {
                 transaction(command.title) { document.update(block.id) { $0.runs = [] }; return document.apply(command.mutation, to: block.id) }
             } else if !convertInlineAtCaret() { publish() }

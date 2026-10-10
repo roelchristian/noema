@@ -7,6 +7,17 @@ import VaultCore
     var end: (() -> Void)?
     var locked = false
     var theme = NoemaTheme()
+    var showSemanticHeadings = false
+    private(set) var semanticHeadingTopInset: CGFloat = 0
+    func updateSemanticHeadingTopInset() {
+        // AppKit ignores paragraphSpacingBefore on the document's first paragraph.
+        let tag = textStorage.flatMap { $0.length > 0 ? $0.attribute(.semanticTag, at: 0, effectiveRange: nil) as? String : nil }
+        let inset = showSemanticHeadings && SemanticPresentation.find(tag) != nil ? BlockTextStorage.semanticHeadingSpace + 1 : 0
+        if inset != semanticHeadingTopInset {
+            textContainerInset.height += inset - semanticHeadingTopInset
+            semanticHeadingTopInset = inset
+        }
+    }
     var handleKey: ((NSEvent) -> Bool)?
     var blockMenu: (() -> NSMenu)?
     var activateBlock: ((UUID, BlockMutation) -> Void)?
@@ -67,6 +78,17 @@ import VaultCore
     }
     override func mouseMoved(with event: NSEvent) { hoverID = blockAt(convert(event.locationInWindow, from: nil)); needsDisplay = true }
     override func mouseExited(with event: NSEvent) { hoverID = nil; needsDisplay = true }
+    func semanticHeadingRect(for range: NSRange) -> NSRect? {
+        guard showSemanticHeadings, let storage = textStorage, let layoutManager,
+              SemanticPresentation.find(storage.attribute(.semanticTag, at: range.location, effectiveRange: nil) as? String) != nil else { return nil }
+        let body = rect(for: range)
+        let glyph = layoutManager.glyphIndexForCharacter(at: range.location)
+        let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let x = textContainerOrigin.x + line.minX + layoutManager.location(forGlyphAt: glyph).x
+        return NSRect(x: x, y: body.minY - BlockTextStorage.semanticHeadingSpace,
+                      width: max(0, bounds.width - textContainerOrigin.x - x),
+                      height: BlockTextStorage.semanticHeadingSpace - 8)
+    }
     override func draw(_ dirtyRect: NSRect) {
         guard let storage = textStorage else { super.draw(dirtyRect); return }
         let ranges = BlockTextStorage.ranges(storage)
@@ -77,15 +99,17 @@ import VaultCore
             numberByDepth[depth] = kind == .numbered ? (numberByDepth[depth] ?? 0) + 1 : 0
             for key in numberByDepth.keys where key > depth { numberByDepth[key] = nil }
             let rect = rect(for: range)
-            guard rect.intersects(dirtyRect) else { continue }
+            let headingRect = semanticHeadingRect(for: range)
+            let decorationRect = headingRect.map { rect.union($0) } ?? rect
+            guard decorationRect.intersects(dirtyRect) else { continue }
             let metadata = (storage.attribute(.blockMetadata, at: range.location, effectiveRange: nil) as? Data).flatMap { try? JSONDecoder().decode(BlockMetadata.self, from: $0) } ?? .init()
             if kind == .code || kind == .callout {
                 theme.native(.accentPrimary).withAlphaComponent(theme.dark ? 0.08 : 0.04).setFill()
-                NSBezierPath(roundedRect: NSRect(x: textContainerOrigin.x - 8 + CGFloat(depth * 24), y: rect.minY - 6, width: max(20, bounds.width - textContainerOrigin.x * 2 - CGFloat(depth * 24) + 16), height: rect.height + 12), xRadius: 5, yRadius: 5).fill()
+                NSBezierPath(roundedRect: NSRect(x: textContainerOrigin.x - 8 + CGFloat(depth * 24), y: decorationRect.minY - 6, width: max(20, bounds.width - textContainerOrigin.x * 2 - CGFloat(depth * 24) + 16), height: decorationRect.height + 12), xRadius: 5, yRadius: 5).fill()
             }
             if kind == .quote || metadata.semantic != nil {
                 (SemanticPresentation.find(metadata.semantic)?.accent ?? NSColor.separatorColor).setFill()
-                NSRect(x: textContainerOrigin.x - 8 + CGFloat(depth * 24), y: rect.minY, width: 2, height: rect.height).fill()
+                NSRect(x: textContainerOrigin.x - 8 + CGFloat(depth * 24), y: decorationRect.minY, width: 2, height: decorationRect.height).fill()
             }
             if kind == .divider {
                 theme.native(.border).setFill()
@@ -104,7 +128,10 @@ import VaultCore
             if let symbol = structureSymbol { drawSymbol(symbol, at: NSRect(x: structuralX, y: rect.minY + 3, width: 14, height: 14), color: .secondaryLabelColor) }
             if let text = structureText { (text as NSString).draw(at: NSPoint(x: structuralX, y: rect.minY + 2), withAttributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.secondaryLabelColor]) }
             if let semantic = SemanticPresentation.find(metadata.semantic) {
-                drawSymbol(semantic.symbol, at: NSRect(x: textContainerOrigin.x - 46, y: rect.minY + 3, width: 14, height: 14), color: semantic.accent)
+                if let headingRect {
+                    (semantic.title as NSString).draw(in: headingRect, withAttributes: [.font: BlockTextStorage.semanticHeadingFont, .foregroundColor: theme.nativeText()])
+                }
+                drawSymbol(semantic.symbol, at: NSRect(x: textContainerOrigin.x - 46, y: headingRect == nil ? rect.minY + 3 : decorationRect.midY - 7, width: 14, height: 14), color: semantic.accent)
             } else if kind == .code, let language = metadata.language {
                 (language as NSString).draw(in: NSRect(x: 30, y: rect.minY + 3, width: max(0, textContainerOrigin.x - 38), height: 34), withAttributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor])
             }

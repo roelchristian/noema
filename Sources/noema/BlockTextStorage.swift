@@ -12,6 +12,8 @@ extension NSAttributedString.Key {
 }
 
 @MainActor enum BlockTextStorage {
+    static let semanticHeadingFont = NSFont.systemFont(ofSize: 16, weight: .semibold)
+    static var semanticHeadingSpace: CGFloat { ceil(semanticHeadingFont.ascender - semanticHeadingFont.descender) + 8 }
     struct VisibleBlock { var block: EditorBlock; var depth: Int; var number: Int }
     static func visible(_ document: BlockDocument) -> [VisibleBlock] {
         func walk(_ blocks: [EditorBlock], depth: Int) -> [VisibleBlock] {
@@ -61,14 +63,37 @@ extension NSAttributedString.Key {
         } else if let link = style.link { attrs[.link] = URL(string: link) }
         return attrs
     }
-    static func render(_ document: BlockDocument, theme: NoemaTheme) -> NSAttributedString {
+    static func render(_ document: BlockDocument, theme: NoemaTheme, showSemanticHeadings: Bool = false) -> NSAttributedString {
         let result = NSMutableAttributedString(string: "")
         for value in visible(document) {
             let block = value.block
             for run in block.runs { result.append(NSAttributedString(string: run.text, attributes: attributes(run.style, block: block, depth: value.depth, theme: theme))) }
             result.append(NSAttributedString(string: "\n", attributes: base(block, depth: value.depth, theme: theme)))
         }
+        if showSemanticHeadings { updateSemanticHeadingSpacing(result) }
         return result
+    }
+    // Reserve display space only above the first paragraph. Labels never enter
+    // the editable string, selection offsets, clipboard, or canonical document.
+    static func updateSemanticHeadingSpacing(_ storage: NSMutableAttributedString, in affectedRange: NSRange? = nil) {
+        for (_, range) in ranges(storage) {
+            if let affectedRange, NSIntersectionRange(range, affectedRange).length == 0 { continue }
+            let tag = storage.attribute(.semanticTag, at: range.location, effectiveRange: nil) as? String
+            guard SemanticPresentation.find(tag) != nil else { continue }
+            let first = NSIntersectionRange((storage.string as NSString).paragraphRange(for: NSRange(location: range.location, length: 0)), range)
+            var styles: [(NSRange, NSMutableParagraphStyle)] = []
+            storage.enumerateAttribute(.paragraphStyle, in: range) { value, part, _ in
+                guard let original = value as? NSParagraphStyle else { return }
+                let leading = NSIntersectionRange(part, first)
+                let rest = NSRange(location: max(part.location, NSMaxRange(first)), length: max(0, NSMaxRange(part) - max(part.location, NSMaxRange(first))))
+                for (segment, spacing) in [(leading, 12 + semanticHeadingSpace), (rest, CGFloat(12))] {
+                    guard segment.length > 0, original.paragraphSpacingBefore != spacing,
+                          let style = original.mutableCopy() as? NSMutableParagraphStyle else { continue }
+                    style.paragraphSpacingBefore = spacing; styles.append((segment, style))
+                }
+            }
+            for (part, style) in styles { storage.addAttribute(.paragraphStyle, value: style, range: part) }
+        }
     }
     static func ranges(_ storage: NSAttributedString) -> [(UUID, NSRange)] {
         var result: [(UUID, NSRange)] = []

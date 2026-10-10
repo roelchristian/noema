@@ -4,6 +4,7 @@ import VaultCore
 
 struct RichArticleView: NSViewRepresentable {
     @Environment(\.noemaTheme) var theme
+    @AppStorage(EditorPreferences.showSemanticHeadingsKey) var showSemanticHeadings = false
     @Binding var text: String
     var reading: Bool
     var locked: Bool
@@ -18,6 +19,7 @@ struct RichArticleView: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
         let view = ArticleTextView(); view.isRichText = true; view.allowsUndo = true; view.isEditable = false; view.isSelectable = true; view.drawsBackground = false
+        view.showSemanticHeadings = showSemanticHeadings
         view.textContainerInset = NSSize(width: 80, height: 24); view.isVerticallyResizable = true; view.isHorizontallyResizable = false
         view.autoresizingMask = [.width]; view.textContainer?.widthTracksTextView = true
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -32,6 +34,8 @@ struct RichArticleView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let coordinator = context.coordinator; coordinator.parent = self
         guard let view = coordinator.view else { return }
+        let headingsChanged = view.showSemanticHeadings != showSemanticHeadings
+        view.showSemanticHeadings = showSemanticHeadings
         view.locked = locked || coordinator.document.unsupportedVersion
         view.isEditable = !reading && !view.locked; view.theme = theme
         view.begin = onBegin; view.end = onEnd
@@ -44,7 +48,7 @@ struct RichArticleView: NSViewRepresentable {
         view.insertionPointColor = theme.native(.accentPrimary)
         view.linkTextAttributes = [.foregroundColor: theme.nativeText(.accentSecondary), .underlineStyle: NSUnderlineStyle.single.rawValue]
         if coordinator.lastText != text { coordinator.load(text); view.undoManager?.removeAllActions() }
-        else if coordinator.lastTheme != theme { coordinator.render(selection: view.selectedRange()) }
+        else if coordinator.lastTheme != theme || headingsChanged { coordinator.render(selection: view.selectedRange()) }
         if let action, coordinator.lastAction != action.id {
             if case .block = action.operation { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
             else if view.isEditable { coordinator.lastAction = action.id; coordinator.perform(action.operation) }

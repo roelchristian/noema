@@ -2,6 +2,18 @@
 
 Environment: Apple Silicon Mac, macOS 27.0; Swift 6.2.4; macOS SDK 26.2.
 
+## Optional semantic block headings
+
+- Added **Settings… → Block display → Show semantic block headings**, off by default. Turning it on shows semantic names above block text in reading and editing views while retaining the colored icons and accents. The app-wide preference persists across relaunch; headings are display decoration and do not enter page content, selection offsets, or copied text.
+- `./scripts/test.sh` passed all 46 entries (optional benchmark not executed), including new coverage for all semantic types across paragraph, heading, list, task, toggle, quote, and code structures; multiline spacing; repeated on/off rendering; lossless capture; selection preservation; and empty-block typing/undo. Initial restricted regression runs lacked file-coordination/pasteboard access; final runs used required macOS services. `./scripts/build.sh debug` packaged the app and archive successfully with icon-service access; `git diff --check` passed. Generated brand assets were unchanged.
+- Native checks used a separate test app and temporary vault in current Dark appearance: verified default-off Settings control, enabled headings in reading view, editing and undo, switching back to icon-only during editing, and enabled preference after quitting/relaunching. The final five-point heading alignment correction is covered automatically; its packaged output was not separately inspected. Existing demo-vault edits were preserved.
+- Light appearance, live appearance/accent switching, accessibility-preference combinations, full VoiceOver interaction, and two-Mac iCloud checks were not performed.
+
+### Heading alignment follow-up — two-minute timebox
+
+- Heading placement now uses the native first glyph position, including the text container origin and line-fragment offset, instead of adding padding to the block's decorative bounds. The regression checks alignment against the native insertion rectangle across semantic types and block structures.
+- `./scripts/test.sh` passed all 46 entries (optional benchmark not executed); `./scripts/build.sh debug` packaged the app and archive; `git diff --check` passed. Native Dark appearance inspection of the rebuilt isolated app in the temporary vault confirmed Idea, Question, Important, and Reference headings align with their body text. Appearance/accent switching and full accessibility checks were not repeated.
+
 ## Wider middle pane
 
 - The page/source/Trash list uses a 385-point minimum and ideal width, with a 490-point maximum. The sidebar retains its 220-point ideal width, giving approximately the requested 1.75 ratio at the default sidebar width. Native split-view resizing remains available.

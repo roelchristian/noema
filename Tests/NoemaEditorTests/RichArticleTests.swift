@@ -38,6 +38,72 @@ import VaultCore
     }
 }
 
+@Test @MainActor func semanticHeadingsReserveSpaceWithoutChangingContent() {
+    let (coordinator, view, window) = editor("Initial")
+    defer { window.close() }
+    #expect(!view.showSemanticHeadings)
+    for semantic in SemanticPresentation.all {
+        for kind in [BlockKind.paragraph, .heading2, .bullet, .task, .toggle, .quote, .code] {
+            var metadata = BlockMetadata(); metadata.semantic = semantic.id
+            let block = EditorBlock(kind: kind, runs: [RichRun("First line\nSecond line😀")], metadata: metadata)
+            let document = BlockDocument(blocks: [block, EditorBlock(runs: [RichRun("Following")])])
+            coordinator.document = document
+            for enabled in [false, true, false] {
+                view.showSemanticHeadings = enabled
+                let selection = NSRange(location: 3, length: 4)
+                coordinator.render(selection: selection)
+                view.layoutManager?.ensureLayout(for: view.textContainer!)
+                let storage = view.textStorage!
+                #expect(view.selectedRange() == selection)
+                #expect(storage.string == "First line\nSecond line😀\nFollowing\n")
+                #expect(BlockTextStorage.capture(storage, previous: document).blocks == document.blocks)
+                let range = BlockTextStorage.ranges(storage)[0].1
+                let heading = view.semanticHeadingRect(for: range)
+                #expect((heading != nil) == enabled)
+                if let heading {
+                    #expect(heading.minY >= view.textContainerOrigin.y - view.semanticHeadingTopInset)
+                    #expect(heading.maxY < view.rect(for: range).minY)
+                    let native = view.firstRect(forCharacterRange: NSRange(location: range.location, length: 0), actualRange: nil)
+                    let caret = view.convert(window.convertFromScreen(native), from: nil)
+                    #expect(abs(heading.minX - caret.minX) < 0.01)
+                }
+                let first = storage.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as! NSParagraphStyle
+                let second = storage.attribute(.paragraphStyle, at: 11, effectiveRange: nil) as! NSParagraphStyle
+                #expect(first.paragraphSpacingBefore == 12 + (enabled ? BlockTextStorage.semanticHeadingSpace : 0))
+                #expect(second.paragraphSpacingBefore == 12)
+            }
+        }
+    }
+}
+
+@Test @MainActor func semanticHeadingsKeepEmptyCaretAndNativeEditingIntact() {
+    let (coordinator, view, window) = editor("Initial")
+    defer { window.close() }
+    view.showSemanticHeadings = true
+    var metadata = BlockMetadata(); metadata.semantic = "idea"
+    for first in [true, false] {
+        let empty = EditorBlock(metadata: metadata)
+        coordinator.document = BlockDocument(blocks: first ? [empty] : [EditorBlock(runs: [RichRun("Previous")]), empty])
+        coordinator.render(selection: NSRange(location: 0, length: 0))
+        let range = BlockTextStorage.ranges(view.textStorage!).last!.1
+        view.setSelectedRange(NSRange(location: range.location, length: 0))
+        view.layoutManager?.ensureLayout(for: view.textContainer!)
+        let heading = view.semanticHeadingRect(for: range)!
+        #expect(heading.minY >= view.textContainerOrigin.y - view.semanticHeadingTopInset)
+        let before = view.rect(for: range)
+        view.undoManager?.beginUndoGrouping()
+        view.insertText("A", replacementRange: view.selectedRange())
+        view.undoManager?.endUndoGrouping()
+        view.layoutManager?.ensureLayout(for: view.textContainer!)
+        let after = view.rect(for: BlockTextStorage.ranges(view.textStorage!).last!.1)
+        #expect(abs(before.minY - after.minY) < 0.5)
+        #expect(coordinator.document.blocks.last?.text == "A")
+        view.undoManager?.undo()
+        #expect(coordinator.document.blocks.last?.text.isEmpty == true)
+        view.undoManager?.removeAllActions()
+    }
+}
+
 @Test @MainActor func blockSpacingAndNestedListAlignment() {
     for dark in [false, true] {
         let theme = NoemaTheme(dark: dark)

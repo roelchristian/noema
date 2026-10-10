@@ -56,7 +56,7 @@ import NoemaBrand
             }
         }
         Settings {
-            AppearanceSettings()
+            NoemaSettings()
                 .systemNoemaTheme()
         }
     }
