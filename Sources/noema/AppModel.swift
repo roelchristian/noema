@@ -104,6 +104,8 @@ struct EditorAction: Equatable {
     var semanticRows: [SemanticBlockHit] = []
     var selectedSemanticID: String?
     var recentPageIDs: [UUID] = []
+    private var sidebarLockSortDates: [UUID: String] = [:]
+    private(set) var sidebarMoveFeedback: [UUID: UUID] = [:]
     var tags: [String] = []
     var wordCount = 0
     var scope: LibraryScope = .wiki
@@ -183,17 +185,29 @@ struct EditorAction: Equatable {
         let accessed = recentPageIDs.compactMap { noteMap[$0] }
         let accessedSet = Set(accessed.map(\.id))
         let remaining = notes.filter { !accessedSet.contains($0.id) }.sorted {
-            (LibraryRow.date($0.updatedAt) ?? .distantPast) > (LibraryRow.date($1.updatedAt) ?? .distantPast)
+            sidebarUpdatedDate($0) > sidebarUpdatedDate($1)
         }
         return Array((accessed + remaining).prefix(5))
     }
     var allPagesByUpdated: [NoteRecord] {
         notes.sorted {
-            let lhs = LibraryRow.date($0.updatedAt) ?? .distantPast
-            let rhs = LibraryRow.date($1.updatedAt) ?? .distantPast
+            let lhs = sidebarUpdatedDate($0)
+            let rhs = sidebarUpdatedDate($1)
             if lhs != rhs { return lhs > rhs }
             return $0.title.localizedStandardCompare($1.title) == .orderedAscending
         }
+    }
+    // Keep saved metadata current while the sidebar finishes its lock-change feedback.
+    func holdSidebarPosition(_ id: UUID) {
+        guard sidebarLockSortDates[id] == nil, let note = notes.first(where: { $0.id == id }) else { return }
+        sidebarLockSortDates[id] = note.updatedAt
+    }
+    func finishSidebarLockFeedback(_ id: UUID, showMoveFeedback: Bool = true) {
+        guard sidebarLockSortDates.removeValue(forKey: id) != nil else { return }
+        if showMoveFeedback { sidebarMoveFeedback[id] = UUID() }
+    }
+    private func sidebarUpdatedDate(_ note: NoteRecord) -> Date {
+        LibraryRow.date(sidebarLockSortDates[note.id] ?? note.updatedAt) ?? .distantPast
     }
     var recentSources: [SourceRecord] {
         Array(sources.sorted { $0.metadata.capturedAt > $1.metadata.capturedAt }.prefix(10))
@@ -305,6 +319,8 @@ struct EditorAction: Equatable {
             generation = UUID(); repository = repo; index = searchIndex; recovery = journal
             unseenRenamedPages.removeAll()
             recentPageIDs.removeAll()
+            sidebarLockSortDates.removeAll()
+            sidebarMoveFeedback.removeAll()
             root = url; vaultName = url.lastPathComponent; scope = .wiki; searchText = ""
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
             let cached = try await searchIndex.cachedEntries()
@@ -650,9 +666,17 @@ struct EditorAction: Equatable {
             } catch { if generation == ticket { errorMessage = error.localizedDescription } }
         }
     }
-    func toggleEditingLock(_ id: UUID? = nil) {
+    func toggleEditingLock(_ id: UUID? = nil, preservingSidebarPosition: Bool = false) {
         guard let targetID = id ?? currentNote?.id else { return }
+        if preservingSidebarPosition {
+            guard notes.contains(where: { $0.id == targetID }),
+                  sidebarLockSortDates[targetID] == nil else { return }
+            holdSidebarPosition(targetID)
+        }
         Task {
+            var succeeded = false
+            defer { if preservingSidebarPosition && !succeeded { finishSidebarLockFeedback(targetID, showMoveFeedback: false) } }
+
             if currentNote?.id == targetID, !(await saveCurrent()) { return }
             guard var note = notes.first(where: { $0.id == targetID }), let repository else { return }
             note.editingLocked = !note.isEditingLocked
@@ -660,6 +684,7 @@ struct EditorAction: Equatable {
                 let saved = try await repository.save(note: note, title: note.title, body: note.body, tags: note.tags)
                 if currentNote?.id == saved.id { apply(saved); reading = true }
                 if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
+                succeeded = true
             } catch { errorMessage = error.localizedDescription }
         }
     }

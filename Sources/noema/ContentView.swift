@@ -11,6 +11,7 @@ struct ContentView: View {
     @Bindable var model: AppModel
     @Environment(\.noemaTheme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @Namespace private var sidebarTabNamespace
     @FocusState private var searchFocused: Bool
     @State private var showTrashConfirmation = false
@@ -315,81 +316,64 @@ struct ContentView: View {
             .environment(\.defaultMinListRowHeight, 26)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: activeSidebarTab)
 
-            VStack(alignment: .leading, spacing: 0) {
-                Divider().opacity(0.5)
-                VStack(alignment: .leading, spacing: 4) {
-                    Button {
-                        switchSidebarScope(.trash)
-                    } label: {
-                        HStack(spacing: 7) {
-                            Image(systemName: "trash")
-                                .font(.system(size: 12))
-                                .foregroundStyle(model.scope == .trash ? Color.accentColor : .secondary)
-                                .frame(width: 16)
-                            Text("Trash")
-                                .font(.system(size: 12.5, weight: model.scope == .trash ? .medium : .regular))
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            if model.trashedPages.count > 0 {
-                                Text(model.trashedPages.count.formatted())
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                                    .monospacedDigit()
-                            }
-                        }
-                        .padding(.horizontal, 6)
-                        .frame(height: 26)
-                        .contentShape(Rectangle())
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(model.scope == .trash ? Color.primary.opacity(0.09) : Color.clear)
-                        )
+            VStack(alignment: .leading, spacing: 8) {
+                Divider().opacity(colorSchemeContrast == .increased ? 0.75 : 0.2)
+                Menu {
+                    Button { model.revealVault() } label: {
+                        Label("Open Vault in Finder", systemImage: "folder")
                     }
-                    .buttonStyle(.plain)
+                    Button { Task { await model.refresh() } } label: {
+                        Label("Refresh from Files", systemImage: "arrow.clockwise")
+                    }
+                    Button { switchSidebarScope(.trash) } label: {
+                        Label(model.trashedPages.isEmpty ? "Trash" : "Trash (\(model.trashedPages.count.formatted()))", systemImage: "trash")
+                    }
                     if !model.recoveredDrafts.isEmpty {
                         Button { model.showRecovery = true } label: {
                             Label("\(model.recoveredDrafts.count) recoverable draft(s)", systemImage: "clock.arrow.circlepath")
-                                .font(.system(size: 12))
-                        }.buttonStyle(.plain).foregroundStyle(.orange)
+                        }
                     }
                     if !model.issues.isEmpty {
                         Button { model.showIssues = true } label: {
                             Label("\(model.issues.count) vault notice(s)", systemImage: "info.circle")
-                                .font(.system(size: 12))
-                        }.buttonStyle(.plain).foregroundStyle(.secondary)
-                    }
-                    Menu {
-                        Button("Open Vault…") { model.chooseVault(create: false) }
-                        Button("Create Vault…") { model.chooseVault(create: true) }
-                        Divider()
-                        Button("Reveal in Finder") { model.revealVault() }
-                        Button("Refresh from Files") { Task { await model.refresh() } }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "folder")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                            Text(model.vaultName)
-                                .font(.system(size: 12.5, weight: .medium))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                            Spacer()
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.secondary)
                         }
-                        .padding(.horizontal, 6)
-                        .frame(height: 26)
-                        .contentShape(Rectangle())
                     }
-                    .menuStyle(.borderlessButton)
-                    .buttonStyle(.plain)
-                    .help("Vault options")
-                    .accessibilityLabel("Vault menu. Current vault: \(model.vaultName)")
+                    Divider()
+                    Button { model.chooseVault(create: false) } label: {
+                        Label("Open Vault…", systemImage: "folder")
+                    }
+                    Button { model.chooseVault(create: true) } label: {
+                        Label("Create Vault…", systemImage: "folder.badge.plus")
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "folder")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
+                        Text(model.vaultName)
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.down")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, minHeight: 34)
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .buttonStyle(.plain)
+                .help("Vault options")
+                .accessibilityLabel("Vault menu. Current vault: \(model.vaultName)")
             }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 10)
         }
         .background {
             if theme.usesFullPalette { theme.color(.background).ignoresSafeArea() }
@@ -451,60 +435,49 @@ struct ContentView: View {
     }
     private func sidebarPageRow(_ note: NoteRecord, showRelativeEditTime: Bool = false) -> some View {
         let active = model.currentNote?.id == note.id
-        return Button {
-            model.select(note.id)
-        } label: {
-            HStack(spacing: 7) {
-                if model.unseenRenamedPages.contains(note.id) {
-                    Image(systemName: "circle.fill")
-                        .font(.system(size: 6))
-                        .foregroundStyle(Color(nsColor: .systemBlue))
-                        .frame(width: 16)
-                        .help("Page renamed since you last viewed it")
-                        .accessibilityLabel("Unread title change")
-                } else {
-                    Image(systemName: "doc.text")
-                        .font(.system(size: 12))
-                        .foregroundStyle(active ? Color.accentColor : .secondary)
-                        .frame(width: 16)
-                }
-                Text(note.title)
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                if note.isEditingLocked {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .help("Page locked against editing")
-                }
-                if showRelativeEditTime {
-                    let relative = relativeEditTime(note.updatedAt)
-                    if !relative.isEmpty {
-                        Text(relative)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .help("Last edited \(metadataDate(note.updatedAt))")
+        return HStack(spacing: 7) {
+            SidebarPageIcon(locked: note.isEditingLocked, unread: model.unseenRenamedPages.contains(note.id), active: active, title: note.title, unlock: {
+                model.toggleEditingLock(note.id, preservingSidebarPosition: !reduceMotion)
+            }, select: { model.select(note.id) }, finishFeedback: { model.finishSidebarLockFeedback(note.id) })
+            Button { model.select(note.id) } label: {
+                HStack(spacing: 7) {
+                    Text(note.title)
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if showRelativeEditTime {
+                        let relative = relativeEditTime(note.updatedAt)
+                        if !relative.isEmpty {
+                            Text(relative)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .help("Last edited \(metadataDate(note.updatedAt))")
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .contentShape(Rectangle())
             }
-            .padding(.leading, 2)
-            .padding(.trailing, 8)
-            .frame(height: 28)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(active ? Color.primary.opacity(0.08) : Color.clear)
-            )
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
+        .padding(.leading, 2)
+        .padding(.trailing, 8)
+        .frame(height: 28)
+        .contentShape(Rectangle())
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(active ? Color.primary.opacity(0.08) : Color.clear)
+        )
+        .modifier(SidebarMoveFeedback(token: model.sidebarMoveFeedback[note.id]))
         .listRowInsets(EdgeInsets(top: 0.5, leading: 0, bottom: 0.5, trailing: 4))
         .listRowSeparator(.hidden)
         .contextMenu {
-            Button(note.isEditingLocked ? "Unlock" : "Lock") { model.toggleEditingLock(note.id) }
+            Button(note.isEditingLocked ? "Unlock" : "Lock") {
+                model.toggleEditingLock(note.id, preservingSidebarPosition: !reduceMotion)
+            }
             Button("Delete…", role: .destructive) { trashPageID = note.id; showTrashConfirmation = true }
         }
     }
@@ -1646,6 +1619,117 @@ struct TopicPageSheet: View {
             }
         }.padding(24).frame(width: 460).interactiveDismissDisabled(model.generatingTopicPage)
         .onAppear { topicFocused = true }
+    }
+}
+
+private struct SidebarMoveFeedback: ViewModifier {
+    let token: UUID?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var trigger: UUID?
+    @State private var lightened = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(!reduceMotion && lightened ? 0.75 : 1)
+            .onChange(of: token) {
+                if !reduceMotion { trigger = token }
+            }
+            .task(id: trigger) {
+                guard trigger != nil, !reduceMotion else { return }
+                defer { lightened = false }
+                do {
+                    // Let the row reach its updated position before giving the location cue.
+                    try await Task.sleep(for: .milliseconds(120))
+                    withAnimation(.easeInOut(duration: 0.3)) { lightened = true }
+                    try await Task.sleep(for: .milliseconds(1200))
+                    withAnimation(.easeOut(duration: 0.65)) { lightened = false }
+                    // Keep the task alive until the fade completes so cleanup cannot cut it short.
+                    try await Task.sleep(for: .milliseconds(700))
+                } catch { lightened = false }
+            }
+            .onDisappear { trigger = nil; lightened = false }
+    }
+}
+
+private struct SidebarPageIcon: View {
+    let locked: Bool
+    let unread: Bool
+    let active: Bool
+    let title: String
+    let unlock: () -> Void
+    let select: () -> Void
+    let finishFeedback: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showUnlocked = false
+    @State private var showLocked = false
+    @State private var unlockPending = false
+    @State private var returningToFile = false
+
+    private var symbol: String {
+        locked ? "lock.fill" : showUnlocked ? "lock.open" : unread ? "circle.fill" : "doc.text"
+    }
+    var body: some View {
+        Button {
+            if locked {
+                guard !unlockPending else { return }
+                unlockPending = true
+                unlock()
+            } else {
+                select()
+            }
+        } label: { icon }
+        .buttonStyle(.plain)
+        .disabled(locked && (unlockPending || showLocked))
+        .help(locked ? "Unlock page" : "Open page")
+        .accessibilityLabel(locked ? "Unlock \(title)" : "Open \(title)")
+        .onChange(of: locked) { wasLocked, isLocked in
+            unlockPending = false
+            if wasLocked && !isLocked {
+                showLocked = false
+                showUnlocked = !reduceMotion
+            } else if !wasLocked && isLocked {
+                showUnlocked = false
+                returningToFile = false
+                showLocked = !reduceMotion
+            }
+            if reduceMotion { finishFeedback() }
+        }
+        .task(id: showLocked) {
+            guard showLocked else { return }
+            do { try await Task.sleep(for: .milliseconds(1400)) } catch { return }
+            showLocked = false
+            finishFeedback()
+        }
+        .task(id: showUnlocked) {
+            guard showUnlocked else { return }
+            do { try await Task.sleep(for: .milliseconds(1400)) } catch { return }
+            returningToFile = true
+            showUnlocked = false
+        }
+        .task(id: returningToFile) {
+            guard returningToFile else { return }
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+            returningToFile = false
+            finishFeedback()
+        }
+        .onDisappear {
+            if unlockPending || showLocked || showUnlocked || returningToFile { finishFeedback() }
+        }
+        .task(id: unlockPending) {
+            guard unlockPending else { return }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            unlockPending = false
+        }
+    }
+    private var icon: some View {
+        Image(systemName: symbol)
+            .font(.system(size: unread && !locked && !showUnlocked ? 6 : 12))
+            .foregroundStyle(showUnlocked ? Color(nsColor: .systemGreen) : unread && !locked ? Color(nsColor: .systemBlue) : active ? Color.accentColor : .secondary)
+            .frame(width: 16, height: 28)
+            .contentShape(Rectangle())
+            .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: symbol)
+            .accessibilityLabel(unread ? "Unread title change" : title)
     }
 }
 

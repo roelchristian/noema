@@ -638,3 +638,33 @@ import VaultCore
     #expect(coordinator.document.blocks[0].runs[1].text == " plain")
 }
 
+@Test(arguments: [false, true]) @MainActor func sidebarLockChangesHoldOrderingUntilFeedbackCompletes(initiallyLocked: Bool) async throws {
+    var older = try NoteCodec.decode(Data("# Older".utf8), path: "Wiki/Older.md", vaultID: UUID())
+    var newer = older; newer.id = UUID(); newer.title = "Newer"
+    older.updatedAt = "2026-10-09T00:00:00Z"; older.editingLocked = initiallyLocked
+    newer.updatedAt = "2026-10-10T00:00:00Z"
+    let model = AppModel(); model.notes = [older, newer]
+    model.holdSidebarPosition(older.id)
+    older.updatedAt = "2026-10-11T00:00:00Z"; older.editingLocked = !initiallyLocked
+    model.notes = [older, newer]
+    #expect(model.allPagesByUpdated.map(\.id) == [newer.id, older.id])
+    #expect(model.recentPages.map(\.id) == [newer.id, older.id])
+    #expect(model.notes.first?.updatedAt == "2026-10-11T00:00:00Z")
+    #expect(model.sidebarMoveFeedback[older.id] == nil)
+    model.finishSidebarLockFeedback(older.id)
+    let feedback = try #require(model.sidebarMoveFeedback[older.id])
+    model.finishSidebarLockFeedback(older.id)
+    #expect(model.sidebarMoveFeedback[older.id] == feedback)
+    #expect(model.allPagesByUpdated.map(\.id) == [older.id, newer.id])
+    #expect(model.recentPages.map(\.id) == [older.id, newer.id])
+    // Failed lock changes (no repository) must release their presentation hold.
+    older.editingLocked = initiallyLocked; model.notes = [older, newer]
+    model.toggleEditingLock(older.id, preservingSidebarPosition: true)
+    older.updatedAt = "2026-10-08T00:00:00Z"; model.notes = [older, newer]
+    for _ in 0..<20 {
+        if model.allPagesByUpdated.map(\.id) == [newer.id, older.id] { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.allPagesByUpdated.map(\.id) == [newer.id, older.id])
+    #expect(model.sidebarMoveFeedback[older.id] == feedback)
+}

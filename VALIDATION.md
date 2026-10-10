@@ -595,3 +595,52 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 - Settings → Apple Intelligence adds a persisted Show page summaries picker. Editor when sidebar is closed is the default; Sidebar only suppresses the editor banner and generation indicator regardless of sidebar visibility. Saved summaries remain in the sidebar, and unknown preference values fall back to the default.
 - Expanded the summary editing/preservation regression to exercise both placement choices with the sidebar visible and hidden. The serial regression run reported 44 issues across 95 tests, including temporary-vault write errors and editor paste checks; the suite did not pass. Debug compilation and linking passed. Packaging failed with Invalid Iconset.
 - `git diff --check` passed. Native UI, appearance/accessibility, and preference persistence across an actual app relaunch were not manually exercised, consistent with the session’s no-UI-validation preference.
+
+## Bottom sidebar vault management menu — 2026-10-11
+
+- Moved Trash (including its nonzero count), recoverable drafts, and vault notices into the existing vault-name menu anchored at the bottom of the sidebar. Finder reveal and refresh stay available there, with Open/Create Vault separated below. Actions retain their existing navigation, recovery, and refresh handlers; no storage changes.
+- `./scripts/build.sh debug` compiled, packaged, and signed successfully with macOS icon-service access; the initial restricted build compiled and linked but packaging failed with Invalid Iconset. Generated tracked brand exports were unchanged. Supervisor selftest passed, and changed-file whitespace checks passed.
+- UI validation was skipped at the user's request, including menu interaction, appearance/theme/accent changes, accessibility preferences, and VoiceOver. No regression suite rerun for this menu-only presentation change. Existing source/documentation and demo-vault changes were preserved.
+
+
+## Vault dropdown spacing and separator — 2026-10-11
+
+- The bottom vault dropdown now uses 12-point footer side insets, eight-point spacing below its divider, eight-point inner horizontal/vertical padding, and a minimum 34-point control height. Semantic callout typography and a fixed icon column align the label; a single chevron replaces the paired indicator and hides the additional native menu indicator. Removed the redundant inner stack.
+- Kept the native divider, inset it with the footer, and reduced normal opacity from 0.5 to 0.2; Increase Contrast uses 0.75 for visibility. Menu actions and storage are unchanged.
+- Final `./scripts/build.sh debug` compiled, packaged, and signed successfully with macOS service access. An initial compile caught an incorrect environment key, corrected to `colorSchemeContrast` before the passing build. Supervisor selftest passed; changed-file whitespace checks passed. Generated tracked brand exports were unchanged.
+- UI validation remained skipped per the user's earlier instruction, including menu layout/interaction, themes/accent colors, Increase Contrast and other accessibility preferences, and VoiceOver. No regression suite rerun for this presentation-only adjustment. Existing unrelated edits were preserved.
+
+
+## Leading sidebar unlock control — 2026-10-11
+
+- Locked sidebar pages replace the leading file/unread icon with a native Unlock button, removing the trailing lock beside relative edit time. Successful unlocking briefly shows an open lock, then restores the regular file or unread icon. Reduce Motion skips the animation; failures retain the locked state and allow retry. Selection and context-menu actions retain their existing handlers.
+- UI validation remains skipped per the session preference. Automated build results are recorded below.
+- Initial debug compilation, packaging, and signing passed; a final build was started after adjusting the regular-icon selection action. Supervisor selftest and changed-file whitespace checks passed. Regression suite was not rerun within the quick timebox; persistence uses the unchanged editing-lock handler. Final-build outcome is reported in the chat.
+
+
+## Unlock feedback before sidebar reordering — 2026-10-11
+
+- Sidebar unlocking preserves the page's previous sort timestamp for All Pages and the update-sorted Recent Pages fallback while publishing saved unlocked metadata immediately. The native open-lock symbol uses system green and holds for 1.4 seconds; the regular icon returns with a 300-ms settling period before releasing the sort hold. Reduce Motion skips the presentation hold. Failed saves, disappearance during feedback, and vault switches release transient ordering state. Existing save/reconciliation handlers and persisted formats remain unchanged.
+- `./scripts/test.sh` passed all 98 tests with native macOS service access, including a new regression for stable All/Recent ordering despite updated saved metadata, reordering after feedback completion, and cleanup after a failed unlock. `./scripts/build.sh debug` compiled, packaged, and signed successfully. Supervisor selftest and changed-file whitespace checks passed; tracked brand exports were unchanged.
+- UI validation remains skipped per the session instruction; visual animation timing, appearance/theme/accent changes, Increase Contrast/Reduce Motion interaction, VoiceOver, and other manual accessibility checks were not exercised. Existing unrelated edits and demo-vault content were preserved.
+
+
+## Right-click lock feedback before reordering — 2026-10-11
+
+- Sidebar context-menu Lock and Unlock now share the transient sort-position hold. After a successful Lock save, the closed-lock icon stays in its row for 1.4 seconds before updated sorting moves it. Unlock retains the green open-lock pause and file-icon return. Saved metadata remains immediate; Reduce Motion skips the presentation pause. Cleanup now applies to both lock directions.
+- `./scripts/test.sh` passed all 98 tests with native macOS service access, including parameterized lock/unlock tests for stable All/Recent ordering until feedback completion, immediate saved timestamps, and release after failed operations. `./scripts/build.sh debug` compiled, packaged, and signed successfully. Supervisor selftest and changed-file whitespace checks passed; generated tracked brand assets were unchanged.
+- Manual UI validation, animation timing, appearance/theme/accent changes, Reduce Motion/Increase Contrast behavior, and VoiceOver/accessibility checks remain skipped per the session preference. Existing unrelated changes and demo-vault content were preserved.
+
+
+## Subtle relocated-row feedback — 2026-10-11
+
+- Completing either sidebar lock/unlock pause now emits a per-page move cue after releasing the sort hold. The relocated row fades to 90% opacity over 180 ms, then returns over 320 ms, starting 80 ms after movement. Reduce Motion suppresses the cue; cancelled row tasks reset opacity. Failed saves and duplicate completion callbacks do not emit new cues. No persisted data changes.
+- All 98 regression tests passed with native macOS service access, including lock/unlock move-cue generation, duplicate completion suppression, and failed-save suppression. Supervisor selftest and changed-file whitespace checks passed. A final debug packaging build was started; its outcome is reported in the chat.
+- Manual UI, visual timing/strength, appearance/theme/accent, accessibility-preference, and VoiceOver checks remain skipped per the session instruction. Existing unrelated edits were preserved.
+
+
+## Longer, clearer relocated-row cue — 2026-10-11
+
+- Increased the post-lock/unlock move cue from 90% to 75% opacity. It now starts 120 ms after relocation, fades out over 300 ms, holds near the lighter state for 900 ms, then fades back over 650 ms. The task stays alive through the return animation so cleanup cannot interrupt it. Reduce Motion handling, ordering, and move-cue eligibility remain unchanged.
+- `./scripts/build.sh debug` compiled, packaged, and signed successfully. Supervisor selftest and changed-file whitespace checks passed; tracked brand exports were unchanged. No regression suite rerun for this opacity/timing-only adjustment (the previous cue-change suite passed all 98 tests).
+- UI validation, perceived visibility/timing, theme/accent switching, accessibility preferences, and VoiceOver remain manually unverified per the session's no-UI-validation instruction. Existing unrelated edits were preserved.
