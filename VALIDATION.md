@@ -596,6 +596,14 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 - Expanded the summary editing/preservation regression to exercise both placement choices with the sidebar visible and hidden. The serial regression run reported 44 issues across 95 tests, including temporary-vault write errors and editor paste checks; the suite did not pass. Debug compilation and linking passed. Packaging failed with Invalid Iconset.
 - `git diff --check` passed. Native UI, appearance/accessibility, and preference persistence across an actual app relaunch were not manually exercised, consistent with the session’s no-UI-validation preference.
 
+
+## Grouped global sidebar search — 2026-10-11
+
+- Sidebar queries search all pages and sources through the existing index plus semantic blocks off the main actor, independent of the selected collection or tag filter. Results appear in Pages, Sources, Semantic Blocks order in the sidebar and main workspace; empty groups are omitted. Collection tabs and normal recent/all sections return when search is cleared. Result navigation preserves the query and uses existing save-before-navigation and block-jump behavior. Obsolete query/vault results are discarded. No storage format changes.
+- Native regression suite passed all 97 tests, including new indexed page/source/nested-block matching, aliases, no matches, query-preserving navigation, and whitespace checks. The restricted initial run reported 44 file-coordination/clipboard-related issues; native retry passed. Debug compilation, packaging, and signing passed with native macOS access after restricted iconutil packaging failed. Generated tracked brand exports were unchanged. Supervisor selftest passed.
+- An isolated app instance with a separate bundle identity and temporary fixture vault verified searching from Sources returns all three groups in order, hides collection tabs, opens a semantic result at its owning page, opens a source read-only, preserves the query, and restores tabs/Recent Sources when cleared. Existing demo-vault changes were preserved. Theme/accent switching, accessibility preferences, VoiceOver, and two-Mac iCloud behavior were not exercised.
+
+
 ## Bottom sidebar vault management menu — 2026-10-11
 
 - Moved Trash (including its nonzero count), recoverable drafts, and vault notices into the existing vault-name menu anchored at the bottom of the sidebar. Finder reveal and refresh stay available there, with Open/Create Vault separated below. Actions retain their existing navigation, recovery, and refresh handlers; no storage changes.

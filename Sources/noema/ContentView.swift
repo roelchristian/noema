@@ -52,7 +52,7 @@ struct ContentView: View {
                 HSplitView {
                     sidebar.frame(minWidth: 250, idealWidth: 265, maxWidth: 280, maxHeight: .infinity)
                     mainWorkspace.frame(minWidth: model.scope == .sources && model.currentNote == nil && model.currentSource == nil ? 520 : 420, maxHeight: .infinity).transaction { $0.animation = nil }
-                    if model.scope == .sources && model.currentNote == nil && model.currentSource == nil,
+                    if !model.isSearching, model.scope == .sources && model.currentNote == nil && model.currentSource == nil,
                        let source = model.sources.first(where: { $0.id == sourceSelection }) {
                         sourceInspector(source).frame(minWidth: 280, idealWidth: 340, maxWidth: 400, maxHeight: .infinity).transaction { $0.animation = nil }
                     } else if showPageDetails, let note = model.currentNote {
@@ -211,103 +211,109 @@ struct ContentView: View {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
                 )
-                HStack(spacing: 4) {
-                    sidebarTabButton(
-                        title: "Pages",
-                        symbol: "book.closed",
-                        count: model.notes.count,
-                        showLabel: activeSidebarTab == .wiki,
-                        highlighted: isPagesScope && model.currentNote == nil && model.currentSource == nil
-                    ) {
-                        switchSidebarScope(.wiki)
+                if !model.isSearching {
+                    HStack(spacing: 4) {
+                        sidebarTabButton(
+                            title: "Pages",
+                            symbol: "book.closed",
+                            count: model.notes.count,
+                            showLabel: activeSidebarTab == .wiki,
+                            highlighted: isPagesScope && model.currentNote == nil && model.currentSource == nil
+                        ) {
+                            switchSidebarScope(.wiki)
+                        }
+                        sidebarTabButton(
+                            title: "Sources",
+                            symbol: "tray.full",
+                            count: model.sources.count,
+                            showLabel: activeSidebarTab == .sources,
+                            highlighted: model.scope == .sources && model.currentNote == nil && model.currentSource == nil
+                        ) {
+                            switchSidebarScope(.sources)
+                        }
+                        sidebarTabButton(
+                            title: "Semantic Blocks",
+                            symbol: "tag",
+                            count: nil,
+                            showLabel: activeSidebarTab == .semantic,
+                            highlighted: model.scope == .semantic && model.currentNote == nil && model.currentSource == nil
+                        ) {
+                            switchSidebarScope(.semantic)
+                        }
                     }
-                    sidebarTabButton(
-                        title: "Sources",
-                        symbol: "tray.full",
-                        count: model.sources.count,
-                        showLabel: activeSidebarTab == .sources,
-                        highlighted: model.scope == .sources && model.currentNote == nil && model.currentSource == nil
-                    ) {
-                        switchSidebarScope(.sources)
-                    }
-                    sidebarTabButton(
-                        title: "Semantic Blocks",
-                        symbol: "tag",
-                        count: nil,
-                        showLabel: activeSidebarTab == .semantic,
-                        highlighted: model.scope == .semantic && model.currentNote == nil && model.currentSource == nil
-                    ) {
-                        switchSidebarScope(.semantic)
-                    }
+                    .padding(3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.primary.opacity(0.05))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5)
+                    )
+                    .animation(tabAnimation, value: activeSidebarTab)
                 }
-                .padding(3)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.primary.opacity(0.05))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5)
-                )
-                .animation(tabAnimation, value: activeSidebarTab)
             }
             .padding(.horizontal, 12)
             .padding(.top, 32)
             .padding(.bottom, 6)
 
             List {
-                Section(isExpanded: $recentSectionExpanded) {
-                    if activeSidebarTab == .sources {
-                        ForEach(model.recentSources) { source in
-                            sidebarItemRow(
-                                title: source.title,
-                                symbol: source.metadata.isLinked ? "link" : "doc.text",
-                                active: sourceSelection == source.id || model.currentSource?.id == source.id
-                            ) {
-                                sourceSelection = source.id
-                                if model.currentNote != nil || model.currentSource != nil || model.scope != .sources {
-                                    switchSidebarScope(.sources)
+                if model.isSearching {
+                    searchResultSections
+                } else {
+                    Section(isExpanded: $recentSectionExpanded) {
+                        if activeSidebarTab == .sources {
+                            ForEach(model.recentSources) { source in
+                                sidebarItemRow(
+                                    title: source.title,
+                                    symbol: source.metadata.isLinked ? "link" : "doc.text",
+                                    active: sourceSelection == source.id || model.currentSource?.id == source.id
+                                ) {
+                                    sourceSelection = source.id
+                                    if model.currentNote != nil || model.currentSource != nil || model.scope != .sources {
+                                        switchSidebarScope(.sources)
+                                    }
                                 }
                             }
-                        }
-                        sidebarFooterLink("View all sources") {
-                            sourceSelection = nil
-                            switchSidebarScope(.sources)
-                        }
-                    } else if activeSidebarTab == .semantic {
-                        ForEach(model.semanticRows.prefix(10)) { hit in
-                            let presentation = SemanticPresentation.find(hit.semantic)
-                            sidebarItemRow(
-                                title: hit.preview.isEmpty ? hit.pageTitle : hit.preview,
-                                symbol: presentation?.symbol ?? "tag",
-                                active: model.selectedSemanticID == hit.id
-                            ) {
-                                model.select(hit.pageID, block: hit.blockID)
+                            sidebarFooterLink("View all sources") {
+                                sourceSelection = nil
+                                switchSidebarScope(.sources)
+                            }
+                        } else if activeSidebarTab == .semantic {
+                            ForEach(model.semanticRows.prefix(10)) { hit in
+                                let presentation = SemanticPresentation.find(hit.semantic)
+                                sidebarItemRow(
+                                    title: hit.preview.isEmpty ? hit.pageTitle : hit.preview,
+                                    symbol: presentation?.symbol ?? "tag",
+                                    active: model.selectedSemanticID == hit.id
+                                ) {
+                                    model.select(hit.pageID, block: hit.blockID)
+                                }
+                            }
+                            sidebarFooterLink("View all blocks") {
+                                switchSidebarScope(.semantic)
+                            }
+                        } else {
+                            ForEach(model.recentPages) { note in
+                                sidebarPageRow(note)
                             }
                         }
-                        sidebarFooterLink("View all blocks") {
-                            switchSidebarScope(.semantic)
-                        }
-                    } else {
-                        ForEach(model.recentPages) { note in
-                            sidebarPageRow(note)
-                        }
-                    }
-                } header: {
-                    Text(activeSidebarTab == .sources ? "RECENT SOURCES" : activeSidebarTab == .semantic ? "RECENT BLOCKS" : "RECENT PAGES")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .contentTransition(.opacity)
-                }
-                if activeSidebarTab == .wiki {
-                    Section(isExpanded: $allPagesSectionExpanded) {
-                        ForEach(model.allPagesByUpdated) { note in
-                            sidebarPageRow(note, showRelativeEditTime: true)
-                        }
                     } header: {
-                        Text("ALL PAGES")
+                        Text(activeSidebarTab == .sources ? "RECENT SOURCES" : activeSidebarTab == .semantic ? "RECENT BLOCKS" : "RECENT PAGES")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(.secondary)
+                            .contentTransition(.opacity)
+                    }
+                    if activeSidebarTab == .wiki {
+                        Section(isExpanded: $allPagesSectionExpanded) {
+                            ForEach(model.allPagesByUpdated) { note in
+                                sidebarPageRow(note, showRelativeEditTime: true)
+                            }
+                        } header: {
+                            Text("ALL PAGES")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -380,6 +386,49 @@ struct ContentView: View {
             else { SidebarMaterialView().ignoresSafeArea() }
         }
         .ignoresSafeArea(.container, edges: .top)
+    }
+    @ViewBuilder private var searchResultSections: some View {
+        if model.sidebarSearchResults.query != model.searchText {
+            if let error = model.errorMessage {
+                DismissibleNotice(message: error) { model.errorMessage = nil }
+            } else {
+                ProgressView("Searching…")
+            }
+        } else if model.sidebarSearchResults.isEmpty {
+            Text("No matches").foregroundStyle(.secondary)
+        } else {
+            if !model.sidebarSearchResults.pages.isEmpty {
+                Section("Pages") {
+                    ForEach(model.sidebarSearchResults.pages) { note in
+                        sidebarPageRow(note)
+                    }
+                }
+            }
+            if !model.sidebarSearchResults.sources.isEmpty {
+                Section("Sources") {
+                    ForEach(model.sidebarSearchResults.sources) { source in
+                        sidebarItemRow(title: source.title,
+                                       symbol: source.metadata.isLinked ? "link" : "doc.text",
+                                       active: model.currentSource?.id == source.id) {
+                            model.select(source.id)
+                        }
+                    }
+                }
+            }
+            if !model.sidebarSearchResults.blocks.isEmpty {
+                Section("Semantic Blocks") {
+                    ForEach(model.sidebarSearchResults.blocks) { hit in
+                        sidebarItemRow(title: hit.preview.isEmpty ? hit.pageTitle : hit.preview,
+                                       symbol: SemanticPresentation.find(hit.semantic)?.symbol ?? "tag",
+                                       active: model.selectedSemanticID == hit.id) {
+                            model.select(hit.pageID, block: hit.blockID)
+                        }
+                        .help("\(hit.pageTitle) · \(hit.semantic)")
+                        .accessibilityLabel("\(hit.pageTitle), \(hit.semantic), \(hit.preview)")
+                    }
+                }
+            }
+        }
     }
     private func sidebarTabButton(title: String, symbol: String, count: Int?, showLabel: Bool, highlighted: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -530,7 +579,12 @@ struct ContentView: View {
         }
     }
     @ViewBuilder private var library: some View {
-        if model.scope == .trash { trashLibrary } else { pageLibrary }
+        if model.isSearching {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Search Results").font(.title2).padding()
+                List { searchResultSections }.listStyle(.inset)
+            }
+        } else if model.scope == .trash { trashLibrary } else { pageLibrary }
     }
     private var pageLibrary: some View {
         ZStack {

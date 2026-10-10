@@ -26,6 +26,23 @@ struct SemanticBlockHit: Identifiable, Sendable {
         }
     }
 }
+struct SidebarSearchResults: Sendable {
+    var query = ""
+    var pages: [NoteRecord] = []
+    var sources: [SourceRecord] = []
+    var blocks: [SemanticBlockHit] = []
+    var isEmpty: Bool { pages.isEmpty && sources.isEmpty && blocks.isEmpty }
+
+    static func search(_ query: String, notes: [NoteRecord], sources: [SourceRecord], index: any SearchIndex) async throws -> Self {
+        let pageHits = try await index.search(query, kind: .wiki, tag: nil)
+        let sourceHits = try await index.search(query, kind: .source, tag: nil)
+        let blocks = await Task.detached { SemanticBlockHit.search(notes, query: query) }.value
+        let noteMap = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let sourceMap = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return Self(query: query, pages: pageHits.compactMap { noteMap[$0.id] },
+                    sources: sourceHits.compactMap { sourceMap[$0.id] }, blocks: blocks)
+    }
+}
 struct LibraryRow: Identifiable, Equatable {
     var id: UUID
     var title: String
@@ -110,6 +127,8 @@ struct EditorAction: Equatable {
     var wordCount = 0
     var scope: LibraryScope = .wiki
     var searchText = ""
+    var sidebarSearchResults = SidebarSearchResults()
+    var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var unseenRenamedPages: Set<UUID> = []
     var appIsActive = true
     var selectedID: UUID?
@@ -428,6 +447,19 @@ struct EditorAction: Equatable {
             snapshot[i].body = body; snapshot[i].title = title
         }
         let capturedNotes = snapshot
+        if isSearching, let index {
+            do {
+                let results = try await SidebarSearchResults.search(query, notes: capturedNotes, sources: sources, index: index)
+                guard searchText == query, generation == ticket, !Task.isCancelled else { return }
+                sidebarSearchResults = results
+                semanticRows = results.blocks
+            } catch {
+                guard searchText == query, generation == ticket, !Task.isCancelled else { return }
+                errorMessage = error.localizedDescription
+            }
+            return
+        }
+        sidebarSearchResults = SidebarSearchResults()
         if scope == .semantic || semanticRows.isEmpty {
             let hits = await Task.detached { SemanticBlockHit.search(capturedNotes, query: query) }.value
             if searchText == query, generation == ticket, !Task.isCancelled {
@@ -441,7 +473,7 @@ struct EditorAction: Equatable {
         let tag: String? = { if case .tag(let tag) = scope { return tag }; return nil }()
         do {
             let hits = try await index.search(capturedQuery, kind: kind, tag: tag)
-            guard capturedScope == scope, capturedQuery == searchText else { return }
+            guard capturedScope == scope, capturedQuery == searchText, generation == ticket, !Task.isCancelled else { return }
             let noteMap = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let sourceMap = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let newRows: [LibraryRow] = hits.compactMap { hit in

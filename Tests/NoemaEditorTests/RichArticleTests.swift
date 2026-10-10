@@ -24,6 +24,55 @@ import VaultCore
     #expect(Set(all.map(\.id)).count == 2)
 }
 
+@Test func sidebarSearchIncludesPagesSourcesAndNestedSemanticBlocks() async throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaSidebarSearch-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let index = try SQLiteSearchIndex(url: folder.appendingPathComponent("search.sqlite"))
+    var note = try NoteCodec.decode(Data("---\ntitle: Astronomy\naliases: [Stargazing]\n---\n# Astronomy".utf8), path: "Wiki/Astronomy.md", vaultID: UUID())
+    var metadata = BlockMetadata(); metadata.semantic = "question"
+    let block = EditorBlock(runs: [RichRun("Why do stars shine?")], metadata: metadata)
+    note.body = BlockDocumentCodec.encode(BlockDocument(blocks: [EditorBlock(children: [block])]))
+    let source = try JSONDecoder().decode(SourceRecord.self, from: Data("""
+    {"metadata":{"id":"\(UUID())","title":"Stars reference","capturedAt":"2026-10-11T00:00:00Z","originalFilename":"stars.txt","sha256":"fixture","storedFilename":"stars.txt"},"body":"A reference about stars"}
+    """.utf8))
+    var batch = ScanBatch(); batch.notes = [note]; batch.sources = [source]
+    try await index.reconcile(batch)
+    let results = try await SidebarSearchResults.search("stars", notes: [note], sources: [source], index: index)
+    #expect(results.pages.map(\.id) == [note.id])
+    #expect(results.sources.map(\.id) == [source.id])
+    #expect(results.blocks.map(\.blockID) == [block.id])
+    #expect(!results.isEmpty)
+    let alias = try await SidebarSearchResults.search("Stargazing", notes: [note], sources: [source], index: index)
+    #expect(alias.pages.map(\.id) == [note.id])
+    #expect(alias.sources.isEmpty)
+    #expect(alias.blocks.isEmpty)
+    let missing = try await SidebarSearchResults.search("absent", notes: [note], sources: [source], index: index)
+    #expect(missing.isEmpty)
+    #expect(missing.query == "absent")
+}
+
+@Test @MainActor func sidebarSearchNavigationPreservesQueryAndScope() async throws {
+    var note = try NoteCodec.decode(Data("# Stars".utf8), path: "Wiki/Stars.md", vaultID: UUID())
+    var metadata = BlockMetadata(); metadata.semantic = "question"
+    let block = EditorBlock(runs: [RichRun("Stars question")], metadata: metadata)
+    note.body = BlockDocumentCodec.encode(BlockDocument(blocks: [block]))
+    let model = AppModel(); model.notes = [note]; model.scope = .sources; model.searchText = "stars"
+    #expect(model.isSearching)
+    model.select(note.id, block: block.id)
+    for _ in 0..<50 {
+        if model.selectedSemanticID != nil { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.currentNote?.id == note.id)
+    #expect(model.selectedSemanticID == "\(note.id):\(block.id)")
+    #expect(model.scope == .sources)
+    #expect(model.searchText == "stars")
+    model.searchText = "  \n "
+    #expect(!model.isSearching)
+    model.searchText = ""
+    #expect(!model.isSearching)
+}
+
 @Test func lccCodeNormalizationAndParallelSourceRename() async throws {
     #expect(OnDeviceSummary.cleanLCC("DG299") == "DG299")
     #expect(OnDeviceSummary.cleanLCC("LCC: bs 1315.") == "BS1315")
@@ -637,6 +686,8 @@ import VaultCore
     #expect(coordinator.document.blocks[0].runs[1].style.math == false)
     #expect(coordinator.document.blocks[0].runs[1].text == " plain")
 }
+
+
 
 @Test(arguments: [false, true]) @MainActor func sidebarLockChangesHoldOrderingUntilFeedbackCompletes(initiallyLocked: Bool) async throws {
     var older = try NoteCodec.decode(Data("# Older".utf8), path: "Wiki/Older.md", vaultID: UUID())
