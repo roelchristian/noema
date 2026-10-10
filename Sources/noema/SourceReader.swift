@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Quartz
 import VaultCore
 
@@ -54,7 +55,9 @@ import VaultCore
                     reader.textStorage?.setAttributedString(html)
                 } else { reader.string = text }
                 reader.setAccessibilityLabel(source.title)
-                scroll.documentView = reader; window.contentView = scroll
+                scroll.documentView = reader
+                window.contentView = NSHostingView(rootView: ThemedSourceTextReader(scroll: scroll,
+                    original: reader.attributedString()).systemNoemaTheme())
             } else {
                 guard let preview = QLPreviewView(frame: window.contentView!.bounds, style: .normal) else { throw VaultError.unavailable("Quick Look is unavailable for this file.") }
                 preview.autoresizingMask = [.width, .height]
@@ -72,5 +75,28 @@ import VaultCore
     func windowWillClose(_ notification: Notification) {
         scopedURL?.stopAccessingSecurityScopedResource(); scopedURL = nil
         Self.readers.removeValue(forKey: sourceID)
+    }
+}
+
+private struct ThemedSourceTextReader: NSViewRepresentable {
+    @Environment(\.noemaTheme) private var theme
+    let scroll: NSScrollView
+    let original: NSAttributedString
+
+    func makeNSView(context: Context) -> NSScrollView { scroll }
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let reader = scroll.documentView as? NSTextView else { return }
+        let selection = reader.selectedRange()
+        reader.textStorage?.setAttributedString(original)
+        // Imported formatting remains intact; full palettes override only foreground color.
+        if theme.usesFullPalette {
+            reader.textStorage?.addAttribute(.foregroundColor, value: theme.nativeText(),
+                range: NSRange(location: 0, length: original.length))
+        }
+        reader.textColor = theme.nativeText()
+        reader.backgroundColor = theme.native(.surfaceElevated)
+        scroll.backgroundColor = theme.native(.surfaceElevated)
+        reader.linkTextAttributes = [.foregroundColor: theme.nativeText(.accentSecondary)]
+        reader.setSelectedRange(selection)
     }
 }

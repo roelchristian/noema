@@ -1,5 +1,12 @@
 # Validation — 10 October 2026
 
+## Theme palettes and application modes — 2026-10-11
+
+- Settings now offers System, Midnight Iris, Forest, Amber, and Rose, with a persisted full-palette checkbox. Unchecked palettes use their main color as an accent with native surfaces and text; palettes follow macOS Light/Dark appearance.
+- `./scripts/test.sh` passed all 93 tests outside the automation sandbox, including palette contrast in both appearances with increased contrast and native/full-palette role checks. The initial sandboxed run encountered file-coordination and pasteboard failures.
+- `./scripts/build.sh debug` compiled successfully, but packaging failed at `iconutil` with `Invalid Iconset`. `git diff --check` and supervisor self-tests passed.
+- Native Settings inspection in an isolated app confirmed the choices and Forest full/accent-only surface switching in current Dark appearance. Further UI validation was stopped at the user's request. Light appearance, live system appearance/accent switching, editor/source-preview interactions, preference persistence after relaunch, and full accessibility checks remain unverified. Existing demo-vault edits were preserved.
+
 ## Custom TeX commands modal in Settings — 11 October 2026, standard timebox
 
 - Moved custom TeX command inputs out of the main Settings pane into `CustomTeXCommandsModal`, opened from **Noema → Settings… → Math & TeX → View or Edit Custom Commands…**. The Settings pane now displays a summary count and the modal trigger button.

@@ -390,7 +390,10 @@ struct ContentView: View {
                 .padding(.vertical, 6)
             }
         }
-        .background(SidebarMaterialView().ignoresSafeArea())
+        .background {
+            if theme.usesFullPalette { theme.color(.background).ignoresSafeArea() }
+            else { SidebarMaterialView().ignoresSafeArea() }
+        }
         .ignoresSafeArea(.container, edges: .top)
     }
     private func sidebarTabButton(title: String, symbol: String, count: Int?, showLabel: Bool, highlighted: Bool, action: @escaping () -> Void) -> some View {

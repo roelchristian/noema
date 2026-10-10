@@ -7,6 +7,22 @@ public enum AppearancePreference: String, CaseIterable, Identifiable, Sendable {
     public var title: String { rawValue.capitalized }
 }
 
+public enum ThemePreference: String, CaseIterable, Identifiable, Sendable {
+    case system, midnightIris, forest, amber, rose
+    public static let defaultsKey = "noema.theme"
+    public static let fullPaletteKey = "noema.theme.fullPalette"
+    public var id: String { rawValue }
+    public var title: String {
+        switch self {
+        case .system: "System"
+        case .midnightIris: "Midnight Iris"
+        case .forest: "Forest"
+        case .amber: "Amber"
+        case .rose: "Rose"
+        }
+    }
+}
+
 public enum ThemeRole: CaseIterable, Sendable {
     case background, surfaceElevated, accentPrimary, accentSecondary, graphHighlight
     case textPrimary, textMuted, border
@@ -44,11 +60,45 @@ public struct ThemeRGB: Equatable, Sendable {
 public struct MidnightIrisPalette: Equatable, Sendable {
     public let dark: Bool
     public let increasedContrast: Bool
-    public init(dark: Bool, increasedContrast: Bool = false) {
+    public let theme: ThemePreference
+    public init(dark: Bool, increasedContrast: Bool = false, theme: ThemePreference = .midnightIris) {
         self.dark = dark
         self.increasedContrast = increasedContrast
+        self.theme = theme
     }
     public func token(_ role: ThemeRole) -> ThemeRGB {
+        // Identity exports retain the default Midnight Iris tokens. App themes share
+        // the same semantic roles and contrast correction, in light and dark variants.
+        let values: [UInt32]
+        switch theme {
+        case .forest:
+            values = dark
+                ? [0x101D18, 0x192C23, 0x63C79D, 0x83CBC5, 0xB1CE88, 0xEBF5EE, 0xADBFB4, 0x354D40]
+                : [0xF2F7F3, 0xFBFEFC, 0x226B4B, 0x246C70, 0x516D2A, 0x172D21, 0x50695B, 0xCFDED3]
+        case .amber:
+            values = dark
+                ? [0x231A12, 0x32261B, 0xE4AD65, 0xDEB887, 0xD6BC75, 0xF9EFE1, 0xC9B59C, 0x55412D]
+                : [0xFAF5EA, 0xFFFCF5, 0x945415, 0x856429, 0x916330, 0x342619, 0x77624C, 0xE6D8C1]
+        case .rose:
+            values = dark
+                ? [0x241720, 0x34232F, 0xE89CBA, 0xC8A5E3, 0xE5A5A5, 0xFAECF3, 0xC8AEBC, 0x563C4B]
+                : [0xFCF3F7, 0xFFFBFD, 0xA13F68, 0x7953A1, 0xA34E4E, 0x37202E, 0x795D6D, 0xE9D3DE]
+        case .system, .midnightIris: values = []
+        }
+        if !values.isEmpty {
+            let index: Int
+            switch role {
+            case .background: index = 0
+            case .surfaceElevated: index = 1
+            case .accentPrimary: index = 2
+            case .accentSecondary: index = 3
+            case .graphHighlight: index = 4
+            case .textPrimary: index = 5
+            case .textMuted: index = 6
+            case .border: index = 7
+            }
+            return ThemeRGB(hex: values[index])
+        }
         let hex: UInt32
         switch role {
         case .background: hex = dark ? 0x101827 : 0xF7F8FC

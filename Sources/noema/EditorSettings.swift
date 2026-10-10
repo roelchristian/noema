@@ -1,5 +1,6 @@
 import SwiftUI
 import VaultCore
+import NoemaBrand
 
 enum EditorPreferences {
     static let aiSummariesKey = "enableOnDeviceAISummaries"
@@ -11,6 +12,9 @@ struct NoemaSettings: View {
     @AppStorage(EditorPreferences.showSemanticHeadingsKey) private var showSemanticHeadings = false
     @AppStorage(EditorPreferences.aiSummariesKey) private var aiSummaries = false
     @AppStorage(EditorPreferences.texMacrosKey) private var texMacrosStorage = ""
+
+    @AppStorage(ThemePreference.defaultsKey) private var themePreference = ThemePreference.system.rawValue
+    @AppStorage(ThemePreference.fullPaletteKey) private var fullPalette = true
 
     @State private var showCustomCommandsModal = false
 
@@ -50,8 +54,20 @@ struct NoemaSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Appearance") {
-                Text("Noema follows macOS appearance, accent and highlight colors, and accessibility settings. Change these in System Settings.")
-                    .font(.callout)
+                Picker("Theme", selection: $themePreference) {
+                    ForEach(ThemePreference.allCases) { theme in
+                        Text(theme.title).tag(theme.rawValue)
+                    }
+                }
+                Toggle("Apply full palette to the app", isOn: $fullPalette)
+                    .toggleStyle(.checkbox)
+                    .disabled(themePreference == ThemePreference.system.rawValue)
+                Text(themePreference == ThemePreference.system.rawValue
+                     ? "System follows macOS appearance and accent colors."
+                     : "Checked: theme colors for app surfaces, text, and accents. Unchecked: the theme’s main color as the accent, with macOS surfaces and text.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Text("All palettes follow macOS Light/Dark appearance and accessibility settings. Your choices are saved automatically.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped).padding(16).frame(width: 540)

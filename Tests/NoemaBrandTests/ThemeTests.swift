@@ -49,3 +49,19 @@ import Testing
         }
     }
 }
+
+@Test func selectablePalettesMeetContrastInBothAppearances() {
+    for theme in ThemePreference.allCases where theme != .system {
+        for dark in [false, true] {
+            for increased in [false, true] {
+                let palette = MidnightIrisPalette(dark: dark, increasedContrast: increased, theme: theme)
+                for surface in [ThemeRole.background, .surfaceElevated] {
+                    for role in [ThemeRole.textPrimary, .textMuted, .accentPrimary, .accentSecondary, .graphHighlight, .border] {
+                        #expect(palette.foreground(role, on: surface).contrastRatio(against: palette.token(surface)) >= (increased ? 7 : 4.5))
+                    }
+                }
+                #expect(ThemeRGB(hex: 0xFFFFFF).contrastRatio(against: palette.controlAccent) >= (increased ? 7 : 4.8))
+            }
+        }
+    }
+}

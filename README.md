@@ -6,7 +6,7 @@ A native macOS personal wiki, with a separate read-only library of raw sources.
 
 The interface uses native macOS Liquid Glass navigation and toolbars, glass search and editing controls, and an orbital glass mark inspired by connected thoughts. Writing and source content retain readable standard backgrounds. The mark shares geometry with the packaged icon; see `Resources/Brand/README.md` for the exported layers and the current `.icns` packaging limitation.
 
-**System appearance:** App chrome, controls, writing surfaces, selection, and previews follow macOS Light/Dark appearance, accent and highlight colors, and accessibility settings. Appearance settings are managed in System Settings; Noema no longer overrides them. Midnight Iris colors are confined to the orbital identity and icon exports.
+**Appearance:** Settings → Appearance offers System, Midnight Iris, Forest, Amber, and Rose. For a selected palette, check **Apply full palette to the app** to theme app surfaces, text, and accents; uncheck it to use only the main accent color with native macOS surfaces and text. Choices persist across launches. Every palette follows macOS Light/Dark appearance and accessibility settings; System also follows the system accent. Native controls retain macOS selection, focus, and disabled behavior.
 
 The middle pane omits the window-title branding. Page and source headers use a compact 26-point title with reduced top spacing. Document controls sit in the main pane, centered vertically beside the title; creation and vault menus remain available there when no document is selected.
 
