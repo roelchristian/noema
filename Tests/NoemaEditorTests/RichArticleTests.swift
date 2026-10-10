@@ -413,3 +413,89 @@ import VaultCore
     state.scrolled(to: 40)
     #expect(state.collapsed)
 }
+
+@Test func generatedPageTitleValidation() {
+    #expect(OnDeviceSummary.cleanTitle("  “Roman History”  ") == "Roman History")
+    #expect(OnDeviceSummary.cleanTitle("\n ") == nil)
+    #expect(OnDeviceSummary.cleanTitle("Title\nExplanation") == nil)
+    #expect(OnDeviceSummary.cleanTitle(String(repeating: "x", count: 121)) == nil)
+}
+
+@Test func generatedTitleStripsMarkdownAndChoosesLanguage() {
+    #expect(OnDeviceSummary.cleanTitle("# **[Roman History](https://example.com)**") == "Roman History")
+    #expect(OnDeviceSummary.cleanTitle("`Roman` *History*") == "Roman History")
+    #expect(OnDeviceSummary.titleLanguage("", preferredLanguage: "fr") == "fr")
+    #expect(OnDeviceSummary.titleLanguage("This article describes the history of ancient Rome and the lives of its emperors.", preferredLanguage: "fr") == "en")
+}
+@Test @MainActor func generatedTitleDoesNotRequireActivePage() throws {
+    let note = try NoteCodec.decode(Data("---\ntitle: Untitled\n---\nSome article text".utf8), path: "Wiki/Untitled.md", vaultID: UUID())
+    let model = AppModel()
+    #expect(model.editorAllowsGeneratedTitle(for: note))
+    model.currentNote = note; model.title = note.title; model.body = note.body
+    #expect(model.editorAllowsGeneratedTitle(for: note))
+    model.title = "User title"
+    #expect(!model.editorAllowsGeneratedTitle(for: note))
+    model.currentNote = nil
+    #expect(model.editorAllowsGeneratedTitle(for: note))
+}
+
+@Test @MainActor func explicitSaveNamesReopenedUntitledPageAndPreservesUserTitle() throws {
+    let note = try NoteCodec.decode(Data("---\ntitle: Untitled 2\n---\nSome article text".utf8), path: "Wiki/Untitled 2.md", vaultID: UUID())
+    let model = AppModel()
+    model.currentNote = note; model.title = note.title; model.body = note.body
+    #expect(!model.needsTitle)
+    model.prepareUntitledPageForNaming()
+    #expect(model.needsTitle)
+    model.title = "Untitled thoughts about Rome"
+    #expect(!model.needsTitle)
+    let named = AppModel()
+    named.currentNote = note; named.title = "My own title"; named.body = note.body
+    named.prepareUntitledPageForNaming()
+    #expect(!named.needsTitle)
+    named.title = " "
+    named.prepareUntitledPageForNaming()
+    #expect(named.needsTitle)
+}
+
+// Opt-in: semantic quality requires the real on-device model, rather than a mocked prompt.
+@Test func onDeviceTopicTitleAcceptance() async throws {
+    guard ProcessInfo.processInfo.environment["NOEMA_AI_TITLE_ACCEPTANCE"] == "1" else { return }
+    guard OnDeviceSummary.unavailabilityReason == nil else {
+        Issue.record("On-device model unavailable for title acceptance")
+        return
+    }
+    let samples = [
+        ("Pertinax", "Pertinax became Roman emperor in 193 after the assassination of Commodus. This page explores Pertinax's short reign, his attempts to restore discipline, and his assassination by the Praetorian Guard."),
+        ("Composting", "This page records my composting routine. Composting kitchen scraps with dry leaves creates soil for the garden. I turn the compost pile weekly, keep it moist, and balance green material with dry brown material.")
+    ]
+    for (topic, content) in samples {
+        let title = try #require(await OnDeviceSummary().pageTitle(content))
+        print("Topic title acceptance: \(topic) → \(title)")
+        #expect(title.localizedCaseInsensitiveContains(topic))
+        #expect(title.split(whereSeparator: \.isWhitespace).count <= 8)
+        #expect(!title.hasSuffix("."))
+        #expect(!title.contains("\n"))
+        #expect(OnDeviceSummary.cleanTitle(title) == title)
+    }
+}
+
+@Test @MainActor func unseenRenameTracksOtherPagesAndInactiveAppUntilViewed() throws {
+    let note = try NoteCodec.decode(Data("---\ntitle: Original\n---\nText".utf8), path: "Wiki/Original.md", vaultID: UUID())
+    let model = AppModel(); model.currentNote = note
+    model.recordPageRename(note.id, from: "Original", to: "New")
+    #expect(!model.unseenRenamedPages.contains(note.id))
+    let other = UUID()
+    model.recordPageRename(other, from: "Original", to: "Original")
+    #expect(!model.unseenRenamedPages.contains(other))
+    model.recordPageRename(other, from: "Original", to: "New")
+    #expect(model.unseenRenamedPages.contains(other))
+    model.appIsActive = false
+    model.recordPageRename(note.id, from: "Original", to: "New")
+    model.markPageViewed(note.id)
+    #expect(model.unseenRenamedPages.contains(note.id))
+    model.appIsActive = true; model.markPageViewed(note.id)
+    #expect(!model.unseenRenamedPages.contains(note.id))
+    #expect(model.unseenRenamedPages.contains(other))
+    model.markPageViewed(other)
+    #expect(model.unseenRenamedPages.isEmpty)
+}

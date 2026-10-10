@@ -177,6 +177,13 @@ struct ContentView: View {
                     ForEach(model.rows) { row in
                         VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 6) {
+                                if row.kind == .wiki, model.unseenRenamedPages.contains(row.id) {
+                                    Image(systemName: "circle.fill")
+                                        .font(.system(size: 8))
+                                        .foregroundStyle(Color(nsColor: .systemBlue))
+                                        .help("Page renamed since you last viewed it")
+                                        .accessibilityLabel("Unread title change")
+                                }
                                 Text(row.title).font(.headline).lineLimit(1)
                                 if row.kind == .wiki, model.notes.first(where: { $0.id == row.id })?.isEditingLocked == true {
                                     Image(systemName: "lock.fill")

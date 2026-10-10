@@ -31,7 +31,7 @@ import NoemaBrand
                 Button("Create Vault…") { model.chooseVault(create: true) }
             }
             CommandGroup(replacing: .saveItem) {
-                Button("Save Page") { model.saveNow() }.keyboardShortcut("s").disabled(model.currentNote == nil)
+                Button("Save Page") { model.savePage() }.keyboardShortcut("s").disabled(model.currentNote == nil)
             }
             CommandMenu("Vault") {
                 Button("Find in Vault") { model.searchFocusToken += 1 }.keyboardShortcut("f", modifiers: [.command, .shift])
@@ -64,12 +64,16 @@ import NoemaBrand
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var model: AppModel?
-    func applicationDidResignActive(_ notification: Notification) { model?.saveNow() }
-    func applicationDidBecomeActive(_ notification: Notification) { model?.scheduleRefresh() }
+    func applicationDidResignActive(_ notification: Notification) { model?.appIsActive = false; model?.saveNow() }
+    func applicationDidBecomeActive(_ notification: Notification) {
+        model?.appIsActive = true
+        if let id = model?.currentNote?.id { model?.markPageViewed(id) }
+        model?.scheduleRefresh()
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let model, model.dirty else { return .terminateNow }
+        guard let model, model.dirty || model.needsTitle || model.hasPendingTitles else { return .terminateNow }
         Task {
-            if await model.saveCurrent() { sender.reply(toApplicationShouldTerminate: true) }
+            if await model.finishCurrentPage(waitForTitles: true) { sender.reply(toApplicationShouldTerminate: true) }
             else {
                 let alert = NSAlert()
                 alert.messageText = "Your draft has been preserved"

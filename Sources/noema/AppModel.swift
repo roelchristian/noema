@@ -28,6 +28,8 @@ struct EditorAction: Equatable {
     var wordCount = 0
     var scope: LibraryScope = .wiki
     var searchText = ""
+    var unseenRenamedPages: Set<UUID> = []
+    var appIsActive = true
     var selectedID: UUID?
     var currentNote: NoteRecord?
     var currentSource: SourceRecord?
@@ -66,6 +68,8 @@ struct EditorAction: Equatable {
     private var queryTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
+    private var untitledPages: [UUID: String] = [:]
+    private var titleTasks: [UUID: Task<Void, Never>] = [:]
     private var saving = false
     private var refreshing = false
     private var pendingRefresh = false
@@ -151,7 +155,7 @@ struct EditorAction: Equatable {
         UserDefaults.standard.set(bookmark, forKey: "vaultBookmark")
     }
     func open(_ url: URL, create: Bool) async {
-        if dirty, !(await saveCurrent()) { return }
+        if !(await finishCurrentPage()) { return }
         busy = true; errorMessage = nil
         let hasScope = url.startAccessingSecurityScopedResource()
         do {
@@ -166,6 +170,7 @@ struct EditorAction: Equatable {
             if let scopeURL { scopeURL.stopAccessingSecurityScopedResource() }
             self.scopeURL = hasScope ? url : nil
             generation = UUID(); repository = repo; index = searchIndex; recovery = journal
+            unseenRenamedPages.removeAll()
             root = url; vaultName = url.lastPathComponent; scope = .wiki; searchText = ""
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
             let cached = try await searchIndex.cachedEntries()
@@ -208,6 +213,10 @@ struct EditorAction: Equatable {
             }
             progressTicket = nil
             guard ticket == generation else { refreshing = false; return }
+            let previousTitles = Dictionary(notes.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
+            for note in result.notes {
+                if let previous = previousTitles[note.id] { recordPageRename(note.id, from: previous, to: note.title) }
+            }
             notes = result.notes; sources = result.sources; issues = result.issues
             trashedPages = try await repository.trashedPages()
             updateTags()
@@ -230,7 +239,9 @@ struct EditorAction: Equatable {
             await updateRows()
         }
     }
-    func changeScope(_ scope: LibraryScope) { self.scope = scope; queryChanged() }
+    func changeScope(_ scope: LibraryScope) {
+        Task { if await finishCurrentPage() { self.scope = scope; queryChanged() } }
+    }
     private func updateRows() async {
         guard let index else { return }
         let capturedScope = scope, capturedQuery = searchText
@@ -251,7 +262,7 @@ struct EditorAction: Equatable {
     func select(_ id: UUID?) {
         Task {
             await waitForSave()
-            if dirty, !(await saveCurrent()) { return }
+            if !(await finishCurrentPage()) { return }
             autosaveTask?.cancel(); wikiQuery = nil; editorAction = nil
             selectedID = id; currentSource = nil; currentNote = nil; externalChange = false; errorMessage = nil
             reading = true
@@ -263,7 +274,15 @@ struct EditorAction: Equatable {
             await updateBacklinks()
         }
     }
+    func recordPageRename(_ id: UUID, from oldTitle: String, to newTitle: String) {
+        guard oldTitle != newTitle else { return }
+        if !appIsActive || currentNote?.id != id { unseenRenamedPages.insert(id) }
+    }
+    func markPageViewed(_ id: UUID) {
+        if appIsActive { unseenRenamedPages.remove(id) }
+    }
     private func apply(_ note: NoteRecord) {
+        markPageViewed(note.id)
         editingHint = nil
         aiSummaryNotice = nil
         editorAction = nil
@@ -279,7 +298,7 @@ struct EditorAction: Equatable {
         guard root != nil, !busy else { pendingBlockURL = url; return }
         Task {
             await waitForSave()
-            if dirty, !(await saveCurrent()) { return }
+            if !(await finishCurrentPage()) { return }
             guard let note = notes.first(where: { $0.id == noteID }), BlockDocumentCodec.decode(note.body).block(blockID) != nil else { errorMessage = "This block link is not available in the open vault."; return }
             autosaveTask?.cancel(); selectedID = noteID; currentSource = nil; apply(note); reading = true
             editorAction = EditorAction(operation: .block(blockID)); await updateBacklinks()
@@ -294,7 +313,7 @@ struct EditorAction: Equatable {
         }
         editingHint = nil; reading = false
     }
-    func finishEditing() { wikiQuery = nil; editorAction = nil; saveNow(); reading = true }
+    func finishEditing() { wikiQuery = nil; editorAction = nil; savePage(); reading = true }
     func toggleEditingLock(_ id: UUID? = nil) {
         guard let targetID = id ?? currentNote?.id else { return }
         Task {
@@ -310,6 +329,10 @@ struct EditorAction: Equatable {
     }
     func edited() {
         guard !editingLocked else { return }
+        if let note = currentNote, let placeholder = untitledPages[note.id],
+           !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title != placeholder {
+            untitledPages.removeValue(forKey: note.id)
+        }
         guard currentNote != nil, dirty else { return }
         saveStatus = "Unsaved changes"
         autosaveTask?.cancel()
@@ -328,6 +351,7 @@ struct EditorAction: Equatable {
             wordCount = await Task.detached { BlockDocumentCodec.markdownBody(draft.body).split(whereSeparator: \.isWhitespace).count }.value
             try await recovery.store(draft)
             let saved = try await repository.save(note: note, title: draft.title, body: draft.body, tags: draft.tags)
+            recordPageRename(saved.id, from: note.title, to: saved.title)
             if currentNote?.id == saved.id {
                 currentNote = saved
                 if title == draft.title { title = saved.title }
@@ -355,7 +379,68 @@ struct EditorAction: Equatable {
             try? await Task.sleep(for: .milliseconds(15))
         }
     }
-    func saveNow() { autosaveTask?.cancel(); Task { _ = await saveCurrent() } }
+    var needsTitle: Bool {
+        guard let note = currentNote, let placeholder = untitledPages[note.id] else { return false }
+        return title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || title == placeholder
+    }
+    var hasPendingTitles: Bool { !titleTasks.isEmpty }
+    func editorAllowsGeneratedTitle(for note: NoteRecord) -> Bool {
+        guard currentNote?.id == note.id else { return true }
+        return !dirty && !editingLocked && !externalChange && currentNote?.contentHash == note.contentHash
+    }
+    @discardableResult func finishCurrentPage(waitForTitles: Bool = false) async -> Bool {
+        autosaveTask?.cancel()
+        if needsTitle, title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let id = currentNote?.id, let placeholder = untitledPages[id] { title = placeholder }
+        guard await saveCurrent() else { return false }
+        startTitleGeneration()
+        if waitForTitles {
+            let pending = Array(titleTasks.values)
+            for task in pending { await task.value }
+            return await saveCurrent()
+        }
+        return true
+    }
+    private func startTitleGeneration() {
+        guard needsTitle, let note = currentNote, let repository,
+              titleTasks[note.id] == nil, !editingLocked, !externalChange,
+              OnDeviceSummary.unavailabilityReason == nil else { return }
+        let capturedGeneration = generation
+        let content = BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(note.body).withoutAISummary))
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        titleTasks[note.id] = Task { [self] in
+            defer { titleTasks.removeValue(forKey: note.id) }
+            do {
+                guard let generated = try await OnDeviceSummary().pageTitle(content) else { return }
+                await waitForSave()
+                guard generation == capturedGeneration, untitledPages[note.id] == note.title,
+                      editorAllowsGeneratedTitle(for: note) else { return }
+                saving = true
+                defer { saving = false }
+                // The repository rejects stale edits, deleted pages, and newly locked pages.
+                let saved = try await repository.save(note: note, title: generated, body: note.body, tags: note.tags)
+                recordPageRename(saved.id, from: note.title, to: saved.title)
+                untitledPages.removeValue(forKey: note.id)
+                if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
+                if currentNote?.id == saved.id {
+                    currentNote = saved
+                    if title == note.title { title = saved.title }
+                }
+                scheduleRefresh()
+            } catch { /* Content is already saved; retain the placeholder for another attempt. */ }
+        }
+    }
+    func prepareUntitledPageForNaming() {
+        guard let note = currentNote, !editingLocked else { return }
+        let candidate = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard candidate.isEmpty || candidate.range(of: #"^Untitled(?: [0-9]+)?$"#, options: .regularExpression) != nil else { return }
+        untitledPages[note.id] = candidate.isEmpty ? note.title : title
+    }
+    func savePage() {
+        prepareUntitledPageForNaming()
+        saveNow()
+    }
+    func saveNow() { autosaveTask?.cancel(); Task { _ = await finishCurrentPage() } }
     func generatePreview() {
         previewTask?.cancel(); let captured = body
         previewTask = Task {
@@ -367,11 +452,12 @@ struct EditorAction: Equatable {
     private func updateTags() { tags = Array(Set(notes.flatMap(\.allTags))).sorted() }
     func newPage(template: Bool = false, named name: String = "Untitled") {
         Task {
-            if dirty, !(await saveCurrent()) { return }
+            if !(await finishCurrentPage()) { return }
             guard let repository else { return }
             do {
                 let body = template ? "## Overview\n\n\n## Personal context\n\nWhy does this matter to me?\n\n## Connections\n\n" : ""
                 let note = try await repository.create(title: name, body: body)
+                if name == "Untitled" { untitledPages[note.id] = note.title }
                 errorMessage = nil
                 notes.insert(note, at: 0); scope = .wiki; reading = false
                 selectedID = note.id; currentSource = nil; apply(note)

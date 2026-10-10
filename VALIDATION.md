@@ -289,3 +289,39 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 ## Final AI summary regression before commit — 2026-10-10
 
 - Reran `./scripts/test.sh` against the final smaller indicator, compact loading, frosted summary, and smooth disclosure changes: all 50 tests passed with native macOS access. `git diff --check` passed. Manual visual/accessibility limitations recorded above remain outstanding. Demo-vault edits are excluded from the feature commit.
+
+
+## Automatic on-device page titles — 2026-10-10
+
+- New unnamed pages are tracked for this session; finishing editing, saving, navigation, app deactivation, and quit attempt a Foundation Models title after saving content. User titles and changes made during inference are preserved. Filename/alias behavior uses the existing repository save path.
+- Initial debug compilation passed; packaging was blocked by sandbox iconutil access (Invalid Iconset). Final regression rerun with native macOS service access passed all 51 tests, including final-source compilation, after an incremental run was interrupted by a source edit. Added title-output validation coverage. `git diff --check` passed.
+- Live title generation, lifecycle/navigation UI, model-unavailability flows, accessibility, and cross-device checks remain unverified. Demo-vault edits were preserved.
+
+
+## Background title generation and language — 2026-10-10
+
+- Title inference now runs per page after its content save, allowing immediate navigation and saving the captured page without requiring active selection or app focus. Quit waits for pending attempts. Repository stale-write, deletion, and lock checks remain in force; active unsaved edits reject results. Switching vaults discards pending results from the earlier vault.
+- NaturalLanguage detects the article language with the system preferred language as fallback. Generated titles are parsed into plain text to remove Markdown headings, emphasis, links, and inline code; multiline/empty/overlong results are rejected.
+- `./scripts/test.sh` passed all 53 tests with macOS service access, including inactive-page eligibility, user-title preservation, language fallback/detection, and Markdown cleanup. `./scripts/build.sh debug` compiled, packaged, and signed the app and archive successfully. `git diff --check` passed; generated brand assets have no tracked changes.
+- Live Foundation Models output, background navigation/quit UI, appearance/accessibility, and two-Mac behavior were not exercised within the two-minute timebox. Existing demo-vault edits were preserved. Eligibility remains session-local.
+
+
+## Explicit-save title eligibility — 2026-10-10
+
+- ⌘S / Save Page and top Done/checkmark now explicitly register blank or numbered Untitled placeholders for naming, including reopened pages. User titles remain untouched. Both actions use the existing background generation/save path.
+- `./scripts/test.sh` passed all 54 tests, including reopened placeholder recognition, blank titles, and preservation of user titles. `git diff --check` passed. `./scripts/build.sh debug` compiled, packaged, and signed the app and archive successfully.
+- Native shortcut/top-button interaction and live AI generation were not exercised within the one-minute timebox. Demo-vault edits were preserved.
+
+
+## Topic-title prompt correction — 2026-10-10
+
+- Replaced the broad descriptive-title prompt with explicit central-topic naming: a specific noun phrase, ideally 2–6 words and at most 8, anchored to the actual page subject. It excludes summaries, explanatory sentences, generic labels, preambles, and formatting. Title generation uses greedy sampling with a 48-token response budget and rejects results exceeding eight whitespace-separated words. Language detection and Markdown cleanup remain intact.
+- `./scripts/test.sh` passed all 55 entries (the live-model acceptance test returns unless explicitly enabled). `NOEMA_AI_TITLE_ACCEPTANCE=1 ./scripts/test.sh --filter onDeviceTopicTitleAcceptance` passed on synthetic pages, producing “Pertinax's Reign” and “Composting Routine”; composting is absent from the prompt's examples. An earlier synthetic sourdough probe produced “Sourdough Starter Care” and passed as well. These checks verify subject retention, word limit, plain text, and no ending period for those samples; they do not establish quality on every article or language.
+- `./scripts/build.sh debug` compiled, packaged, and signed the app and archive; `git diff --check` passed. Generated brand assets had no tracked changes. Native save/navigation UI and broader multilingual title quality were not checked in this prompt-only change. Demo-vault edits were preserved.
+
+
+## Unread title-change dot — 2026-10-10
+
+- Added a native SF Symbol blue dot beside wiki-row titles when a rename occurs on another page or while the app is inactive. Generated titles, local saves, and external refresh title changes share tracking. Opening the page (or reactivating the app with it displayed) clears its indicator. State is session-local and clears on vault switching. The dot uses systemBlue and exposes a tooltip and VoiceOver label.
+- Added coverage for other-page and inactive-app renames, unchanged titles, focused-page suppression, and clearing only viewed pages. `./scripts/test.sh` passed all 56 entries with macOS service access. `./scripts/build.sh debug` subsequently completed compilation, packaging, and signing of the app and archive successfully. `git diff --check` passed.
+- Native visual/interaction, appearance/accent/accessibility, and live background-title checks were not performed within the timebox. Existing demo-vault edits were preserved.
