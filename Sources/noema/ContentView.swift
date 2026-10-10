@@ -58,7 +58,7 @@ struct ContentView: View {
         }
         .toolbar(removing: .title)
         .toolbar(removing: .sidebarToggle)
-        .toolbarVisibility(.hidden, for: .windowToolbar)
+        .background(TrafficLightEnforcer())
         .sheet(isPresented: $model.showTopicPage) { TopicPageSheet(model: model) }
         .sheet(isPresented: $model.showURLSource) { URLSourceSheet(model: model) }
         .sheet(isPresented: $model.showPasteSource) { PasteSourceSheet(model: model) }

@@ -13,6 +13,7 @@ import NoemaBrand
                 .task { delegate.model = model; await model.restore() }
                 .onOpenURL { model.openBlockURL($0) }
         }
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(replacing: .appInfo) {
