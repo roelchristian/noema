@@ -12,6 +12,7 @@ public protocol VaultRepository: Sendable {
     func trash(note: NoteRecord) async throws
     func deleteSource(_ source: SourceRecord) async throws
     func renameSource(_ source: SourceRecord, title: String, summary: String?) async throws -> SourceRecord
+    func updateSourceLCC(_ source: SourceRecord, lcc: String?) async throws -> SourceRecord
     func linkSources(at url: URL, maximumFiles: Int) async throws -> [SourceRecord]
     func importSource(data: Data, filename: String, title: String, originURL: String?) async throws -> SourceRecord
 }
@@ -135,14 +136,22 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func create(title: String = "Untitled", body: String = "") throws -> NoteRecord {
-        try createPage(title: title, body: body, source: nil)
+        try createPage(title: title, body: body, source: nil, lcc: nil)
+    }
+
+    public func create(title: String = "Untitled", body: String = "", lcc: String?) throws -> NoteRecord {
+        try createPage(title: title, body: body, source: nil, lcc: lcc)
     }
 
     public func create(title: String, body: String, source: SourceRecord) throws -> NoteRecord {
-        try createPage(title: title, body: body, source: source)
+        try createPage(title: title, body: body, source: source, lcc: nil)
     }
 
-    private func createPage(title: String, body: String, source: SourceRecord?) throws -> NoteRecord {
+    public func create(title: String, body: String, source: SourceRecord, lcc: String?) throws -> NoteRecord {
+        try createPage(title: title, body: body, source: source, lcc: lcc)
+    }
+
+    private func createPage(title: String, body: String, source: SourceRecord?, lcc: String?) throws -> NoteRecord {
         let snapshot = try scan()
         if let source {
             guard let current = snapshot.sources.first(where: { $0.id == source.id }),
@@ -160,6 +169,8 @@ public actor FileVaultRepository: VaultRepository {
         let now = timestamp()
         var note = NoteRecord(id: UUID(), title: actualTitle, aliases: [], tags: [], inlineTags: [], createdAt: now, updatedAt: now, body: body, relativePath: "", contentHash: "", originalHeader: nil)
         note.sourceIDs = source.map { [$0.id] }
+        let normalizedLCC = lcc?.trimmingCharacters(in: .whitespacesAndNewlines)
+        note.lcc = (normalizedLCC?.isEmpty == false ? normalizedLCC : nil) ?? source?.metadata.lcc
         note.relativePath = availablePath(title: actualTitle)
         let data = try NoteCodec.encode(note)
         try Self.coordinatedWrite(data, to: root.appendingPathComponent(note.relativePath), mustNotExist: true)
@@ -175,7 +186,7 @@ public actor FileVaultRepository: VaultRepository {
         }
         guard !titleExists(title, in: snapshot.notes.filter { $0.id != note.id }) else { throw VaultError.duplicateTitle(title) }
         if snapshot.notes.first(where: { $0.id == note.id })?.isEditingLocked == true,
-           title != note.title || body != note.body || normalizeTags(tags) != note.tags || snapshot.notes.first(where: { $0.id == note.id })?.linkedSourceIDs != note.linkedSourceIDs {
+           title != note.title || body != note.body || normalizeTags(tags) != note.tags || snapshot.notes.first(where: { $0.id == note.id })?.linkedSourceIDs != note.linkedSourceIDs || snapshot.notes.first(where: { $0.id == note.id })?.lcc != note.lcc {
             throw VaultError.invalid("This article is locked. Unlock it before editing.")
         }
         var updated = note
@@ -562,13 +573,20 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func renameSource(_ source: SourceRecord, title: String, summary: String? = nil) throws -> SourceRecord {
+        try renameSource(source, title: title, summary: summary, lcc: nil)
+    }
+
+    public func renameSource(_ source: SourceRecord, title: String, summary: String? = nil, lcc: String? = nil) throws -> SourceRecord {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, title.count <= 120 else { throw VaultError.invalid("Invalid source title.") }
         let summary = summary?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let summary, summary.isEmpty { throw VaultError.invalid("Source summary must not be empty.") }
+        let normalizedLCC = lcc?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanLCC = (normalizedLCC?.isEmpty == false) ? normalizedLCC : nil
         if var pending = downloadingSources[source.id] {
             pending.metadata.title = title
             if let summary { pending.metadata.aiSummary = summary }
+            if let cleanLCC { pending.metadata.lcc = cleanLCC }
             downloadingSources[source.id] = pending
             return pending
         }
@@ -583,12 +601,45 @@ public actor FileVaultRepository: VaultRepository {
                       metadata.storedFilename == source.metadata.storedFilename else { throw VaultError.invalid("Source changed while its title was generated. Refresh and try again.") }
                 metadata.title = title
                 if let summary { metadata.aiSummary = summary }
+                if let cleanLCC { metadata.lcc = cleanLCC }
                 try encoder.encode(metadata).write(to: target, options: .atomic)
                 result = SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue)
             } catch { failure = error }
         }
         if let failure { throw failure }; if let coordinationError { throw coordinationError }
         guard let result else { throw VaultError.storage("Source title was not saved.") }
+        return result
+    }
+
+    public func updateSourceLCC(_ source: SourceRecord, lcc: String?) throws -> SourceRecord {
+        let normalizedLCC = lcc?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanLCC = (normalizedLCC?.isEmpty == false) ? normalizedLCC : nil
+        if let cleanLCC, cleanLCC.count > 24 || cleanLCC.contains("\n") || cleanLCC.contains("\r") {
+            throw VaultError.invalid("Invalid LCC class code.")
+        }
+        if var pending = downloadingSources[source.id] {
+            pending.metadata.lcc = cleanLCC
+            downloadingSources[source.id] = pending
+            return pending
+        }
+        let url = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/metadata.json")
+        var result: SourceRecord?, failure: Error?, coordinationError: NSError?
+        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: [], error: &coordinationError) { target in
+            do {
+                var metadata = try JSONDecoder().decode(SourceMetadata.self, from: Data(contentsOf: target))
+                guard metadata.id == source.id,
+                      metadata.sha256 == source.metadata.sha256,
+                      metadata.linkedBookmark == source.metadata.linkedBookmark,
+                      metadata.storedFilename == source.metadata.storedFilename else {
+                    throw VaultError.invalid("Source changed while updating LCC metadata. Refresh and try again.")
+                }
+                metadata.lcc = cleanLCC
+                try encoder.encode(metadata).write(to: target, options: .atomic)
+                result = SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue)
+            } catch { failure = error }
+        }
+        if let failure { throw failure }; if let coordinationError { throw coordinationError }
+        guard let result else { throw VaultError.storage("Source LCC was not saved.") }
         return result
     }
 

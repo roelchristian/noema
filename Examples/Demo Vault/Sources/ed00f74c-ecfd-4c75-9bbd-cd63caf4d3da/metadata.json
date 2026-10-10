@@ -1,8 +1,10 @@
 {
-  "capturedAt" : "2026-10-10T11:05:27Z",
-  "id" : "ED00F74C-ECFD-4C75-9BBD-CD63CAF4D3DA",
-  "originalFilename" : "pasted.txt",
-  "sha256" : "40ad1ac57181eb34564ab000d08ce8d7eb47991d288b5f368740e44223de7132",
-  "storedFilename" : "original.txt",
-  "title" : "Demo raw reading"
+  "aiSummary": "A demo passage remains unprocessed and distinct from personal interpretation, with the original text preserved exactly.",
+  "capturedAt": "2026-10-10T11:05:27Z",
+  "id": "ED00F74C-ECFD-4C75-9BBD-CD63CAF4D3DA",
+  "lcc": "AZ105",
+  "originalFilename": "pasted.txt",
+  "sha256": "40ad1ac57181eb34564ab000d08ce8d7eb47991d288b5f368740e44223de7132",
+  "storedFilename": "original.txt",
+  "title": "Demo raw reading"
 }

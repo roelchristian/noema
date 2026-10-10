@@ -223,13 +223,23 @@ struct EditorAction: Equatable {
         Task {
             defer { generatingAISummary = false }
             do {
-                let summary = try await OnDeviceSummary().summarize(content)
+                let generator = OnDeviceSummary()
+                async let generatedSummary = generator.summarize(content)
+                async let generatedLCC = generator.inferLCC(content)
+                let (summary, lcc) = try await (generatedSummary, generatedLCC)
                 guard currentNote?.id == capturedID, generation == capturedGeneration else { return }
                 guard body == capturedBody, !editingLocked, !externalChange,
                       UserDefaults.standard.bool(forKey: EditorPreferences.aiSummariesKey) else {
                     aiSummaryNotice = "The page changed during generation. Generate the summary again."; return
                 }
                 guard !summary.isEmpty else { aiSummaryNotice = "No summary was returned. Try again."; return }
+                if let lcc, !lcc.isEmpty {
+                    lccInput = lcc
+                    currentNote?.lcc = lcc
+                    if let id = currentNote?.id, let i = notes.firstIndex(where: { $0.id == id }) {
+                        notes[i].lcc = lcc
+                    }
+                }
                 var document = BlockDocumentCodec.decode(body)
                 document.setAISummary(summary)
                 body = BlockDocumentCodec.encode(document); edited()
@@ -456,7 +466,14 @@ struct EditorAction: Equatable {
     func markPageViewed(_ id: UUID) {
         if appIsActive { unseenRenamedPages.remove(id) }
     }
+    var lccInput = ""
+    var generatingPageLCC = false
+    var generatingSourceLCCs: Set<UUID> = []
+    private var lccSaveTask: Task<Void, Never>?
+    private var sourceLCCSaveTasks: [UUID: Task<Void, Never>] = [:]
+
     private func apply(_ note: NoteRecord) {
+        lccSaveTask?.cancel()
         markPageViewed(note.id)
         recentPageIDs.removeAll { $0 == note.id }
         recentPageIDs.insert(note.id, at: 0)
@@ -464,10 +481,129 @@ struct EditorAction: Equatable {
         aiSummaryNotice = nil
         editorAction = nil
         currentNote = note; title = note.title; body = note.body; tagInput = note.tags.joined(separator: ", ")
+        lccInput = note.lcc ?? ""
         let document = BlockDocumentCodec.decode(note.body)
         editorReadOnly = document.unsupportedVersion
         editorNotice = document.unsupportedVersion ? "This page uses a newer block format and is read-only. Its original content is preserved." : document.recoveredMetadata != nil ? "External Markdown changed. The earlier editor metadata was preserved for recovery; external text is shown." : nil
         externalChange = false; saveStatus = "Saved locally"; generatePreview()
+    }
+    func setPageLCC(_ value: String) {
+        guard !editingLocked, let note = currentNote else { return }
+        lccInput = value
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedValue = trimmed.isEmpty ? nil : trimmed
+        guard normalizedValue != note.lcc else { return }
+        currentNote?.lcc = normalizedValue
+        if let i = notes.firstIndex(where: { $0.id == note.id }) { notes[i].lcc = normalizedValue }
+        saveStatus = "Unsaved changes"
+        lccSaveTask?.cancel()
+        let targetID = note.id, ticket = generation
+        lccSaveTask = Task {
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            await persistPageLCC(pageID: targetID, lcc: normalizedValue, ticket: ticket)
+        }
+    }
+    private func persistPageLCC(pageID: UUID, lcc: String?, ticket: UUID) async {
+        await waitForSave()
+        guard generation == ticket, let repository,
+              var note = (currentNote?.id == pageID ? currentNote : notes.first(where: { $0.id == pageID })),
+              !note.isEditingLocked else { return }
+        if currentNote?.id == pageID, dirty {
+            _ = await saveCurrent()
+            return
+        }
+        saving = true; saveStatus = "Saving…"
+        defer { saving = false }
+        do {
+            note.lcc = lcc
+            let saved = try await repository.save(note: note, title: note.title, body: note.body, tags: note.tags)
+            guard generation == ticket else { return }
+            if let i = notes.firstIndex(where: { $0.id == pageID }) { notes[i] = saved }
+            if currentNote?.id == pageID {
+                currentNote = saved
+                lccInput = saved.lcc ?? ""
+                saveStatus = dirty ? "Unsaved changes" : "Saved locally"
+            }
+            scheduleRefresh()
+        } catch { if generation == ticket { errorMessage = error.localizedDescription } }
+    }
+    func refreshPageLCC() {
+        guard let note = currentNote, !editingLocked, !generatingPageLCC else { return }
+        if let reason = OnDeviceSummary.unavailabilityReason { errorMessage = reason; return }
+        let content = BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(body).withoutAISummary))
+        let fallback = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let input = content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : content
+        guard !input.isEmpty else {
+            errorMessage = "Add page content or a title before refreshing LCC metadata."
+            return
+        }
+        let targetID = note.id, ticket = generation
+        generatingPageLCC = true
+        Task {
+            defer { if generation == ticket { generatingPageLCC = false } }
+            do {
+                guard let lcc = try await OnDeviceSummary().lccCode(input), !lcc.isEmpty else {
+                    throw VaultError.unavailable("Could not determine an LCC class code for this page.")
+                }
+                guard generation == ticket, currentNote?.id == targetID, !editingLocked else { return }
+                lccInput = lcc
+                currentNote?.lcc = lcc
+                if let i = notes.firstIndex(where: { $0.id == targetID }) { notes[i].lcc = lcc }
+                await persistPageLCC(pageID: targetID, lcc: lcc, ticket: ticket)
+            } catch { if generation == ticket { errorMessage = "LCC refresh: " + error.localizedDescription } }
+        }
+    }
+    func updateSourceLCC(_ source: SourceRecord, lcc: String) {
+        guard !downloadingSources.contains(source.id) else { return }
+        let trimmed = lcc.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedValue = trimmed.isEmpty ? nil : trimmed
+        if let i = sources.firstIndex(where: { $0.id == source.id }) {
+            sources[i].metadata.lcc = normalizedValue
+        }
+        if currentSource?.id == source.id {
+            currentSource?.metadata.lcc = normalizedValue
+        }
+        sourceLCCSaveTasks[source.id]?.cancel()
+        let ticket = generation
+        sourceLCCSaveTasks[source.id] = Task {
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            guard generation == ticket, let repository else { return }
+            do {
+                let updated = try await repository.updateSourceLCC(source, lcc: normalizedValue)
+                guard generation == ticket else { return }
+                if let i = sources.firstIndex(where: { $0.id == source.id }) { sources[i] = updated }
+                if currentSource?.id == source.id { currentSource = updated }
+                if let index { var entries = ScanBatch(); entries.notes = notes; entries.sources = sources; try await index.reconcile(entries) }
+            } catch { if generation == ticket { errorMessage = error.localizedDescription } }
+        }
+    }
+    func refreshSourceLCC(_ source: SourceRecord) {
+        guard !downloadingSources.contains(source.id), !generatingSourceLCCs.contains(source.id),
+              let repository, let root else { return }
+        if let reason = OnDeviceSummary.unavailabilityReason { errorMessage = reason; return }
+        let ticket = generation
+        generatingSourceLCCs.insert(source.id)
+        Task {
+            defer { if generation == ticket { generatingSourceLCCs.remove(source.id) } }
+            do {
+                let text = try await sourceSummaryContent(source, root: root)
+                guard generation == ticket else { return }
+                let input = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? source.title : String(text.prefix(6000))
+                guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw VaultError.unavailable("No readable text for LCC classification.")
+                }
+                guard let lcc = try await OnDeviceSummary().lccCode(input), !lcc.isEmpty else {
+                    throw VaultError.unavailable("Could not determine an LCC class code for this source.")
+                }
+                guard generation == ticket else { return }
+                let current = sources.first(where: { $0.id == source.id }) ?? source
+                let updated = try await repository.updateSourceLCC(current, lcc: lcc)
+                guard generation == ticket else { return }
+                if let i = sources.firstIndex(where: { $0.id == source.id }) { sources[i] = updated }
+                if currentSource?.id == source.id { currentSource = updated }
+                await refresh()
+            } catch { if generation == ticket { errorMessage = "Source LCC: " + error.localizedDescription } }
+        }
     }
     func openBlockURL(_ url: URL) {
         guard url.scheme == "noema", url.host == "page", let noteID = UUID(uuidString: url.lastPathComponent),
@@ -542,9 +678,11 @@ struct EditorAction: Equatable {
     }
     @discardableResult func saveCurrent() async -> Bool {
         await waitForSave()
-        guard dirty, let note = currentNote, let repository, let recovery else { return !saving }
+        guard dirty, var note = currentNote, let repository, let recovery else { return !saving }
         guard !saving else { return false }
         saving = true; saveStatus = "Saving…"
+        let trimmedLCC = lccInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        note.lcc = trimmedLCC.isEmpty ? nil : trimmedLCC
         let draft = DraftRecord(note: note, title: title, body: body, tags: editedTags)
         do {
             wordCount = await Task.detached { BlockDocumentCodec.markdownBody(draft.body).split(whereSeparator: \.isWhitespace).count }.value
@@ -553,6 +691,7 @@ struct EditorAction: Equatable {
             recordPageRename(saved.id, from: note.title, to: saved.title)
             if currentNote?.id == saved.id {
                 currentNote = saved
+                lccInput = saved.lcc ?? ""
                 if title == draft.title { title = saved.title }
                 if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
                 updateTags()
@@ -610,14 +749,20 @@ struct EditorAction: Equatable {
         titleTasks[note.id] = Task { [self] in
             defer { titleTasks.removeValue(forKey: note.id) }
             do {
-                guard let generated = try await OnDeviceSummary().pageTitle(content) else { return }
+                let generator = OnDeviceSummary()
+                async let generatedTitle = generator.pageTitle(content)
+                async let generatedLCC = generator.inferLCC(content)
+                let (generated, lcc) = try await (generatedTitle, generatedLCC)
+                guard let generated else { return }
                 await waitForSave()
                 guard generation == capturedGeneration, untitledPages[note.id] == note.title,
                       editorAllowsGeneratedTitle(for: note) else { return }
                 saving = true
                 defer { saving = false }
+                var updatedNote = note
+                if let lcc, !lcc.isEmpty { updatedNote.lcc = lcc }
                 // The repository rejects stale edits, deleted pages, and newly locked pages.
-                let saved = try await repository.save(note: note, title: generated, body: note.body, tags: note.tags)
+                let saved = try await repository.save(note: updatedNote, title: generated, body: note.body, tags: note.tags)
                 recordPageRename(saved.id, from: note.title, to: saved.title)
                 untitledPages.removeValue(forKey: note.id)
                 if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
@@ -663,7 +808,11 @@ struct EditorAction: Equatable {
             let context = results.enumerated().map { offset, result in
                 "[\(offset + 1)] " + result.title + "\n" + result.url.absoluteString + "\n" + result.text
             }.joined(separator: "\n\n")
-            var article = try await OnDeviceSummary().pageFromTopic(topic, context: context)
+            let generator = OnDeviceSummary()
+            async let generatedArticle = generator.pageFromTopic(topic, context: context)
+            async let generatedLCC = generator.inferLCC(OnDeviceSummary.topicPrompt(topic: topic, context: context))
+            var article = try await generatedArticle
+            let lcc = await generatedLCC
             article += "\n\n*AI-generated draft based on web results retrieved " + timestamp() + ".*"
             let references: [String] = results.enumerated().map { offset, result in
                 let title = result.title.replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
@@ -671,7 +820,7 @@ struct EditorAction: Equatable {
             }
             article += "\n\n## Web references\n\n" + references.joined(separator: "\n")
             guard generation == ticket, await finishCurrentPage(), generation == ticket else { return false }
-            let note = try await repository.create(title: topic, body: article)
+            let note = try await repository.create(title: topic, body: article, lcc: lcc)
             guard generation == ticket else { return false }
             errorMessage = nil; searchText = ""; scope = .wiki; reading = false
             notes.insert(note, at: 0); selectedID = note.id; currentSource = nil; apply(note)
@@ -982,9 +1131,12 @@ struct EditorAction: Equatable {
                 }
                 let generator = OnDeviceSummary()
                 let article = try await generator.pageFromSource(text)
-                let pageTitle = try await generator.pageTitle(article) ?? source.title
+                async let generatedTitle = generator.pageTitle(article)
+                async let generatedLCC = generator.inferLCC(article)
+                let pageTitle = (try await generatedTitle) ?? source.title
+                let lcc = (await generatedLCC) ?? source.metadata.lcc
                 guard generation == ticket, await finishCurrentPage(), generation == ticket else { return }
-                let note = try await repository.create(title: pageTitle, body: article, source: source)
+                let note = try await repository.create(title: pageTitle, body: article, source: source, lcc: lcc)
                 guard generation == ticket else { return }
                 errorMessage = nil; searchText = ""; scope = .wiki; reading = false
                 notes.insert(note, at: 0); selectedID = note.id; currentSource = nil; apply(note)
@@ -1007,9 +1159,13 @@ struct EditorAction: Equatable {
                 guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw VaultError.unavailable("No readable text for an AI summary.")
                 }
-                let summary = try await OnDeviceSummary().summarize(String(text.prefix(6000)))
+                let excerpt = String(text.prefix(6000))
+                let generator = OnDeviceSummary()
+                async let generatedSummary = generator.summarize(excerpt)
+                async let generatedLCC = generator.inferLCC(excerpt)
+                let (summary, lcc) = try await (generatedSummary, generatedLCC)
                 guard generation == ticket else { return }
-                _ = try await repository.renameSource(source, title: source.title, summary: summary)
+                _ = try await repository.renameSource(source, title: source.title, summary: summary, lcc: lcc)
                 guard generation == ticket else { return }
                 await refresh()
             } catch { if generation == ticket { errorMessage = "Source summary: " + error.localizedDescription } }
@@ -1035,15 +1191,18 @@ struct EditorAction: Equatable {
                     let text = try await sourceSummaryContent(source, root: root)
                     guard generation == ticket else { return }
                     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw VaultError.unavailable("No readable text for automatic naming and summary. Original file name retained.") }
-                    async let generatedTitle = OnDeviceSummary().pageTitle(text)
-                    async let generatedSummary = OnDeviceSummary().summarize(String(text.prefix(6000)))
-                    let (titleResult, summary) = try await (generatedTitle, generatedSummary)
+                    let excerpt = String(text.prefix(6000))
+                    let generator = OnDeviceSummary()
+                    async let generatedTitle = generator.pageTitle(text)
+                    async let generatedSummary = generator.summarize(excerpt)
+                    async let generatedLCC = generator.inferLCC(excerpt)
+                    let (titleResult, summary, lcc) = try await (generatedTitle, generatedSummary, generatedLCC)
                     guard let title = titleResult else { throw VaultError.unavailable("No valid topic title was generated. Original file name retained.") }
                     guard generation == ticket else { return }
                     if sourceNamingOverrides.contains(source.id) {
                         generatingSourceTitles.remove(source.id); sourceRenameCompleted += 1; continue
                     }
-                    let renamed = try await repository.renameSource(source, title: title, summary: summary)
+                    let renamed = try await repository.renameSource(source, title: title, summary: summary, lcc: lcc)
                     guard generation == ticket else { return }
                     if let position = sources.firstIndex(where: { $0.id == source.id }) { sources[position] = renamed }
                     if let index { var entries = ScanBatch(); entries.notes = notes; entries.sources = sources; try await index.reconcile(entries) }

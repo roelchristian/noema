@@ -18,6 +18,7 @@ public struct NoteRecord: Codable, Identifiable, Sendable, Equatable {
     public var body: String
     public var relativePath: String
     public var contentHash: String
+    public var lcc: String? = nil
     public var editingLocked: Bool? = nil
     public var isEditingLocked: Bool { editingLocked == true }
     public var sourceIDs: [UUID]? = nil
@@ -32,6 +33,7 @@ public struct SourceMetadata: Codable, Identifiable, Sendable, Equatable {
     public var originalFilename: String
     public var originURL: String?
     public var sha256: String
+    public var lcc: String? = nil
     public var aiSummary: String? = nil
     public var isURLSource: Bool? = nil
     public var webAvailabilityIssue: String? = nil

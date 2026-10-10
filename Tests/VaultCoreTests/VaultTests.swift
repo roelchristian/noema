@@ -22,6 +22,51 @@ private func temporaryFolder() throws -> URL {
     #expect(decoded.allTags == ["history", "learning"])
 }
 
+@Test func lccMetadataRoundTripOnNotesAndSources() async throws {
+    let id = UUID()
+    let input = Data("---\nid: \(id.uuidString)\ntitle: Pertinax\nlcc: DG299\ntags: [history]\n---\nBody\n".utf8)
+    var note = try NoteCodec.decode(input, path: "Wiki/Pertinax.md", vaultID: UUID())
+    #expect(note.lcc == "DG299")
+    note.lcc = "DG270"
+    let encoded = try NoteCodec.encode(note)
+    let decoded = try NoteCodec.decode(encoded, path: "Wiki/Pertinax.md", vaultID: UUID())
+    #expect(decoded.lcc == "DG270")
+
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    var source = try await repo.importSource(data: Data(" Ruth text ".utf8), filename: "ruth.txt", title: "Ruth", originURL: nil)
+    let metaURL = folder.appendingPathComponent("Sources/\(source.id.uuidString.lowercased())/metadata.json")
+    var meta = try JSONDecoder().decode(SourceMetadata.self, from: Data(contentsOf: metaURL))
+    meta.lcc = "BS1315"
+    try JSONEncoder().encode(meta).write(to: metaURL, options: .atomic)
+    let scanned = try await repo.scan()
+    source = try #require(scanned.sources.first)
+    #expect(source.metadata.lcc == "BS1315")
+    let createdPage = try await repo.create(title: "Ruth Notes", body: "Notes", source: source)
+    #expect(createdPage.lcc == "BS1315")
+
+    let demoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Examples/Demo Vault")
+    let demoWikiFiles = try FileManager.default.contentsOfDirectory(at: demoRoot.appendingPathComponent("Wiki"), includingPropertiesForKeys: nil)
+        .filter { $0.pathExtension == "md" }
+    #expect(!demoWikiFiles.isEmpty)
+    for fileURL in demoWikiFiles {
+        let note = try NoteCodec.decode(Data(contentsOf: fileURL), path: "Wiki/" + fileURL.lastPathComponent, vaultID: UUID())
+        #expect(note.lcc?.isEmpty == false, "Expected non-empty lcc for \(fileURL.lastPathComponent)")
+    }
+    let demoSourceDirs = try FileManager.default.contentsOfDirectory(at: demoRoot.appendingPathComponent("Sources"), includingPropertiesForKeys: [.isDirectoryKey])
+        .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+    #expect(!demoSourceDirs.isEmpty)
+    for dirURL in demoSourceDirs {
+        let metadataURL = dirURL.appendingPathComponent("metadata.json")
+        let metadata = try JSONDecoder().decode(SourceMetadata.self, from: Data(contentsOf: metadataURL))
+        #expect(metadata.lcc?.isEmpty == false, "Expected non-empty lcc for source \(metadata.title)")
+    }
+}
+
 @Test func malformedTextAndFrontmatterAreRejected() throws {
     for input in [Data([0xff, 0xfe, 0xfd]), Data("---\ntitle: [unclosed\n---\nbody".utf8), Data("---\ntitle: x\nbody".utf8), Data("---\nid: not-a-uuid\n---\nbody".utf8)] {
         #expect(throws: (any Error).self) { try NoteCodec.decode(input, path: "Wiki/bad.md", vaultID: UUID()) }

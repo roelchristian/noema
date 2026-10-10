@@ -38,11 +38,18 @@ public enum NoteCodec {
             throw VaultError.invalid("\(path) has an invalid source reference.")
         }
         note.sourceIDs = Array(Set(references.compactMap(UUID.init(uuidString:)))).sorted { $0.uuidString < $1.uuidString }
+        let rawLCC = string("lcc")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        note.lcc = (rawLCC?.isEmpty == false) ? rawLCC : nil
         note.editingLocked = string("editing_locked") == "true"
         return note
     }
     public static func encode(_ note: NoteRecord) throws -> Data {
         var node = try note.originalHeader.flatMap { try Yams.compose(yaml: $0) } ?? Node([:])
+        if let lcc = note.lcc?.trimmingCharacters(in: .whitespacesAndNewlines), !lcc.isEmpty {
+            node["lcc"] = Node(lcc)
+        } else {
+            node["lcc"] = nil
+        }
         if note.editingLocked != nil { node["editing_locked"] = Node(note.isEditingLocked ? "true" : "false") }
         node["sources"] = Node(note.linkedSourceIDs.map { Node($0.uuidString.lowercased()) })
         node["id"] = Node(note.id.uuidString.lowercased())

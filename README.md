@@ -84,9 +84,9 @@ My Vault/
   .Trash/                       # recoverable removed pages, excluded from search
 ```
 
-Wiki frontmatter contains `id`, `title`, `aliases`, `tags`, `created_at`, and `updated_at`. Unknown YAML fields are preserved semantically; YAML formatting/comments are not guaranteed to retain their original appearance after an app save. A Markdown file added externally is read without rewriting it; metadata is added on its first app save.
+Wiki frontmatter contains `id`, `title`, `aliases`, `tags`, optional `lcc` (Library of Congress Classification class code), `created_at`, and `updated_at`. Unknown YAML fields are preserved semantically; YAML formatting/comments are not guaranteed to retain their original appearance after an app save. A Markdown file added externally is read without rewriting it; metadata is added on its first app save.
 
-Source metadata contains `id`, `title`, `capturedAt`, `originalFilename`, optional `originURL`, `sha256`, and `storedFilename`. Imported originals are copied byte for byte; linked originals stay at their external location. External source mutations are flagged rather than silently accepted. Source read-only behavior is an app rule; normal files remain accessible in Finder.
+Source metadata contains `id`, `title`, `capturedAt`, `originalFilename`, optional `originURL`, optional `lcc` (Library of Congress Classification class code), `sha256`, and `storedFilename`. Imported originals are copied byte for byte; linked originals stay at their external location. External source mutations are flagged rather than silently accepted. Source read-only behavior is an app rule; normal files remain accessible in Finder.
 
 Local SQLite indexes and recovery drafts live in the app’s Application Support directory under `KnowledgeVault/<vault-uuid>` (the original storage name is retained so existing drafts remain recoverable). They are outside the synced vault. The index is disposable; **keep Drafts** if it contains unsaved work. Reopening a vault rebuilds a deleted search index from canonical files.
 

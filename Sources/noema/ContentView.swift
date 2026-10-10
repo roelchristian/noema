@@ -869,6 +869,74 @@ struct ContentView: View {
             }.disabled(model.updatingSourceReferences)
         }
     }
+    @ViewBuilder private func sourceLCCRow(_ source: SourceRecord) -> some View {
+        LabeledContent {
+            HStack(spacing: 4) {
+                TextField(
+                    "None",
+                    text: Binding(
+                        get: { source.metadata.lcc ?? "" },
+                        set: { model.updateSourceLCC(source, lcc: $0) }
+                    )
+                )
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                .font(.caption)
+                .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceLCCs.contains(source.id))
+                if model.generatingSourceLCCs.contains(source.id) || model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id) {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Button {
+                        model.refreshSourceLCC(source)
+                    } label: {
+                        Label("Refresh LCC", systemImage: "arrow.clockwise").labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .disabled(model.downloadingSources.contains(source.id))
+                    .help("Refresh LCC with AI")
+                }
+            }
+        } label: {
+            Text("LCC").foregroundStyle(.secondary)
+        }.font(.caption)
+    }
+    @ViewBuilder private func pageLCCRow(_ note: NoteRecord) -> some View {
+        LabeledContent {
+            HStack(spacing: 4) {
+                if model.editingLocked {
+                    let effectiveLCC = (model.currentNote?.id == note.id ? model.lccInput : (note.lcc ?? "")).trimmingCharacters(in: .whitespacesAndNewlines)
+                    Text(effectiveLCC.isEmpty ? "None" : effectiveLCC).foregroundStyle(.primary)
+                } else {
+                    TextField(
+                        "None",
+                        text: Binding(
+                            get: { model.lccInput },
+                            set: { model.setPageLCC($0) }
+                        )
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    .font(.caption)
+                    .disabled(model.generatingPageLCC)
+                }
+                if model.generatingPageLCC {
+                    ProgressView().controlSize(.mini)
+                } else if !model.editingLocked {
+                    Button {
+                        model.refreshPageLCC()
+                    } label: {
+                        Label("Refresh LCC", systemImage: "arrow.clockwise").labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("Refresh LCC with AI")
+                }
+            }
+        } label: {
+            Text("LCC").foregroundStyle(.secondary)
+        }.font(.caption)
+    }
     private func sourceInspector(_ source: SourceRecord) -> some View {
         VStack(spacing: 0) {
             inspectorToolbar { sourceSelection = nil }
@@ -878,6 +946,7 @@ struct ContentView: View {
                     inspectorIdentity(title: source.title, kind: source.metadata.originalFilename.split(separator: ".").last.map { $0.uppercased() } ?? "Source", date: source.metadata.capturedAt)
                     InspectorSection(title: "Properties", condensed: false) {
                         LabeledContent("Availability") { sourceAvailabilityStatus(source.id) }.font(.caption)
+                        sourceLCCRow(source)
                         InspectorProperty("Original file", source.metadata.originalFilename)
                         InspectorProperty("Location", source.metadata.isLinked ? "Linked" : "In vault")
                         if let size = source.metadata.fileSize {
@@ -890,6 +959,8 @@ struct ContentView: View {
                     } actions: {
                         Menu {
                             Button("Open Preview") { model.openSource(source.id) }
+                            Button("Refresh LCC with AI") { model.refreshSourceLCC(source) }
+                                .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceLCCs.contains(source.id))
                             Button("Check Availability") { model.checkSourceAvailability([source]) }
                                 .disabled(model.checkingSourceAvailability.contains(source.id))
                         } label: { Label("Source actions", systemImage: "ellipsis").labelStyle(.iconOnly) }
@@ -927,6 +998,7 @@ struct ContentView: View {
                                 if let root = model.root { NSWorkspace.shared.activateFileViewerSelecting([root.appendingPathComponent(note.relativePath)]) }
                             }.buttonStyle(.link).foregroundStyle(.primary)
                         }.font(.caption)
+                        pageLCCRow(note)
                         InspectorProperty("Created", metadataDate(note.createdAt)).help(note.createdAt)
                         InspectorProperty("Modified", metadataDate(note.updatedAt)).help(note.updatedAt)
                         let pageTags = Array(Set(model.editedTags + note.inlineTags)).sorted()

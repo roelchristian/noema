@@ -24,6 +24,31 @@ import VaultCore
     #expect(Set(all.map(\.id)).count == 2)
 }
 
+@Test func lccCodeNormalizationAndParallelSourceRename() async throws {
+    #expect(OnDeviceSummary.cleanLCC("DG299") == "DG299")
+    #expect(OnDeviceSummary.cleanLCC("LCC: bs 1315.") == "BS1315")
+    #expect(OnDeviceSummary.cleanLCC("`PS3503.A923`") == "PS3503.A923")
+    #expect(OnDeviceSummary.cleanLCC("Class: QA174") == "QA174")
+    #expect(OnDeviceSummary.cleanLCC("Not a valid code at all") == nil)
+
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaLCCTests-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let imported = try await repo.importSource(data: Data("Sample content".utf8), filename: "sample.txt", title: "Sample", originURL: nil)
+    let updated = try await repo.renameSource(imported, title: "Renamed Sample", summary: "Concise summary.", lcc: "QA174")
+    #expect(updated.metadata.title == "Renamed Sample")
+    #expect(updated.metadata.aiSummary == "Concise summary.")
+    #expect(updated.metadata.lcc == "QA174")
+    let edited = try await repo.updateSourceLCC(updated, lcc: "QA152")
+    #expect(edited.metadata.lcc == "QA152")
+    #expect(edited.metadata.title == "Renamed Sample")
+    let cleared = try await repo.updateSourceLCC(edited, lcc: "   ")
+    #expect(cleared.metadata.lcc == nil)
+    let rescanned = try await repo.scan()
+    #expect(rescanned.sources.first?.metadata.lcc == nil)
+}
+
 @Test func libraryPreviewPrefersPersistedAISummaryAndFallsBackToContent() throws {
     var note = try NoteCodec.decode(Data("# Opening\n\nFirst **content** line.\nSecond line.".utf8), path: "Wiki/Preview.md", vaultID: UUID())
     note.updatedAt = "2026-10-10T08:30:00Z"
