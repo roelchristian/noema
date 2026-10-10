@@ -7,6 +7,7 @@ struct ContentView: View {
     @FocusState private var searchFocused: Bool
     @State private var showTrashConfirmation = false
     @State private var trashPageID: UUID?
+    @State private var permanentDeletion: TrashedPage?
     @State private var sourceOriginal = false
     var body: some View {
         Group {
@@ -122,6 +123,7 @@ struct ContentView: View {
             Section("Library") {
                 navigationLabel("Pages", symbol: "book.closed").badge(model.notes.count).tag(LibraryScope.wiki)
                 navigationLabel("Sources", symbol: "tray.full").badge(model.sources.count).tag(LibraryScope.sources)
+                navigationLabel("Trash", symbol: "trash").badge(model.trashedPages.count).tag(LibraryScope.trash)
             }
             if !model.tags.isEmpty {
                 Section("Topics") { ForEach(model.tags, id: \.self) { tag in navigationLabel(tag, symbol: "number", topic: true).tag(LibraryScope.tag(tag)) } }
@@ -156,7 +158,10 @@ struct ContentView: View {
             Image(systemName: symbol).foregroundStyle(theme.text(topic ? .graphHighlight : .accentPrimary, on: .background))
         }
     }
-    private var library: some View {
+    @ViewBuilder private var library: some View {
+        if model.scope == .trash { trashLibrary } else { pageLibrary }
+    }
+    private var pageLibrary: some View {
         VStack(spacing: 0) {
             if model.rows.isEmpty {
                 ContentUnavailableView(model.searchText.isEmpty ? "\(model.scopeTitle) is empty" : "No matches", systemImage: model.scope == .sources ? "tray" : "doc.text.magnifyingglass", description: Text(model.searchText.isEmpty ? (model.scope == .sources ? "Import a text file or paste a source to begin." : "Create a page to start building your wiki.") : "Try another word or topic."))
@@ -165,7 +170,15 @@ struct ContentView: View {
                 List(selection: Binding(get: { model.selectedID }, set: { model.select($0) })) {
                     ForEach(model.rows) { row in
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(row.title).foregroundStyle(theme.text(.textPrimary, on: .background)).font(.headline).lineLimit(1)
+                            HStack(spacing: 6) {
+                                Text(row.title).font(.headline).lineLimit(1)
+                                if row.kind == .wiki, model.notes.first(where: { $0.id == row.id })?.isEditingLocked == true {
+                                    Image(systemName: "lock.fill")
+                                        .font(.caption)
+                                        .help("Page locked against editing")
+                                        .accessibilityLabel("Page locked against editing")
+                                }
+                            }.foregroundStyle(theme.text(.textPrimary, on: .background))
                             Text(row.excerpt.replacingOccurrences(of: "\n", with: " ")).font(.callout)
                                 .foregroundStyle(theme.text(row.id == model.selectedID ? .textPrimary : .textMuted, on: .background)).lineLimit(2)
                             if !row.tags.isEmpty {
@@ -220,6 +233,39 @@ struct ContentView: View {
                 }.padding(10).glassEffect(.regular.interactive(), in: Capsule())
             }.padding(18)
         }
+    }
+    private var trashLibrary: some View {
+        VStack(spacing: 0) {
+            if model.trashedPages.isEmpty {
+                ContentUnavailableView("Trash is empty", systemImage: "trash", description: Text("Deleted pages appear here until restored or permanently deleted."))
+            } else {
+                List {
+                    ForEach(model.trashedPages) { page in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(page.note.title).font(.headline)
+                            HStack {
+                                Button("Restore") { model.restoreTrashedPage(page) }
+                                Button("Delete permanently…", role: .destructive) { permanentDeletion = page }
+                            }.buttonStyle(.borderless)
+                        }.padding(.vertical, 7)
+                        .contextMenu {
+                            Button("Restore") { model.restoreTrashedPage(page) }
+                            Button("Delete permanently…", role: .destructive) { permanentDeletion = page }
+                        }
+                    }
+                }.listStyle(.plain)
+            }
+            Text("\(model.trashedPages.count) deleted pages").font(.caption).foregroundStyle(.secondary).padding(12)
+            if let error = model.errorMessage { Text(error).foregroundStyle(.red).textSelection(.enabled).padding(12) }
+        }
+        .safeAreaBar(edge: .top) { Text("Trash").font(.title2.bold()).frame(maxWidth: .infinity, alignment: .leading).padding(18) }
+        .alert("Permanently delete this page?", isPresented: Binding(get: { permanentDeletion != nil }, set: { if !$0 { permanentDeletion = nil } })) {
+            Button("Delete permanently", role: .destructive) {
+                if let page = permanentDeletion { model.permanentlyDeleteTrashedPage(page) }
+                permanentDeletion = nil
+            }
+            Button("Cancel", role: .cancel) { permanentDeletion = nil }
+        } message: { Text("‘\(permanentDeletion?.note.title ?? "")’ will be removed from the vault. This cannot be undone.") }
     }
     @ViewBuilder private var detail: some View {
         if model.currentNote != nil || model.currentSource != nil {

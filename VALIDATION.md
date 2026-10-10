@@ -190,3 +190,15 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 - Reduced the shared reading/editor horizontal text inset from 152 to 80 points per side. Code-language labels now fit inside the narrower gutter, keeping the block handles and semantic icons clear of article text.
 - `./scripts/build.sh debug` compiled and packaged the app and archive successfully. `./scripts/test.sh` passed all 41 entries (optional benchmark not executed); `git diff --check` passed. Generated brand assets were unchanged.
 - Native Light appearance inspection used the isolated `local.noema.suggestion-check` app and `/tmp/Noema-Suggestion-Acceptance/Test Vault`: confirmed the narrower reading and editing layouts and visible semantic-icon clearance. No page content was edited. Appearance/accent switching, accessibility-preference combinations, full VoiceOver, and code-language label interaction were not manually exercised.
+
+## Locked-page list indicator — one-minute timebox
+
+- Locked wiki pages display the native `lock.fill` symbol beside the list title, with a tooltip and VoiceOver label. The indicator follows the note's lock state and uses the existing semantic foreground color.
+- `./scripts/build.sh debug` compiled and packaged the app and archive successfully; `git diff --check` passed. Brand assets were unchanged. No new tests were added for this localized visual change.
+- Native UI verification could not proceed because the isolated UI-check app was unavailable to computer use. Lock/unlock visual transitions, appearance/accent changes, and accessibility interaction were not exercised within the timebox.
+
+## Trash recovery menu — four-minute timebox
+
+- Added Trash below Sources, backed by the existing `.Trash` folder and showing Restore and Delete permanently controls and context-menu actions. Permanent deletion requires a named-page confirmation. Storage uses coordinated access, checks stale hashes and path containment, and preserves bytes on restore. Active UUID/title collisions block restore; unresolved cloud versions block permanent deletion. Vault format remains v1.
+- `./scripts/build.sh debug` packaged the app and archive successfully. `./scripts/test.sh` passed all 43 entries (optional benchmark not executed), including new restore identity/byte preservation, permanent deletion, stale-file rejection, and path/duplicate safety checks. `git diff --check` passed.
+- Native checks used the isolated UI-check app and temporary Test Vault in current Dark appearance: verified sidebar placement, Trash count, visible actions/context menu, Restore returning a disposable page to Pages, and the named-page permanent-deletion confirmation. Final permanent deletion was covered automatically; no agent UI confirmation was submitted. No demo content was changed. Appearance/accent switching, full VoiceOver, accessibility preferences, and two-Mac iCloud checks remain unverified.

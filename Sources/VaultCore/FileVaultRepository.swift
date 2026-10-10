@@ -4,6 +4,9 @@ public protocol VaultRepository: Sendable {
     func scan(progress: (@Sendable (ScanBatch) -> Void)?) async throws -> ScanBatch
     func create(title: String, body: String) async throws -> NoteRecord
     func save(note: NoteRecord, title: String, body: String, tags: [String]) async throws -> NoteRecord
+    func trashedPages() async throws -> [TrashedPage]
+    func restore(_ page: TrashedPage) async throws
+    func permanentlyDelete(_ page: TrashedPage) async throws
     func trash(note: NoteRecord) async throws
     func importSource(data: Data, filename: String, title: String, originURL: String?) async throws -> SourceRecord
 }
@@ -186,6 +189,55 @@ public actor FileVaultRepository: VaultRepository {
         if let operationError { throw operationError }
         if let coordinatorError { throw coordinatorError }
         cache.removeValue(forKey: note.relativePath)
+    }
+
+    public func trashedPages() throws -> [TrashedPage] {
+        let directory = root.appendingPathComponent(".Trash")
+        return try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension.lowercased() == "md" }
+            .map { url in
+                let path = ".Trash/" + url.lastPathComponent
+                let checked = try checkedTrashURL(path)
+                return TrashedPage(note: try NoteCodec.decode(Self.coordinatedRead(checked), path: path, vaultID: manifest.id))
+            }.sorted { $0.note.title.localizedStandardCompare($1.note.title) == .orderedAscending }
+    }
+    public func restore(_ page: TrashedPage) throws {
+        let snapshot = try scan()
+        guard !snapshot.notes.contains(where: { $0.id == page.note.id }),
+              !snapshot.issues.contains(where: { $0.contains("Duplicate note ID") }) else {
+            throw VaultError.invalid("A page with this identity already exists. Resolve the duplicate before restoring.")
+        }
+        guard !titleExists(page.note.title, in: snapshot.notes) else { throw VaultError.duplicateTitle(page.note.title) }
+        let source = try checkedTrashURL(page.id)
+        let destination = try checkedWikiURL(availablePath(title: page.note.title))
+        var failure: Error?, coordinationError: NSError?
+        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: source, options: .forMoving, writingItemAt: destination, options: [], error: &coordinationError) { from, to in
+            do {
+                guard digest(try Data(contentsOf: from)) == page.note.contentHash else { throw VaultError.invalid("This trashed page changed. Refresh Trash before restoring.") }
+                guard !fm.fileExists(atPath: to.path) else { throw VaultError.invalid("The restore destination is occupied. Try again.") }
+                try fm.moveItem(at: from, to: to)
+            } catch { failure = error }
+        }
+        if let failure { throw failure }; if let coordinationError { throw coordinationError }
+    }
+    public func permanentlyDelete(_ page: TrashedPage) throws {
+        let url = try checkedTrashURL(page.id)
+        var failure: Error?, coordinationError: NSError?
+        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: .forDeleting, error: &coordinationError) { url in
+            do {
+                guard digest(try Data(contentsOf: url)) == page.note.contentHash else { throw VaultError.invalid("This trashed page changed. Refresh Trash before deleting.") }
+                guard (NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).isEmpty else { throw VaultError.invalid("Resolve this page's cloud conflicts before permanently deleting it.") }
+                try fm.removeItem(at: url)
+            } catch { failure = error }
+        }
+        if let failure { throw failure }; if let coordinationError { throw coordinationError }
+    }
+    private func checkedTrashURL(_ path: String) throws -> URL {
+        let url = root.appendingPathComponent(path).standardizedFileURL
+        let directory = root.appendingPathComponent(".Trash").standardizedFileURL
+        guard url.deletingLastPathComponent() == directory, url.pathExtension.lowercased() == "md",
+              url.resolvingSymlinksInPath() == url else { throw VaultError.invalid("Invalid trash file path.") }
+        return url
     }
 
     public func importSource(data: Data, filename: String, title: String, originURL: String?) throws -> SourceRecord {

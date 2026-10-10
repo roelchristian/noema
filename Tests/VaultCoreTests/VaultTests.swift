@@ -259,3 +259,44 @@ private func temporaryFolder() throws -> URL {
     #expect(trash.count == 1)
     #expect(try Data(contentsOf: #require(trash.first)) == bytes)
 }
+
+@Test func trashRestoreAndPermanentDeletionKeepIdentityAndRejectStaleData() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let note = try await repo.create(title: "Restore me", body: "Original")
+    let bytes = try Data(contentsOf: folder.appendingPathComponent(note.relativePath))
+    try await repo.trash(note: note)
+    let trashed = try #require(await repo.trashedPages().first)
+    #expect(trashed.note.id == note.id)
+    try await repo.restore(trashed)
+    let restored = try #require(await repo.scan().notes.first)
+    #expect(restored.id == note.id)
+    #expect(try Data(contentsOf: folder.appendingPathComponent(restored.relativePath)) == bytes)
+    #expect(try await repo.trashedPages().isEmpty)
+    try await repo.trash(note: restored)
+    let stale = try #require(await repo.trashedPages().first)
+    let url = folder.appendingPathComponent(stale.id)
+    var changed = stale.note; changed.body = "External change"
+    try NoteCodec.encode(changed).write(to: url, options: .atomic)
+    await #expect(throws: (any Error).self) { try await repo.restore(stale) }
+    await #expect(throws: (any Error).self) { try await repo.permanentlyDelete(stale) }
+    #expect(FileManager.default.fileExists(atPath: url.path))
+    let fresh = try #require(await repo.trashedPages().first)
+    try await repo.permanentlyDelete(fresh)
+    #expect(try await repo.trashedPages().isEmpty)
+    #expect(try await repo.scan().notes.isEmpty)
+}
+
+@Test func trashRestoreRejectsOccupiedIdentityAndPathsOutsideTrash() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let note = try await repo.create(title: "Keep", body: "Keep me")
+    let bytes = try Data(contentsOf: folder.appendingPathComponent(note.relativePath))
+    try await repo.trash(note: note)
+    let trashed = try #require(await repo.trashedPages().first)
+    try bytes.write(to: folder.appendingPathComponent(note.relativePath))
+    await #expect(throws: (any Error).self) { try await repo.restore(trashed) }
+    await #expect(throws: (any Error).self) { try await repo.permanentlyDelete(TrashedPage(note: note)) }
+    #expect(try Data(contentsOf: folder.appendingPathComponent(note.relativePath)) == bytes)
+    #expect(try await repo.trashedPages().count == 1)
+}

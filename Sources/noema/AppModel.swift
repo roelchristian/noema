@@ -3,7 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import VaultCore
 
-enum LibraryScope: Hashable { case wiki, sources, tag(String) }
+enum LibraryScope: Hashable { case wiki, sources, trash, tag(String) }
 struct LibraryRow: Identifiable {
     var id: UUID
     var title: String
@@ -22,6 +22,7 @@ struct EditorAction: Equatable {
     var vaultName = "Noema"
     var notes: [NoteRecord] = []
     var sources: [SourceRecord] = []
+    var trashedPages: [TrashedPage] = []
     var rows: [LibraryRow] = []
     var tags: [String] = []
     var wordCount = 0
@@ -75,7 +76,7 @@ struct EditorAction: Equatable {
         return title != note.title || body != note.body || editedTags != note.tags
     }
     var scopeTitle: String {
-        switch scope { case .wiki: "Pages"; case .sources: "Sources"; case .tag(let tag): "#" + tag }
+        switch scope { case .wiki: "Pages"; case .sources: "Sources"; case .trash: "Trash"; case .tag(let tag): "#" + tag }
     }
     var linkSuggestions: [NoteRecord] {
         guard let wikiQuery else { return [] }
@@ -129,7 +130,7 @@ struct EditorAction: Equatable {
             root = url; vaultName = url.lastPathComponent; scope = .wiki; searchText = ""
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
             let cached = try await searchIndex.cachedEntries()
-            notes = cached.notes; sources = cached.sources
+            notes = cached.notes; sources = cached.sources; trashedPages = []
             updateTags()
             recoveredDrafts = try await journal.drafts()
             try remember(url)
@@ -169,6 +170,7 @@ struct EditorAction: Equatable {
             progressTicket = nil
             guard ticket == generation else { refreshing = false; return }
             notes = result.notes; sources = result.sources; issues = result.issues
+            trashedPages = try await repository.trashedPages()
             updateTags()
             if let note = currentNote, let fresh = notes.first(where: { $0.id == note.id }), fresh.contentHash != note.contentHash {
                 if dirty || saving { externalChange = true }
@@ -349,6 +351,20 @@ struct EditorAction: Equatable {
                 }
                 await refresh()
             } catch { errorMessage = error.localizedDescription }
+        }
+    }
+    func restoreTrashedPage(_ page: TrashedPage) {
+        Task {
+            guard let repository else { return }
+            do { try await repository.restore(page); await refresh() }
+            catch { errorMessage = error.localizedDescription }
+        }
+    }
+    func permanentlyDeleteTrashedPage(_ page: TrashedPage) {
+        Task {
+            guard let repository else { return }
+            do { try await repository.permanentlyDelete(page); await refresh() }
+            catch { errorMessage = error.localizedDescription }
         }
     }
     func reloadDiskVersion() {
