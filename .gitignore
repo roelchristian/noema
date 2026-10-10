@@ -1,0 +1,23 @@
+# SwiftPM and packaged build output
+.build/
+.swiftpm/
+dist/
+build/
+DerivedData/
+*.app/
+*.dSYM/
+*.profraw
+*.profdata
+
+# Local IDE and Finder state
+xcuserdata/
+*.xcuserstate
+.DS_Store
+
+# Disposable indexes and example-vault recovery output
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+Examples/**/.Trash/
+Examples/**/Conflicts/
+Examples/**/.import-*/
