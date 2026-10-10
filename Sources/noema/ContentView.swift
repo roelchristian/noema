@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var showTrashConfirmation = false
     @State private var trashPageID: UUID?
     @State private var permanentDeletion: TrashedPage?
+    @State private var dismissedExternalChange = false
     @State private var sourceOriginal = false
     @State private var showPageDetails = true
     @State private var sourceSelection: UUID?
@@ -89,7 +90,8 @@ struct ContentView: View {
         }
         .onChange(of: model.searchText) { model.queryChanged() }
         .onChange(of: model.searchFocusToken) { searchFocused = true }
-        .onChange(of: model.selectedID) { sourceOriginal = false }
+        .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false }
+        .onChange(of: model.externalChange) { dismissedExternalChange = false }
         .onChange(of: model.root) { sourceSelection = nil; renamingSource = nil; deletingSource = nil }
     }
     private var welcome: some View {
@@ -109,7 +111,7 @@ struct ContentView: View {
             Text("Choose a folder on your Mac or in iCloud Drive. Your files stay yours.")
                 .font(.callout).foregroundStyle(theme.text())
             if model.busy { ProgressView() }
-            if let error = model.errorMessage { Text(error).foregroundStyle(.red).frame(maxWidth: 560).textSelection(.enabled) }
+            if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil }.frame(maxWidth: 560) }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     private var sidebar: some View {
@@ -247,7 +249,7 @@ struct ContentView: View {
                     if model.busy { ProgressView().controlSize(.small) }
                 }
                 if model.scope == .sources, let error = model.errorMessage {
-                    Text(error).foregroundStyle(.red).textSelection(.enabled)
+                    DismissibleNotice(message: error) { model.errorMessage = nil }
                 }
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").foregroundStyle(theme.text())
@@ -453,7 +455,7 @@ struct ContentView: View {
                 }.listStyle(.plain)
             }
             Text("\(model.trashedPages.count) deleted pages").font(.caption).foregroundStyle(.secondary).padding(12)
-            if let error = model.errorMessage { Text(error).foregroundStyle(.red).textSelection(.enabled).padding(12) }
+            if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil }.padding(12) }
         }
         .safeAreaBar(edge: .top) { Text("Trash").font(.title2.bold()).frame(maxWidth: .infinity, alignment: .leading).padding(18) }
         .alert("Permanently delete this page?", isPresented: Binding(get: { permanentDeletion != nil }, set: { if !$0 { permanentDeletion = nil } })) {
@@ -469,24 +471,27 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 if let message = model.errorMessage {
                     VStack(alignment: .leading, spacing: 8) {
-                        Label(message, systemImage: "exclamationmark.triangle").font(.callout).textSelection(.enabled)
+                        DismissibleNotice(message: message) {
+                            model.errorMessage = nil; dismissedExternalChange = model.externalChange
+                        }.font(.callout)
                         if model.externalChange {
                             HStack {
                                 Button("Reload disk version") { model.reloadDiskVersion() }
                                 Button("Save draft as new page") { model.saveDraftAsNewPage() }
                             }
                         } else if model.currentNote != nil { Button("Try saving again") { model.saveNow() } }
-                        else { Button("Dismiss") { model.errorMessage = nil } }
+
                     }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(.orange.opacity(0.12))
-                } else if model.externalChange {
+                } else if model.externalChange, !dismissedExternalChange {
                     HStack {
                         Label("This page changed or moved outside the app.", systemImage: "arrow.triangle.2.circlepath")
                         Spacer(); Button("Reload") { model.reloadDiskVersion() }
                         Button("Save a copy") { model.saveDraftAsNewPage() }
+                        Button("Dismiss") { dismissedExternalChange = true }
                     }.font(.callout).padding(12).background(.orange.opacity(0.12))
                 }
                 if let notice = model.editorNotice, model.currentNote != nil {
-                    Label(notice, systemImage: "info.circle").font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    DismissibleNotice(message: notice, isError: false) { model.editorNotice = nil }.font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
                         .background(theme.color(.surfaceElevated))
                 }
                 pageHeader
@@ -520,7 +525,7 @@ struct ContentView: View {
                 Text(model.scope == .sources ? "Keep the original. Find your meaning." : "A personal atlas of thought.").font(.title2.weight(.medium))
                 Text(model.scope == .sources ? "Browse raw material here. Your interpretations belong in the wiki." : "Choose a page, or start with a thought you want to connect.").foregroundStyle(theme.text())
                 if model.scope != .sources { Button("New personal page") { model.newPage(template: true) }.buttonStyle(.glass) }
-                if let error = model.errorMessage { Text(error).foregroundStyle(.red).textSelection(.enabled).frame(maxWidth: 500) }
+                if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil }.frame(maxWidth: 500) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 .safeAreaBar(edge: .top) { HStack { Spacer(); headerActions }.padding(.horizontal, 28).padding(.vertical, 8) }
         }
@@ -590,7 +595,7 @@ struct ContentView: View {
     }
     private var pageHeader: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if let notice = model.aiSummaryNotice { Text(notice).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+            if let notice = model.aiSummaryNotice { DismissibleNotice(message: notice, isError: false) { model.aiSummaryNotice = nil }.font(.caption) }
             if model.currentSource != nil || model.editingHint != nil {
                 HStack {
                     if model.currentSource != nil {
@@ -693,8 +698,11 @@ struct ContentView: View {
     private var noticesSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Vault notices").font(.title2.bold())
-            if model.issues.isEmpty { Text("Your vault is up to date locally.").foregroundStyle(theme.text()) }
-            List(model.issues, id: \.self) { Text($0).font(.callout).textSelection(.enabled) }
+            if model.issues.isEmpty { Text("No active vault notices.").foregroundStyle(theme.text()) }
+            List(model.issues, id: \.self) { issue in
+                DismissibleNotice(message: issue, isError: false) { model.dismissVaultNotice(issue) }.font(.callout)
+            }
+            if !model.issues.isEmpty { Button("Dismiss All") { model.dismissAllVaultNotices() } }
             HStack { Button("Reveal vault") { model.revealVault() }; Spacer(); Button("Done") { model.showIssues = false }.keyboardShortcut(.cancelAction) }
         }.padding(24).frame(width: 580, height: 420)
     }
@@ -716,7 +724,7 @@ struct PasteSourceSheet: View {
             TextField("Original URL (optional)", text: $url)
             TextEditor(text: $text).font(.system(.body, design: .monospaced))
                 .scrollContentBackground(.hidden).background(theme.color(.surfaceElevated)).border(theme.color(.border))
-            if let error = model.errorMessage { Text(error).font(.caption).foregroundStyle(.red) }
+            if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil }.font(.caption) }
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
@@ -746,5 +754,20 @@ private struct SidebarAISummary: View {
                 .accessibilityValue(expanded ? "Expanded" : "Collapsed")
         }
         .onChange(of: text) { expanded = false }
+    }
+}
+
+private struct DismissibleNotice: View {
+    var message: String
+    var isError = true
+    var dismiss: () -> Void
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(message).foregroundStyle(isError ? Color.red : Color.secondary)
+                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: dismiss) {
+                Label("Dismiss message", systemImage: "xmark.circle.fill").labelStyle(.iconOnly)
+            }.buttonStyle(.borderless).foregroundStyle(.secondary).help("Dismiss message")
+        }
     }
 }

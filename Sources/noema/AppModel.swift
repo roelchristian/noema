@@ -96,6 +96,13 @@ struct EditorAction: Equatable {
     var errorMessage: String?
     var externalChange = false
     var issues: [String] = []
+    private var dismissedVaultNotices: Set<String> = []
+    func dismissVaultNotice(_ issue: String) {
+        dismissedVaultNotices.insert(issue); issues.removeAll { $0 == issue }
+    }
+    func dismissAllVaultNotices() {
+        dismissedVaultNotices.formUnion(issues); issues = []
+    }
     var recoveredDrafts: [DraftRecord] = []
     var showRecovery = false
     var showPasteSource = false
@@ -220,6 +227,7 @@ struct EditorAction: Equatable {
             sourceAvailability = [:]; checkingSourceAvailability = []
             generatingSourceSummaries = []
             generatingSourceTitles = []; sourceRenameCompleted = 0; sourceRenameTotal = 0
+            dismissedVaultNotices = []
             generation = UUID(); repository = repo; index = searchIndex; recovery = journal
             unseenRenamedPages.removeAll()
             root = url; vaultName = url.lastPathComponent; scope = .wiki; searchText = ""
@@ -268,7 +276,7 @@ struct EditorAction: Equatable {
             for note in result.notes {
                 if let previous = previousTitles[note.id] { recordPageRename(note.id, from: previous, to: note.title) }
             }
-            notes = result.notes; sources = result.sources; issues = result.issues
+            notes = result.notes; sources = result.sources; issues = result.issues.filter { !dismissedVaultNotices.contains($0) }
             trashedPages = try await repository.trashedPages()
             updateTags()
             if let note = currentNote, let fresh = notes.first(where: { $0.id == note.id }), fresh.contentHash != note.contentHash {
@@ -607,6 +615,7 @@ struct EditorAction: Equatable {
                 guard await self.finishCurrentPage() else { return }
                 self.scope = .sources
                 let ticket = self.generation
+                var failures: [String] = []
                 for url in urls {
                 do {
                     guard self.generation == ticket else { return }
@@ -628,7 +637,10 @@ struct EditorAction: Equatable {
                     self.sources.append(contentsOf: added)
                     self.rows = self.sources.map(LibraryRow.init(source:))
                     for source in added { self.enqueueSourceTitle(source) }
-                } catch { self.errorMessage = error.localizedDescription }
+                } catch {
+                    failures.append(url.lastPathComponent + ": " + error.localizedDescription)
+                    self.errorMessage = failures.joined(separator: "\n")
+                }
                 }
                 await self.refresh()
             }

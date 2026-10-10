@@ -263,8 +263,28 @@ public actor FileVaultRepository: VaultRepository {
         return url
     }
 
+    private func rejectDuplicateSource(checksum: String, linkedURL: URL? = nil) throws {
+        let directories = try fm.contentsOfDirectory(at: root.appendingPathComponent("Sources"), includingPropertiesForKeys: nil)
+        for directory in directories {
+            guard let id = UUID(uuidString: directory.lastPathComponent) else { continue }
+            guard let metadata = try? JSONDecoder().decode(SourceMetadata.self, from: Self.coordinatedRead(directory.appendingPathComponent("metadata.json"))),
+                  metadata.id == id else { continue }
+            var sameLinkedFile = false
+            if let linkedURL, let bookmark = metadata.linkedBookmark {
+                var stale = false
+                if let existing = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], bookmarkDataIsStale: &stale) {
+                    sameLinkedFile = existing.standardizedFileURL.resolvingSymlinksInPath() == linkedURL.standardizedFileURL.resolvingSymlinksInPath()
+                }
+            }
+            guard metadata.sha256 != checksum, !sameLinkedFile else {
+                throw VaultError.invalid("File already added as a source: ‘" + metadata.title + "’.")
+            }
+        }
+    }
+
     public func importSource(data: Data, filename: String, title: String, originURL: String?) throws -> SourceRecord {
         guard data.count <= Self.maximumImportBytes else { throw VaultError.invalid("Files larger than 2 MB must be linked instead of imported.") }
+        try rejectDuplicateSource(checksum: digest(data))
         let body = try Self.sourceText(data, filename: filename)
         let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
         let storedExtension = ext.isEmpty ? "bin" : ext
@@ -344,6 +364,7 @@ public actor FileVaultRepository: VaultRepository {
         // Validate every member before publishing any records.
         let prepared = try files.sorted { $0.path < $1.path }.map { file -> SourceRecord in
             let data = try Self.coordinatedRead(file)
+            try rejectDuplicateSource(checksum: digest(data), linkedURL: file)
             let body = try Self.sourceText(data, filename: file.lastPathComponent)
             let bookmark = try file.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil)
             let metadata = SourceMetadata(id: UUID(), title: file.deletingPathExtension().lastPathComponent, capturedAt: timestamp(), originalFilename: file.lastPathComponent, originURL: nil, sha256: digest(data), fileSize: data.count, linkedBookmark: bookmark, storedFilename: "original." + file.pathExtension.lowercased())

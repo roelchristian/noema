@@ -372,7 +372,10 @@ private func temporaryFolder() throws -> URL {
     #expect(pdf.body.isEmpty)
     let original = folder.appendingPathComponent("Sources/" + pdf.id.uuidString.lowercased() + "/original.pdf")
     #expect(try Data(contentsOf: original) == bytes)
-    let linked = try await repository.linkSources(at: original, maximumFiles: 10)
+    await #expect(throws: VaultError.self) { try await repository.linkSources(at: original, maximumFiles: 10) }
+    let external = folder.appendingPathComponent("external.pdf")
+    try (bytes + Data([2])).write(to: external)
+    let linked = try await repository.linkSources(at: external, maximumFiles: 10)
     #expect(linked.first?.metadata.isLinked == true)
     #expect(linked.first?.body.isEmpty == true)
     let html = try await repository.importSource(data: Data("<h1>Hello</h1>".utf8), filename: "page.html", title: "HTML", originURL: nil)
@@ -484,6 +487,7 @@ private func temporaryFolder() throws -> URL {
     try bytes.write(to: file)
     // Replacing the deleted file invalidates the old security bookmark; relinking restores access.
     #expect(FileVaultRepository.checkSourceAvailability(source, root: root).contains("stale"))
+    try await repository.deleteSource(source)
     let relinked = try await repository.linkSources(at: file, maximumFiles: 1)[0]
     #expect(FileVaultRepository.checkSourceAvailability(relinked, root: root) == "Available")
     #expect(try await repository.scan().sources.first(where: { $0.id == relinked.id })?.availabilityIssue == nil)
@@ -498,4 +502,35 @@ private func temporaryFolder() throws -> URL {
     #expect(FileVaultRepository.checkSourceAvailability(source, root: root) != "Available")
     try FileManager.default.removeItem(at: file)
     #expect(FileVaultRepository.checkSourceAvailability(source, root: root) == "File not found")
+}
+
+@Test func duplicateSourceRejectsSameBytesAcrossModesAndBatchContinues() async throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try FileVaultRepository.open(root: root, create: true)
+    let bytes = Data("Existing content".utf8)
+    let existing = try await repository.importSource(data: bytes, filename: "first.txt", title: "First", originURL: nil)
+    var failures: [String] = []
+    for (filename, data) in [("copy.txt", bytes), ("new.txt", Data("New content".utf8))] {
+        do { _ = try await repository.importSource(data: data, filename: filename, title: filename, originURL: nil) }
+        catch { failures.append(error.localizedDescription) }
+    }
+    #expect(failures.count == 1)
+    #expect(failures[0].contains("File already added as a source"))
+    #expect(try await repository.scan().sources.count == 2)
+    let external = root.appendingPathComponent("copy.txt"); try bytes.write(to: external)
+    await #expect(throws: VaultError.self) { try await repository.linkSources(at: external, maximumFiles: 5) }
+    #expect(try await repository.scan().sources.contains { $0.id == existing.id })
+}
+@Test func duplicateLinkedSourceRejectsChangedSameFileAndImportOfLinkedBytes() async throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try FileVaultRepository.open(root: root, create: true)
+    let file = root.appendingPathComponent("linked.txt")
+    let bytes = Data("Linked content".utf8); try bytes.write(to: file)
+    _ = try await repository.linkSources(at: file, maximumFiles: 5)
+    await #expect(throws: VaultError.self) {
+        try await repository.importSource(data: bytes, filename: "copy.txt", title: "Copy", originURL: nil)
+    }
+    try Data("Changed externally".utf8).write(to: file)
+    await #expect(throws: VaultError.self) { try await repository.linkSources(at: file, maximumFiles: 5) }
+    #expect(try await repository.scan().sources.count == 1)
 }
