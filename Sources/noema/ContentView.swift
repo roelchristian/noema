@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import VaultCore
 
 struct ContentView: View {
@@ -11,6 +12,7 @@ struct ContentView: View {
     @State private var dismissedExternalChange = false
     @State private var sourceOriginal = false
     @State private var showPageDetails = true
+    @State private var condensedInspector = false
     @State private var sourceSelection: UUID?
     @State private var renamingSource: SourceRecord?
     @State private var sourceName = ""
@@ -27,7 +29,7 @@ struct ContentView: View {
                     HSplitView {
                         library.frame(minWidth: 520)
                         if let source = model.sources.first(where: { $0.id == sourceSelection }) {
-                            sourceInspector(source).frame(minWidth: 260, idealWidth: 320, maxWidth: 460)
+                            sourceInspector(source).frame(minWidth: 280, idealWidth: 340, maxWidth: 400)
                         }
                     }
                 }
@@ -41,7 +43,7 @@ struct ContentView: View {
                     HSplitView {
                         detail.frame(minWidth: 360)
                         if showPageDetails, let note = model.currentNote {
-                            pageInspector(note).frame(minWidth: 260, idealWidth: 320, maxWidth: 460)
+                            pageInspector(note).frame(minWidth: 280, idealWidth: 340, maxWidth: 400)
                         }
                     }
                 }
@@ -331,17 +333,48 @@ struct ContentView: View {
             Text(model.availabilityLabel(id)).lineLimit(1).help(model.availabilityLabel(id))
         }
     }
-    private func sourceSummaryButton(_ source: SourceRecord) -> some View {
+    private func sourceSummaryButton(_ source: SourceRecord, compact: Bool = false) -> some View {
         let hasSummary = source.metadata.aiSummary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        return Button(hasSummary ? "Regenerate AI Summary" : "Generate AI Summary") {
+        return Button(compact ? (hasSummary ? "Regenerate" : "Generate") : (hasSummary ? "Regenerate AI Summary" : "Generate AI Summary")) {
             model.generateSourceSummary(source)
         }
         .disabled(model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id))
     }
+    private func metadataDate(_ value: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        var date = formatter.date(from: value)
+        if date == nil {
+            formatter.formatOptions.insert(.withFractionalSeconds)
+            date = formatter.date(from: value)
+        }
+        return date?.formatted(date: .abbreviated, time: .shortened) ?? value
+    }
+    private func inspectorToolbar(close: @escaping () -> Void) -> some View {
+        HStack {
+            Text("Inspector").font(.headline)
+            Spacer()
+            Toggle(isOn: $condensedInspector) {
+                Label("Condensed inspector", systemImage: "rectangle.compress.vertical").labelStyle(.iconOnly)
+            }.toggleStyle(.button).help("Condensed inspector")
+            Button(action: close) {
+                Label("Close inspector", systemImage: "xmark").labelStyle(.iconOnly)
+            }.buttonStyle(.borderless).help("Close inspector")
+        }.controlSize(.small).padding(.horizontal, 20).padding(.vertical, 10)
+    }
+    private func inspectorIdentity(title: String, kind: String, date: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("DOCUMENT").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            Text(title).font(.headline).fixedSize(horizontal: false, vertical: true)
+            Text(kind + " · " + metadataDate(date)).font(.caption).foregroundStyle(.secondary).help(date)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
     private func sourceReferences(_ note: NoteRecord) -> some View {
         let canEdit = !note.isEditingLocked && !model.editorReadOnly && !model.updatingSourceReferences
-        return VStack(alignment: .leading, spacing: 8) {
-            Label("Sources", systemImage: "books.vertical").font(.headline)
+        return InspectorSection(title: "Sources", count: note.linkedSourceIDs.count, condensed: condensedInspector) {
+            if note.linkedSourceIDs.isEmpty {
+                Text("No sources linked").foregroundStyle(.secondary)
+                Text("Attach a reference from your source library.").font(.caption).foregroundStyle(.secondary)
+            }
             ForEach(note.linkedSourceIDs, id: \.self) { id in
                 SourceAssociationRow(
                     title: model.sources.first(where: { $0.id == id })?.title ?? "Unavailable source",
@@ -350,17 +383,19 @@ struct ContentView: View {
                     remove: { model.setSourceReference(pageID: note.id, sourceID: id, linked: false) }
                 ).id(note.id.uuidString + id.uuidString)
             }
-            Menu("Add Source") {
+        } actions: {
+            Menu("Add") {
                 ForEach(model.sources.filter { !note.linkedSourceIDs.contains($0.id) }) { source in
                     Button(source.title) { model.setSourceReference(pageID: note.id, sourceID: source.id, linked: true) }
                 }
             }.disabled(!canEdit || model.sources.allSatisfy { note.linkedSourceIDs.contains($0.id) })
-        }.controlSize(.small)
+        }
     }
     private func sourcePages(_ source: SourceRecord) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Pages", systemImage: "doc.text").font(.headline)
-            ForEach(model.notes.filter { $0.linkedSourceIDs.contains(source.id) }) { note in
+        let pages = model.notes.filter { $0.linkedSourceIDs.contains(source.id) }
+        return InspectorSection(title: "Pages", count: pages.count, condensed: condensedInspector) {
+            if pages.isEmpty { Text("No pages reference this source.").foregroundStyle(.secondary) }
+            ForEach(pages) { note in
                 SourceAssociationRow(
                     title: note.title, openLabel: "Open page", canOpen: true,
                     canRemove: !note.isEditingLocked && !model.updatingSourceReferences,
@@ -368,129 +403,113 @@ struct ContentView: View {
                     remove: { model.setSourceReference(pageID: note.id, sourceID: source.id, linked: false) }
                 ).id(source.id.uuidString + note.id.uuidString)
             }
-            Menu("Add to Page") {
+        } actions: {
+            Menu("Add") {
                 ForEach(model.notes.filter { !$0.isEditingLocked && !$0.linkedSourceIDs.contains(source.id) }) { note in
                     Button(note.title) { model.setSourceReference(pageID: note.id, sourceID: source.id, linked: true) }
                 }
             }.disabled(model.updatingSourceReferences)
-        }.controlSize(.small)
+        }
     }
     private func sourceInspector(_ source: SourceRecord) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .top) {
-                    Text(source.title).font(.title2.bold())
-                    Spacer()
-                    Button { sourceSelection = nil } label: {
-                        Label("Close source details", systemImage: "xmark").labelStyle(.iconOnly)
-                    }.buttonStyle(.borderless).help("Close source details")
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Metadata").font(.headline)
-                    LabeledContent("Availability") { sourceAvailabilityStatus(source.id) }
-                    Button("Check Availability") { model.checkSourceAvailability([source]) }
-                        .disabled(model.checkingSourceAvailability.contains(source.id))
-                    LabeledContent("Original file", value: source.metadata.originalFilename)
-                    LabeledContent("Location", value: source.metadata.isLinked ? "Linked" : "In vault")
-                    LabeledContent("Kind", value: URL(fileURLWithPath: source.metadata.originalFilename).pathExtension.uppercased())
-                    if let size = source.metadata.fileSize {
-                        LabeledContent("Size", value: ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+        VStack(spacing: 0) {
+            inspectorToolbar { sourceSelection = nil }
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    inspectorIdentity(title: source.title, kind: source.metadata.originalFilename.split(separator: ".").last.map { $0.uppercased() } ?? "Source", date: source.metadata.capturedAt)
+                    InspectorSection(title: "Properties", condensed: false) {
+                        LabeledContent("Availability") { sourceAvailabilityStatus(source.id) }.font(.caption)
+                        InspectorProperty("Original file", source.metadata.originalFilename)
+                        InspectorProperty("Location", source.metadata.isLinked ? "Linked" : "In vault")
+                        if let size = source.metadata.fileSize {
+                            InspectorProperty("Size", ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+                        }
+                        InspectorProperty("Captured", metadataDate(source.metadata.capturedAt)).help(source.metadata.capturedAt)
+                        if let origin = source.metadata.originURL, let url = URL(string: origin), !origin.isEmpty {
+                            LabeledContent("Origin") { Link(origin, destination: url) }.font(.caption)
+                        }
+                    } actions: {
+                        Menu {
+                            Button("Open Preview") { model.openSource(source.id) }
+                            Button("Check Availability") { model.checkSourceAvailability([source]) }
+                                .disabled(model.checkingSourceAvailability.contains(source.id))
+                        } label: { Label("Source actions", systemImage: "ellipsis").labelStyle(.iconOnly) }
+                        .menuStyle(.borderlessButton).fixedSize().help("Source actions")
                     }
-                    LabeledContent("Captured", value: source.metadata.capturedAt)
-                    if let origin = source.metadata.originURL, !origin.isEmpty {
-                        LabeledContent("Origin", value: origin)
-                    }
-                }.font(.callout)
-                sourcePages(source)
-                Divider()
-                Label("AI-generated summary", systemImage: "sparkles").font(.headline)
-                sourceSummaryButton(source)
-                if model.generatingSourceSummaries.contains(source.id) {
-                    HStack {
-                        ProgressView().controlSize(.mini)
-                        Text("Generating AI summary…").foregroundStyle(.secondary)
-                    }
-                }
-                if let summary = source.metadata.aiSummary, !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    SidebarAISummary(text: summary).id(source.id)
-                } else if model.generatingSourceTitles.contains(source.id) {
-                    HStack {
-                        ProgressView().controlSize(.mini)
-                        Text("Generating AI summary…").foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text("No AI summary available.").foregroundStyle(.secondary)
-                }
-            }.textSelection(.enabled).padding(20)
-        }
-        .frame(maxHeight: .infinity)
-        .background(theme.color(.background))
-        .accessibilityLabel("Source details")
+                    sourcePages(source)
+                    InspectorSection(title: "AI summary", condensed: condensedInspector) {
+                        if model.generatingSourceSummaries.contains(source.id) || model.generatingSourceTitles.contains(source.id) {
+                            HStack { ProgressView().controlSize(.mini); Text("Generating summary…").foregroundStyle(.secondary) }
+                        }
+                        if let summary = source.metadata.aiSummary, !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            SidebarAISummary(text: summary).id(source.id)
+                            Text("AI-generated").font(.caption).foregroundStyle(.secondary)
+                        } else { Text("No AI summary available.").foregroundStyle(.secondary) }
+                    } actions: { sourceSummaryButton(source, compact: true).labelStyle(.titleOnly) }
+                }.textSelection(.enabled).padding(20)
+            }
+        }.frame(maxHeight: .infinity).background(theme.color(.background)).accessibilityLabel("Source inspector")
     }
     private func pageInspector(_ note: NoteRecord) -> some View {
         let document = BlockDocumentCodec.decode(model.body)
         let summary = document.aiSummary
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .top) {
-                    Text(model.title).font(.title2.bold())
-                    Spacer()
-                    Button { showPageDetails = false } label: {
-                        Label("Close page details", systemImage: "xmark").labelStyle(.iconOnly)
-                    }.buttonStyle(.borderless).help("Close page details")
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Metadata").font(.headline)
-                    LabeledContent("File", value: note.relativePath)
-                    LabeledContent("Created", value: note.createdAt)
-                    LabeledContent("Updated", value: note.updatedAt)
-                    LabeledContent("Tags", value: Array(Set(model.editedTags + note.inlineTags)).sorted().joined(separator: ", "))
-                    if !note.aliases.isEmpty {
-                        LabeledContent("Aliases", value: note.aliases.joined(separator: ", "))
-                    }
-                    LabeledContent("Editing", value: model.editingLocked ? "Locked" : "Unlocked")
-                }.font(.callout)
-                sourceReferences(note)
-                Divider()
-                Label("Semantic tags", systemImage: "tag").font(.headline)
-                if document.semanticGroups.isEmpty {
-                    Text("No semantic tags on this page.").font(.caption).foregroundStyle(.secondary)
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(document.semanticGroups, id: \.tag) { group in
-                        ForEach(group.blocks) { block in
-                            SemanticBlockSidebarRow(block: block) {
-                                model.editorAction = EditorAction(operation: .block(block.id))
+        return VStack(spacing: 0) {
+            inspectorToolbar { showPageDetails = false }
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    inspectorIdentity(title: model.title, kind: "Markdown", date: note.updatedAt)
+                    InspectorSection(title: "Properties", condensed: false) {
+                        LabeledContent("Location") {
+                            Button(note.relativePath) {
+                                if let root = model.root { NSWorkspace.shared.activateFileViewerSelecting([root.appendingPathComponent(note.relativePath)]) }
+                            }.buttonStyle(.link).foregroundStyle(.primary)
+                        }.font(.caption)
+                        InspectorProperty("Created", metadataDate(note.createdAt)).help(note.createdAt)
+                        InspectorProperty("Modified", metadataDate(note.updatedAt)).help(note.updatedAt)
+                        InspectorProperty("Tags", Array(Set(model.editedTags + note.inlineTags)).sorted().joined(separator: ", "))
+                        if !note.aliases.isEmpty { InspectorProperty("Aliases", note.aliases.joined(separator: ", ")) }
+                        LabeledContent("Protection") {
+                            Button { model.toggleEditingLock() } label: {
+                                Label(model.editingLocked ? "Locked" : "Unlocked", systemImage: model.editingLocked ? "lock" : "lock.open")
+                            }.buttonStyle(.borderless).help(model.editingLocked ? "Unlock page" : "Lock page")
+                        }.font(.caption)
+                    } actions: { EmptyView() }
+                    sourceReferences(note)
+                    InspectorSection(title: "Semantic blocks", count: document.semanticGroups.flatMap(\.blocks).count, condensed: condensedInspector) {
+                        if document.semanticGroups.isEmpty { Text("No semantic blocks on this page.").foregroundStyle(.secondary) }
+                        ForEach(document.semanticGroups, id: \.tag) { group in
+                            ForEach(group.blocks) { block in
+                                SemanticBlockSidebarRow(block: block) {
+                                    model.editorAction = EditorAction(operation: .block(block.id))
+                                }
                             }
                         }
+                    } actions: { EmptyView() }
+                    InspectorSection(title: "AI summary", condensed: condensedInspector) {
+                        if !aiSummaries { Text("Enable summaries in Noema → Settings → Apple Intelligence.").font(.caption).foregroundStyle(.secondary) }
+                        if model.generatingAISummary {
+                            HStack { ProgressView().controlSize(.mini); Text("Generating summary…").foregroundStyle(.secondary) }
+                        }
+                        if let summary {
+                            SidebarAISummary(text: summary.text).id(note.id)
+                            Text("AI-generated").font(.caption).foregroundStyle(.secondary)
+                        } else { Text("No AI summary available.").foregroundStyle(.secondary) }
+                    } actions: {
+                        Menu {
+                            Button(summary == nil ? "Generate Summary" : "Regenerate Summary") { model.summarizePage() }
+                                .disabled(!aiSummaries || model.editingLocked || model.generatingAISummary)
+                            if summary != nil {
+                                Button("Delete Summary", role: .destructive) { model.deleteAISummary() }
+                                    .disabled(model.editingLocked || model.generatingAISummary)
+                            }
+                        } label: { Label("Summary actions", systemImage: "ellipsis").labelStyle(.iconOnly) }
+                        .menuStyle(.borderlessButton).fixedSize().help("Summary actions")
                     }
-                }
-                Divider()
-                Label("AI-generated summary", systemImage: "sparkles").font(.headline)
-                Button(summary == nil ? "Generate AI Summary" : "Regenerate AI Summary") {
-                    model.summarizePage()
-                }.disabled(!aiSummaries || model.editingLocked || model.generatingAISummary)
-                if !aiSummaries {
-                    Text("Enable summaries in Noema → Settings → Apple Intelligence.").font(.caption).foregroundStyle(.secondary)
-                }
-                if model.generatingAISummary {
-                    HStack {
-                        ProgressView().controlSize(.mini)
-                        Text("Generating AI summary…").foregroundStyle(.secondary)
-                    }
-                }
-                if let summary {
-                    SidebarAISummary(text: summary.text).id(note.id)
-                    Button("Delete Summary", role: .destructive) { model.deleteAISummary() }
-                        .disabled(model.editingLocked || model.generatingAISummary)
-                } else {
-                    Text("No AI summary available.").foregroundStyle(.secondary)
-                }
-            }.textSelection(.enabled).padding(20)
-        }
-        .frame(maxHeight: .infinity)
-        .background(theme.color(.background))
-        .accessibilityLabel("Page details")
+                }.textSelection(.enabled).padding(20)
+            }
+        }.frame(maxHeight: .infinity).background(theme.color(.background)).accessibilityLabel("Page inspector")
     }
     private var trashLibrary: some View {
         VStack(spacing: 0) {
@@ -830,7 +849,6 @@ struct PasteSourceSheet: View {
 private struct SemanticBlockSidebarRow: View {
     let block: EditorBlock
     let navigate: () -> Void
-    @State private var hovered = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -842,16 +860,56 @@ private struct SemanticBlockSidebarRow: View {
                     .foregroundStyle(Color(nsColor: presentation?.accent ?? .secondaryLabelColor))
                     .frame(width: 20)
                     .accessibilityHidden(true)
-                Text(preview.isEmpty ? "Empty block" : preview)
-                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(presentation?.title ?? block.metadata.semantic ?? "Block").font(.callout.weight(.medium)).foregroundStyle(.primary)
+                    Text(preview.isEmpty ? "Empty block" : preview).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }.frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: "arrow.right")
-                    .opacity(hovered || focused ? 1 : 0).accessibilityHidden(true)
+                    .foregroundStyle(.secondary).accessibilityHidden(true)
             }.font(.body).contentShape(Rectangle())
         }.buttonStyle(.borderless).focused($focused)
-            .onHover { hovered = $0 }
             .help(block.text)
             .accessibilityLabel("Go to \(presentation?.title ?? block.metadata.semantic ?? "tagged") block: \(preview.isEmpty ? "Empty block" : preview)")
+    }
+}
+
+private struct InspectorProperty: View {
+    let title: String
+    let value: String
+    init(_ title: String, _ value: String) { self.title = title; self.value = value }
+    var body: some View {
+        LabeledContent { Text(value.isEmpty ? "None" : value).foregroundStyle(.primary) } label: {
+            Text(title).foregroundStyle(.secondary)
+        }.font(.caption)
+    }
+}
+
+private struct InspectorSection<Content: View, Actions: View>: View {
+    let title: String
+    let count: Int?
+    let condensed: Bool
+    let content: Content
+    let actions: Actions
+    @State private var expanded: Bool
+    init(title: String, count: Int? = nil, condensed: Bool, @ViewBuilder content: () -> Content, @ViewBuilder actions: () -> Actions) {
+        self.title = title; self.count = count; self.condensed = condensed
+        self.content = content(); self.actions = actions()
+        _expanded = State(initialValue: !condensed)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+            HStack(alignment: .center, spacing: 8) {
+                DisclosureGroup(isExpanded: $expanded) { EmptyView() } label: {
+                    HStack(spacing: 6) {
+                        Text(title).font(.callout.weight(.semibold)).foregroundStyle(.primary)
+                        if let count { Text(count.formatted()).font(.caption).foregroundStyle(.secondary) }
+                    }
+                }
+                actions.controlSize(.small).font(.caption)
+            }
+            if expanded { VStack(alignment: .leading, spacing: 8) { content }.frame(maxWidth: .infinity, alignment: .leading).font(.callout) }
+        }.onChange(of: condensed) { expanded = !condensed }
     }
 }
 
@@ -862,7 +920,8 @@ private struct SidebarAISummary: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(text)
-                .lineLimit(expanded ? nil : 3)
+                .font(.callout)
+                .lineLimit(expanded ? nil : 4)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button(expanded ? "Show less" : "Show more") { expanded.toggle() }
                 .buttonStyle(.link)

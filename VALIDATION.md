@@ -457,6 +457,11 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 - Debug compilation/package/signing passed; regression suite passed all 70 tests with native macOS access. `git diff --check` passed; tracked brand exports were unchanged. Validation completion extended beyond the one-minute timebox. No dedicated new tests for these presentation controls.
 - Native dismissal interaction, appearance/accent, accessibility preferences, and VoiceOver were not exercised. Source availability continues to show the file's actual checked status. Pre-existing editor/UI/README and demo-vault edits were preserved.
 
+## Compact metadata presentation — 2026-10-11
+
+- Page and source metadata use caption-sized secondary text, six-point row spacing, and smaller native controls. Created, Updated, and Captured timestamps use localized abbreviated dates and shortened times; unparseable values remain visible. README updated; unrelated demo-vault edits preserved.
+- `git diff --check` passed. Debug build/package and regression suite were started with native macOS access and remained in progress at the requested one-minute stop; their results are unconfirmed. Native UI, appearance/accent, accessibility preferences, and VoiceOver checks were not performed.
+
 
 ## Page/source references — 11 October 2026, three-minute timebox
 
@@ -473,3 +478,9 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 - `./scripts/test.sh` passed all 72 tests with native macOS service access, including a new source-to-page navigation check for selection, scope, filter clearing, and body preservation. `git diff --check` passed.
 - `./scripts/build.sh debug` compiled, packaged, and signed the app/archive successfully with native macOS service access. Generated brand assets were unchanged.
 - Manual sidebar navigation/confirmation in a temporary vault, theme/accent changes, VoiceOver/accessibility adaptations, and two-Mac iCloud behavior were not exercised within the timebox.
+
+## Coherent document inspector — 2026-10-11
+
+- Unified page/source inspectors with a fixed Inspector header, compact wrapping document identity, shared native DisclosureGroup section headers/counts/actions, consistent 18-point section and 8-point content spacing, and a resizable 340-point ideal width. Condensed mode collapses references, semantic blocks, and summaries while retaining Properties. Property labels are muted and values primary; exact timestamp tooltips accompany localized dates. Page location reveals the file in Finder; Protection uses the existing lock action. Semantic rows show type, two-line preview, and a visible jump affordance using existing block navigation. Source/page associations retain their existing open/remove behavior and add controls in section headers; empty states are explicit. Summary previews use four lines and inline expansion; generation/delete actions move into headers.
+- Debug compilation/package/signing passed for the redesign. Regression suite passed all 75 tests, including existing locked nested-block navigation and reference-opening coverage. Final copy/accessibility cleanup compiled as part of the regression run; the final debug packaging/signing rerun also passed. `git diff --check` passed. Previous compact-metadata validation also subsequently completed successfully (debug package and 70 tests).
+- Manual inspector resizing/collapse, Finder/lock controls, appearance/accent, accessibility preferences and VoiceOver were not exercised within the timebox. Alias editing, additional semantic context-menu mutations, and persisted summary generation/freshness indicators are not implemented in this UI pass. Existing demo-vault changes were preserved; no storage format changes.
