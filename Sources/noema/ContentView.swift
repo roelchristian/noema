@@ -24,6 +24,7 @@ struct ContentView: View {
     @State private var allPagesSectionExpanded = true
     @State private var pageSortOrder: PageSortOrder = .updated
     @State private var sourceSelection: UUID?
+    @State private var sourceRowsCache: [LibraryRow] = []
     @State private var renamingSource: SourceRecord?
     @State private var sourceName = ""
     @State private var deletingSource: SourceRecord?
@@ -32,12 +33,15 @@ struct ContentView: View {
     private var tabAnimation: Animation? {
         reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.84, blendDuration: 0.1)
     }
+    /// Only assigns when content differs, so a tab switch whose rows already match does not re-render the keep-alive table.
+    private func syncSourceRows() {
+        guard model.scope == .sources, sourceRowsCache != model.rows else { return }
+        sourceRowsCache = model.rows
+    }
     private func switchSidebarScope(_ scope: LibraryScope) {
-        if let tabAnimation {
-            withAnimation(tabAnimation) { model.changeScope(scope) }
-        } else {
-            model.changeScope(scope)
-        }
+        // Tab chrome animates via `.animation(_, value: activeSidebarTab)`; wrapping the whole scope
+        // change in withAnimation also animated the heavy Table/workspace and made switches jitter.
+        model.changeScope(scope)
     }
     var body: some View {
         Group {
@@ -45,10 +49,10 @@ struct ContentView: View {
             else {
                 HSplitView {
                     sidebar.frame(minWidth: 250, idealWidth: 265, maxWidth: 280, maxHeight: .infinity)
-                    mainWorkspace.frame(minWidth: model.scope == .sources && model.currentNote == nil && model.currentSource == nil ? 520 : 420, maxHeight: .infinity)
+                    mainWorkspace.frame(minWidth: model.scope == .sources && model.currentNote == nil && model.currentSource == nil ? 520 : 420, maxHeight: .infinity).transaction { $0.animation = nil }
                     if model.scope == .sources && model.currentNote == nil && model.currentSource == nil,
                        let source = model.sources.first(where: { $0.id == sourceSelection }) {
-                        sourceInspector(source).frame(minWidth: 280, idealWidth: 340, maxWidth: 400, maxHeight: .infinity)
+                        sourceInspector(source).frame(minWidth: 280, idealWidth: 340, maxWidth: 400, maxHeight: .infinity).transaction { $0.animation = nil }
                     } else if showPageDetails, let note = model.currentNote {
                         pageInspector(note).frame(minWidth: 280, idealWidth: 340, maxWidth: 400, maxHeight: .infinity)
                     }
@@ -112,6 +116,10 @@ struct ContentView: View {
         .onChange(of: model.searchFocusToken) { searchFocused = true }
         .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false }
         .onChange(of: model.externalChange) { dismissedExternalChange = false }
+        .onChange(of: model.rows) { syncSourceRows() }
+        .onChange(of: model.scope) { syncSourceRows() }
+        .onChange(of: model.sources.count) { if model.scope != .sources { sourceRowsCache = model.sources.map(LibraryRow.init(source:)) } }
+        .onAppear { sourceRowsCache = model.sources.map(LibraryRow.init(source:)) }
         .onChange(of: model.root) { sourceSelection = nil; renamingSource = nil; deletingSource = nil }
     }
     @ViewBuilder private var mainWorkspace: some View {
@@ -548,10 +556,19 @@ struct ContentView: View {
         if model.scope == .trash { trashLibrary } else { pageLibrary }
     }
     private var pageLibrary: some View {
+        ZStack {
+            // Keep-alive: the Sources table is built once (at app open, while Pages is showing) and
+            // only hidden afterwards, so switching tabs never pays Table construction cost again.
+            sourceTable
+                .opacity(model.scope == .sources ? 1 : 0)
+                .allowsHitTesting(model.scope == .sources)
+                .accessibilityHidden(model.scope != .sources)
+            if model.scope != .sources { pageLibraryContent }
+        }
+    }
+    private var pageLibraryContent: some View {
         VStack(spacing: 0) {
-            if model.scope == .sources {
-                sourceTable
-            } else if model.scope == .semantic {
+            if model.scope == .semantic {
                 semanticBlockList
             } else if model.rows.isEmpty {
                 ContentUnavailableView(model.searchText.isEmpty ? "\(model.scopeTitle) is empty" : "No matches", systemImage: model.scope == .sources ? "tray" : "doc.text.magnifyingglass", description: Text(model.searchText.isEmpty ? (model.scope == .sources ? "Import a text file or paste a source to begin." : "Create a page to start building your wiki.") : "Try another word or topic."))
@@ -694,8 +711,15 @@ struct ContentView: View {
         }
         .ignoresSafeArea(.container, edges: .top)
     }
+    /// Rows shown by the keep-alive table: live search results while Sources is active, otherwise the last
+    /// known source rows, so page rows in `model.rows` never leak into (or churn) the hidden table.
+    private var sourceTableRows: [LibraryRow] {
+        sourceRowsCache.sorted(using: sourceSortOrder)
+    }
     private var sourceTable: some View {
-        Table(model.rows.sorted(using: sourceSortOrder),
+        // Build lookups once per body pass so cells don't each scan `model.sources` (O(n²)).
+        let issues = Dictionary(model.sources.map { ($0.id, $0.availabilityIssue) }, uniquingKeysWith: { first, _ in first })
+        return Table(sourceTableRows,
               selection: $sourceSelection,
               sortOrder: $sourceSortOrder) {
             TableColumn("File Name", value: \.title) { row in
@@ -719,7 +743,7 @@ struct ContentView: View {
                     .help(row.sourceLocation == "Linked" ? "Read-only linked original" : "Original stored in vault")
             }.width(min: 85, ideal: 95)
             TableColumn("Availability") { row in
-                sourceAvailabilityStatus(row.id)
+                sourceAvailabilityStatus(row.id, issue: issues[row.id] ?? nil)
             }.width(min: 150, ideal: 180)
             TableColumn("Kind", value: \.fileKind)
                 .width(min: 80, ideal: 90)
@@ -747,7 +771,7 @@ struct ContentView: View {
         } primaryAction: { ids in if let id = ids.first { model.openSource(id) } }
         .accessibilityLabel("Sources table")
     }
-    @ViewBuilder private func sourceAvailabilityStatus(_ id: UUID) -> some View {
+    @ViewBuilder private func sourceAvailabilityStatus(_ id: UUID, issue: String?) -> some View {
         if model.downloadingSources.contains(id) {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.mini)
@@ -759,7 +783,8 @@ struct ContentView: View {
                 Text("Checking availability…").foregroundStyle(.secondary)
             }
         } else {
-            Text(model.availabilityLabel(id)).lineLimit(1).help(model.availabilityLabel(id))
+            let label = model.sourceAvailability[id] ?? issue ?? "Available"
+            Text(label).lineLimit(1).help(label)
         }
     }
     private func createSourcePageButton(_ source: SourceRecord) -> some View {
@@ -945,7 +970,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     inspectorIdentity(title: source.title, kind: source.metadata.originalFilename.split(separator: ".").last.map { $0.uppercased() } ?? "Source", date: source.metadata.capturedAt)
                     InspectorSection(title: "Properties", condensed: false) {
-                        LabeledContent("Availability") { sourceAvailabilityStatus(source.id) }.font(.caption)
+                        LabeledContent("Availability") { sourceAvailabilityStatus(source.id, issue: source.availabilityIssue) }.font(.caption)
                         sourceLCCRow(source)
                         InspectorProperty("Original file", source.metadata.originalFilename)
                         InspectorProperty("Location", source.metadata.isLinked ? "Linked" : "In vault")

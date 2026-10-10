@@ -26,7 +26,7 @@ struct SemanticBlockHit: Identifiable, Sendable {
         }
     }
 }
-struct LibraryRow: Identifiable {
+struct LibraryRow: Identifiable, Equatable {
     var id: UUID
     var title: String
     var excerpt: String
@@ -428,11 +428,12 @@ struct EditorAction: Equatable {
             guard capturedScope == scope, capturedQuery == searchText else { return }
             let noteMap = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let sourceMap = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            rows = hits.compactMap { hit in
+            let newRows: [LibraryRow] = hits.compactMap { hit in
                 if hit.kind == .wiki, let note = noteMap[hit.id] { return LibraryRow(note: note) }
                 if let source = sourceMap[hit.id] { return LibraryRow(source: source) }
                 return nil
             }
+            if newRows != rows { rows = newRows }
         } catch { errorMessage = error.localizedDescription }
     }
     func select(_ id: UUID?, scope targetScope: LibraryScope? = nil, block blockID: UUID? = nil) {
