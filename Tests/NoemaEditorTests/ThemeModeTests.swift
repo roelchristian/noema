@@ -19,7 +19,8 @@ import NoemaBrand
             #expect(theme.nativeText() == theme.palette.foreground(.textPrimary).nsColor)
         }
     }
-    let system = NoemaTheme()
+    var system = NoemaTheme()
+    system.preference = .system
     #expect(!system.usesFullPalette)
     #expect(system.accent == nil)
     #expect(system.native(.accentPrimary) == NSColor.controlAccentColor)
@@ -41,4 +42,15 @@ import NoemaBrand
     #expect(preview.isTracking)
     #expect(preview.finish() == .amber)
     #expect(preview.preference == nil)
+}
+
+@Test @MainActor func freshThemeUsesFullMidnightIrisInBothAppearances() {
+    #expect(ThemePreference.defaultValue == .midnightIris)
+    for dark in [false, true] {
+        let theme = NoemaTheme(dark: dark)
+        #expect(theme.preference == .midnightIris)
+        #expect(theme.fullPalette)
+        #expect(theme.usesFullPalette)
+        #expect(theme.native(.background) == MidnightIrisPalette(dark: dark).token(.background).nsColor)
+    }
 }

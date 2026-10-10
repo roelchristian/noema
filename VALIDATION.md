@@ -1,5 +1,12 @@
 # Validation — 10 October 2026
 
+## Full Midnight Iris default — 2026-10-11
+
+- Fresh installations now default to Midnight Iris with the full palette enabled. Settings, the theme environment, and invalid-value fallback share the same default. Existing saved theme and full-palette preferences are preserved.
+- `./scripts/test.sh` compiled the app and passed all 95 tests outside the automation sandbox, including the default palette in both appearances and explicit System-mode coverage. `git diff --check` passed.
+- `./scripts/build.sh debug` compiled, packaged, and signed the app and archive successfully outside the automation sandbox. The sandboxed packaging attempt failed with `Invalid Iconset`; the unsandboxed retry passed.
+- UI validation was omitted as requested. Live fresh-install appearance and relaunch remain unverified.
+
 ## Theme dropdown swatches and hover previews — 2026-10-11
 
 - The native NSPopUpButton shows six semantic palette swatches beside every theme. Native menu highlighting previews the theme throughout theme-aware windows, in the current full-palette/accent-only mode.

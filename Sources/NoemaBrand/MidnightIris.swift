@@ -9,6 +9,7 @@ public enum AppearancePreference: String, CaseIterable, Identifiable, Sendable {
 
 public enum ThemePreference: String, CaseIterable, Identifiable, Sendable {
     case system, midnightIris, forest, amber, rose
+    public static let defaultValue: Self = .midnightIris
     public static let defaultsKey = "noema.theme"
     public static let fullPaletteKey = "noema.theme.fullPalette"
     public var id: String { rawValue }

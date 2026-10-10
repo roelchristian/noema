@@ -7,7 +7,7 @@ struct NoemaTheme: Equatable, Sendable {
     var dark: Bool
     var increasedContrast: Bool
     var revision: Int = 0
-    var preference: ThemePreference = .system
+    var preference: ThemePreference = .defaultValue
     var fullPalette = true
     var usesFullPalette: Bool { preference != .system && fullPalette }
     var palette: MidnightIrisPalette { MidnightIrisPalette(dark: dark, increasedContrast: increasedContrast, theme: preference) }
@@ -51,12 +51,12 @@ extension EnvironmentValues {
 private struct SystemNoemaThemeModifier: ViewModifier {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.colorSchemeContrast) private var contrast
-    @AppStorage(ThemePreference.defaultsKey) private var preference = ThemePreference.system.rawValue
+    @AppStorage(ThemePreference.defaultsKey) private var preference = ThemePreference.defaultValue.rawValue
     @AppStorage(ThemePreference.fullPaletteKey) private var fullPalette = true
     @State private var revision = 0
     func body(content: Content) -> some View {
         var theme = NoemaTheme(dark: scheme == .dark, increasedContrast: contrast == .increased); theme.revision = revision
-        theme.preference = ThemePreviewState.shared.preference ?? ThemePreference(rawValue: preference) ?? .system
+        theme.preference = ThemePreviewState.shared.preference ?? ThemePreference(rawValue: preference) ?? .defaultValue
         theme.fullPalette = fullPalette
         return content.environment(\.noemaTheme, theme)
             .tint(theme.accent)

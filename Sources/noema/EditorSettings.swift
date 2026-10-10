@@ -13,7 +13,7 @@ struct NoemaSettings: View {
     @AppStorage(EditorPreferences.aiSummariesKey) private var aiSummaries = false
     @AppStorage(EditorPreferences.texMacrosKey) private var texMacrosStorage = ""
 
-    @AppStorage(ThemePreference.defaultsKey) private var themePreference = ThemePreference.system.rawValue
+    @AppStorage(ThemePreference.defaultsKey) private var themePreference = ThemePreference.defaultValue.rawValue
     @AppStorage(ThemePreference.fullPaletteKey) private var fullPalette = true
 
     @State private var showCustomCommandsModal = false
