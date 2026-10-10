@@ -77,6 +77,15 @@ struct EditorAction: Equatable {
     var vaultName = "Noema"
     var notes: [NoteRecord] = []
     var sources: [SourceRecord] = []
+    var downloadingSources: Set<UUID> = []
+    private struct PendingSourceDownload {
+        var source: SourceRecord
+        var url: URL
+        var shouldImport: Bool
+        var download: @Sendable (URL) async throws -> Data
+    }
+    private var sourceDownloadQueue: [PendingSourceDownload] = []
+    private var sourceDownloadTask: Task<Void, Never>?
     var sourceAvailability: [UUID: String] = [:]
     var checkingSourceAvailability: Set<UUID> = []
     private var sourceAvailabilityQueue: [SourceRecord] = []
@@ -274,6 +283,7 @@ struct EditorAction: Equatable {
             watcher?.stop()
             if let scopeURL { scopeURL.stopAccessingSecurityScopedResource() }
             self.scopeURL = hasScope ? url : nil
+            sourceDownloadTask?.cancel(); sourceDownloadTask = nil; sourceDownloadQueue = []; downloadingSources = []
             sourceNamingTask?.cancel(); sourceNamingTask = nil; sourceNamingQueue = []
             sourceAvailabilityTask?.cancel(); sourceAvailabilityTask = nil; sourceAvailabilityQueue = []
             sourceAvailability = [:]; checkingSourceAvailability = []
@@ -772,18 +782,38 @@ struct EditorAction: Equatable {
             guard urls.count <= 5 else { self?.errorMessage = "Add up to 5 files at a time."; return }
             let shouldImport = importOption.state == .on
             Task { @MainActor in
-                guard let self, let repository = self.repository else { return }
-                guard await self.finishCurrentPage() else { return }
-                self.scope = .sources
-                let ticket = self.generation
-                var failures: [String] = []
-                for url in urls {
+                await self?.addSourceFiles(urls, shouldImport: shouldImport)
+            }
+        }
+    }
+    func addSourceFiles(
+        _ urls: [URL],
+        shouldImport: Bool,
+        isCloudNotDownloaded: @escaping @Sendable (URL) -> Bool = FileVaultRepository.isCloudFileNotDownloaded,
+        downloadCloudFile: @escaping @Sendable (URL) async throws -> Data = FileVaultRepository.downloadCloudFile
+    ) async {
+        guard urls.count <= 5 else { errorMessage = "Add up to 5 files at a time."; return }
+        guard let repository else { return }
+        guard await finishCurrentPage() else { return }
+        scope = .sources
+        let ticket = generation
+        var failures: [String] = []
+        for url in urls {
+            do {
+                guard generation == ticket else { return }
+                if isCloudNotDownloaded(url) {
+                    let pending = try await repository.beginSourceDownload(at: url, shouldImport: shouldImport)
+                    guard generation == ticket else { return }
+                    sources.append(pending)
+                    rows = sources.map(LibraryRow.init(source:))
+                    enqueueSourceDownload(pending, url: url, shouldImport: shouldImport, download: downloadCloudFile)
+                    continue
+                }
+                let added: [SourceRecord]
                 do {
-                    guard self.generation == ticket else { return }
-                    let added: [SourceRecord]
                     if shouldImport {
-                        let access = url.startAccessingSecurityScopedResource()
-                        defer { if access { url.stopAccessingSecurityScopedResource() } }
+                        let scoped = url.startAccessingSecurityScopedResource()
+                        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                         let data = try await Task.detached {
                             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
                             guard values.isRegularFile == true else { throw VaultError.invalid("Choose a regular file. Folders are not supported.") }
@@ -794,16 +824,85 @@ struct EditorAction: Equatable {
                     } else {
                         added = try await repository.linkSources(at: url, maximumFiles: 5)
                     }
-                    guard self.generation == ticket else { return }
-                    self.sources.append(contentsOf: added)
-                    self.rows = self.sources.map(LibraryRow.init(source:))
-                    for source in added { self.enqueueSourceTitle(source) }
+                } catch let error as VaultError {
+                    if case .unavailable = error {
+                        let pending = try await repository.beginSourceDownload(at: url, shouldImport: shouldImport)
+                        guard generation == ticket else { return }
+                        sources.append(pending)
+                        rows = sources.map(LibraryRow.init(source:))
+                        enqueueSourceDownload(pending, url: url, shouldImport: shouldImport, download: downloadCloudFile)
+                        continue
+                    }
+                    throw error
+                }
+                guard generation == ticket else { return }
+                sources.append(contentsOf: added)
+                rows = sources.map(LibraryRow.init(source:))
+                for source in added { enqueueSourceTitle(source) }
+            } catch {
+                failures.append(url.lastPathComponent + ": " + error.localizedDescription)
+                errorMessage = failures.joined(separator: "\n")
+            }
+        }
+        await refresh()
+    }
+    private func enqueueSourceDownload(
+        _ source: SourceRecord,
+        url: URL,
+        shouldImport: Bool,
+        download: @escaping @Sendable (URL) async throws -> Data
+    ) {
+        downloadingSources.insert(source.id)
+        sourceDownloadQueue.append(PendingSourceDownload(source: source, url: url, shouldImport: shouldImport, download: download))
+        guard sourceDownloadTask == nil, let repository else { return }
+        let ticket = generation
+        sourceDownloadTask = Task {
+            defer {
+                if generation == ticket {
+                    sourceDownloadTask = nil
+                    sourceDownloadQueue = []
+                    downloadingSources = []
+                }
+            }
+            while !sourceDownloadQueue.isEmpty {
+                guard generation == ticket, !Task.isCancelled else { return }
+                let item = sourceDownloadQueue.removeFirst()
+                guard downloadingSources.contains(item.source.id) else { continue }
+                do {
+                    let access = item.url.startAccessingSecurityScopedResource()
+                    defer { if access { item.url.stopAccessingSecurityScopedResource() } }
+                    let data = try await item.download(item.url)
+                    guard generation == ticket, downloadingSources.contains(item.source.id) else { continue }
+                    let completed = try await repository.completeSourceDownload(
+                        id: item.source.id,
+                        at: item.url,
+                        data: data,
+                        shouldImport: item.shouldImport
+                    )
+                    guard generation == ticket else { return }
+                    downloadingSources.remove(item.source.id)
+                    sourceAvailability.removeValue(forKey: item.source.id)
+                    if let indexPos = sources.firstIndex(where: { $0.id == item.source.id }) {
+                        sources[indexPos] = completed
+                    } else {
+                        sources.append(completed)
+                    }
+                    if currentSource?.id == completed.id {
+                        currentSource = completed
+                        title = completed.title
+                        body = completed.body
+                        generatePreview()
+                    }
+                    await refresh()
+                    enqueueSourceTitle(completed)
                 } catch {
-                    failures.append(url.lastPathComponent + ": " + error.localizedDescription)
-                    self.errorMessage = failures.joined(separator: "\n")
+                    await repository.cancelSourceDownload(id: item.source.id)
+                    guard generation == ticket else { return }
+                    downloadingSources.remove(item.source.id)
+                    sources.removeAll { $0.id == item.source.id }
+                    errorMessage = item.url.lastPathComponent + ": " + error.localizedDescription
+                    await refresh()
                 }
-                }
-                await self.refresh()
             }
         }
     }
@@ -827,11 +926,12 @@ struct EditorAction: Equatable {
         return failures
     }
     func availabilityLabel(_ id: UUID) -> String {
-        sourceAvailability[id] ?? sources.first(where: { $0.id == id })?.availabilityIssue ?? "Available"
+        if downloadingSources.contains(id) { return "Downloading from iCloud" }
+        return sourceAvailability[id] ?? sources.first(where: { $0.id == id })?.availabilityIssue ?? "Available"
     }
     func checkSourceAvailability(_ requested: [SourceRecord]) {
         guard let root else { return }
-        for source in requested where !checkingSourceAvailability.contains(source.id) {
+        for source in requested where !checkingSourceAvailability.contains(source.id) && !downloadingSources.contains(source.id) {
             checkingSourceAvailability.insert(source.id); sourceAvailabilityQueue.append(source)
         }
         guard sourceAvailabilityTask == nil, !sourceAvailabilityQueue.isEmpty else { return }
@@ -868,7 +968,7 @@ struct EditorAction: Equatable {
         }.value
     }
     func createPageFromSource(_ source: SourceRecord) {
-        guard !generatingSourcePages.contains(source.id), let repository, let root else { return }
+        guard !downloadingSources.contains(source.id), !generatingSourcePages.contains(source.id), let repository, let root else { return }
         if let reason = OnDeviceSummary.unavailabilityReason { errorMessage = reason; return }
         let ticket = generation
         generatingSourcePages.insert(source.id)
@@ -894,7 +994,7 @@ struct EditorAction: Equatable {
     }
 
     func generateSourceSummary(_ source: SourceRecord) {
-        guard !generatingSourceTitles.contains(source.id), !generatingSourceSummaries.contains(source.id),
+        guard !downloadingSources.contains(source.id), !generatingSourceTitles.contains(source.id), !generatingSourceSummaries.contains(source.id),
               let repository, let root else { return }
         if let reason = OnDeviceSummary.unavailabilityReason { errorMessage = reason; return }
         let ticket = generation
@@ -968,6 +1068,8 @@ struct EditorAction: Equatable {
     }
     func deleteSource(_ source: SourceRecord) {
         sourceNamingOverrides.insert(source.id); generatingSourceTitles.remove(source.id)
+        downloadingSources.remove(source.id)
+        sourceDownloadQueue.removeAll { $0.source.id == source.id }
         Task {
             guard let repository else { return }
             let ticket = generation
@@ -983,7 +1085,7 @@ struct EditorAction: Equatable {
         Task {
             await waitForSave()
             guard await finishCurrentPage() else { return }
-            guard let id, let source = sources.first(where: { $0.id == id }), let root else { return }
+            guard let id, !downloadingSources.contains(id), let source = sources.first(where: { $0.id == id }), let root else { return }
             do { try await SourceReader.open(source, root: root) }
             catch { errorMessage = error.localizedDescription }
         }

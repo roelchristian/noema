@@ -20,6 +20,7 @@ public actor FileVaultRepository: VaultRepository {
     public nonisolated let root: URL
     public nonisolated let manifest: VaultManifest
     private var cache: [String: (Date?, Int?, NoteRecord)] = [:]
+    private var downloadingSources: [UUID: SourceRecord] = [:]
     private let fm = FileManager.default
     private let encoder: JSONEncoder = {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; return encoder
@@ -118,6 +119,11 @@ public actor FileVaultRepository: VaultRepository {
                 result.sources.append(source); chunk.sources.append(source)
                 if chunk.sources.count >= 128 { progress?(chunk); chunk = ScanBatch() }
             } catch { result.issues.append("Source \(directory.lastPathComponent): \(error.localizedDescription). Incomplete imports are left intact for recovery.") }
+        }
+        let onDiskSourceIDs = Set(result.sources.map(\.id))
+        for pending in downloadingSources.values where !onDiskSourceIDs.contains(pending.id) {
+            result.sources.append(pending)
+            chunk.sources.append(pending)
         }
         progress?(chunk)
         if let conflicts = try? fm.contentsOfDirectory(at: root.appendingPathComponent("Conflicts"), includingPropertiesForKeys: nil), !conflicts.isEmpty {
@@ -295,20 +301,21 @@ public actor FileVaultRepository: VaultRepository {
         return url
     }
 
-    private func rejectDuplicateSource(checksum: String, linkedURL: URL? = nil) throws {
+    private func rejectDuplicateSource(checksum: String, linkedURL: URL? = nil, excludingID: UUID? = nil) throws {
         let directories = try fm.contentsOfDirectory(at: root.appendingPathComponent("Sources"), includingPropertiesForKeys: nil)
         for directory in directories {
-            guard let id = UUID(uuidString: directory.lastPathComponent) else { continue }
+            guard let id = UUID(uuidString: directory.lastPathComponent), id != excludingID else { continue }
             guard let metadata = try? JSONDecoder().decode(SourceMetadata.self, from: Self.coordinatedRead(directory.appendingPathComponent("metadata.json"))),
                   metadata.id == id else { continue }
             var sameLinkedFile = false
-            if let linkedURL, let bookmark = metadata.linkedBookmark {
+            if let linkedURL, let bookmark = metadata.linkedBookmark, !bookmark.isEmpty {
                 var stale = false
-                if let existing = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], bookmarkDataIsStale: &stale) {
+                if let existing = try? Self.resolveBookmarkData(bookmark, isStale: &stale) {
                     sameLinkedFile = existing.standardizedFileURL.resolvingSymlinksInPath() == linkedURL.standardizedFileURL.resolvingSymlinksInPath()
                 }
             }
-            guard metadata.sha256 != checksum, !sameLinkedFile else {
+            let sameChecksum = !checksum.isEmpty && !metadata.sha256.isEmpty && metadata.sha256 == checksum
+            guard !sameChecksum, !sameLinkedFile else {
                 throw VaultError.invalid("File already added as a source: ‘" + metadata.title + "’.")
             }
         }
@@ -347,17 +354,16 @@ public actor FileVaultRepository: VaultRepository {
         return issue ?? "Available"
     }
 
-    private func publishSource(data: Data, filename: String, title: String, originURL: String?, isURLSource: Bool) throws -> SourceRecord {
+    private func publishSource(id: UUID = UUID(), capturedAt: String? = nil, data: Data, filename: String, title: String, originURL: String?, isURLSource: Bool) throws -> SourceRecord {
         guard data.count <= Self.maximumImportBytes else { throw VaultError.invalid("Files larger than 2 MB must be linked instead of imported.") }
-        try rejectDuplicateSource(checksum: digest(data))
+        try rejectDuplicateSource(checksum: digest(data), excludingID: id)
         let body = try Self.sourceText(data, filename: filename)
         let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
         let storedExtension = ext.isEmpty ? "bin" : ext
         if let originURL, !originURL.isEmpty {
             guard let url = URL(string: originURL), ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else { throw VaultError.invalid("The origin URL must be an http or https address.") }
         }
-        let id = UUID()
-        var metadata = SourceMetadata(id: id, title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent : title, capturedAt: timestamp(), originalFilename: URL(fileURLWithPath: filename).lastPathComponent, originURL: originURL?.isEmpty == true ? nil : originURL, sha256: digest(data), fileSize: data.count, storedFilename: "original.\(storedExtension)")
+        var metadata = SourceMetadata(id: id, title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent : title, capturedAt: capturedAt ?? timestamp(), originalFilename: URL(fileURLWithPath: filename).lastPathComponent, originURL: originURL?.isEmpty == true ? nil : originURL, sha256: digest(data), fileSize: data.count, storedFilename: "original.\(storedExtension)")
         metadata.isURLSource = isURLSource ? true : nil
         let pending = root.appendingPathComponent("Sources/.import-\(id.uuidString)")
         try fm.createDirectory(at: pending, withIntermediateDirectories: true)
@@ -411,13 +417,118 @@ public actor FileVaultRepository: VaultRepository {
         } catch { return sourceAvailabilityMessage(error, linked: source.metadata.isLinked) }
     }
 
+    private static func makeBookmarkData(for url: URL) throws -> Data {
+        do {
+            return try url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil)
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileReadUnknownError {
+            return try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        }
+    }
+
+    private static func resolveBookmarkData(_ bookmark: Data, isStale: inout Bool) throws -> URL {
+        do {
+            return try URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], bookmarkDataIsStale: &isStale)
+        } catch {
+            return try URL(resolvingBookmarkData: bookmark, options: [.withoutUI], bookmarkDataIsStale: &isStale)
+        }
+    }
+
     public static func readLinkedSource(_ bookmark: Data) throws -> Data {
         var stale = false
-        let url = try URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], bookmarkDataIsStale: &stale)
+        let url = try resolveBookmarkData(bookmark, isStale: &stale)
         guard !stale else { throw VaultError.unavailable("Linked source permission is stale. Link the file again.") }
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         return try coordinatedRead(url)
+    }
+
+    public func beginSourceDownload(at url: URL, shouldImport: Bool) throws -> SourceRecord {
+        let targetURL = Self.logicalCloudURL(url)
+        var st = stat()
+        if lstat(url.path, &st) == 0 {
+            let mode = st.st_mode & S_IFMT
+            guard mode != S_IFDIR, mode != S_IFLNK else {
+                throw VaultError.invalid(shouldImport ? "Choose a regular file. Folders are not supported." : "Choose files only. Folder linking is no longer supported.")
+            }
+            if shouldImport, Int(st.st_size) > Self.maximumImportBytes {
+                throw VaultError.invalid("Files larger than 2 MB must be linked instead of imported.")
+            }
+        } else {
+            let values = try? targetURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values?.isDirectory != true, values?.isSymbolicLink != true else {
+                throw VaultError.invalid(shouldImport ? "Choose a regular file. Folders are not supported." : "Choose files only. Folder linking is no longer supported.")
+            }
+            if shouldImport, let size = values?.fileSize, size > Self.maximumImportBytes {
+                throw VaultError.invalid("Files larger than 2 MB must be linked instead of imported.")
+            }
+        }
+        try rejectDuplicateSource(checksum: "", linkedURL: targetURL)
+        let id = UUID()
+        let ext = targetURL.pathExtension.lowercased()
+        let storedExtension = ext.isEmpty ? "bin" : ext
+        let rawTitle = targetURL.deletingPathExtension().lastPathComponent
+        let fileSize: Int? = (lstat(url.path, &st) == 0 && st.st_size > 0) ? Int(st.st_size) : (try? targetURL.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+        let metadata = SourceMetadata(
+            id: id,
+            title: rawTitle.isEmpty ? targetURL.lastPathComponent : rawTitle,
+            capturedAt: timestamp(),
+            originalFilename: targetURL.lastPathComponent,
+            originURL: nil,
+            sha256: "",
+            fileSize: fileSize,
+            linkedBookmark: shouldImport ? nil : Data(),
+            storedFilename: "original.\(storedExtension)"
+        )
+        let source = SourceRecord(metadata: metadata, body: "", availabilityIssue: "Downloading from iCloud")
+        downloadingSources[id] = source
+        return source
+    }
+
+    public func completeSourceDownload(id: UUID, at url: URL, data: Data, shouldImport: Bool) throws -> SourceRecord {
+        guard let pending = downloadingSources[id] else {
+            throw VaultError.invalid("Source download is no longer active.")
+        }
+        let targetURL = Self.logicalCloudURL(url)
+        defer { downloadingSources.removeValue(forKey: id) }
+        if shouldImport {
+            return try publishSource(
+                id: id,
+                capturedAt: pending.metadata.capturedAt,
+                data: data,
+                filename: targetURL.lastPathComponent,
+                title: pending.title,
+                originURL: nil,
+                isURLSource: false
+            )
+        }
+        try rejectDuplicateSource(checksum: digest(data), linkedURL: targetURL, excludingID: id)
+        let body = try Self.sourceText(data, filename: targetURL.lastPathComponent)
+        let bookmark = try Self.makeBookmarkData(for: targetURL)
+        let metadata = SourceMetadata(
+            id: id,
+            title: pending.title,
+            capturedAt: pending.metadata.capturedAt,
+            originalFilename: targetURL.lastPathComponent,
+            originURL: nil,
+            sha256: digest(data),
+            fileSize: data.count,
+            linkedBookmark: bookmark,
+            storedFilename: pending.metadata.storedFilename
+        )
+        let staging = root.appendingPathComponent("Sources/.import-" + id.uuidString)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Self.coordinatedWrite(encoder.encode(metadata), to: staging.appendingPathComponent("metadata.json"))
+        let final = root.appendingPathComponent("Sources/" + id.uuidString.lowercased())
+        var failure: Error?, coordinationError: NSError?
+        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: staging, options: .forMoving, writingItemAt: final, options: [], error: &coordinationError) { from, to in
+            do { try fm.moveItem(at: from, to: to) } catch { failure = error }
+        }
+        if let failure { throw failure }; if let coordinationError { throw coordinationError }
+        return SourceRecord(metadata: metadata, body: body)
+    }
+
+    public func cancelSourceDownload(id: UUID) {
+        downloadingSources.removeValue(forKey: id)
     }
 
     public func linkSources(at url: URL, maximumFiles: Int) throws -> [SourceRecord] {
@@ -432,7 +543,7 @@ public actor FileVaultRepository: VaultRepository {
             let data = try Self.coordinatedRead(file)
             try rejectDuplicateSource(checksum: digest(data), linkedURL: file)
             let body = try Self.sourceText(data, filename: file.lastPathComponent)
-            let bookmark = try file.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil)
+            let bookmark = try Self.makeBookmarkData(for: file)
             let metadata = SourceMetadata(id: UUID(), title: file.deletingPathExtension().lastPathComponent, capturedAt: timestamp(), originalFilename: file.lastPathComponent, originURL: nil, sha256: digest(data), fileSize: data.count, linkedBookmark: bookmark, storedFilename: "original." + file.pathExtension.lowercased())
             return SourceRecord(metadata: metadata, body: body)
         }
@@ -455,6 +566,12 @@ public actor FileVaultRepository: VaultRepository {
         guard !title.isEmpty, title.count <= 120 else { throw VaultError.invalid("Invalid source title.") }
         let summary = summary?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let summary, summary.isEmpty { throw VaultError.invalid("Source summary must not be empty.") }
+        if var pending = downloadingSources[source.id] {
+            pending.metadata.title = title
+            if let summary { pending.metadata.aiSummary = summary }
+            downloadingSources[source.id] = pending
+            return pending
+        }
         let url = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/metadata.json")
         var result: SourceRecord?, failure: Error?, coordinationError: NSError?
         NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: [], error: &coordinationError) { target in
@@ -476,6 +593,10 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func deleteSource(_ source: SourceRecord) throws {
+        if downloadingSources.removeValue(forKey: source.id) != nil {
+            let directory = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
+            if !fm.fileExists(atPath: directory.path) { return }
+        }
         let directory = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
         guard directory.resolvingSymlinksInPath().path == directory.standardizedFileURL.path else { throw VaultError.invalid("Source directory cannot be a symbolic link.") }
         var failure: Error?, coordinationError: NSError?
@@ -523,6 +644,85 @@ public actor FileVaultRepository: VaultRepository {
     }
     private func isAvailable(_ values: URLResourceValues) -> Bool {
         values.ubiquitousItemDownloadingStatus == nil || values.ubiquitousItemDownloadingStatus != .notDownloaded
+    }
+    public static func logicalCloudURL(_ url: URL) -> URL {
+        let name = url.lastPathComponent
+        if name.hasPrefix("."), name.lowercased().hasSuffix(".icloud") {
+            let trimmed = String(name.dropFirst().dropLast(".icloud".count))
+            if !trimmed.isEmpty {
+                return url.deletingLastPathComponent().appendingPathComponent(trimmed)
+            }
+        }
+        return url
+    }
+    public static func isCloudFileNotDownloaded(_ url: URL) -> Bool {
+        if url.lastPathComponent.hasPrefix("."), url.pathExtension.lowercased() == "icloud" {
+            return true
+        }
+        var st = stat()
+        if lstat(url.path, &st) == 0 {
+            if (st.st_flags & UInt32(SF_DATALESS)) != 0 {
+                return true
+            }
+            if st.st_size > 0, st.st_blocks == 0,
+               url.path.contains("/CloudStorage/") || url.path.localizedCaseInsensitiveContains("OneDrive") || url.path.contains("Mobile Documents") {
+                return true
+            }
+        }
+        var refreshed = url
+        refreshed.removeAllCachedResourceValues()
+        if let values = try? refreshed.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey, .ubiquitousItemIsDownloadingKey]) {
+            if values.ubiquitousItemDownloadingStatus == .notDownloaded {
+                return true
+            }
+            if values.ubiquitousItemIsDownloading == true, values.ubiquitousItemDownloadingStatus != .current {
+                return true
+            }
+        }
+        return false
+    }
+    public static func downloadCloudFile(_ url: URL) async throws -> Data {
+        let targetURL = logicalCloudURL(url)
+        try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+        if targetURL != url {
+            try? FileManager.default.startDownloadingUbiquitousItem(at: targetURL)
+        }
+        return try await Task.detached {
+            try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+            if targetURL != url {
+                try? FileManager.default.startDownloadingUbiquitousItem(at: targetURL)
+            }
+            var data: Data?, failure: Error?, coordinatorError: NSError?
+            NSFileCoordinator(filePresenter: nil).coordinate(readingItemAt: targetURL, options: [], error: &coordinatorError) { coordinatedURL in
+                do { data = try Data(contentsOf: coordinatedURL) } catch { failure = error }
+            }
+            var checkURL = targetURL
+            checkURL.removeAllCachedResourceValues()
+            if let data, !isCloudFileNotDownloaded(checkURL) {
+                return data
+            }
+            let deadline = Date().addingTimeInterval(60)
+            while Date() < deadline {
+                if Task.isCancelled { throw CancellationError() }
+                try await Task.sleep(for: .milliseconds(250))
+                var refreshedURL = targetURL
+                refreshedURL.removeAllCachedResourceValues()
+                if !isCloudFileNotDownloaded(refreshedURL) {
+                    if let data, !data.isEmpty { return data }
+                    var retryData: Data?, retryFailure: Error?, retryCoordError: NSError?
+                    NSFileCoordinator(filePresenter: nil).coordinate(readingItemAt: refreshedURL, options: [], error: &retryCoordError) { coordinatedURL in
+                        do { retryData = try Data(contentsOf: coordinatedURL) } catch { retryFailure = error }
+                    }
+                    if let retryData { return retryData }
+                    if let retryFailure { throw retryFailure }
+                    if let retryCoordError { throw retryCoordError }
+                }
+            }
+            if let data { return data }
+            if let failure { throw failure }
+            if let coordinatorError { throw coordinatorError }
+            throw VaultError.unavailable("Downloading \(targetURL.lastPathComponent) from iCloud. Try again when the download finishes.")
+        }.value
     }
     public static func coordinatedRead(_ url: URL) throws -> Data {
         let values = try url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])

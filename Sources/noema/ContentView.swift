@@ -43,24 +43,22 @@ struct ContentView: View {
         Group {
             if model.root == nil { welcome }
             else {
-                NavigationSplitView {
-                    sidebar.navigationSplitViewColumnWidth(min: 250, ideal: 265, max: 280)
-                } detail: {
-                    HSplitView {
-                        mainWorkspace.frame(minWidth: model.scope == .sources && model.currentNote == nil && model.currentSource == nil ? 520 : 420)
-                        if model.scope == .sources && model.currentNote == nil && model.currentSource == nil,
-                           let source = model.sources.first(where: { $0.id == sourceSelection }) {
-                            sourceInspector(source).frame(minWidth: 280, idealWidth: 340, maxWidth: 400)
-                        } else if showPageDetails, let note = model.currentNote {
-                            pageInspector(note).frame(minWidth: 280, idealWidth: 340, maxWidth: 400)
-                        }
+                HSplitView {
+                    sidebar.frame(minWidth: 250, idealWidth: 265, maxWidth: 280, maxHeight: .infinity)
+                    mainWorkspace.frame(minWidth: model.scope == .sources && model.currentNote == nil && model.currentSource == nil ? 520 : 420, maxHeight: .infinity)
+                    if model.scope == .sources && model.currentNote == nil && model.currentSource == nil,
+                       let source = model.sources.first(where: { $0.id == sourceSelection }) {
+                        sourceInspector(source).frame(minWidth: 280, idealWidth: 340, maxWidth: 400, maxHeight: .infinity)
+                    } else if showPageDetails, let note = model.currentNote {
+                        pageInspector(note).frame(minWidth: 280, idealWidth: 340, maxWidth: 400, maxHeight: .infinity)
                     }
-                    .ignoresSafeArea(.container, edges: .top)
                 }
-                .navigationSplitViewStyle(.balanced)
+                .ignoresSafeArea(.container, edges: .top)
             }
         }
         .toolbar(removing: .title)
+        .toolbar(removing: .sidebarToggle)
+        .toolbarVisibility(.hidden, for: .windowToolbar)
         .sheet(isPresented: $model.showTopicPage) { TopicPageSheet(model: model) }
         .sheet(isPresented: $model.showURLSource) { URLSourceSheet(model: model) }
         .sheet(isPresented: $model.showPasteSource) { PasteSourceSheet(model: model) }
@@ -156,68 +154,7 @@ struct ContentView: View {
         }
     }
     private var sidebar: some View {
-        List {
-            Section(isExpanded: $recentSectionExpanded) {
-                if activeSidebarTab == .sources {
-                    ForEach(model.recentSources) { source in
-                        sidebarItemRow(
-                            title: source.title,
-                            symbol: source.metadata.isLinked ? "link" : "doc.text",
-                            active: sourceSelection == source.id || model.currentSource?.id == source.id
-                        ) {
-                            sourceSelection = source.id
-                            if model.currentNote != nil || model.currentSource != nil || model.scope != .sources {
-                                switchSidebarScope(.sources)
-                            }
-                        }
-                    }
-                    sidebarFooterLink("View all sources") {
-                        sourceSelection = nil
-                        switchSidebarScope(.sources)
-                    }
-                } else if activeSidebarTab == .semantic {
-                    ForEach(model.semanticRows.prefix(10)) { hit in
-                        let presentation = SemanticPresentation.find(hit.semantic)
-                        sidebarItemRow(
-                            title: hit.preview.isEmpty ? hit.pageTitle : hit.preview,
-                            symbol: presentation?.symbol ?? "tag",
-                            active: model.selectedSemanticID == hit.id
-                        ) {
-                            model.select(hit.pageID, block: hit.blockID)
-                        }
-                    }
-                    sidebarFooterLink("View all blocks") {
-                        switchSidebarScope(.semantic)
-                    }
-                } else {
-                    ForEach(model.recentPages) { note in
-                        sidebarPageRow(note)
-                    }
-                }
-            } header: {
-                Text(activeSidebarTab == .sources ? "RECENT SOURCES" : activeSidebarTab == .semantic ? "RECENT BLOCKS" : "RECENT PAGES")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .contentTransition(.opacity)
-            }
-            if activeSidebarTab == .wiki {
-                Section(isExpanded: $allPagesSectionExpanded) {
-                    ForEach(model.allPagesByUpdated) { note in
-                        sidebarPageRow(note, showRelativeEditTime: true)
-                    }
-                } header: {
-                    Text("ALL PAGES")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
-        .environment(\.defaultMinListRowHeight, 26)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: activeSidebarTab)
-        .background(SidebarMaterialView().ignoresSafeArea())
-        .safeAreaInset(edge: .top, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
                     NoemaMark().frame(width: 20, height: 20).accessibilityHidden(true)
@@ -305,10 +242,70 @@ struct ContentView: View {
                 .animation(tabAnimation, value: activeSidebarTab)
             }
             .padding(.horizontal, 12)
-            .padding(.top, 6)
+            .padding(.top, 32)
             .padding(.bottom, 6)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+
+            List {
+                Section(isExpanded: $recentSectionExpanded) {
+                    if activeSidebarTab == .sources {
+                        ForEach(model.recentSources) { source in
+                            sidebarItemRow(
+                                title: source.title,
+                                symbol: source.metadata.isLinked ? "link" : "doc.text",
+                                active: sourceSelection == source.id || model.currentSource?.id == source.id
+                            ) {
+                                sourceSelection = source.id
+                                if model.currentNote != nil || model.currentSource != nil || model.scope != .sources {
+                                    switchSidebarScope(.sources)
+                                }
+                            }
+                        }
+                        sidebarFooterLink("View all sources") {
+                            sourceSelection = nil
+                            switchSidebarScope(.sources)
+                        }
+                    } else if activeSidebarTab == .semantic {
+                        ForEach(model.semanticRows.prefix(10)) { hit in
+                            let presentation = SemanticPresentation.find(hit.semantic)
+                            sidebarItemRow(
+                                title: hit.preview.isEmpty ? hit.pageTitle : hit.preview,
+                                symbol: presentation?.symbol ?? "tag",
+                                active: model.selectedSemanticID == hit.id
+                            ) {
+                                model.select(hit.pageID, block: hit.blockID)
+                            }
+                        }
+                        sidebarFooterLink("View all blocks") {
+                            switchSidebarScope(.semantic)
+                        }
+                    } else {
+                        ForEach(model.recentPages) { note in
+                            sidebarPageRow(note)
+                        }
+                    }
+                } header: {
+                    Text(activeSidebarTab == .sources ? "RECENT SOURCES" : activeSidebarTab == .semantic ? "RECENT BLOCKS" : "RECENT PAGES")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .contentTransition(.opacity)
+                }
+                if activeSidebarTab == .wiki {
+                    Section(isExpanded: $allPagesSectionExpanded) {
+                        ForEach(model.allPagesByUpdated) { note in
+                            sidebarPageRow(note, showRelativeEditTime: true)
+                        }
+                    } header: {
+                        Text("ALL PAGES")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .environment(\.defaultMinListRowHeight, 26)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: activeSidebarTab)
+
             VStack(alignment: .leading, spacing: 0) {
                 Divider().opacity(0.5)
                 VStack(alignment: .leading, spacing: 4) {
@@ -385,6 +382,8 @@ struct ContentView: View {
                 .padding(.vertical, 6)
             }
         }
+        .background(SidebarMaterialView().ignoresSafeArea())
+        .ignoresSafeArea(.container, edges: .top)
     }
     private func sidebarTabButton(title: String, symbol: String, count: Int?, showLabel: Bool, highlighted: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -621,7 +620,12 @@ struct ContentView: View {
             }
             HStack {
                 Text(libraryCount)
-                if model.scope == .sources, model.sourceRenameTotal > 0 {
+                if model.scope == .sources, !model.downloadingSources.isEmpty {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text("Downloading from iCloud")
+                    }
+                } else if model.scope == .sources, model.sourceRenameTotal > 0 {
                     Text("Renaming \(min(model.sourceRenameCompleted + 1, model.sourceRenameTotal)) of \(model.sourceRenameTotal) files…")
                 }
                 Spacer(); Text("⌘P")
@@ -695,7 +699,12 @@ struct ContentView: View {
               selection: $sourceSelection,
               sortOrder: $sourceSortOrder) {
             TableColumn("File Name", value: \.title) { row in
-                if model.generatingSourceTitles.contains(row.id) {
+                if model.downloadingSources.contains(row.id) {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text("Downloading from iCloud").foregroundStyle(.secondary)
+                    }
+                } else if model.generatingSourceTitles.contains(row.id) {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.mini)
                         Text("Generating title").foregroundStyle(.secondary)
@@ -727,10 +736,11 @@ struct ContentView: View {
         .contextMenu(forSelectionType: UUID.self) { ids in
             if ids.count == 1, let id = ids.first, let source = model.sources.first(where: { $0.id == id }) {
                 Button("Open Preview") { model.openSource(id) }
+                    .disabled(model.downloadingSources.contains(id))
                 createSourcePageButton(source)
                 sourceSummaryButton(source)
                 Button("Check Availability") { model.checkSourceAvailability([source]) }
-                    .disabled(model.checkingSourceAvailability.contains(id))
+                    .disabled(model.checkingSourceAvailability.contains(id) || model.downloadingSources.contains(id))
                 Button { sourceName = source.title; renamingSource = source } label: { Label("Rename", systemImage: "pencil") }
                 Button(role: .destructive) { deletingSource = source } label: { Label("Delete", systemImage: "trash") }
             }
@@ -738,7 +748,12 @@ struct ContentView: View {
         .accessibilityLabel("Sources table")
     }
     @ViewBuilder private func sourceAvailabilityStatus(_ id: UUID) -> some View {
-        if model.checkingSourceAvailability.contains(id) {
+        if model.downloadingSources.contains(id) {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("Downloading from iCloud").foregroundStyle(.secondary)
+            }
+        } else if model.checkingSourceAvailability.contains(id) {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.mini)
                 Text("Checking availability…").foregroundStyle(.secondary)
@@ -751,7 +766,7 @@ struct ContentView: View {
         Button { model.createPageFromSource(source) } label: {
             Label(model.generatingSourcePages.contains(source.id) ? "Creating Page…" : "Create Page with AI", systemImage: "sparkles")
         }
-        .disabled(model.generatingSourcePages.contains(source.id) || model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id))
+        .disabled(model.downloadingSources.contains(source.id) || model.generatingSourcePages.contains(source.id) || model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id))
     }
 
     private func sourceSummaryButton(_ source: SourceRecord, compact: Bool = false) -> some View {
@@ -759,7 +774,7 @@ struct ContentView: View {
         return Button(compact ? (hasSummary ? "Regenerate" : "Generate") : (hasSummary ? "Regenerate AI Summary" : "Generate AI Summary")) {
             model.generateSourceSummary(source)
         }
-        .disabled(model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id))
+        .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id))
     }
     private func metadataDate(_ value: String) -> String {
         let formatter = ISO8601DateFormatter()
@@ -771,16 +786,36 @@ struct ContentView: View {
         return date?.formatted(date: .abbreviated, time: .shortened) ?? value
     }
     private func inspectorToolbar(close: @escaping () -> Void) -> some View {
-        HStack {
+        HStack(spacing: 6) {
             Text("Inspector").font(.headline)
             Spacer()
-            Toggle(isOn: $condensedInspector) {
-                Label("Condensed inspector", systemImage: "rectangle.compress.vertical").labelStyle(.iconOnly)
-            }.toggleStyle(.button).help("Condensed inspector")
+            Button {
+                condensedInspector.toggle()
+            } label: {
+                Image(systemName: "rectangle.compress.vertical")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(condensedInspector ? Color.accentColor : .secondary)
+                    .frame(width: 24, height: 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(condensedInspector ? Color.primary.opacity(0.1) : Color.clear)
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Condensed inspector")
+            .accessibilityLabel("Condensed inspector")
             Button(action: close) {
-                Label("Close inspector", systemImage: "xmark").labelStyle(.iconOnly)
-            }.buttonStyle(.borderless).help("Close inspector")
-        }.controlSize(.small).padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 8)
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Close inspector")
+            .accessibilityLabel("Close inspector")
+        }.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 8)
     }
     private func inspectorIdentity(title: String, kind: String, date: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {

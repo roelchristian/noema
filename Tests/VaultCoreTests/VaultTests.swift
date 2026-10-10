@@ -679,3 +679,53 @@ func wikipediaCaptureUsesFullHTML(html: String) async throws {
     #expect(results.map(\.title) == ["First & best", "Second"])
     #expect(results.first?.url.absoluteString == "https://example.com/a?q=1&x=2")
 }
+
+@Test func cloudSourceDownloadQueuesAllowsPageLinkingAndCompletes() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let root = folder.appendingPathComponent("Vault")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let repo = try FileVaultRepository.open(root: root, create: true)
+    let note = try await repo.create(title: "Research Note", body: "Initial body")
+
+    // 1. Linked cloud/OneDrive file not yet downloaded locally
+    let linkedFile = folder.appendingPathComponent("OneDriveReport.txt")
+    try Data().write(to: linkedFile)
+    let pendingLinked = try await repo.beginSourceDownload(at: linkedFile, shouldImport: false)
+    #expect(pendingLinked.availabilityIssue == "Downloading from iCloud")
+    #expect(pendingLinked.metadata.isLinked)
+    #expect(try await repo.scan().sources.contains(where: { $0.id == pendingLinked.id }))
+
+    // User can link the queued source to a wiki page while it is still downloading
+    let linkedNote = try await repo.setSourceReference(note: note, sourceID: pendingLinked.id, linked: true)
+    #expect(linkedNote.linkedSourceIDs == [pendingLinked.id])
+
+    // Download completes and materializes the file locally
+    let linkedBytes = Data("Downloaded OneDrive linked content".utf8)
+    try linkedBytes.write(to: linkedFile)
+    let completedLinked = try await repo.completeSourceDownload(id: pendingLinked.id, at: linkedFile, data: linkedBytes, shouldImport: false)
+    #expect(completedLinked.id == pendingLinked.id)
+    #expect(completedLinked.body == "Downloaded OneDrive linked content")
+    #expect(completedLinked.metadata.sha256 == digest(linkedBytes))
+    let scannedAfterLink = try await repo.scan()
+    #expect(scannedAfterLink.notes.first(where: { $0.id == note.id })?.linkedSourceIDs == [completedLinked.id])
+    #expect(scannedAfterLink.sources.first(where: { $0.id == completedLinked.id })?.availabilityIssue == nil)
+
+    // 2. Imported cloud/OneDrive file not yet downloaded locally
+    let importedFile = folder.appendingPathComponent("OneDriveNotes.md")
+    try Data().write(to: importedFile)
+    let pendingImport = try await repo.beginSourceDownload(at: importedFile, shouldImport: true)
+    #expect(pendingImport.availabilityIssue == "Downloading from iCloud")
+    #expect(!pendingImport.metadata.isLinked)
+    // Incomplete import is not written to disk before download finishes
+    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("Sources/\(pendingImport.id.uuidString.lowercased())").path))
+
+    let bothLinkedNote = try await repo.setSourceReference(note: linkedNote, sourceID: pendingImport.id, linked: true)
+    #expect(Set(bothLinkedNote.linkedSourceIDs) == Set([completedLinked.id, pendingImport.id]))
+
+    let importedBytes = Data("# Downloaded Markdown".utf8)
+    try importedBytes.write(to: importedFile)
+    let completedImport = try await repo.completeSourceDownload(id: pendingImport.id, at: importedFile, data: importedBytes, shouldImport: true)
+    #expect(completedImport.id == pendingImport.id)
+    #expect(completedImport.body == "# Downloaded Markdown")
+    #expect(FileVaultRepository.checkSourceAvailability(completedImport, root: root) == "Available")
+}
