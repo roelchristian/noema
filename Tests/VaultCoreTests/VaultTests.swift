@@ -242,3 +242,20 @@ private func temporaryFolder() throws -> URL {
     let edited = try await repo.save(note: note, title: note.title, body: "Changed", tags: [])
     #expect(edited.body == "Changed")
 }
+
+@Test func trashLockedPagePreservesBytesAndOtherPages() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let other = try await repo.create(title: "Keep", body: "Other page")
+    var target = try await repo.create(title: "Trash", body: "Recover me")
+    target.editingLocked = true
+    target = try await repo.save(note: target, title: target.title, body: target.body, tags: target.tags)
+    let bytes = try Data(contentsOf: folder.appendingPathComponent(target.relativePath))
+    try await repo.trash(note: target)
+    let remaining = try await repo.scan().notes
+    #expect(remaining.map(\.id) == [other.id])
+    #expect(remaining.first?.body == other.body)
+    let trash = try FileManager.default.contentsOfDirectory(at: folder.appendingPathComponent(".Trash"), includingPropertiesForKeys: nil)
+    #expect(trash.count == 1)
+    #expect(try Data(contentsOf: #require(trash.first)) == bytes)
+}

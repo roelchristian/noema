@@ -30,7 +30,7 @@ The script packages and locally signs a sandboxed app and creates `dist/noema.zi
 For a quick tour, open `Examples/Demo Vault`. Its pages contain illustrative personal context, and you can create a separate vault for your own writing.
 
 1. Click **Create a vault**. Create or choose a dedicated folder, locally or in iCloud Drive. Keep your content vault separate from this source-code folder.
-2. Select **Pages** to browse your writing; page headers begin with the title. Use **New Personal Page** for optional Overview / Personal context / Connections headings, or create a blank page with ⌘N.
+2. Select **Pages** to browse your writing. Swipe left on a page row to reveal **Delete** (moves it to recoverable vault trash after confirmation), or swipe right for **Lock** / **Unlock**. These actions are also in the row’s context menu; page headers begin with the title. Use **New Personal Page** for optional Overview / Personal context / Connections headings, or create a blank page with ⌘N.
 3. Add topics in the comma-separated field or write inline `#history` tags. Type `[[` for page suggestions. A link such as `[[Pertinax|my reading]]` can show a friendly label.
 4. Click **Edit** or click the article text area once to start native block editing; click **Done** or press Escape to finish. The lock control beside Edit and Trash in the top toolbar prevents article edits; clicking a locked article shows an unlock reminder in the page header. The square-and-pencil **New page** icon opens the page-creation menu.
 5. Select **Sources** to import UTF-8 `.txt` / `.md` files or paste text with an optional original URL. Originals cannot be edited in the app. Imported Markdown also has an Original view.
@@ -40,6 +40,8 @@ For a quick tour, open `Examples/Demo Vault`. Its pages contain illustrative per
 Sources and wiki pages are independent in v1. No AI provider is contacted. Raw data stays distinguishable from your interpretation.
 
 ## Block editing
+
+Reading and editing use compact 80-point side margins, retaining a gutter for block icons and handles.
 
 Type `/` in an empty paragraph or after whitespace to search block commands. The compact menu opens directly above or below the caret within the visible editor, scrolls to fit the available space, separates basic and semantic blocks, and shows semantic icon colors. Aliases such as `/h2` and `/ques` and fuzzy matching are supported; use arrows and Return, or Escape to dismiss. Paragraphs, three heading levels, bullets, numbering, tasks, quotes, code, dividers, callouts, and nested toggles share the same command layer.
 

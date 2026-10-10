@@ -253,9 +253,11 @@ struct EditorAction: Equatable {
         editingHint = nil; reading = false
     }
     func finishEditing() { wikiQuery = nil; editorAction = nil; saveNow(); reading = true }
-    func toggleEditingLock() {
+    func toggleEditingLock(_ id: UUID? = nil) {
+        guard let targetID = id ?? currentNote?.id else { return }
         Task {
-            guard await saveCurrent(), var note = currentNote, let repository else { return }
+            if currentNote?.id == targetID, !(await saveCurrent()) { return }
+            guard var note = notes.first(where: { $0.id == targetID }), let repository else { return }
             note.editingLocked = !note.isEditingLocked
             do {
                 let saved = try await repository.save(note: note, title: note.title, body: note.body, tags: note.tags)
@@ -334,13 +336,17 @@ struct EditorAction: Equatable {
             } catch { errorMessage = error.localizedDescription }
         }
     }
-    func trashCurrent() {
+    func trashCurrent() { trashPage(currentNote?.id) }
+    func trashPage(_ id: UUID?) {
+        guard let id else { return }
         Task {
-            if dirty, !(await saveCurrent()) { return }
-            guard let note = currentNote, let repository else { return }
+            if currentNote?.id == id, !(await saveCurrent()) { return }
+            guard let note = notes.first(where: { $0.id == id }), let repository else { return }
             do {
                 try await repository.trash(note: note)
-                selectedID = nil; currentNote = nil; body = ""; externalChange = false
+                if currentNote?.id == id {
+                    selectedID = nil; currentNote = nil; body = ""; externalChange = false
+                }
                 await refresh()
             } catch { errorMessage = error.localizedDescription }
         }

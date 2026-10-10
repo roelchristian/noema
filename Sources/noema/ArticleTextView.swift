@@ -106,7 +106,7 @@ import VaultCore
             if let semantic = SemanticPresentation.find(metadata.semantic) {
                 drawSymbol(semantic.symbol, at: NSRect(x: textContainerOrigin.x - 46, y: rect.minY + 3, width: 14, height: 14), color: semantic.accent)
             } else if kind == .code, let language = metadata.language {
-                (language as NSString).draw(in: NSRect(x: 52, y: rect.minY + 3, width: 76, height: 34), withAttributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor])
+                (language as NSString).draw(in: NSRect(x: 30, y: rect.minY + 3, width: max(0, textContainerOrigin.x - 38), height: 34), withAttributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor])
             }
             if id == hoverID && !locked && isEditable {
                 theme.nativeText(.textMuted).setFill()

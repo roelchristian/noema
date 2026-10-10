@@ -6,6 +6,7 @@ struct ContentView: View {
     @Environment(\.noemaTheme) private var theme
     @FocusState private var searchFocused: Bool
     @State private var showTrashConfirmation = false
+    @State private var trashPageID: UUID?
     @State private var sourceOriginal = false
     var body: some View {
         Group {
@@ -29,7 +30,7 @@ struct ContentView: View {
                         Button { model.toggleEditingLock() } label: {
                             Label(model.editingLocked ? "Unlock article" : "Lock article", systemImage: model.editingLocked ? "lock.fill" : "lock.open")
                         }.help(model.editingLocked ? "Unlock article" : "Lock article against editing")
-                        Button { showTrashConfirmation = true } label: {
+                        Button { trashPageID = model.currentNote?.id; showTrashConfirmation = true } label: {
                             Label("Move page to vault trash", systemImage: "trash")
                         }.help("Move page to vault trash")
                     }
@@ -90,7 +91,7 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) { model.unresolvedTarget = nil }
         } message: { Text("‘\(model.unresolvedTarget ?? "")’ does not exist yet.") }
         .confirmationDialog("Move this page to vault trash?", isPresented: $showTrashConfirmation) {
-            Button("Move to Trash", role: .destructive) { model.trashCurrent() }
+            Button("Move to Trash", role: .destructive) { model.trashPage(trashPageID) }
         } message: { Text("The Markdown file stays recoverable in the vault’s .Trash folder.") }
         .onChange(of: model.searchText) { model.queryChanged() }
         .onChange(of: model.searchFocusToken) { searchFocused = true }
@@ -172,6 +173,26 @@ struct ContentView: View {
                                     .foregroundStyle(theme.text(row.id == model.selectedID ? .textPrimary : .graphHighlight, on: .background)).lineLimit(1)
                             }
                         }.padding(.vertical, 7).tag(row.id)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            if row.kind == .wiki {
+                                Button(role: .destructive) { trashPageID = row.id; showTrashConfirmation = true } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                        }
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            if row.kind == .wiki, let note = model.notes.first(where: { $0.id == row.id }) {
+                                Button { model.toggleEditingLock(row.id) } label: {
+                                    Label(note.isEditingLocked ? "Unlock" : "Lock", systemImage: note.isEditingLocked ? "lock.open" : "lock")
+                                }
+                            }
+                        }
+                        .contextMenu {
+                            if row.kind == .wiki, let note = model.notes.first(where: { $0.id == row.id }) {
+                                Button(note.isEditingLocked ? "Unlock" : "Lock") { model.toggleEditingLock(row.id) }
+                                Button("Delete…", role: .destructive) { trashPageID = row.id; showTrashConfirmation = true }
+                            }
+                        }
                     }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
             }

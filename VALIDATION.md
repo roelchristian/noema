@@ -178,3 +178,15 @@ Packaging produces a local ad-hoc signed `.app` and an archive without extended 
 6. Rename a page, check its old-title links, then move it to trash. Confirm changes arrive on the other Mac and restore its Markdown file from `.Trash`.
 
 Until this procedure passes, iCloud support is implemented but cross-device behavior remains unverified.
+
+## Page row swipe actions — 2026-10-10
+
+- Page rows use native trailing swipe actions for Delete and leading actions for Lock/Unlock, with context-menu alternatives. Delete confirms the captured page identity and uses recoverable vault trash. Actions on another row preserve the current selection.
+- `./scripts/test.sh` passed all 40 existing test entries (optional benchmark not executed). `./scripts/build.sh debug` packaged the app and archive successfully. Restricted initial attempts could not use macOS file coordination, pasteboard, or icon services; reruns with service access passed.
+- Added a regression for trashing a locked page while preserving its original bytes and another page; `./scripts/test.sh --filter trashLockedPagePreservesBytesAndOtherPages` passed. `git diff --check` passed. Native gesture execution in a temporary vault, appearance/accent changes, accessibility adaptations, and VoiceOver were not exercised within the requested timebox.
+
+## Compact article margins — 2026-10-10
+
+- Reduced the shared reading/editor horizontal text inset from 152 to 80 points per side. Code-language labels now fit inside the narrower gutter, keeping the block handles and semantic icons clear of article text.
+- `./scripts/build.sh debug` compiled and packaged the app and archive successfully. `./scripts/test.sh` passed all 41 entries (optional benchmark not executed); `git diff --check` passed. Generated brand assets were unchanged.
+- Native Light appearance inspection used the isolated `local.noema.suggestion-check` app and `/tmp/Noema-Suggestion-Acceptance/Test Vault`: confirmed the narrower reading and editing layouts and visible semantic-icon clearance. No page content was edited. Appearance/accent switching, accessibility-preference combinations, full VoiceOver, and code-language label interaction were not manually exercised.
