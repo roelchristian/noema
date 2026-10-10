@@ -8,6 +8,8 @@ The interface uses native macOS Liquid Glass navigation and toolbars, glass sear
 
 **System appearance:** App chrome, controls, writing surfaces, selection, and previews follow macOS Light/Dark appearance, accent and highlight colors, and accessibility settings. Appearance settings are managed in System Settings; Noema no longer overrides them. Midnight Iris colors are confined to the orbital identity and icon exports.
 
+The middle pane omits the window-title branding. Page and source headers use a compact 26-point title with reduced top spacing. Document controls sit in the main pane, centered vertically beside the title; creation and vault menus remain available there when no document is selected.
+
 The middle page/source list starts at 385 points wide, about 1.75 times the sidebar's default 220 points. Native split-view dividers remain resizable.
 
 List rows have padded side margins and show the last-updated time for pages (capture time for sources): a time today, or a date for older entries. A saved AI summary appears as a two-line preview with a sparkles icon; pages without one show their opening content instead.

@@ -2,6 +2,18 @@
 
 Environment: Apple Silicon Mac, macOS 27.0; Swift 6.2.4; macOS SDK 26.2.
 
+## Main-pane document controls — one-minute follow-up
+
+- Moved document controls and adjacent creation/vault menus into the third pane's page/source header. The title and controls share a vertically centered native HStack. Empty selection retains creation/vault controls at the top of the third pane.
+- `./scripts/build.sh debug` compiled, packaged, and signed successfully after rerunning with macOS icon-service access (initial restricted packaging reported Invalid Iconset). `git diff --check` passed. Existing demo-vault edits were preserved.
+- Native visual/layout, editing interactions, appearance/accent switching, accessibility, and regression checks were not performed within the explicit timebox.
+
+## Compact pane headers — one-minute timebox
+
+- Removed the native window-title branding from the middle pane. Page/source title fonts are 26 points (previously 32), including title editing; header top padding is 8 points (previously 28), with 20-point bottom spacing.
+- `./scripts/build.sh debug` compiled and linked successfully, but packaging stopped at `iconutil` with Invalid Iconset in the restricted environment. `git diff --check` passed. Existing demo-vault edits were preserved.
+- Native layout/alignment, theme/accent switching, accessibility, and regression checks were not performed within the explicit timebox. Toolbar alignment is not visually verified; packaging remains incomplete.
+
 ## Padded list rows, dates, and summary previews — three-minute timebox
 
 - Page/source rows have 12 points of additional horizontal padding and 10 points of vertical padding. Page update times and source capture times appear beside titles, using a localized time today or date otherwise; missing metadata leaves the date empty. Saved, nonempty AI summaries provide the two-line preview with a sparkles icon. Other rows show opening plain content, excluding the block metadata envelope.

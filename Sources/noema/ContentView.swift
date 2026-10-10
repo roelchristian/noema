@@ -22,64 +22,7 @@ struct ContentView: View {
                 .navigationSplitViewStyle(.balanced)
             }
         }
-        .toolbar {
-            if model.root != nil {
-                if model.currentNote != nil {
-                    ToolbarItemGroup(placement: .primaryAction) {
-                        if aiSummaries {
-                            Button { model.summarizePage() } label: { Label("Summarize", systemImage: "sparkles") }
-                                .disabled(model.editingLocked || model.generatingAISummary)
-                                .help("Generate an on-device AI summary")
-                        }
-                        Button { if model.reading { model.beginEditing() } else { model.finishEditing() } } label: {
-                            Label(model.reading ? "Edit" : "Done", systemImage: model.reading ? "pencil" : "checkmark")
-                        }.disabled(model.editingLocked)
-                        Button { model.toggleEditingLock() } label: {
-                            Label(model.editingLocked ? "Unlock article" : "Lock article", systemImage: model.editingLocked ? "lock.fill" : "lock.open")
-                        }.help(model.editingLocked ? "Unlock article" : "Lock article against editing")
-                        Button { trashPageID = model.currentNote?.id; showTrashConfirmation = true } label: {
-                            Label("Move page to vault trash", systemImage: "trash")
-                        }.help("Move page to vault trash")
-                    }
-                } else if model.currentSource?.metadata.storedFilename.hasSuffix(".md") == true {
-                    ToolbarItem(placement: .primaryAction) {
-                        Picker("Source view", selection: $sourceOriginal) {
-                            Text("Read").tag(false)
-                            Text("Original").tag(true)
-                        }.pickerStyle(.segmented).frame(minWidth: 160)
-                    }
-                }
-                if model.currentNote != nil || model.currentSource?.metadata.storedFilename.hasSuffix(".md") == true {
-                    ToolbarSpacer(.fixed, placement: .primaryAction)
-                }
-                ToolbarItemGroup(placement: .primaryAction) {
-                    if model.scope == .sources {
-                        Button { model.importFiles() } label: { Label("Import source", systemImage: "square.and.arrow.down") }
-                        Button { model.showPasteSource = true } label: { Label("Paste source", systemImage: "doc.on.clipboard") }
-                    } else {
-                        Menu {
-                            Button("Blank page") { model.newPage() }
-                            Button("Personal page template") { model.newPage(template: true) }
-                        } label: { Label("New page", systemImage: "square.and.pencil") }
-                            .labelStyle(.iconOnly)
-                            .buttonBorderShape(.roundedRectangle)
-                            .help("New page")
-                            .accessibilityLabel("New page")
-                    }
-                }
-                ToolbarSpacer(.fixed, placement: .primaryAction)
-                ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        Button("Open another vault…") { model.chooseVault(create: false) }
-                        Button { model.revealVault() } label: { Label("Reveal vault in Finder", systemImage: "folder") }
-                        Button { Task { await model.refresh() } } label: { Label("Refresh from files", systemImage: "arrow.clockwise") }
-                        Button("Vault notices (\(model.issues.count))") { model.showIssues = true }
-                        Button("Recover drafts (\(model.recoveredDrafts.count))") { model.showRecovery = true }.disabled(model.recoveredDrafts.isEmpty)
-                    } label: { Label("Vault options", systemImage: "ellipsis.circle") }
-                        .accessibilityLabel("Vault options")
-                }
-            }
-        }
+        .toolbar(removing: .title)
         .sheet(isPresented: $model.showPasteSource) { PasteSourceSheet(model: model) }
         .sheet(isPresented: $model.showRecovery) { recoverySheet }
         .sheet(isPresented: $model.showIssues) { noticesSheet }
@@ -350,12 +293,69 @@ struct ContentView: View {
                 if model.scope != .sources { Button("New personal page") { model.newPage(template: true) }.buttonStyle(.glass) }
                 if let error = model.errorMessage { Text(error).foregroundStyle(.red).textSelection(.enabled).frame(maxWidth: 500) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                .safeAreaBar(edge: .top) { HStack { Spacer(); headerActions }.padding(.horizontal, 28).padding(.vertical, 8) }
         }
     }
     private var libraryCount: String {
         let count = model.rows.count
         let noun = model.scope == .sources ? (count == 1 ? "source" : "sources") : (count == 1 ? "page" : "pages")
         return "\(count) \(noun)"
+    }
+    private var headerActions: some View {
+        HStack(spacing: 16) {
+            if model.root != nil {
+                if model.currentNote != nil {
+                    HStack(spacing: 8) {
+                        if aiSummaries {
+                            Button { model.summarizePage() } label: { Label("Summarize", systemImage: "sparkles") }
+                                .disabled(model.editingLocked || model.generatingAISummary)
+                                .help("Generate an on-device AI summary")
+                        }
+                        Button { if model.reading { model.beginEditing() } else { model.finishEditing() } } label: {
+                            Label(model.reading ? "Edit" : "Done", systemImage: model.reading ? "pencil" : "checkmark")
+                        }.disabled(model.editingLocked)
+                        Button { model.toggleEditingLock() } label: {
+                            Label(model.editingLocked ? "Unlock article" : "Lock article", systemImage: model.editingLocked ? "lock.fill" : "lock.open")
+                        }.help(model.editingLocked ? "Unlock article" : "Lock article against editing")
+                        Button { trashPageID = model.currentNote?.id; showTrashConfirmation = true } label: {
+                            Label("Move page to vault trash", systemImage: "trash")
+                        }.help("Move page to vault trash")
+                    }
+                } else if model.currentSource?.metadata.storedFilename.hasSuffix(".md") == true {
+                    HStack(spacing: 8) {
+                        Picker("Source view", selection: $sourceOriginal) {
+                            Text("Read").tag(false)
+                            Text("Original").tag(true)
+                        }.pickerStyle(.segmented).frame(minWidth: 160)
+                    }
+                }
+                HStack(spacing: 8) {
+                    if model.scope == .sources {
+                        Button { model.importFiles() } label: { Label("Import source", systemImage: "square.and.arrow.down") }
+                        Button { model.showPasteSource = true } label: { Label("Paste source", systemImage: "doc.on.clipboard") }
+                    } else {
+                        Menu {
+                            Button("Blank page") { model.newPage() }
+                            Button("Personal page template") { model.newPage(template: true) }
+                        } label: { Label("New page", systemImage: "square.and.pencil") }
+                            .labelStyle(.iconOnly)
+                            .buttonBorderShape(.roundedRectangle)
+                            .help("New page")
+                            .accessibilityLabel("New page")
+                    }
+                }
+                HStack(spacing: 8) {
+                    Menu {
+                        Button("Open another vault…") { model.chooseVault(create: false) }
+                        Button { model.revealVault() } label: { Label("Reveal vault in Finder", systemImage: "folder") }
+                        Button { Task { await model.refresh() } } label: { Label("Refresh from files", systemImage: "arrow.clockwise") }
+                        Button("Vault notices (\(model.issues.count))") { model.showIssues = true }
+                        Button("Recover drafts (\(model.recoveredDrafts.count))") { model.showRecovery = true }.disabled(model.recoveredDrafts.isEmpty)
+                    } label: { Label("Vault options", systemImage: "ellipsis.circle") }
+                        .accessibilityLabel("Vault options")
+                }
+            }
+        }.labelStyle(.iconOnly).buttonStyle(.glass).fixedSize(horizontal: true, vertical: false)
     }
     private var pageHeader: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -376,15 +376,15 @@ struct ContentView: View {
                 }
             }
             if model.currentNote != nil {
-                HStack(alignment: .firstTextBaseline, spacing: 16) {
+                HStack(alignment: .center, spacing: 16) {
                     if model.reading {
-                        Text(model.title).font(.system(size: 32, weight: .semibold)).textSelection(.enabled)
+                        Text(model.title).font(.system(size: 26, weight: .semibold)).textSelection(.enabled)
                             .onTapGesture(count: 2) { model.beginEditing() }
                     } else {
-                        TextField("Page title", text: $model.title).textFieldStyle(.plain).font(.system(size: 32, weight: .semibold))
+                        TextField("Page title", text: $model.title).textFieldStyle(.plain).font(.system(size: 26, weight: .semibold))
                     }
                     Spacer()
-
+                    headerActions
                 }
                 if !model.reading {
                     HStack {
@@ -396,7 +396,11 @@ struct ContentView: View {
                     HStack { ForEach(note.allTags.prefix(8), id: \.self) { tag in Button("#" + tag) { model.changeScope(.tag(tag)) }.font(.caption).foregroundStyle(theme.text(.graphHighlight, on: .background)).buttonStyle(.bordered).tint(theme.color(.graphHighlight)).controlSize(.small) } }
                 }
             } else {
-                Text(model.title).font(.system(size: 32, weight: .semibold)).textSelection(.enabled)
+                HStack(alignment: .center, spacing: 16) {
+                    Text(model.title).font(.system(size: 26, weight: .semibold)).textSelection(.enabled)
+                    Spacer()
+                    headerActions
+                }
                 if let source = model.currentSource {
                     HStack {
                         Text(source.metadata.originalFilename)
@@ -405,7 +409,7 @@ struct ContentView: View {
                     }.font(.caption).foregroundStyle(theme.text())
                 }
             }
-        }.padding(28)
+        }.padding(.horizontal, 28).padding(.top, 8).padding(.bottom, 20)
     }
     private var pageFooter: some View {
         VStack(alignment: .leading, spacing: 10) {
