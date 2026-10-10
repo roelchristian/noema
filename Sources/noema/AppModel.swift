@@ -94,6 +94,7 @@ struct EditorAction: Equatable {
     var rows: [LibraryRow] = []
     var semanticRows: [SemanticBlockHit] = []
     var selectedSemanticID: String?
+    var recentPageIDs: [UUID] = []
     var tags: [String] = []
     var wordCount = 0
     var scope: LibraryScope = .wiki
@@ -163,6 +164,20 @@ struct EditorAction: Equatable {
     }
     var scopeTitle: String {
         switch scope { case .wiki: "Pages"; case .sources: "Sources"; case .semantic: "Semantic Blocks"; case .trash: "Trash"; case .tag(let tag): "#" + tag }
+    }
+    var activeTagFilter: String? {
+        if case .tag(let tag) = scope { return tag }
+        return nil
+    }
+    var recentPages: [NoteRecord] {
+        let noteMap = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let accessed = recentPageIDs.compactMap { noteMap[$0] }
+        let accessedSet = Set(accessed.map(\.id))
+        let remaining = notes.filter { !accessedSet.contains($0.id) }.sorted { $0.updatedAt > $1.updatedAt }
+        return Array((accessed + remaining).prefix(10))
+    }
+    var recentSources: [SourceRecord] {
+        Array(sources.sorted { $0.metadata.capturedAt > $1.metadata.capturedAt }.prefix(10))
     }
     var linkSuggestions: [NoteRecord] {
         guard let wikiQuery else { return [] }
@@ -259,6 +274,7 @@ struct EditorAction: Equatable {
             dismissedVaultNotices = []
             generation = UUID(); repository = repo; index = searchIndex; recovery = journal
             unseenRenamedPages.removeAll()
+            recentPageIDs.removeAll()
             root = url; vaultName = url.lastPathComponent; scope = .wiki; searchText = ""
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
             let cached = try await searchIndex.cachedEntries()
@@ -328,20 +344,50 @@ struct EditorAction: Equatable {
         }
     }
     func changeScope(_ scope: LibraryScope) {
-        Task { if await finishCurrentPage() { self.scope = scope; queryChanged() } }
+        let applyScope = { @MainActor in
+            self.autosaveTask?.cancel(); self.wikiQuery = nil; self.editorAction = nil
+            self.scope = scope
+            self.selectedID = nil; self.currentNote = nil; self.currentSource = nil; self.selectedSemanticID = nil
+            self.externalChange = false; self.errorMessage = nil; self.reading = true
+            if self.searchText.isEmpty {
+                switch scope {
+                case .wiki:
+                    self.rows = self.notes.map { LibraryRow(note: $0) }
+                case .sources:
+                    self.rows = self.sources.map { LibraryRow(source: $0) }
+                case .tag(let tag):
+                    self.rows = self.notes.filter { $0.allTags.contains(tag) }.map { LibraryRow(note: $0) }
+                case .semantic, .trash:
+                    break
+                }
+            }
+        }
+        if !dirty && !saving && !needsTitle {
+            applyScope()
+            Task { await updateRows() }
+        } else {
+            Task {
+                await waitForSave()
+                if await finishCurrentPage() {
+                    applyScope()
+                    await updateRows()
+                }
+            }
+        }
     }
     private func updateRows() async {
-        if scope == .semantic {
-            let query = searchText, ticket = generation
-            var snapshot = notes
-            if let currentNote, let i = snapshot.firstIndex(where: { $0.id == currentNote.id }) {
-                snapshot[i].body = body; snapshot[i].title = title
-            }
-            let capturedNotes = snapshot
+        let query = searchText, ticket = generation
+        var snapshot = notes
+        if let currentNote, let i = snapshot.firstIndex(where: { $0.id == currentNote.id }) {
+            snapshot[i].body = body; snapshot[i].title = title
+        }
+        let capturedNotes = snapshot
+        if scope == .semantic || semanticRows.isEmpty {
             let hits = await Task.detached { SemanticBlockHit.search(capturedNotes, query: query) }.value
-            guard scope == .semantic, searchText == query, generation == ticket, !Task.isCancelled else { return }
-            semanticRows = hits
-            return
+            if searchText == query, generation == ticket, !Task.isCancelled {
+                semanticRows = hits
+            }
+            if scope == .semantic { return }
         }
         guard let index else { return }
         let capturedScope = scope, capturedQuery = searchText
@@ -392,6 +438,8 @@ struct EditorAction: Equatable {
     }
     private func apply(_ note: NoteRecord) {
         markPageViewed(note.id)
+        recentPageIDs.removeAll { $0 == note.id }
+        recentPageIDs.insert(note.id, at: 0)
         editingHint = nil
         aiSummaryNotice = nil
         editorAction = nil

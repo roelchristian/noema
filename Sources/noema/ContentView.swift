@@ -3,8 +3,15 @@ import AppKit
 import VaultCore
 
 struct ContentView: View {
+    enum PageSortOrder: String, CaseIterable, Identifiable {
+        case updated = "Recently Updated"
+        case title = "Title"
+        var id: String { rawValue }
+    }
     @Bindable var model: AppModel
     @Environment(\.noemaTheme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var sidebarTabNamespace
     @FocusState private var searchFocused: Bool
     @State private var showTrashConfirmation = false
     @State private var trashPageID: UUID?
@@ -13,37 +20,37 @@ struct ContentView: View {
     @State private var sourceOriginal = false
     @State private var showPageDetails = true
     @State private var condensedInspector = false
+    @State private var recentSectionExpanded = true
+    @State private var pageSortOrder: PageSortOrder = .updated
     @State private var sourceSelection: UUID?
     @State private var renamingSource: SourceRecord?
     @State private var sourceName = ""
     @State private var deletingSource: SourceRecord?
     @State private var sourceSortOrder = [KeyPathComparator(\LibraryRow.title)]
     @AppStorage(EditorPreferences.aiSummariesKey) private var aiSummaries = false
+    private var tabAnimation: Animation? {
+        reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.84, blendDuration: 0.1)
+    }
+    private func switchSidebarScope(_ scope: LibraryScope) {
+        if let tabAnimation {
+            withAnimation(tabAnimation) { model.changeScope(scope) }
+        } else {
+            model.changeScope(scope)
+        }
+    }
     var body: some View {
         Group {
             if model.root == nil { welcome }
-            else if model.scope == .sources {
+            else {
                 NavigationSplitView {
-                    sidebar.navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
+                    sidebar.navigationSplitViewColumnWidth(min: 250, ideal: 265, max: 280)
                 } detail: {
                     HSplitView {
-                        library.frame(minWidth: 520)
-                        if let source = model.sources.first(where: { $0.id == sourceSelection }) {
+                        mainWorkspace.frame(minWidth: model.scope == .sources && model.currentNote == nil && model.currentSource == nil ? 520 : 420)
+                        if model.scope == .sources && model.currentNote == nil && model.currentSource == nil,
+                           let source = model.sources.first(where: { $0.id == sourceSelection }) {
                             sourceInspector(source).frame(minWidth: 280, idealWidth: 340, maxWidth: 400)
-                        }
-                    }
-                    .ignoresSafeArea(.container, edges: .top)
-                }
-                .navigationSplitViewStyle(.balanced)
-            } else {
-                NavigationSplitView {
-                    sidebar.navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
-                } content: {
-                    library.navigationSplitViewColumnWidth(min: model.scope == .sources ? 520 : 385, ideal: model.scope == .sources ? 620 : 385, max: model.scope == .sources ? 850 : 490)
-                } detail: {
-                    HSplitView {
-                        detail.frame(minWidth: 360)
-                        if showPageDetails, let note = model.currentNote {
+                        } else if showPageDetails, let note = model.currentNote {
                             pageInspector(note).frame(minWidth: 280, idealWidth: 340, maxWidth: 400)
                         }
                     }
@@ -94,13 +101,26 @@ struct ContentView: View {
                  ? "Remove ‘\(deletingSource?.title ?? "")’ from Sources? Its linked original will remain on your filesystem."
                  : "Permanently delete ‘\(deletingSource?.title ?? "")’ and its imported original from the vault? This cannot be undone.")
         }
-        .onChange(of: model.searchText) { model.queryChanged() }
+        .onChange(of: model.searchText) {
+            if searchFocused && !model.searchText.isEmpty && (model.currentNote != nil || model.currentSource != nil) {
+                model.changeScope(model.scope)
+            } else {
+                model.queryChanged()
+            }
+        }
         .onChange(of: model.body) { if model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.title) { if model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.searchFocusToken) { searchFocused = true }
         .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false }
         .onChange(of: model.externalChange) { dismissedExternalChange = false }
         .onChange(of: model.root) { sourceSelection = nil; renamingSource = nil; deletingSource = nil }
+    }
+    @ViewBuilder private var mainWorkspace: some View {
+        if model.currentNote != nil || model.currentSource != nil {
+            detail
+        } else {
+            library
+        }
     }
     private var welcome: some View {
         VStack(spacing: 24) {
@@ -122,45 +142,376 @@ struct ContentView: View {
             if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil }.frame(maxWidth: 560) }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    private var sidebar: some View {
-        List(selection: Binding(get: { Optional(model.scope) }, set: { if let scope = $0 { model.changeScope(scope) } })) {
-            Section("Library") {
-                navigationLabel("Pages", symbol: "book.closed").badge(model.notes.count).tag(LibraryScope.wiki)
-                navigationLabel("Sources", symbol: "tray.full").badge(model.sources.count).tag(LibraryScope.sources)
-                navigationLabel("Semantic Blocks", symbol: "tag").tag(LibraryScope.semantic)
-                navigationLabel("Trash", symbol: "trash").badge(model.trashedPages.count).tag(LibraryScope.trash)
-            }
-            if !model.tags.isEmpty {
-                Section("Topics") { ForEach(model.tags, id: \.self) { tag in navigationLabel(tag, symbol: "number", topic: true).tag(LibraryScope.tag(tag)) } }
-            }
-        }
-        .safeAreaInset(edge: .top) {
-            HStack(spacing: 4) {
-                NoemaMark().frame(width: 40, height: 40).accessibilityHidden(true)
-                Text("Noema").font(.title3.weight(.medium))
-                Spacer()
-            }.padding(.horizontal, 12).padding(.vertical, 6)
-        }
-        .safeAreaInset(edge: .bottom) {
-            VStack(alignment: .leading, spacing: 8) {
-                if !model.recoveredDrafts.isEmpty {
-                    Button { model.showRecovery = true } label: { Label("\(model.recoveredDrafts.count) recoverable draft(s)", systemImage: "clock.arrow.circlepath") }.buttonStyle(.plain).foregroundStyle(.orange)
-                }
-                if !model.issues.isEmpty {
-                    Button { model.showIssues = true } label: { Label("\(model.issues.count) vault notice(s)", systemImage: "info.circle") }.buttonStyle(.plain)
-                }
-                Button { model.chooseVault(create: false) } label: {
-                    HStack { Label(model.vaultName, systemImage: "folder").lineLimit(1); Spacer(); Image(systemName: "chevron.up.chevron.down") }
-                }.buttonStyle(.glass).tint(nil).controlSize(.small).help("Open another vault")
-                    .accessibilityLabel("Open another vault. Current vault: \(model.vaultName)")
-            }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+    private var isPagesScope: Bool {
+        if case .wiki = model.scope { return true }
+        if case .tag = model.scope { return true }
+        return false
+    }
+    private var activeSidebarTab: LibraryScope {
+        switch model.scope {
+        case .sources: return .sources
+        case .semantic: return .semantic
+        default: return .wiki
         }
     }
-    private func navigationLabel(_ title: String, symbol: String, topic: Bool = false) -> some View {
-        Label {
-            Text(title).foregroundStyle(theme.text(.textPrimary))
-        } icon: {
-            Image(systemName: symbol).foregroundStyle(theme.text(topic ? .graphHighlight : .accentPrimary, on: .background))
+    private var sidebar: some View {
+        List {
+            Section(isExpanded: $recentSectionExpanded) {
+                if activeSidebarTab == .sources {
+                    ForEach(model.recentSources) { source in
+                        sidebarItemRow(
+                            title: source.title,
+                            symbol: source.metadata.isLinked ? "link" : "doc.text",
+                            active: sourceSelection == source.id || model.currentSource?.id == source.id
+                        ) {
+                            sourceSelection = source.id
+                            if model.currentNote != nil || model.currentSource != nil || model.scope != .sources {
+                                switchSidebarScope(.sources)
+                            }
+                        }
+                    }
+                    sidebarFooterLink("View all sources") {
+                        sourceSelection = nil
+                        switchSidebarScope(.sources)
+                    }
+                } else if activeSidebarTab == .semantic {
+                    ForEach(model.semanticRows.prefix(10)) { hit in
+                        let presentation = SemanticPresentation.find(hit.semantic)
+                        sidebarItemRow(
+                            title: hit.preview.isEmpty ? hit.pageTitle : hit.preview,
+                            symbol: presentation?.symbol ?? "tag",
+                            active: model.selectedSemanticID == hit.id
+                        ) {
+                            model.select(hit.pageID, block: hit.blockID)
+                        }
+                    }
+                    sidebarFooterLink("View all blocks") {
+                        switchSidebarScope(.semantic)
+                    }
+                } else {
+                    ForEach(model.recentPages) { note in
+                        sidebarPageRow(note)
+                    }
+                    sidebarFooterLink("View all pages") {
+                        switchSidebarScope(.wiki)
+                    }
+                }
+            } header: {
+                Text(activeSidebarTab == .sources ? "RECENT SOURCES" : activeSidebarTab == .semantic ? "RECENT BLOCKS" : "RECENT PAGES")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.opacity)
+            }
+        }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 26)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: activeSidebarTab)
+        .background(SidebarMaterialView().ignoresSafeArea())
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    NoemaMark().frame(width: 20, height: 20).accessibilityHidden(true)
+                    Text("Noema").font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary)
+                    Spacer()
+                }
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    ZStack(alignment: .leading) {
+                        TextField("", text: $model.searchText)
+                            .accessibilityLabel("Search")
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12.5))
+                            .focused($searchFocused)
+                        if model.searchText.isEmpty {
+                            Text("Search")
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(.secondary)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    if !model.searchText.isEmpty {
+                        Button { model.searchText = "" } label: {
+                            Label("Clear search", systemImage: "xmark.circle.fill")
+                                .labelStyle(.iconOnly)
+                                .font(.system(size: 11))
+                        }.buttonStyle(.plain).foregroundStyle(.secondary)
+                    } else {
+                        Text("⌘K")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.primary.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                )
+                HStack(spacing: 4) {
+                    sidebarTabButton(
+                        title: "Pages",
+                        symbol: "book.closed",
+                        count: model.notes.count,
+                        showLabel: activeSidebarTab == .wiki,
+                        highlighted: isPagesScope && model.currentNote == nil && model.currentSource == nil
+                    ) {
+                        switchSidebarScope(.wiki)
+                    }
+                    sidebarTabButton(
+                        title: "Sources",
+                        symbol: "tray.full",
+                        count: model.sources.count,
+                        showLabel: activeSidebarTab == .sources,
+                        highlighted: model.scope == .sources && model.currentNote == nil && model.currentSource == nil
+                    ) {
+                        switchSidebarScope(.sources)
+                    }
+                    sidebarTabButton(
+                        title: "Semantic Blocks",
+                        symbol: "tag",
+                        count: nil,
+                        showLabel: activeSidebarTab == .semantic,
+                        highlighted: model.scope == .semantic && model.currentNote == nil && model.currentSource == nil
+                    ) {
+                        switchSidebarScope(.semantic)
+                    }
+                }
+                .padding(3)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5)
+                )
+                .animation(tabAnimation, value: activeSidebarTab)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 6)
+            .padding(.bottom, 6)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                Divider().opacity(0.5)
+                VStack(alignment: .leading, spacing: 4) {
+                    Button {
+                        switchSidebarScope(.trash)
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: "trash")
+                                .font(.system(size: 12))
+                                .foregroundStyle(model.scope == .trash ? Color.accentColor : .secondary)
+                                .frame(width: 16)
+                            Text("Trash")
+                                .font(.system(size: 12.5, weight: model.scope == .trash ? .medium : .regular))
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            if model.trashedPages.count > 0 {
+                                Text(model.trashedPages.count.formatted())
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                        }
+                        .padding(.horizontal, 6)
+                        .frame(height: 26)
+                        .contentShape(Rectangle())
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(model.scope == .trash ? Color.primary.opacity(0.09) : Color.clear)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    if !model.recoveredDrafts.isEmpty {
+                        Button { model.showRecovery = true } label: {
+                            Label("\(model.recoveredDrafts.count) recoverable draft(s)", systemImage: "clock.arrow.circlepath")
+                                .font(.system(size: 12))
+                        }.buttonStyle(.plain).foregroundStyle(.orange)
+                    }
+                    if !model.issues.isEmpty {
+                        Button { model.showIssues = true } label: {
+                            Label("\(model.issues.count) vault notice(s)", systemImage: "info.circle")
+                                .font(.system(size: 12))
+                        }.buttonStyle(.plain).foregroundStyle(.secondary)
+                    }
+                    Menu {
+                        Button("Open Vault…") { model.chooseVault(create: false) }
+                        Button("Create Vault…") { model.chooseVault(create: true) }
+                        Divider()
+                        Button("Reveal in Finder") { model.revealVault() }
+                        Button("Refresh from Files") { Task { await model.refresh() } }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                            Text(model.vaultName)
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            Spacer()
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 6)
+                        .frame(height: 26)
+                        .contentShape(Rectangle())
+                    }
+                    .menuStyle(.borderlessButton)
+                    .buttonStyle(.plain)
+                    .help("Vault options")
+                    .accessibilityLabel("Vault menu. Current vault: \(model.vaultName)")
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+            }
+        }
+    }
+    private func sidebarTabButton(title: String, symbol: String, count: Int?, showLabel: Bool, highlighted: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 12.5, weight: showLabel ? .medium : .regular))
+                    .foregroundStyle(showLabel ? Color.accentColor : Color.secondary)
+                if showLabel {
+                    HStack(spacing: 6) {
+                        Text(title)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                        Spacer(minLength: 2)
+                        if let count {
+                            Text(count.formatted())
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                    }
+                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .leading)))
+                }
+            }
+            .padding(.horizontal, showLabel ? 8 : 0)
+            .frame(maxWidth: showLabel ? .infinity : 30, minHeight: 26, maxHeight: 26)
+            .clipped()
+            .contentShape(Rectangle())
+            .background {
+                if showLabel {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.primary.opacity(highlighted ? 0.11 : 0.08))
+                        .matchedGeometryEffect(id: "sidebarActiveTab", in: sidebarTabNamespace)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
+    }
+    private func sidebarPageRow(_ note: NoteRecord) -> some View {
+        let active = model.currentNote?.id == note.id
+        return Button {
+            model.select(note.id)
+        } label: {
+            HStack(spacing: 7) {
+                if model.unseenRenamedPages.contains(note.id) {
+                    Image(systemName: "circle.fill")
+                        .font(.system(size: 6))
+                        .foregroundStyle(Color(nsColor: .systemBlue))
+                        .frame(width: 16)
+                        .help("Page renamed since you last viewed it")
+                        .accessibilityLabel("Unread title change")
+                } else {
+                    Image(systemName: "doc.text")
+                        .font(.system(size: 12))
+                        .foregroundStyle(active ? Color.accentColor : .secondary)
+                        .frame(width: 16)
+                }
+                Text(note.title)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if note.isEditingLocked {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .help("Page locked against editing")
+                }
+            }
+            .padding(.leading, 2)
+            .padding(.trailing, 8)
+            .frame(height: 28)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(active ? Color.primary.opacity(0.08) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 0.5, leading: 0, bottom: 0.5, trailing: 4))
+        .listRowSeparator(.hidden)
+        .contextMenu {
+            Button(note.isEditingLocked ? "Unlock" : "Lock") { model.toggleEditingLock(note.id) }
+            Button("Delete…", role: .destructive) { trashPageID = note.id; showTrashConfirmation = true }
+        }
+    }
+    private func sidebarItemRow(title: String, symbol: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Image(systemName: symbol)
+                    .font(.system(size: 12))
+                    .foregroundStyle(active ? Color.accentColor : .secondary)
+                    .frame(width: 16)
+                Text(title)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+            }
+            .padding(.leading, 2)
+            .padding(.trailing, 8)
+            .frame(height: 28)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(active ? Color.primary.opacity(0.08) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 0.5, leading: 0, bottom: 0.5, trailing: 4))
+        .listRowSeparator(.hidden)
+    }
+    private func sidebarFooterLink(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 2)
+                .padding(.trailing, 8)
+                .frame(height: 24, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 4))
+        .listRowSeparator(.hidden)
+    }
+    private var sortedPageRows: [LibraryRow] {
+        switch pageSortOrder {
+        case .updated:
+            return model.rows.sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
+        case .title:
+            return model.rows.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         }
     }
     @ViewBuilder private var library: some View {
@@ -177,7 +528,7 @@ struct ContentView: View {
                     .frame(maxHeight: .infinity)
             } else {
                 List(selection: Binding(get: { model.selectedID }, set: { model.select($0) })) {
-                    ForEach(model.rows) { row in
+                    ForEach(sortedPageRows) { row in
                         VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 6) {
                                 if row.kind == .wiki, model.unseenRenamedPages.contains(row.id) {
@@ -248,8 +599,25 @@ struct ContentView: View {
         .background(theme.color(.background))
         .safeAreaBar(edge: .top) {
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(model.scopeTitle).font(.title2.bold()); Spacer()
+                HStack(spacing: 12) {
+                    Text(model.scopeTitle).font(.title2.bold())
+                    if model.activeTagFilter != nil {
+                        Button("Clear filter") { model.changeScope(.wiki) }
+                            .font(.caption)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                    }
+                    Spacer()
+                    if isPagesScope {
+                        Picker("Sort", selection: $pageSortOrder) {
+                            ForEach(PageSortOrder.allCases) { order in
+                                Text(order.rawValue).tag(order)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .controlSize(.small)
+                        .fixedSize()
+                    }
                     if model.scope == .sources {
                         Menu {
                             Button("Check Availability of All Sources") { model.checkSourceAvailability(model.sources) }
@@ -259,28 +627,34 @@ struct ContentView: View {
                             Button("From Files…") { model.addSource() }
                             Button("By URL…") { model.showURLSource = true }
                         }
+                    } else {
+                        headerActions
                     }
                     if model.busy { ProgressView().controlSize(.small) }
                 }
                 if model.scope == .sources, let error = model.errorMessage {
                     DismissibleNotice(message: error) { model.errorMessage = nil }
                 }
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(theme.text())
-                    ZStack(alignment: .leading) {
-                        TextField("", text: $model.searchText)
-                            .accessibilityLabel("Search \(model.scope == .semantic ? "semantic blocks" : model.scope == .sources ? "sources" : "pages")")
-                            .textFieldStyle(.plain).focused($searchFocused)
-                        if model.searchText.isEmpty {
-                            Text("Search \(model.scope == .semantic ? "semantic blocks" : model.scope == .sources ? "sources" : "pages")")
-                                .foregroundStyle(theme.text()).allowsHitTesting(false).accessibilityHidden(true)
+                if isPagesScope && !model.tags.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            Button("All Pages") { model.changeScope(.wiki) }
+                                .font(.caption)
+                                .buttonStyle(.bordered)
+                                .tint(model.activeTagFilter == nil ? .accentColor : nil)
+                                .controlSize(.small)
+                            ForEach(model.tags, id: \.self) { tag in
+                                Button("#" + tag) {
+                                    model.changeScope(model.activeTagFilter == tag ? .wiki : .tag(tag))
+                                }
+                                .font(.caption)
+                                .buttonStyle(.bordered)
+                                .tint(model.activeTagFilter == tag ? theme.color(.graphHighlight) : nil)
+                                .controlSize(.small)
+                            }
                         }
                     }
-                    if !model.searchText.isEmpty {
-                        Button { model.searchText = "" } label: { Label("Clear search", systemImage: "xmark.circle.fill").labelStyle(.iconOnly) }
-                            .buttonStyle(.plain).foregroundStyle(theme.text())
-                    }
-                }.padding(.horizontal, 10).padding(.vertical, 8).glassEffect(.regular.interactive(), in: Capsule())
+                }
             }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
         }
         .ignoresSafeArea(.container, edges: .top)
@@ -489,7 +863,31 @@ struct ContentView: View {
                         }.font(.caption)
                         InspectorProperty("Created", metadataDate(note.createdAt)).help(note.createdAt)
                         InspectorProperty("Modified", metadataDate(note.updatedAt)).help(note.updatedAt)
-                        InspectorProperty("Tags", Array(Set(model.editedTags + note.inlineTags)).sorted().joined(separator: ", "))
+                        let pageTags = Array(Set(model.editedTags + note.inlineTags)).sorted()
+                        LabeledContent {
+                            if pageTags.isEmpty {
+                                Text("None").foregroundStyle(.secondary)
+                            } else {
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 4) {
+                                        ForEach(pageTags, id: \.self) { tag in
+                                            Button("#" + tag) { model.changeScope(.tag(tag)) }
+                                                .buttonStyle(.bordered)
+                                                .tint(theme.color(.graphHighlight))
+                                                .controlSize(.mini)
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            Text("Tags").foregroundStyle(.secondary)
+                        }.font(.caption)
+                        if !model.editingLocked {
+                            TextField("Add tags (comma-separated)", text: $model.tagInput)
+                                .textFieldStyle(.roundedBorder)
+                                .controlSize(.small)
+                                .font(.caption)
+                        }
                         if !note.aliases.isEmpty { InspectorProperty("Aliases", note.aliases.joined(separator: ", ")) }
                         LabeledContent("Protection") {
                             Button { model.toggleEditingLock() } label: {
@@ -1066,3 +1464,19 @@ struct TopicPageSheet: View {
         .onAppear { topicFocused = true }
     }
 }
+
+private struct SidebarMaterialView: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        return view
+    }
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = .sidebar
+        nsView.blendingMode = .behindWindow
+        nsView.state = .followsWindowActiveState
+    }
+}
+
