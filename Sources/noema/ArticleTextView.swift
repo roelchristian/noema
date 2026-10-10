@@ -103,7 +103,7 @@ import VaultCore
             let decorationRect = headingRect.map { rect.union($0) } ?? rect
             guard decorationRect.intersects(dirtyRect) else { continue }
             let metadata = (storage.attribute(.blockMetadata, at: range.location, effectiveRange: nil) as? Data).flatMap { try? JSONDecoder().decode(BlockMetadata.self, from: $0) } ?? .init()
-            if kind == .code || kind == .callout {
+            if kind == .code || kind == .callout || kind == .math {
                 theme.native(.accentPrimary).withAlphaComponent(theme.dark ? 0.08 : 0.04).setFill()
                 NSBezierPath(roundedRect: NSRect(x: textContainerOrigin.x - 8 + CGFloat(depth * 24), y: decorationRect.minY - 6, width: max(20, bounds.width - textContainerOrigin.x * 2 - CGFloat(depth * 24) + 16), height: decorationRect.height + 12), xRadius: 5, yRadius: 5).fill()
             }
@@ -134,6 +134,19 @@ import VaultCore
                 drawSymbol(semantic.symbol, at: NSRect(x: textContainerOrigin.x - 46, y: headingRect == nil ? rect.minY + 3 : decorationRect.midY - 7, width: 14, height: 14), color: semantic.accent)
             } else if kind == .code, let language = metadata.language {
                 (language as NSString).draw(in: NSRect(x: 30, y: rect.minY + 3, width: max(0, textContainerOrigin.x - 38), height: 34), withAttributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor])
+            } else if kind == .math {
+                drawSymbol("function", at: NSRect(x: textContainerOrigin.x - 46, y: rect.minY + 3, width: 14, height: 14), color: .secondaryLabelColor)
+                let rawBlock = (storage.string as NSString).substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
+                let rendered = TeXMath.render(rawBlock, display: true)
+                if !rendered.isEmpty {
+                    let previewStyle = NSMutableParagraphStyle(); previewStyle.alignment = .right
+                    let previewRect = NSRect(x: max(textContainerOrigin.x + 120, bounds.width - textContainerOrigin.x - 260), y: decorationRect.minY, width: 260, height: decorationRect.height)
+                    (rendered as NSString).draw(in: previewRect, withAttributes: [
+                        .font: NSFont.systemFont(ofSize: 14, weight: .medium),
+                        .foregroundColor: theme.nativeText(.accentSecondary),
+                        .paragraphStyle: previewStyle
+                    ])
+                }
             }
             if id == hoverID && !locked && isEditable {
                 theme.nativeText(.textMuted).setFill()

@@ -6,10 +6,25 @@ public struct InlineStyle: Codable, Equatable, Sendable {
     public var underline = false
     public var strike = false
     public var code = false
+    public var math = false
+    public var rawMath: String?
     public var highlight = false
     public var link: String?
     public var wikiTarget: String?
     public init() {}
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        bold = try container.decodeIfPresent(Bool.self, forKey: .bold) ?? false
+        italic = try container.decodeIfPresent(Bool.self, forKey: .italic) ?? false
+        underline = try container.decodeIfPresent(Bool.self, forKey: .underline) ?? false
+        strike = try container.decodeIfPresent(Bool.self, forKey: .strike) ?? false
+        code = try container.decodeIfPresent(Bool.self, forKey: .code) ?? false
+        math = try container.decodeIfPresent(Bool.self, forKey: .math) ?? false
+        rawMath = try container.decodeIfPresent(String.self, forKey: .rawMath)
+        highlight = try container.decodeIfPresent(Bool.self, forKey: .highlight) ?? false
+        link = try container.decodeIfPresent(String.self, forKey: .link)
+        wikiTarget = try container.decodeIfPresent(String.self, forKey: .wikiTarget)
+    }
 }
 
 public struct RichRun: Codable, Equatable, Sendable {
@@ -25,7 +40,7 @@ public struct BlockKind: RawRepresentable, Codable, Hashable, Sendable {
     public static let paragraph = Self(rawValue: "paragraph")
     public static let heading1 = Self(rawValue: "h1"), heading2 = Self(rawValue: "h2"), heading3 = Self(rawValue: "h3")
     public static let bullet = Self(rawValue: "bullet"), numbered = Self(rawValue: "numbered"), task = Self(rawValue: "task")
-    public static let quote = Self(rawValue: "quote"), code = Self(rawValue: "code"), divider = Self(rawValue: "divider")
+    public static let quote = Self(rawValue: "quote"), code = Self(rawValue: "code"), math = Self(rawValue: "math"), divider = Self(rawValue: "divider")
     public static let callout = Self(rawValue: "callout"), toggle = Self(rawValue: "toggle")
     public var isList: Bool { [Self.bullet, .numbered, .task].contains(self) }
 }
@@ -129,24 +144,48 @@ public enum BlockDocumentCodec {
     private struct Envelope: Codable { var version: Int; var hash: String; var document: BlockDocument }
     private static let prefix = "<!--noema:document:"
 
+    private static func isValidEnvelopeLine(_ line: String) -> Bool {
+        guard line.hasPrefix(prefix), line.hasSuffix("-->") else { return false }
+        let encoded = String(line.dropFirst(prefix.count).dropLast(3))
+        guard let data = Data(base64Encoded: encoded),
+              let header = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              header["version"] is Int else { return false }
+        return true
+    }
+
+    private static func sanitized(_ document: BlockDocument) -> BlockDocument {
+        guard document.blocks.contains(where: { $0.kind == .paragraph && $0.children.isEmpty && isValidEnvelopeLine($0.text) }) else {
+            return document
+        }
+        var copy = document
+        copy.blocks.removeAll { $0.kind == .paragraph && $0.children.isEmpty && isValidEnvelopeLine($0.text) }
+        if copy.blocks.isEmpty { copy.blocks = [EditorBlock()] }
+        return copy
+    }
+
     public static func decode(_ source: String) -> BlockDocument {
         var markdown = source, recovered: String?
         if let range = source.range(of: "\n" + prefix, options: .backwards), source.hasSuffix("-->") {
             let encoded = String(source[range.upperBound...].dropLast(3))
             if let data = Data(base64Encoded: encoded),
                let header = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-               let version = header["version"] as? Int, version != 1 {
-                var document = parse(String(source[..<range.lowerBound])); document.unsupportedVersion = true; document.originalSource = source; return document
-            }
-            if let data = Data(base64Encoded: encoded), let envelope = try? JSONDecoder().decode(Envelope.self, from: data) {
-                if envelope.version != 1 {
-                    var document = parse(source); document.unsupportedVersion = true; document.originalSource = source; return document
+               let version = header["version"] as? Int {
+                let body = String(source[..<range.lowerBound])
+                if version != 1 {
+                    var document = parse(body); document.unsupportedVersion = true; document.originalSource = source; return document
                 }
-                markdown = String(source[..<range.lowerBound])
-                if envelope.hash == digest(Data(markdown.utf8)), valid(envelope.document) { return envelope.document }
+                markdown = body
+                if let envelope = try? JSONDecoder().decode(Envelope.self, from: data),
+                   envelope.hash == digest(Data(markdown.utf8)), valid(envelope.document) {
+                    return sanitized(envelope.document)
+                }
                 // External text wins. Keep the stale payload in the next save for manual recovery.
                 recovered = encoded
             }
+        }
+        while let extra = markdown.range(of: "\n" + prefix, options: .backwards),
+              isValidEnvelopeLine(String(markdown[extra.lowerBound...].dropFirst())) {
+            markdown = String(markdown[..<extra.lowerBound])
         }
         var document = parse(markdown); document.recoveredMetadata = recovered; document.originalSource = source
         return document
@@ -175,10 +214,13 @@ public enum BlockDocumentCodec {
                 let content: String
                 if let original = block.originalMarkdown, block.sourceUnchanged { content = original }
                 else {
-                    let text = block.kind == .code ? block.text : block.runs.map { run -> String in
+                    let text = (block.kind == .code || block.kind == .math) ? block.text : block.runs.map { run -> String in
                         var text = run.text
-                        if run.style.code { text = "`" + text + "`" }
-                        else {
+                        if run.style.math {
+                            text = "$" + (run.style.rawMath ?? text) + "$"
+                        } else if run.style.code {
+                            text = "`" + text + "`"
+                        } else {
                             if run.style.bold { text = "**" + text + "**" }
                             if run.style.italic { text = "*" + text + "*" }
                             if run.style.strike { text = "~~" + text + "~~" }
@@ -198,6 +240,7 @@ public enum BlockDocumentCodec {
                     case .task: content = (block.metadata.checked ? "- [x] " : "- [ ] ") + text
                     case .quote: content = "> " + text
                     case .code: content = "```" + (block.metadata.language ?? "") + "\n" + text + "\n```"
+                    case .math: content = "$$\n" + text + "\n$$"
                     case .divider: content = "---" + (text.isEmpty ? "" : "\n" + text)
                     default: content = text
                     }
@@ -211,9 +254,12 @@ public enum BlockDocumentCodec {
     }
     // Strip only the trailing editor envelope from derived search/preview text.
     public static func markdownBody(_ source: String) -> String {
-        guard let range = source.range(of: "\n" + prefix, options: .backwards), source.hasSuffix("-->"),
-              Data(base64Encoded: String(source[range.upperBound...].dropLast(3))) != nil else { return source }
-        return String(source[..<range.lowerBound])
+        var result = source
+        while let range = result.range(of: "\n" + prefix, options: .backwards), result.hasSuffix("-->"),
+              Data(base64Encoded: String(result[range.upperBound...].dropLast(3))) != nil {
+            result = String(result[..<range.lowerBound])
+        }
+        return result
     }
     public static func inline(_ text: String) -> [RichRun] {
         // Unsupported constructs stay literal and recoverable rather than disappearing in preview.
@@ -221,6 +267,7 @@ public enum BlockDocumentCodec {
         guard let spans = MarkdownService.preview(text).first?.spans, !spans.isEmpty else { return text.isEmpty ? [] : [RichRun(text)] }
         return spans.map { span in
             var style = InlineStyle(); style.bold = span.bold; style.italic = span.italic; style.code = span.code
+            style.math = span.math; style.rawMath = span.rawMath
             style.link = span.url; style.wikiTarget = span.wikiTarget
             return RichRun(span.text, style: style)
         }
@@ -251,6 +298,25 @@ public enum BlockDocumentCodec {
                 original += "\n" + content.joined(separator: "\n")
                 if index < lines.count { original += "\n" + String(lines[index].dropFirst(lines[index].hasPrefix(indentation) ? indentation.count : 0)) }
                 text = content.joined(separator: "\n"); literal = true
+            } else if text.trimmingCharacters(in: .whitespaces) == "$$" || text.trimmingCharacters(in: .whitespaces) == "\\[" {
+                let closeFence = text.trimmingCharacters(in: .whitespaces) == "$$" ? "$$" : "\\]"
+                kind = .math
+                var content: [String] = []; index += 1
+                while index < lines.count && lines[index].trimmingCharacters(in: .whitespaces) != closeFence {
+                    content.append(String(lines[index].dropFirst(lines[index].hasPrefix(indentation) ? indentation.count : 0)))
+                    index += 1
+                }
+                original += "\n" + content.joined(separator: "\n")
+                if index < lines.count { original += "\n" + String(lines[index].dropFirst(lines[index].hasPrefix(indentation) ? indentation.count : 0)) }
+                text = content.joined(separator: "\n"); literal = true
+            } else if text.hasPrefix("$$") && text.hasSuffix("$$") && text.count >= 4 {
+                kind = .math
+                text = String(text.dropFirst(2).dropLast(2)).trimmingCharacters(in: .whitespaces)
+                literal = true
+            } else if text.hasPrefix("\\[") && text.hasSuffix("\\]") && text.count >= 4 {
+                kind = .math
+                text = String(text.dropFirst(2).dropLast(2)).trimmingCharacters(in: .whitespaces)
+                literal = true
             } else {
                 for (prefix, candidate) in [("### ", BlockKind.heading3), ("## ", .heading2), ("# ", .heading1), ("- [ ] ", .task), ("- [x] ", .task), ("- [X] ", .task), ("- ", .bullet), ("* ", .bullet), ("> ", .quote)] where text.hasPrefix(prefix) {
                     kind = candidate; metadata.checked = prefix.lowercased() == "- [x] "; text = String(text.dropFirst(prefix.count)); break

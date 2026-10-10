@@ -108,6 +108,30 @@ import Testing
     #expect(decoded.apply(.delete, to: decoded.blocks[0].id) == nil)
     let malformed = "Visible\n<!--noema:document:broken-->"
     #expect(BlockDocumentCodec.encode(BlockDocumentCodec.decode(malformed)) == malformed)
+
+    // Pre-math envelopes without "math" in InlineStyle decode cleanly without exposing <!--noema:document:...-->.
+    var styledBlock = EditorBlock(runs: [RichRun("Legacy bold", style: { var s = InlineStyle(); s.bold = true; return s }())])
+    styledBlock.metadata.semantic = "claim"
+    let encodedLegacy = BlockDocumentCodec.encode(BlockDocument(blocks: [styledBlock]))
+    let prefix = "<!--noema:document:"
+    let envRange = encodedLegacy.range(of: prefix)!
+    let rawB64 = String(encodedLegacy[envRange.upperBound...].dropLast(3))
+    let legacyJSON = String(data: Data(base64Encoded: rawB64)!, encoding: .utf8)!
+        .replacingOccurrences(of: #""math":false,"#, with: "")
+    let legacySource = String(encodedLegacy[..<envRange.upperBound]) + Data(legacyJSON.utf8).base64EncodedString() + "-->"
+    let decodedLegacy = BlockDocumentCodec.decode(legacySource)
+    #expect(decodedLegacy.blocks.count == 1)
+    #expect(decodedLegacy.blocks[0].id == styledBlock.id)
+    #expect(decodedLegacy.blocks[0].runs.first?.style.bold == true)
+    #expect(decodedLegacy.blocks[0].metadata.semantic == "claim")
+
+    // If a version-1 envelope was previously ingested as a trailing paragraph block and re-saved, decode strips it.
+    let corruptedBlock = EditorBlock(runs: [RichRun(prefix + rawB64 + "-->")])
+    let stackedSource = BlockDocumentCodec.encode(BlockDocument(blocks: [styledBlock, corruptedBlock]))
+    let healed = BlockDocumentCodec.decode(stackedSource)
+    #expect(healed.blocks.map(\.id) == [styledBlock.id])
+    #expect(!BlockDocumentCodec.markdownBody(stackedSource).contains(prefix))
+
     let first = EditorBlock(runs: [RichRun("First")]), second = EditorBlock(runs: [RichRun("Second")])
     var document = BlockDocument(blocks: [first, second])
     _ = document.apply(.reorderAfter(second.id), to: first.id)
@@ -173,4 +197,69 @@ import Testing
     #expect(removedOnly)
     #expect(summaryOnly.blocks.count == 1)
     #expect(summaryOnly.blocks[0].text.isEmpty)
+}
+
+@Test func inlineAndDisplayMathAndCustomNewcommandMacros() throws {
+    let suite = UserDefaults(suiteName: "noema.math.tests.\(UUID().uuidString)")!
+    #expect(TeXMacro(name: "\\R", argCount: 0, body: "\\mathbb{R}")?.newcommandString == #"\newcommand{\R}{\mathbb{R}}"#)
+    #expect(TeXMacro(name: "norm", argCount: 1, body: "\\|#1\\|")?.newcommandString == #"\newcommand{\norm}[1]{\|#1\|}"#)
+    #expect(TeXMacro(name: "inner", argCount: 2, body: "\\langle #1, #2 \\rangle")?.newcommandString == #"\newcommand{\inner}[2]{\langle #1, #2 \rangle}"#)
+    #expect(TeXMacro(name: "tri", argCount: 3, body: "#1 + #2 + #3")?.newcommandString == #"\newcommand{\tri}[3]{#1 + #2 + #3}"#)
+    #expect(TeXMacro(name: "tooMany", argCount: 4, body: "#1") == nil)
+    #expect(TeXMacro(name: "badRef", argCount: 1, body: "#1 + #2") == nil)
+    #expect(TeXMacro.parseNewcommand(#"\newcommand{\tooMany}[4]{#1}"#) == nil)
+
+    let added = TeXMacroStore.addFromNewcommand("""
+    \\newcommand{\\R}{\\mathbb{R}}
+    \\newcommand{\\inv}[1]{\\frac{1}{#1}}
+    \\newcommand{\\pair}[2]{\\langle #1, #2 \\rangle}
+    \\newcommand{\\lincomb}[3]{#1 x + #2 y + #3 z}
+    """, in: suite)
+    #expect(added?.count == 4)
+
+    var macros = TeXMacroStore.load(from: suite)
+    #expect(TeXMath.render(#"x \in \R"#, macros: macros) == "x ∈ ℝ")
+    #expect(TeXMath.render(#"\inv{\alpha}"#, macros: macros) == "1/α")
+    #expect(TeXMath.render(#"\pair{u}{v}"#, macros: macros) == "⟨ u, v ⟩")
+    #expect(TeXMath.render(#"\lincomb{\alpha}{\beta}{\gamma}"#, macros: macros) == "α x + β y + γ z")
+    #expect(TeXMath.render(#"\newcommand{\cube}[1]{#1^3}\cube{x} = y_1"#, macros: macros) == "x³ = y₁")
+
+    // Verify editing in-place, renaming via builder/newcommand, and deleting custom macros.
+    let editedInv = TeXMacro(name: "\\recip", argCount: 1, body: "\\frac{1}{#1}")!
+    macros = TeXMacroStore.update(originalName: "inv", with: editedInv, in: suite)
+    #expect(macros.map(\.name) == ["R", "recip", "pair", "lincomb"])
+    #expect(TeXMath.render(#"\recip{\beta}"#, macros: macros) == "1/β")
+
+    let updatedPair = TeXMacroStore.updateFromNewcommand(originalName: "\\pair", #"\newcommand{\ip}[2]{\langle #1 | #2 \rangle}"#, in: suite)
+    #expect(updatedPair?.map(\.name) == ["R", "recip", "ip", "lincomb"])
+    #expect(TeXMath.render(#"\ip{a}{b}"#, macros: updatedPair ?? []) == "⟨ a | b ⟩")
+
+    macros = TeXMacroStore.remove(name: "\\lincomb", in: suite)
+    #expect(macros.map(\.name) == ["R", "recip", "ip"])
+
+    let markdown = """
+    Inline $E = mc^2$ and $\\frac{\\alpha}{\\beta}$ with #tag.
+
+    $$
+    \\int_0^\\infty e^{-x^2} dx
+    $$
+    """
+    let analysis = MarkdownService.analyze(markdown)
+    #expect(analysis.tags == ["tag"])
+    let preview = MarkdownService.preview(markdown)
+    #expect(preview.count == 2)
+    #expect(preview[0].spans.contains(where: { $0.math && $0.text == "E = mc²" && $0.rawMath == "E = mc^2" }))
+    #expect(preview[0].spans.contains(where: { $0.math && $0.text == "α/β" && $0.rawMath == #"\frac{\alpha}{\beta}"# }))
+    #expect(preview[1].style == .math)
+    #expect(preview[1].spans.first?.text == "∫₀^∞ e^(-x²) dx")
+
+    var doc = BlockDocumentCodec.decode(markdown)
+    #expect(doc.blocks.count == 3)
+    #expect(doc.blocks[0].runs.contains(where: { $0.style.math && $0.style.rawMath == "E = mc^2" }))
+    #expect(doc.blocks[2].kind == .math)
+    #expect(doc.blocks[2].text == #"\int_0^\infty e^{-x^2} dx"#)
+    #expect(BlockDocumentCodec.encode(doc) == markdown)
+    _ = doc.apply(.semantic("important"), to: doc.blocks[2].id)
+    #expect(BlockDocumentCodec.readable(doc).contains("$$\n\\int_0^\\infty e^{-x^2} dx\n$$"))
+    #expect(BlockDocumentCodec.decode(BlockDocumentCodec.encode(doc)) == doc)
 }

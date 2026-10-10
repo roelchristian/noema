@@ -1,5 +1,17 @@
 # Validation — 10 October 2026
 
+## Custom TeX commands modal in Settings — 11 October 2026, standard timebox
+
+- Moved custom TeX command inputs out of the main Settings pane into `CustomTeXCommandsModal`, opened from **Noema → Settings… → Math & TeX → View or Edit Custom Commands…**. The Settings pane now displays a summary count and the modal trigger button.
+- `CustomTeXCommandsModal` lets users view configured commands with live rendered previews, add new commands (0–3 arguments via the command builder or direct `\newcommand` input), edit/rename existing commands in place (`TeXMacroStore.update` and `TeXMacroStore.updateFromNewcommand`), and delete commands (`TeXMacroStore.remove`).
+- Verified with `./scripts/test.sh --filter inlineAndDisplayMathAndCustomNewcommandMacros` and `./scripts/build.sh debug`. Manual interactive UI, appearance/accent switching, and VoiceOver checks were not performed within the timebox.
+
+## Inline and display math and custom TeX macros — 11 October 2026, six-minute timebox
+
+- Added `TeXMath`, `TeXMacro`, and `TeXMacroStore` in `VaultCore` supporting inline math (`$...$` and `\(...\)`), display math blocks (`$$...$$` and `\[...\]`, plus `/math` and `$$` shortcuts), and custom `\newcommand` macros with 0 to 3 arguments (`#1`, `#2`, `#3`).
+- Added **Custom TeX macros** in **Noema → Settings…** allowing users to add custom commands either via direct `\newcommand{\cmd}[n]{body}` input or via the Custom TeX macro builder UI (command name, 0–3 arguments picker, and TeX body), with live preview and removal. Inline `\newcommand` definitions inside math expressions are also expanded.
+- `inlineAndDisplayMathAndCustomNewcommandMacros`, `slashCommandMatchingAndBoundaries`, `slashPaletteUsesCompactSectionsAndSemanticSymbols`, and all non-bookmark tests in `./scripts/test.sh` passed (5 linked-bookmark tests require unsandboxed `com.apple.security.files.bookmarks.app-scope` access). Manual interactive UI, appearance/accent, and VoiceOver checks were not performed within the timebox.
+
 ## Hanging semantic list icons — 11 October 2026, one-minute timebox
 
 - Placed each semantic result's colored icon in a 20-point leading gutter outside the text column. Type, preview, and owning page now align together; retains requested Pages row padding and spacing.

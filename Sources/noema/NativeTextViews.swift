@@ -135,20 +135,26 @@ struct MarkdownPreview: NSViewRepresentable {
             case .heading(let level): size = [30, 24, 20, 18, 17, 16][min(max(level - 1, 0), 5)]; weight = .semibold; paragraph.paragraphSpacingBefore = 16
             case .quote: color = theme.nativeText(.textMuted); paragraph.headIndent = 16; paragraph.firstLineHeadIndent = 16
             case .code: size = 14; paragraph.lineSpacing = 3
+            case .math: size = 17; paragraph.alignment = .center; paragraph.paragraphSpacingBefore = 12; paragraph.paragraphSpacing = 18
             case .rule: color = theme.native(.border)
             case .paragraph: break
             }
             for span in block.spans {
                 var font = span.code ? NSFont.monospacedSystemFont(ofSize: size - 1, weight: span.bold ? .semibold : .regular) : NSFont.systemFont(ofSize: size, weight: span.bold ? .semibold : weight)
+                if span.math {
+                    font = NSFontDescriptor.preferredFontDescriptor(forTextStyle: .body).withDesign(.serif).flatMap { NSFont(descriptor: $0, size: size) } ?? font
+                    font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+                }
                 if span.italic { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
                 var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: paragraph]
-                if span.code { attributes[.backgroundColor] = theme.native(.accentPrimary).withAlphaComponent(theme.dark ? 0.18 : 0.08) }
+                if span.code || span.math { attributes[.backgroundColor] = theme.native(.accentPrimary).withAlphaComponent(theme.dark ? 0.18 : 0.08) }
                 if let target = span.wikiTarget {
                     var components = URLComponents(); components.scheme = "noema"; components.host = "wiki"
                     components.queryItems = [URLQueryItem(name: "title", value: target)]
                     attributes[.link] = components.url
                 } else if let address = span.url, let url = URL(string: address), ["http", "https", "mailto"].contains(url.scheme ?? "") { attributes[.link] = url }
-                result.append(NSAttributedString(string: span.text, attributes: attributes))
+                let text = span.math ? (span.rawMath.map { TeXMath.render($0, display: block.style == .math) } ?? span.text) : span.text
+                result.append(NSAttributedString(string: text, attributes: attributes))
             }
             result.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: paragraph]))
         }

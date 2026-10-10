@@ -52,6 +52,7 @@ import NoemaBrand
                 Button("Underline") { model.format("underline", "") }.keyboardShortcut("u").disabled(model.currentNote == nil || model.reading)
                 Button("Strikethrough") { model.format("strike", "") }.disabled(model.currentNote == nil || model.reading)
                 Button("Inline Code") { model.format("code", "") }.disabled(model.currentNote == nil || model.reading)
+                Button("Inline Math") { model.format("math", "") }.disabled(model.currentNote == nil || model.reading)
                 Button("Highlight") { model.format("highlight", "") }.disabled(model.currentNote == nil || model.reading)
                 Button("Hyperlink…") { model.format("link", "") }.keyboardShortcut("k").disabled(model.currentNote == nil || model.reading)
                 Button("Wiki Link") { model.format("[[", "]]") }.keyboardShortcut("l", modifiers: [.command, .shift]).disabled(model.currentNote == nil || model.reading)

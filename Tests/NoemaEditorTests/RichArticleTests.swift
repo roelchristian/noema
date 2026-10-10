@@ -48,10 +48,12 @@ import VaultCore
 
 @Test func slashCommandMatchingAndBoundaries() {
     #expect(BlockCommand.matching("h2").first?.id == "h2")
+    #expect(BlockCommand.matching("math").first?.id == "math")
+    #expect(BlockCommand.matching("latex").first?.id == "math")
     #expect(BlockCommand.matching("ques").first?.id == "question")
     #expect(BlockCommand.matching("wrn").contains { $0.id == "warning" })
     #expect(BlockCommand.matching("zzzzzz").isEmpty)
-    #expect(BlockCommand.all.filter { $0.semantic == nil }.count == 12)
+    #expect(BlockCommand.all.filter { $0.semantic == nil }.count == 13)
     #expect(BlockCommand.all.filter { $0.semantic?.isEmpty == false }.count == 10)
     for source in ["/ques", "Some text /h2", "😀 /idea"] {
         let range = BlockCommand.slashRange(in: source, selection: NSRange(location: source.utf16.count, length: 0))
@@ -60,7 +62,7 @@ import VaultCore
     for source in ["https://example.com", "word/ques", "/two words"] {
         #expect(BlockCommand.slashRange(in: source, selection: NSRange(location: source.utf16.count, length: 0)) == nil)
     }
-    for prefix in ["# ", "## ", "### ", "- ", "* ", "1. ", "[] ", "[ ] ", "> ", "---", "```"] { #expect(BlockCommand.shortcut(prefix) != nil) }
+    for prefix in ["# ", "## ", "### ", "- ", "* ", "1. ", "[] ", "[ ] ", "> ", "---", "```", "$$", "$$ "] { #expect(BlockCommand.shortcut(prefix) != nil) }
 }
 
 @Test @MainActor func richTextRenderingRetainsFormattingAndCollapsedChildren() {
@@ -215,7 +217,7 @@ import VaultCore
             #expect(bounds.contains(cell.titleRect(forBounds: bounds)))
         }
     }
-    palette.move(12)
+    palette.move(13)
     #expect(palette.commands[palette.selected].id == "question")
     palette.update(BlockCommand.matching("ques"))
     #expect(palette.commands.first?.id == "question")
@@ -587,3 +589,27 @@ import VaultCore
     #expect(model.notes.isEmpty)
     #expect(!model.generatingTopicPage)
 }
+
+@Test @MainActor func inlineMathExitsAfterClosingDollar() {
+    let (coordinator, view, window) = editor("")
+    defer { window.close() }
+    view.setSelectedRange(NSRange(location: 0, length: 0))
+    view.undoManager?.beginUndoGrouping()
+    view.insertText("$a", replacementRange: view.selectedRange())
+    view.undoManager?.endUndoGrouping()
+    view.undoManager?.beginUndoGrouping()
+    view.insertText("$", replacementRange: view.selectedRange())
+    view.undoManager?.endUndoGrouping()
+    #expect(coordinator.document.blocks[0].runs.count == 1)
+    #expect(coordinator.document.blocks[0].runs[0].style.math == true)
+    #expect(coordinator.document.blocks[0].runs[0].text == "a")
+    view.undoManager?.beginUndoGrouping()
+    view.insertText(" plain", replacementRange: view.selectedRange())
+    view.undoManager?.endUndoGrouping()
+    #expect(coordinator.document.blocks[0].runs.count == 2)
+    #expect(coordinator.document.blocks[0].runs[0].style.math == true)
+    #expect(coordinator.document.blocks[0].runs[0].text == "a")
+    #expect(coordinator.document.blocks[0].runs[1].style.math == false)
+    #expect(coordinator.document.blocks[0].runs[1].text == " plain")
+}
+

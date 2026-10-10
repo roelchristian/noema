@@ -9,6 +9,7 @@ extension RichArticleView {
         var document = BlockDocument()
         var lastText: String?
         var lastTheme: NoemaTheme?
+        var lastMacros: String?
         var lastAction: UUID?
         var changing = false
         let palette = BlockPalette()
@@ -108,7 +109,7 @@ extension RichArticleView {
                 changing = true; BlockTextStorage.updateSemanticHeadingSpacing(storage, in: current()?.1); changing = false
             }
             view.updateSemanticHeadingTopInset()
-            if let (block, _) = current(), block.kind != .code, let command = BlockCommand.shortcut(block.text) {
+            if let (block, _) = current(), block.kind != .code, block.kind != .math, let command = BlockCommand.shortcut(block.text) {
                 transaction(command.title) { document.update(block.id) { $0.runs = [] }; return document.apply(command.mutation, to: block.id) }
             } else if !convertInlineAtCaret() { publish() }
             updateTypingAttributes()
@@ -126,8 +127,22 @@ extension RichArticleView {
             var attrs = storage.attributes(at: location, effectiveRange: nil)
             if view.selectedRange().length == 0, location > 0,
                storage.attribute(.blockID, at: location - 1, effectiveRange: nil) as? String == attrs[.blockID] as? String {
-                // Inherit the preceding run when typing immediately after formatted content.
-                attrs = storage.attributes(at: location - 1, effectiveRange: nil)
+                let prevAttrs = storage.attributes(at: location - 1, effectiveRange: nil)
+                let prevStyle = BlockTextStorage.style(prevAttrs)
+                let currStyle = BlockTextStorage.style(attrs)
+                if (prevStyle.math && !currStyle.math) || (prevStyle.code && !currStyle.code) {
+                    if let (block, blockRange) = current() {
+                        var exited = prevStyle
+                        exited.math = false
+                        exited.rawMath = nil
+                        exited.code = false
+                        let depth = storage.attribute(.blockDepth, at: blockRange.location, effectiveRange: nil) as? Int ?? 0
+                        attrs = BlockTextStorage.attributes(exited, block: block, depth: depth, theme: parent.theme)
+                    }
+                } else {
+                    // Inherit the preceding run when typing immediately after formatted content.
+                    attrs = prevAttrs
+                }
             }
             view.typingAttributes = attrs
         }
@@ -147,7 +162,7 @@ extension RichArticleView {
             return true
         }
         func updatePalette() {
-            guard let view, view.isEditable, !view.locked, current()?.0.kind != .code,
+            guard let view, view.isEditable, !view.locked, current()?.0.kind != .code, current()?.0.kind != .math,
                   let range = BlockCommand.slashRange(in: view.string, selection: view.selectedRange()) else {
                 suggestions.close(); slashRange = nil; dismissedSlash = nil; return
             }
@@ -218,7 +233,7 @@ extension RichArticleView {
             let offset = view.selectedRange().location - range.location
             switch event.keyCode {
             case 36, 76:
-                if shift, block.kind == .code { return false }
+                if shift, (block.kind == .code || block.kind == .math) { return false }
                 if block.kind == .divider { mutate(.split(block.utf16Count), name: "New paragraph"); return true }
                 transaction("Split block") {
                     deleteSelectionFromStorage()
@@ -231,7 +246,7 @@ extension RichArticleView {
                     return true
                 }
             case 48:
-                if block.kind == .code { return false }
+                if block.kind == .code || block.kind == .math { return false }
                 mutate(shift ? .outdent : .indent, name: shift ? "Outdent block" : "Indent block"); return true
             case 53: dismissPalette(); parent.onEnd(); return true
             default: break
@@ -260,19 +275,30 @@ extension RichArticleView {
             _ = replaceSelection(with: [])
         }
         func convertInlineAtCaret() -> Bool {
-            guard let view, let (block, range) = current(), block.kind != .code, block.kind != .divider, view.selectedRange().length == 0 else { return false }
+            guard let view, let (block, range) = current(), block.kind != .code, block.kind != .math, block.kind != .divider, view.selectedRange().length == 0 else { return false }
             let offset = view.selectedRange().location - range.location
             let before = (block.text as NSString).substring(to: min(offset, block.utf16Count))
-            let patterns: [(String, String)] = [(#"\*\*([^*\n]+)\*\*$"#, "bold"), (#"(?<!\*)\*([^*\n]+)\*$"#, "italic"), (#"`([^`\n]+)`$"#, "code"), (#"~~([^~\n]+)~~$"#, "strike")]
+            let patterns: [(String, String)] = [(#"\*\*([^*\n]+)\*\*$"#, "bold"), (#"(?<!\*)\*([^*\n]+)\*$"#, "italic"), (#"`([^`\n]+)`$"#, "code"), (#"~~([^~\n]+)~~$"#, "strike"), (#"(?<!\$)\$([^$\n]+)\$$"#, "math")]
             for (pattern, styleName) in patterns {
                 guard let regex = try? NSRegularExpression(pattern: pattern), let match = regex.firstMatch(in: before, range: NSRange(location: 0, length: before.utf16.count)) else { continue }
                 var runs = block.slicing(match.range(at: 1))
-                for index in runs.indices {
-                    switch styleName { case "bold": runs[index].style.bold = true; case "italic": runs[index].style.italic = true; case "code": runs[index].style.code = true; default: runs[index].style.strike = true }
+                if styleName == "math" {
+                    let raw = runs.map(\.text).joined().trimmingCharacters(in: .whitespaces)
+                    guard !raw.isEmpty else { continue }
+                    let rendered = TeXMath.render(raw, display: false)
+                    var style = runs.first?.style ?? InlineStyle()
+                    style.math = true
+                    style.rawMath = raw
+                    runs = [RichRun(rendered.isEmpty ? raw : rendered, style: style)]
+                } else {
+                    for index in runs.indices {
+                        switch styleName { case "bold": runs[index].style.bold = true; case "italic": runs[index].style.italic = true; case "code": runs[index].style.code = true; default: runs[index].style.strike = true }
+                    }
                 }
+                let insertedLen = runs.reduce(0) { $0 + $1.text.utf16.count }
                 transaction("Inline " + styleName) {
                     document.update(block.id) { value in value.runs = value.slicing(NSRange(location: 0, length: match.range.location)) + runs + value.slicing(NSRange(location: NSMaxRange(match.range), length: value.utf16Count - NSMaxRange(match.range))) }
-                    return BlockCursor(block.id, offset: match.range.location + match.range(at: 1).length)
+                    return BlockCursor(block.id, offset: match.range.location + insertedLen)
                 }
                 return true
             }
@@ -297,6 +323,7 @@ extension RichArticleView {
                 case "underline": value.underline = enabled
                 case "strike": value.strike = enabled
                 case "code": value.code = enabled
+                case "math": value.math = enabled; if !enabled { value.rawMath = nil }
                 case "highlight": value.highlight = enabled
                 case "link": value.link = link; value.wikiTarget = nil
                 default: break
@@ -304,7 +331,7 @@ extension RichArticleView {
             }
             let firstStyle = selection.length > 0 ? BlockTextStorage.style(storage.attributes(at: selection.location, effectiveRange: nil)) : BlockTextStorage.style(view.typingAttributes)
             let enabled: Bool
-            switch name { case "bold": enabled = !firstStyle.bold; case "italic": enabled = !firstStyle.italic; case "underline": enabled = !firstStyle.underline; case "strike": enabled = !firstStyle.strike; case "code": enabled = !firstStyle.code; case "highlight": enabled = !firstStyle.highlight; default: enabled = true }
+            switch name { case "bold": enabled = !firstStyle.bold; case "italic": enabled = !firstStyle.italic; case "underline": enabled = !firstStyle.underline; case "strike": enabled = !firstStyle.strike; case "code": enabled = !firstStyle.code; case "math": enabled = !firstStyle.math; case "highlight": enabled = !firstStyle.highlight; default: enabled = true }
             if selection.length == 0 {
                 var style = firstStyle; apply(&style, enabled: enabled)
                 let depth = storage.attribute(.blockDepth, at: blockRange.location, effectiveRange: nil) as? Int ?? 0
@@ -317,7 +344,15 @@ extension RichArticleView {
                     let local = NSRange(location: intersection.location - range.location, length: intersection.length)
                     document.update(id) { value in
                         var styled = value.slicing(local)
-                        for index in styled.indices { apply(&styled[index].style, enabled: enabled) }
+                        for index in styled.indices {
+                            apply(&styled[index].style, enabled: enabled)
+                            if name == "math", enabled {
+                                let raw = styled[index].style.rawMath ?? styled[index].text
+                                styled[index].style.rawMath = raw
+                                let rendered = TeXMath.render(raw, display: false)
+                                if !rendered.isEmpty { styled[index].text = rendered }
+                            }
+                        }
                         value.runs = value.slicing(NSRange(location: 0, length: local.location)) + styled + value.slicing(NSRange(location: NSMaxRange(local), length: value.utf16Count - NSMaxRange(local)))
                     }
                 }
@@ -342,7 +377,7 @@ extension RichArticleView {
             view.window?.makeFirstResponder(view)
             switch operation {
             case .wrap(let prefix, _):
-                switch prefix { case "**": format("bold"); case "*": format("italic"); case "underline", "strike", "code", "highlight": format(prefix); case "link": editLink(); case "block-actions": showBlockMenu(); default: view.insertText("[[", replacementRange: view.selectedRange()) }
+                switch prefix { case "**": format("bold"); case "*": format("italic"); case "underline", "strike", "code", "math", "highlight": format(prefix); case "link": editLink(); case "block-actions": showBlockMenu(); default: view.insertText("[[", replacementRange: view.selectedRange()) }
             case .block(let id):
                 func expand(_ blocks: inout [EditorBlock]) -> Bool {
                     for index in blocks.indices {
@@ -435,7 +470,7 @@ extension RichArticleView {
             menu.addItem(.separator())
             for (title, value) in [("Duplicate", "duplicate"), ("Copy Markdown", "copy"), ("Copy link to block", "link"), ("Move up", "up"), ("Move down", "down"), ("Indent", "indent"), ("Outdent", "outdent"), ("Delete", "delete")] { addAction(title, value: value, to: menu) }
             let format = NSMenu()
-            for title in ["Bold", "Italic", "Underline", "Strike", "Code", "Highlight", "Link"] { addAction(title, value: "format:" + title.lowercased(), to: format) }
+            for title in ["Bold", "Italic", "Underline", "Strike", "Code", "Math", "Highlight", "Link"] { addAction(title, value: "format:" + title.lowercased(), to: format) }
             let item = NSMenuItem(title: "Inline format", action: nil, keyEquivalent: ""); item.submenu = format; menu.addItem(item)
             return menu
         }

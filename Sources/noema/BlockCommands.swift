@@ -24,6 +24,7 @@ struct BlockCommand: Identifiable, Equatable {
         .init(id: "divider", title: "Divider", symbol: "minus", detail: "Horizontal separator", aliases: ["rule", "hr"]),
         .init(id: "toggle", title: "Toggle", symbol: "chevron.right", detail: "Collapsible nested content", aliases: ["fold", "details"]),
         .init(id: "code", title: "Code", symbol: "chevron.left.forwardslash.chevron.right", detail: "Monospaced code; Shift Return for newline", aliases: ["pre", "codeblock"]),
+        .init(id: "math", title: "Math", symbol: "function", detail: "Display TeX equation; Shift Return for newline", prefix: "$$", aliases: ["tex", "latex", "equation", "displaymath"]),
         .init(id: "callout", title: "Callout", symbol: "info.circle", detail: "Highlighted note", aliases: ["note", "aside"]),
         .init(id: "question", title: "Question", symbol: "questionmark.circle", detail: "An open question", semantic: "question", aliases: ["ques", "ask"]),
         .init(id: "idea", title: "Idea", symbol: "lightbulb", detail: "A thought or hypothesis", semantic: "idea", aliases: ["thought"]),
@@ -45,11 +46,11 @@ struct BlockCommand: Identifiable, Equatable {
 
     var mutation: BlockMutation {
         if let semantic { return .semantic(semantic.isEmpty ? nil : semantic) }
-        let kinds: [String: BlockKind] = ["text": .paragraph, "h1": .heading1, "h2": .heading2, "h3": .heading3, "bullet": .bullet, "number": .numbered, "todo": .task, "quote": .quote, "code": .code, "divider": .divider, "toggle": .toggle, "callout": .callout]
+        let kinds: [String: BlockKind] = ["text": .paragraph, "h1": .heading1, "h2": .heading2, "h3": .heading3, "bullet": .bullet, "number": .numbered, "todo": .task, "quote": .quote, "code": .code, "math": .math, "divider": .divider, "toggle": .toggle, "callout": .callout]
         return .transform(kinds[id] ?? .paragraph)
     }
     static func shortcut(_ text: String) -> Self? {
-        let aliases = ["# ": "h1", "## ": "h2", "### ": "h3", "- ": "bullet", "* ": "bullet", "1. ": "number", "[] ": "todo", "[ ] ": "todo", "- [ ] ": "todo", "> ": "quote", "---": "divider", "```": "code"]
+        let aliases = ["# ": "h1", "## ": "h2", "### ": "h3", "- ": "bullet", "* ": "bullet", "1. ": "number", "[] ": "todo", "[ ] ": "todo", "- [ ] ": "todo", "> ": "quote", "---": "divider", "```": "code", "$$": "math", "$$ ": "math"]
         return aliases[text].flatMap { id in all.first { $0.id == id } }
     }
 

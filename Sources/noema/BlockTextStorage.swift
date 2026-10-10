@@ -9,6 +9,7 @@ extension NSAttributedString.Key {
     static let inlineStyle = Self("noema.inlineStyle")
     static let semanticTag = Self("noema.semanticTag")
     static let wikiTarget = Self("noema.wikiTarget")
+    static let renderedMath = Self("noema.renderedMath")
 }
 
 @MainActor enum BlockTextStorage {
@@ -32,12 +33,13 @@ extension NSAttributedString.Key {
         let hasInsideMarker = [.bullet, .numbered, .task, .toggle].contains(block.kind)
         paragraph.headIndent = CGFloat(depth * 24 + (hasInsideMarker ? 24 : (block.kind == .quote ? 18 : 0))); paragraph.firstLineHeadIndent = paragraph.headIndent
         if sizes[block.kind] != nil { paragraph.paragraphSpacingBefore = 12 }
-        if block.metadata.semantic != nil || [.quote, .callout, .code].contains(block.kind) {
+        if block.metadata.semantic != nil || [.quote, .callout, .code, .math].contains(block.kind) {
             paragraph.paragraphSpacingBefore = 12
             paragraph.paragraphSpacing = 18
         }
+        let isMonoBlock = block.kind == .code || block.kind == .math
         var attrs: [NSAttributedString.Key: Any] = [
-            .font: block.kind == .code ? NSFont.monospacedSystemFont(ofSize: 14, weight: .regular) : NSFont.systemFont(ofSize: size, weight: sizes[block.kind] == nil ? .regular : .semibold),
+            .font: isMonoBlock ? NSFont.monospacedSystemFont(ofSize: 14, weight: .regular) : NSFont.systemFont(ofSize: size, weight: sizes[block.kind] == nil ? .regular : .semibold),
             .foregroundColor: theme.nativeText(), .paragraphStyle: paragraph,
             .blockID: block.id.uuidString, .blockKind: block.kind.rawValue, .blockDepth: depth
         ]
@@ -50,12 +52,16 @@ extension NSAttributedString.Key {
         var attrs = base(block, depth: depth, theme: theme)
         var font = attrs[.font] as! NSFont
         if style.code { font = .monospacedSystemFont(ofSize: font.pointSize, weight: .regular) }
+        else if style.math {
+            font = NSFontDescriptor.preferredFontDescriptor(forTextStyle: .body).withDesign(.serif).flatMap { NSFont(descriptor: $0, size: font.pointSize) } ?? font
+            font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+        }
         if style.bold { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
         if style.italic { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
         attrs[.font] = font; attrs[.inlineStyle] = try? JSONEncoder().encode(style)
         if style.underline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
         if style.strike { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
-        if style.highlight || style.code { attrs[.backgroundColor] = theme.native(.graphHighlight).withAlphaComponent(theme.dark ? 0.22 : 0.10) }
+        if style.highlight || style.code || style.math { attrs[.backgroundColor] = theme.native(.graphHighlight).withAlphaComponent(theme.dark ? 0.22 : 0.10) }
         if let target = style.wikiTarget {
             attrs[.wikiTarget] = target
             var url = URLComponents(); url.scheme = "noema"; url.host = "wiki"; url.queryItems = [.init(name: "title", value: target)]
@@ -67,7 +73,18 @@ extension NSAttributedString.Key {
         let result = NSMutableAttributedString(string: "")
         for value in visible(document) {
             let block = value.block
-            for run in block.runs { result.append(NSAttributedString(string: run.text, attributes: attributes(run.style, block: block, depth: value.depth, theme: theme))) }
+            for run in block.runs {
+                var attrs = attributes(run.style, block: block, depth: value.depth, theme: theme)
+                let displayString: String
+                if run.style.math, let raw = run.style.rawMath {
+                    let rendered = TeXMath.render(raw, display: false)
+                    displayString = rendered.isEmpty ? run.text : rendered
+                    attrs[.renderedMath] = displayString
+                } else {
+                    displayString = run.text
+                }
+                result.append(NSAttributedString(string: displayString, attributes: attrs))
+            }
             result.append(NSAttributedString(string: "\n", attributes: base(block, depth: value.depth, theme: theme)))
         }
         if showSemanticHeadings { updateSemanticHeadingSpacing(result) }
@@ -111,7 +128,7 @@ extension NSAttributedString.Key {
         }
         style.underline = (attrs[.underlineStyle] as? Int ?? 0) != 0
         style.strike = (attrs[.strikethroughStyle] as? Int ?? 0) != 0
-        style.highlight = attrs[.backgroundColor] != nil && !style.code
+        style.highlight = attrs[.backgroundColor] != nil && !style.code && !style.math
         if let link = attrs[.link] { style.link = String(describing: link) }
         style.wikiTarget = attrs[.wikiTarget] as? String ?? style.wikiTarget
         return style
@@ -120,7 +137,10 @@ extension NSAttributedString.Key {
         var result: [RichRun] = []
         storage.enumerateAttributes(in: range) { attrs, range, _ in
             let text = (storage.string as NSString).substring(with: range)
-            let value = style(attrs)
+            var value = style(attrs)
+            if value.math, let rendered = attrs[.renderedMath] as? String, text != rendered {
+                value.rawMath = text
+            }
             if result.last?.style == value { result[result.count - 1].text += text }
             else { result.append(RichRun(text, style: value)) }
         }

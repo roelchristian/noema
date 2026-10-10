@@ -5,6 +5,7 @@ import VaultCore
 struct RichArticleView: NSViewRepresentable {
     @Environment(\.noemaTheme) var theme
     @AppStorage(EditorPreferences.showSemanticHeadingsKey) var showSemanticHeadings = false
+    @AppStorage(EditorPreferences.texMacrosKey) var texMacros = ""
     @Binding var text: String
     var reading: Bool
     var locked: Bool
@@ -37,6 +38,8 @@ struct RichArticleView: NSViewRepresentable {
         let coordinator = context.coordinator; coordinator.parent = self
         guard let view = coordinator.view else { return }
         let headingsChanged = view.showSemanticHeadings != showSemanticHeadings
+        let macrosChanged = coordinator.lastMacros != texMacros
+        coordinator.lastMacros = texMacros
         view.showSemanticHeadings = showSemanticHeadings
         view.locked = locked || coordinator.document.unsupportedVersion
         view.isEditable = !reading && !view.locked; view.theme = theme
@@ -50,7 +53,7 @@ struct RichArticleView: NSViewRepresentable {
         view.insertionPointColor = theme.native(.accentPrimary)
         view.linkTextAttributes = [.foregroundColor: theme.nativeText(.accentSecondary), .underlineStyle: NSUnderlineStyle.single.rawValue]
         if coordinator.lastText != text { coordinator.load(text); view.undoManager?.removeAllActions() }
-        else if coordinator.lastTheme != theme || headingsChanged { coordinator.render(selection: view.selectedRange()) }
+        else if coordinator.lastTheme != theme || headingsChanged || macrosChanged { coordinator.render(selection: view.selectedRange()) }
         if let action, coordinator.lastAction != action.id {
             if case .block = action.operation { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
             else if view.isEditable { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
