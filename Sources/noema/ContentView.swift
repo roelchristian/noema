@@ -26,6 +26,9 @@ struct ContentView: View {
                         Button { if model.reading { model.beginEditing() } else { model.finishEditing() } } label: {
                             Label(model.reading ? "Edit" : "Done", systemImage: model.reading ? "pencil" : "checkmark")
                         }.disabled(model.editingLocked)
+                        Button { model.toggleEditingLock() } label: {
+                            Label(model.editingLocked ? "Unlock article" : "Lock article", systemImage: model.editingLocked ? "lock.fill" : "lock.open")
+                        }.help(model.editingLocked ? "Unlock article" : "Lock article against editing")
                         Button { showTrashConfirmation = true } label: {
                             Label("Move page to vault trash", systemImage: "trash")
                         }.help("Move page to vault trash")
@@ -49,7 +52,10 @@ struct ContentView: View {
                         Menu {
                             Button("Blank page") { model.newPage() }
                             Button("Personal page template") { model.newPage(template: true) }
-                        } label: { Label("New page", systemImage: "plus") }
+                        } label: { Label("New page", systemImage: "square.and.pencil") }
+                            .labelStyle(.iconOnly)
+                            .buttonBorderShape(.roundedRectangle)
+                            .help("New page")
                             .accessibilityLabel("New page")
                     }
                 }
@@ -261,22 +267,19 @@ struct ContentView: View {
     }
     private var pageHeader: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Label(model.currentSource == nil ? "Personal wiki" : "Raw source", systemImage: model.currentSource == nil ? "book.closed" : "tray.full")
-                    .font(.caption.weight(.medium)).foregroundStyle(theme.text())
-                Spacer()
-                if model.currentNote != nil {
-                    if let hint = model.editingHint {
+            if model.currentSource != nil || model.editingHint != nil {
+                HStack {
+                    if model.currentSource != nil {
+                        Label("Raw source", systemImage: "tray.full")
+                            .font(.caption.weight(.medium)).foregroundStyle(theme.text())
+                    }
+                    Spacer()
+                    if model.currentNote != nil, let hint = model.editingHint {
                         Text(hint).font(.caption).foregroundStyle(.secondary)
                     }
-                    Button { model.toggleEditingLock() } label: {
-                        Image(systemName: model.editingLocked ? "lock.fill" : "lock.open")
-                    }.buttonStyle(.plain).foregroundStyle(theme.text())
-                        .help(model.editingLocked ? "Unlock article" : "Lock article against editing")
-                        .accessibilityLabel(model.editingLocked ? "Unlock article" : "Lock article")
-                }
-                if model.currentSource != nil {
-                    Label("Read only", systemImage: "lock").font(.caption).foregroundStyle(theme.text())
+                    if model.currentSource != nil {
+                        Label("Read only", systemImage: "lock").font(.caption).foregroundStyle(theme.text())
+                    }
                 }
             }
             if model.currentNote != nil {

@@ -30,9 +30,9 @@ The script packages and locally signs a sandboxed app and creates `dist/noema.zi
 For a quick tour, open `Examples/Demo Vault`. Its pages contain illustrative personal context, and you can create a separate vault for your own writing.
 
 1. Click **Create a vault**. Create or choose a dedicated folder, locally or in iCloud Drive. Keep your content vault separate from this source-code folder.
-2. Select **Pages** to browse your writing. Use **New Personal Page** for optional Overview / Personal context / Connections headings, or create a blank page with ⌘N.
+2. Select **Pages** to browse your writing; page headers begin with the title. Use **New Personal Page** for optional Overview / Personal context / Connections headings, or create a blank page with ⌘N.
 3. Add topics in the comma-separated field or write inline `#history` tags. Type `[[` for page suggestions. A link such as `[[Pertinax|my reading]]` can show a friendly label.
-4. Click **Edit** or click the article text area once to start native block editing; click **Done** or press Escape to finish. The lock control prevents article edits; clicking a locked article shows an unlock reminder beside the lock.
+4. Click **Edit** or click the article text area once to start native block editing; click **Done** or press Escape to finish. The lock control beside Edit and Trash in the top toolbar prevents article edits; clicking a locked article shows an unlock reminder in the page header. The square-and-pencil **New page** icon opens the page-creation menu.
 5. Select **Sources** to import UTF-8 `.txt` / `.md` files or paste text with an optional original URL. Originals cannot be edited in the app. Imported Markdown also has an Original view.
 
 **⌘S** saves immediately, **⌘P / ⇧⌘F** focuses vault search, **⌘B / ⌘I / ⌘U** toggles bold/italic/underline, and **⌘K** edits a hyperlink, and **⇧⌘I** imports sources. Editing saves after 500 ms of inactivity. Page title changes keep the filename stable and add the old title as an alias, so links continue working.

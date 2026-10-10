@@ -2,6 +2,22 @@
 
 Environment: Apple Silicon Mac, macOS 27.0; Swift 6.2.4; macOS SDK 26.2.
 
+## Page header cleanup — one-minute timebox
+
+- Removed the Personal wiki label and its icon. The header starts with the page title unless an editing reminder is present; source labels and read-only indicators remain.
+- `./scripts/build.sh debug` compiled and packaged successfully; `git diff --check` passed. Native inspection in an isolated temporary vault confirmed the header starts with the title and the toolbar controls remain. No content was edited. Regression, appearance/accent changes, and full accessibility checks were not run for this label/layout change.
+
+## New page compose icon
+
+- Replaced the plus-and-title presentation with the native `square.and.pencil` compose symbol. The existing page-creation menu keeps its New page tooltip and accessibility label.
+- `./scripts/build.sh debug` compiled and packaged successfully; `git diff --check` passed. After relaunch, native accessibility inspection confirmed the New page menu uses `square.and.pencil`. No page content was edited. No regression suite, appearance/accent changes, or full accessibility checks were run for this icon-only change.
+
+## Toolbar lock and New page control — two-minute timebox
+
+- Moved lock/unlock into the native top toolbar group between Edit/Done and Trash. New page shows its plus symbol and title with the native rounded-rectangle border shape, producing a wider control instead of a circular icon-only button.
+- `./scripts/build.sh debug` compiled and packaged successfully; `git diff --check` passed. Native inspection in an isolated temporary vault confirmed the toolbar placement and wider New page control. Lock changed to Unlock and disabled Edit; unlocking restored Edit. No demo content was changed.
+- No regression suite was run for this control-placement/style change. Checks used current Light appearance; live appearance/accent changes, full VoiceOver, and accessibility-preference combinations remain unverified.
+
 ## Pages section and Noema display name
 
 - Renamed the library section, heading, and search label to Pages; page creation uses New Page / Blank page. Visible app branding, window title, application menu, About panel, appearance copy, and mark accessibility label use Noema.
