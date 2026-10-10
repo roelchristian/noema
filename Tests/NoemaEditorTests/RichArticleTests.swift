@@ -400,12 +400,12 @@ import VaultCore
 }
 
 
-@Test @MainActor func pinnedAISummaryIsExcludedFromEditingAndRetainedAfterReplacement() {
+@Test(arguments: [true, false]) @MainActor func pinnedAISummaryIsExcludedFromEditingAndRetainedAfterReplacement(showsSummary: Bool) {
     let model = AppModel()
     var document = BlockDocument(blocks: [EditorBlock(runs: [RichRun("Original content")])])
     document.setAISummary("Generated overview")
     model.body = BlockDocumentCodec.encode(document)
-    let article = SummarizedArticleView(model: model)
+    let article = SummarizedArticleView(model: model, showsSummary: showsSummary)
     let editable = BlockDocumentCodec.decode(article.editorText.wrappedValue)
     #expect(editable.aiSummary == nil)
     #expect(editable.blocks.first?.text == "Original content")

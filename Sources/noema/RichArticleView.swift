@@ -66,6 +66,7 @@ struct RichArticleView: NSViewRepresentable {
 
 struct SummarizedArticleView: View {
     @Bindable var model: AppModel
+    var showsSummary = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var disclosure = SummaryDisclosureState()
     private var document: BlockDocument { BlockDocumentCodec.decode(model.body) }
@@ -84,7 +85,7 @@ struct SummarizedArticleView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if model.generatingAISummary {
+            if showsSummary, model.generatingAISummary {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.mini)
                     Text("Generating AI Summary...")
@@ -93,7 +94,7 @@ struct SummarizedArticleView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.horizontal, 80).padding(.vertical, 8)
             }
-            if let summary = document.aiSummary {
+            if showsSummary, let summary = document.aiSummary {
                 Group {
                     if disclosure.collapsed {
                         HStack(spacing: 8) {

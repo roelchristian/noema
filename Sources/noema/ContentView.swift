@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var trashPageID: UUID?
     @State private var permanentDeletion: TrashedPage?
     @State private var sourceOriginal = false
+    @State private var showPageDetails = true
     @State private var sourceSelection: UUID?
     @State private var renamingSource: SourceRecord?
     @State private var sourceName = ""
@@ -35,7 +36,14 @@ struct ContentView: View {
                     sidebar.navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
                 } content: {
                     library.navigationSplitViewColumnWidth(min: model.scope == .sources ? 520 : 385, ideal: model.scope == .sources ? 620 : 385, max: model.scope == .sources ? 850 : 490)
-                } detail: { detail }
+                } detail: {
+                    HSplitView {
+                        detail.frame(minWidth: 360)
+                        if showPageDetails, let note = model.currentNote {
+                            pageInspector(note).frame(minWidth: 260, idealWidth: 320, maxWidth: 460)
+                        }
+                    }
+                }
                 .navigationSplitViewStyle(.balanced)
             }
         }
@@ -359,7 +367,7 @@ struct ContentView: View {
                     }
                 }
                 if let summary = source.metadata.aiSummary, !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(summary).frame(maxWidth: .infinity, alignment: .leading)
+                    SidebarAISummary(text: summary).id(source.id)
                 } else if model.generatingSourceTitles.contains(source.id) {
                     HStack {
                         ProgressView().controlSize(.mini)
@@ -373,6 +381,55 @@ struct ContentView: View {
         .frame(maxHeight: .infinity)
         .background(theme.color(.background))
         .accessibilityLabel("Source details")
+    }
+    private func pageInspector(_ note: NoteRecord) -> some View {
+        let summary = BlockDocumentCodec.decode(model.body).aiSummary
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top) {
+                    Text(model.title).font(.title2.bold())
+                    Spacer()
+                    Button { showPageDetails = false } label: {
+                        Label("Close page details", systemImage: "xmark").labelStyle(.iconOnly)
+                    }.buttonStyle(.borderless).help("Close page details")
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Metadata").font(.headline)
+                    LabeledContent("File", value: note.relativePath)
+                    LabeledContent("Created", value: note.createdAt)
+                    LabeledContent("Updated", value: note.updatedAt)
+                    LabeledContent("Tags", value: Array(Set(model.editedTags + note.inlineTags)).sorted().joined(separator: ", "))
+                    if !note.aliases.isEmpty {
+                        LabeledContent("Aliases", value: note.aliases.joined(separator: ", "))
+                    }
+                    LabeledContent("Editing", value: model.editingLocked ? "Locked" : "Unlocked")
+                }.font(.callout)
+                Divider()
+                Label("AI-generated summary", systemImage: "sparkles").font(.headline)
+                Button(summary == nil ? "Generate AI Summary" : "Regenerate AI Summary") {
+                    model.summarizePage()
+                }.disabled(!aiSummaries || model.editingLocked || model.generatingAISummary)
+                if !aiSummaries {
+                    Text("Enable summaries in Noema → Settings → Apple Intelligence.").font(.caption).foregroundStyle(.secondary)
+                }
+                if model.generatingAISummary {
+                    HStack {
+                        ProgressView().controlSize(.mini)
+                        Text("Generating AI summary…").foregroundStyle(.secondary)
+                    }
+                }
+                if let summary {
+                    SidebarAISummary(text: summary.text).id(note.id)
+                    Button("Delete Summary", role: .destructive) { model.deleteAISummary() }
+                        .disabled(model.editingLocked || model.generatingAISummary)
+                } else {
+                    Text("No AI summary available.").foregroundStyle(.secondary)
+                }
+            }.textSelection(.enabled).padding(20)
+        }
+        .frame(maxHeight: .infinity)
+        .background(theme.color(.background))
+        .accessibilityLabel("Page details")
     }
     private var trashLibrary: some View {
         VStack(spacing: 0) {
@@ -438,7 +495,7 @@ struct ContentView: View {
                     if let source = model.currentSource, sourceOriginal || source.metadata.storedFilename.hasSuffix(".txt") {
                         MarkdownEditor(text: .constant(model.body), action: nil, onWikiQuery: { _ in }, editable: false)
                     } else if model.currentNote != nil {
-                        SummarizedArticleView(model: model)
+                        SummarizedArticleView(model: model, showsSummary: !showPageDetails)
                             .id(model.selectedID)
                     } else { MarkdownPreview(blocks: model.preview, onWikiLink: model.followWikiLink) }
                     if !model.reading, model.currentNote != nil, model.wikiQuery != nil, !model.linkSuggestions.isEmpty {
@@ -478,6 +535,9 @@ struct ContentView: View {
             if model.root != nil {
                 if model.currentNote != nil {
                     HStack(spacing: 8) {
+                        Button { showPageDetails.toggle() } label: {
+                            Label("Page details", systemImage: "sidebar.right")
+                        }.help(showPageDetails ? "Hide page details" : "Show page details")
                         if aiSummaries {
                             Button { model.summarizePage() } label: { Label("Summarize", systemImage: "sparkles") }
                                 .disabled(model.editingLocked || model.generatingAISummary)
@@ -554,7 +614,12 @@ struct ContentView: View {
                     } else {
                         TextField("Page title", text: $model.title).textFieldStyle(.plain).font(.system(size: 26, weight: .semibold))
                     }
-                    Spacer()
+                    if !showPageDetails {
+                        Spacer()
+                        headerActions
+                    }
+                }
+                if showPageDetails {
                     headerActions
                 }
                 if !model.reading {
@@ -661,5 +726,25 @@ struct PasteSourceSheet: View {
                 }.buttonStyle(.glassProminent).disabled(text.isEmpty || importing).keyboardShortcut(.defaultAction)
             }
         }.padding(24).frame(width: 660, height: 540)
+    }
+}
+
+
+private struct SidebarAISummary: View {
+    let text: String
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(text)
+                .lineLimit(expanded ? nil : 3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(expanded ? "Show less" : "Show more") { expanded.toggle() }
+                .buttonStyle(.link)
+                .font(.caption)
+                .accessibilityLabel(expanded ? "Collapse AI-generated summary" : "Expand AI-generated summary")
+                .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+        }
+        .onChange(of: text) { expanded = false }
     }
 }
