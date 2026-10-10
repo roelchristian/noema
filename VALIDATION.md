@@ -584,3 +584,8 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 - Removed the enclosing page-content width cap and applied the existing 980-point limit to the summary text, generation indicator, and article editor. Expanded/collapsed summary material and divider now span the main pane while text stays centered with the article. Source previews retain their existing width.
 - Initial build detected an input edited during compilation; retried after edits completed. The debug build retry exceeded its 35-second limit. Compilation is unverified.
 - `git diff --check` passed. UI validation was skipped at the user’s request; wide-window, theme, and accessibility behavior remain manually unverified. No regression suite was run for this layout-only change.
+
+## AI summary banner refinements — 2026-10-11
+
+- Summary generation and summary content share one full-width native frosted background and a thinner bottom divider. Summary typography remains unchanged, as clarified by the user. Expanded banners initially show three lines with accessible Show more / Show less controls; hiding the banner or replacing summary text resets the preview.
+- `./scripts/test.sh` compiled the test target but the run of 95 tests reported 44 issues, including editor paste/formatting expectations; the regression suite did not pass. Final `./scripts/build.sh debug` compiled and linked successfully (21.07 seconds), then packaging failed at `iconutil` with `Invalid Iconset`. `git diff --check` passed. UI validation, appearance, and accessibility checks were skipped at the user’s request.

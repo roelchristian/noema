@@ -71,6 +71,7 @@ struct SummarizedArticleView: View {
     @Bindable var model: AppModel
     var showsSummary = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var summaryExpanded = false
     @State private var disclosure = SummaryDisclosureState()
     private var document: BlockDocument { BlockDocumentCodec.decode(model.body) }
     var editorText: Binding<String> {
@@ -88,54 +89,66 @@ struct SummarizedArticleView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if showsSummary, model.generatingAISummary {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.mini)
-                    Text("Generating AI Summary...")
-                        .font(.callout).foregroundStyle(.secondary).lineLimit(1)
-                }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.horizontal, 80).padding(.vertical, 8)
-                    .frame(maxWidth: 980).frame(maxWidth: .infinity)
-            }
-            if showsSummary, let summary = document.aiSummary {
-                Group {
-                    if disclosure.collapsed {
+            if showsSummary, model.generatingAISummary || document.aiSummary != nil {
+                VStack(alignment: .leading, spacing: 0) {
+                    if showsSummary, model.generatingAISummary {
                         HStack(spacing: 8) {
-                            Image(systemName: "sparkles").accessibilityLabel("AI-generated summary")
-                            Text(summary.text.replacingOccurrences(of: "\n", with: " "))
-                                .lineLimit(1).truncationMode(.tail)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Button("Show") { disclosure.toggle() }.buttonStyle(.link).fixedSize()
-                                .accessibilityLabel("Show AI-generated summary")
-                            deleteSummaryButton
-                        }.font(.caption).foregroundStyle(.secondary)
-                            .transition(.opacity)
-                    } else {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Label("Summary", systemImage: "list.bullet.rectangle").font(.headline)
-                                Spacer()
-                                Button("Hide") { disclosure.toggle() }.buttonStyle(.link).font(.caption)
-                                    .accessibilityLabel("Hide AI-generated summary")
-                                deleteSummaryButton
-                            }
-                            Text("AI-generated summary").font(.caption).foregroundStyle(.secondary)
-                            Text(summary.text).textSelection(.enabled)
+                            ProgressView().controlSize(.mini)
+                            Text("Generating AI Summary...")
+                                .font(.callout).foregroundStyle(.secondary).lineLimit(1)
                         }
-                        .transition(.opacity)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.horizontal, 80).padding(.vertical, 8)
+                            .frame(maxWidth: 980).frame(maxWidth: .infinity)
+                    }
+                    if showsSummary, let summary = document.aiSummary {
+                        Group {
+                            if disclosure.collapsed {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "sparkles").accessibilityLabel("AI-generated summary")
+                                    Text(summary.text.replacingOccurrences(of: "\n", with: " "))
+                                        .lineLimit(1).truncationMode(.tail)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    Button("Show") { disclosure.toggle() }.buttonStyle(.link).fixedSize()
+                                        .accessibilityLabel("Show AI-generated summary")
+                                    deleteSummaryButton
+                                }.font(.caption).foregroundStyle(.secondary)
+                                    .transition(.opacity)
+                            } else {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Label("Summary", systemImage: "list.bullet.rectangle").font(.headline)
+                                        Spacer()
+                                        Button("Hide") { disclosure.toggle() }.buttonStyle(.link).font(.caption)
+                                            .accessibilityLabel("Hide AI-generated summary")
+                                        deleteSummaryButton
+                                    }
+                                    Text("AI-generated summary").font(.caption).foregroundStyle(.secondary)
+                                    Text(summary.text).textSelection(.enabled)
+                                        .lineLimit(summaryExpanded ? nil : 3)
+                                    Button(summaryExpanded ? "Show less" : "Show more") { summaryExpanded.toggle() }
+                                        .buttonStyle(.link).font(.caption)
+                                        .accessibilityLabel(summaryExpanded ? "Show less AI-generated summary" : "Show full AI-generated summary")
+                                        .accessibilityValue(summaryExpanded ? "Expanded" : "Three-line preview")
+                                }
+                                .transition(.opacity)
+                            }
+                        }
+                        .padding(.horizontal, 80).padding(.vertical, disclosure.collapsed ? 16 : 24)
+                        .frame(maxWidth: 980, alignment: .leading)
+                        .frame(maxWidth: .infinity)
                     }
                 }
-                .padding(.horizontal, 80).padding(.vertical, disclosure.collapsed ? 16 : 24)
-                .frame(maxWidth: 980, alignment: .leading)
                 .frame(maxWidth: .infinity)
                 .background(.ultraThinMaterial)
-                Divider()
+                Divider().scaleEffect(y: 0.5).frame(height: 0.5)
             }
             RichArticleView(text: editorText, reading: model.reading, locked: model.editingLocked, action: model.editorAction, onBegin: model.beginEditing, onEnd: model.finishEditing, onWikiLink: model.followWikiLink, onWikiQuery: { model.wikiQuery = $0 }, noteID: model.currentNote?.id, onBlockLink: model.openBlockURL, onScrollOffset: { disclosure.scrolled(to: $0) })
                 .frame(maxWidth: 980).frame(maxWidth: .infinity)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: disclosure.collapsed)
+        .onChange(of: document.aiSummary?.text) { summaryExpanded = false }
+        .onChange(of: disclosure.collapsed) { if disclosure.collapsed { summaryExpanded = false } }
     }
     private var deleteSummaryButton: some View {
         Button("Delete", role: .destructive) { model.deleteAISummary() }
