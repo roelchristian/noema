@@ -1314,20 +1314,29 @@ struct ContentView: View {
                 }
             }
             if model.currentNote != nil {
-                HStack(alignment: .center, spacing: 16) {
-                    if model.reading {
-                        Text(model.title).font(.system(size: 26, weight: .semibold)).textSelection(.enabled)
-                            .onTapGesture(count: 2) { model.beginEditing() }
-                    } else {
-                        TextField("Page title", text: $model.title).textFieldStyle(.plain).font(.system(size: 26, weight: .semibold))
+                if model.reading && !showPageDetails {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .center, spacing: 16) {
+                            pageTitle.fixedSize(horizontal: true, vertical: false)
+                            Spacer()
+                            headerActions
+                        }
+                        VStack(alignment: .leading, spacing: 10) {
+                            pageTitle
+                            headerActions
+                        }
                     }
-                    if !showPageDetails {
-                        Spacer()
+                } else {
+                    HStack(alignment: .center, spacing: 16) {
+                        pageTitle
+                        if !showPageDetails {
+                            Spacer()
+                            headerActions
+                        }
+                    }
+                    if showPageDetails {
                         headerActions
                     }
-                }
-                if showPageDetails {
-                    headerActions
                 }
                 if model.reading, let note = model.currentNote, !note.allTags.isEmpty {
                     HStack { ForEach(note.allTags.prefix(8), id: \.self) { tag in Button("#" + tag) { model.changeScope(.tag(tag)) }.font(.caption).foregroundStyle(theme.text(.graphHighlight, on: .background)).buttonStyle(.bordered).tint(theme.color(.graphHighlight)).controlSize(.small) } }
@@ -1350,6 +1359,17 @@ struct ContentView: View {
         // Match the article text column: 80pt text inset + 5pt default line-fragment padding, inside the same 980pt centered column.
         .padding(.horizontal, 85).padding(.top, 14).padding(.bottom, 12)
         .frame(maxWidth: 980, alignment: .leading).frame(maxWidth: .infinity)
+    }
+    private var pageTitle: some View {
+        Group {
+            if model.reading {
+                Text(model.title).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onTapGesture(count: 2) { model.beginEditing() }
+            } else {
+                TextField("Page title", text: $model.title).textFieldStyle(.plain)
+            }
+        }.font(.system(size: 26, weight: .semibold))
     }
     private var pageFooter: some View {
         VStack(alignment: .leading, spacing: 10) {
