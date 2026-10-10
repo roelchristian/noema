@@ -12,7 +12,7 @@ struct LibraryRow: Identifiable {
     var kind: EntryKind
 }
 struct EditorAction: Equatable {
-    enum Operation: Equatable { case wrap(String, String), wikiLink(String) }
+    enum Operation: Equatable { case wrap(String, String), wikiLink(String), block(UUID) }
     var id = UUID()
     var operation: Operation
 }
@@ -35,7 +35,10 @@ struct EditorAction: Equatable {
     var tagInput = ""
     var preview: [PreviewBlock] = []
     var backlinks: [NoteRecord] = []
-    var reading = false
+    var reading = true
+    var editorNotice: String?
+    var editorReadOnly = false
+    var pendingBlockURL: URL?
     var busy = false
     var saveStatus = "Saved locally"
     var errorMessage: String?
@@ -133,6 +136,7 @@ struct EditorAction: Equatable {
             busy = false
             await updateRows()
             await refresh()
+            if let url = pendingBlockURL { pendingBlockURL = nil; openBlockURL(url) }
         } catch {
             if hasScope, scopeURL != url { url.stopAccessingSecurityScopedResource() }
             busy = false; errorMessage = error.localizedDescription
@@ -158,7 +162,7 @@ struct EditorAction: Equatable {
                 Task { @MainActor in
                     guard let self, self.generation == ticket, self.progressTicket == scanTicket else { return }
                     self.notes.append(contentsOf: chunk.notes); self.sources.append(contentsOf: chunk.sources)
-                    self.rows = self.notes.map { LibraryRow(id: $0.id, title: $0.title, excerpt: String($0.body.prefix(130)), tags: $0.allTags, kind: .wiki) }
+                    self.rows = self.notes.map { LibraryRow(id: $0.id, title: $0.title, excerpt: String(BlockDocumentCodec.markdownBody($0.body).prefix(130)), tags: $0.allTags, kind: .wiki) }
                 }
             }
             progressTicket = nil
@@ -206,8 +210,9 @@ struct EditorAction: Equatable {
         Task {
             await waitForSave()
             if dirty, !(await saveCurrent()) { return }
-            autosaveTask?.cancel(); wikiQuery = nil
+            autosaveTask?.cancel(); wikiQuery = nil; editorAction = nil
             selectedID = id; currentSource = nil; currentNote = nil; externalChange = false; errorMessage = nil
+            reading = true
             if let note = notes.first(where: { $0.id == id }) { apply(note) }
             else if let source = sources.first(where: { $0.id == id }) {
                 currentSource = source; title = source.title; body = source.body; reading = true
@@ -217,10 +222,41 @@ struct EditorAction: Equatable {
         }
     }
     private func apply(_ note: NoteRecord) {
+        editorAction = nil
         currentNote = note; title = note.title; body = note.body; tagInput = note.tags.joined(separator: ", ")
+        let document = BlockDocumentCodec.decode(note.body)
+        editorReadOnly = document.unsupportedVersion
+        editorNotice = document.unsupportedVersion ? "This page uses a newer block format and is read-only. Its original content is preserved." : document.recoveredMetadata != nil ? "External Markdown changed. The earlier editor metadata was preserved for recovery; external text is shown." : nil
         externalChange = false; saveStatus = "Saved locally"; generatePreview()
     }
+    func openBlockURL(_ url: URL) {
+        guard url.scheme == "noema", url.host == "page", let noteID = UUID(uuidString: url.lastPathComponent),
+              let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "block" })?.value, let blockID = UUID(uuidString: value) else { return }
+        guard root != nil, !busy else { pendingBlockURL = url; return }
+        Task {
+            await waitForSave()
+            if dirty, !(await saveCurrent()) { return }
+            guard let note = notes.first(where: { $0.id == noteID }), BlockDocumentCodec.decode(note.body).block(blockID) != nil else { errorMessage = "This block link is not available in the open vault."; return }
+            autosaveTask?.cancel(); selectedID = noteID; currentSource = nil; apply(note); reading = true
+            editorAction = EditorAction(operation: .block(blockID)); await updateBacklinks()
+        }
+    }
+    var editingLocked: Bool { currentNote?.isEditingLocked == true || editorReadOnly }
+    func beginEditing() { guard currentNote != nil, !editingLocked else { return }; reading = false }
+    func finishEditing() { wikiQuery = nil; editorAction = nil; saveNow(); reading = true }
+    func toggleEditingLock() {
+        Task {
+            guard await saveCurrent(), var note = currentNote, let repository else { return }
+            note.editingLocked = !note.isEditingLocked
+            do {
+                let saved = try await repository.save(note: note, title: note.title, body: note.body, tags: note.tags)
+                if currentNote?.id == saved.id { apply(saved); reading = true }
+                if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
     func edited() {
+        guard !editingLocked else { return }
         guard currentNote != nil, dirty else { return }
         saveStatus = "Unsaved changes"
         autosaveTask?.cancel()
@@ -236,7 +272,7 @@ struct EditorAction: Equatable {
         saving = true; saveStatus = "Saving…"
         let draft = DraftRecord(note: note, title: title, body: body, tags: editedTags)
         do {
-            wordCount = await Task.detached { draft.body.split(whereSeparator: \.isWhitespace).count }.value
+            wordCount = await Task.detached { BlockDocumentCodec.markdownBody(draft.body).split(whereSeparator: \.isWhitespace).count }.value
             try await recovery.store(draft)
             let saved = try await repository.save(note: note, title: draft.title, body: draft.body, tags: draft.tags)
             if currentNote?.id == saved.id {
@@ -270,7 +306,7 @@ struct EditorAction: Equatable {
     func generatePreview() {
         previewTask?.cancel(); let captured = body
         previewTask = Task {
-            let (blocks, count) = await Task.detached { (MarkdownService.preview(captured), captured.split(whereSeparator: \.isWhitespace).count) }.value
+            let (blocks, count) = await Task.detached { (MarkdownService.preview(captured), BlockDocumentCodec.markdownBody(captured).split(whereSeparator: \.isWhitespace).count) }.value
             guard !Task.isCancelled, body == captured else { return }
             preview = blocks; wordCount = count
         }
@@ -340,8 +376,8 @@ struct EditorAction: Equatable {
         else if matches.isEmpty { unresolvedTarget = target }
         else { ambiguousMatches = matches }
     }
-    func suggestLink(_ title: String) { editorAction = EditorAction(operation: .wikiLink(title)); wikiQuery = nil }
-    func format(_ prefix: String, _ suffix: String) { editorAction = EditorAction(operation: .wrap(prefix, suffix)) }
+    func suggestLink(_ title: String) { guard !reading, !editingLocked else { return }; editorAction = EditorAction(operation: .wikiLink(title)); wikiQuery = nil }
+    func format(_ prefix: String, _ suffix: String) { guard !reading, !editingLocked else { return }; editorAction = EditorAction(operation: .wrap(prefix, suffix)) }
     func importFiles() {
         let panel = NSOpenPanel(); panel.allowsMultipleSelection = true
         panel.allowedContentTypes = [UTType.plainText, UTType(filenameExtension: "md") ?? .plainText]

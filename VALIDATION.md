@@ -2,6 +2,59 @@
 
 Environment: Apple Silicon Mac, macOS 27.0; Swift 6.2.4; macOS SDK 26.2.
 
+## Block spacing and icon alignment — 3-minute UI timebox
+
+- Semantic presentations now show icons without visible name/status labels outside the article margin. Basic list/task/toggle markers sit inside the margin, with matching click positions. Semantic blocks, quotes, callouts, and code receive increased top/bottom spacing; callout/code backgrounds receive increased vertical padding. Accessibility names and statuses are retained.
+- `./scripts/test.sh` passed all 34 test entries (the optional benchmark entry skipped its benchmark). Rendering coverage checks extra spacing, nested marker clearance, wrapped-text indentation, and semantic metadata retention in both theme variants.
+- `./scripts/build.sh debug` successfully packaged `dist/noema.app` and `dist/noema.zip`; `git diff --check` passed. Initial restricted runs were blocked by macOS file coordination/pasteboard and icon services; the successful runs had access to those services.
+- Live visual inspection of the updated package in a temporary vault, appearance/accent changes, and VoiceOver interaction were not completed in this timebox.
+
+### Follow-up: block terminator and slash menu
+
+- Block decoration bounds exclude a nonempty block's terminating newline, preventing an added block from extending the preceding semantic accent into an empty line. No Markdown content is removed.
+- Slash palette width reduced to 260 points; rows show command titles with details in tooltips/accessibility labels. Basic/semantic headings have a native separator, and semantic symbols/colors come from the shared registry. The anchor uses the caret rectangle, menu width, and available screen space to choose above or below.
+- Final `./scripts/test.sh` passed all 36 entries (optional benchmark not executed), including semantic split/capture/decorative bounds and compact palette sections, matching, and keyboard selection. `./scripts/build.sh debug` packaged the app and archive successfully. `git diff --check` passed; generated brand assets had no changes.
+- Live menu positioning near screen edges, native icon-color appearance, and VoiceOver interaction remain unverified within the under-3-minute timebox.
+
+## Block editor — current validation
+
+The block editor was implemented within the user’s one-hour cap, including interrupted work. The sections below this one retain historical validation; the previous app-specific Midnight Iris appearance preference has been replaced by system appearance and dynamic AppKit colors.
+
+- Final `./scripts/test.sh`: 33 test entries passed (32 functional checks plus the optional benchmark entry, skipped in the ordinary run). Added coverage includes rich/nested JSON round trips, external text overriding stale metadata, future-version read-only behavior, malformed data retention, two-space/tab indentation, repeated legacy UUIDs, structure/tag independence, split/merge/list exit, nested moves/duplicates, collapsed content, slash matching/query removal, selection-preserving formatting, Markdown/RTF paste, emoji insertion, typing/command undo, duplicate/delete/reorder undo and redo, and cross-block selection preserving surviving descendants.
+- The 1,000-block render/capture/serialization/reload pipeline took 115 ms in the final run. This is a pipeline measurement, not a sustained typing latency or frame-rate benchmark.
+- Explicit `VAULT_BENCHMARK=1 ./scripts/test.sh --filter benchmarkFiveThousandEntries` passed: scan 13.72 s, index 5.73 s, cached load 54.50 ms, search p95 34.89 ms with 5,000 results. Search omits the editor envelope, and a changed derived-index revision forces rebuilding previous cached wiki rows.
+- Native checks used a separate app identity and `/tmp/Noema-Block-Acceptance`, preserving the user’s demo vault. Observed existing Markdown headings/lists/tasks/quote/code/divider, all ten semantic icons and labels, a question retaining bullet structure and answered status, callout presentation, toggle collapse with children retained on disk and after relaunch, caret-adjacent `/h2` filtering, Return execution with query removal, heading creation, list continuation/exit, autosave/reload, and editing/splitting/merging at the end of a 1,000-block document. Automated insertion separately verifies emoji; the computer-use keyboard mapper substituted punctuation for the emoji in its rapid-input sequence.
+- The final native surface was inspected in the Mac’s current Dark appearance and native blue selection/accent. The user’s system settings were not changed. Automated rendering covers both theme variants, but final live Light appearance, changing system appearance/accent while editing, full VoiceOver navigation, and accessibility preference combinations remain unverified.
+- Native drag attempts reached valid sibling targets but did not produce a completed drop/reorder. The drag handle, scoped pasteboard, insertion drawing, and shared reorder/undo commands are implemented; deliverable 18 is **not accepted**. Keyboard/menu reorder is the available path, with automated undo/redo coverage. Further native drag diagnosis is required.
+- Tables, images, and unsupported HTML remain literal rather than receiving dedicated editors. RTF attachments retain original RTF in metadata for recovery. Multi-block drag is not implemented. Two-Mac iCloud acceptance remains outstanding.
+
+- Final `./scripts/build.sh release` succeeded, producing `dist/noema.app` and `dist/noema.zip`. The ZIP was extracted outside iCloud and passed `codesign --verify --deep --strict`. `git diff --check` passed; temporary drag diagnostics were removed. The app is locally ad-hoc signed, not notarized.
+
+### Requested deliverables
+
+| # | Result and evidence |
+|---|---|
+| 1 | Compatibility decision recorded in `BLOCK_EDITOR.md`; existing changes preserved. |
+| 2 | UUID/tree/rich runs/metadata/timestamps model; automated coverage passed. |
+| 3 | Lossless versioned envelope, source spelling, external-edit recovery; tests passed. |
+| 4 | Paragraph/headings/lists/quote/tasks implemented; Markdown import tests and native checks performed. |
+| 5 | Code/divider/callout/toggle implemented; rendering tests and native checks performed. |
+| 6 | Shared core mutations preserve runs, identity, and children; tests passed. |
+| 7 | Native typing plus document/selection command undo; create/transform/delete/reorder checks passed. |
+| 8 | Split/merge/empty-list exit covered by tests and native editing. |
+| 9 | Continuous native navigation plus indent/outdent; model/caret checks passed; exhaustive held-key stress remains. |
+| 10 | Fuzzy matching, aliases, grouped palette; tests and native filtering passed. |
+| 11 | Arrow/Return/Escape handlers and query removal; automated/native execution covered. |
+| 12 | All specified block prefixes registered and tested. |
+| 13 | Bold/italic/underline/strike/code/highlight/links; selection and rich-run tests passed. |
+| 14 | Plain/Markdown/RTF paste and recovery of unsupported content; tests passed. |
+| 15 | Ten editable, labeled semantic presentations; registry tests and native visual checks performed. |
+| 16 | Independent semantic tags and optional statuses survive structure changes/reload; tests and native checks passed. |
+| 17 | Shared context actions implemented; duplication/deletion/move/indent tests passed. End-to-end OS block-link launch remains unverified. |
+| 18 | Native drag **incomplete**: attempts did not complete a drop. Reorder commands and undo/redo pass. |
+| 19 | Partial acceptance: Dark/native input checked; live Light/theme/accent changes and full accessibility pass remain. |
+| 20 | Regression, 5,000-page benchmark, 1,000-block pipeline/native edit, and documentation completed; packaging result recorded below. |
+
 ## Automated
 
 - Release regression suite passed: 13 functional checks, plus the optional benchmark entry (not executed without `VAULT_BENCHMARK=1`).

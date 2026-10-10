@@ -17,6 +17,7 @@ let package = Package(
         ], linkerSettings: [.linkedLibrary("sqlite3")]),
         .executableTarget(name: "noema", dependencies: ["VaultCore", "NoemaBrand"]),
         .testTarget(name: "VaultCoreTests", dependencies: ["VaultCore"]),
-        .testTarget(name: "NoemaBrandTests", dependencies: ["NoemaBrand"])
+        .testTarget(name: "NoemaBrandTests", dependencies: ["NoemaBrand"]),
+        .testTarget(name: "NoemaEditorTests", dependencies: ["noema"])
     ]
 )

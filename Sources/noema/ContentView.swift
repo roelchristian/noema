@@ -23,10 +23,9 @@ struct ContentView: View {
             if model.root != nil {
                 if model.currentNote != nil {
                     ToolbarItemGroup(placement: .primaryAction) {
-                        Picker("Page view", selection: $model.reading) {
-                            Text("Edit").tag(false)
-                            Text("Read").tag(true)
-                        }.pickerStyle(.segmented).frame(minWidth: 140)
+                        Button { if model.reading { model.beginEditing() } else { model.finishEditing() } } label: {
+                            Label(model.reading ? "Edit" : "Done", systemImage: model.reading ? "pencil" : "checkmark")
+                        }.disabled(model.editingLocked)
                         Button { showTrashConfirmation = true } label: {
                             Label("Move page to vault trash", systemImage: "trash")
                         }.help("Move page to vault trash")
@@ -170,7 +169,7 @@ struct ContentView: View {
                     }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
             }
-            HStack { Text(libraryCount); Spacer(); Text("⌘K") }.font(.caption).foregroundStyle(theme.text()).padding(12)
+            HStack { Text(libraryCount); Spacer(); Text("⌘P") }.font(.caption).foregroundStyle(theme.text()).padding(12)
         }
         .background(theme.color(.background))
         .safeAreaBar(edge: .top) {
@@ -216,13 +215,19 @@ struct ContentView: View {
                         Button("Save a copy") { model.saveDraftAsNewPage() }
                     }.font(.callout).padding(12).background(.orange.opacity(0.12))
                 }
+                if let notice = model.editorNotice, model.currentNote != nil {
+                    Label(notice, systemImage: "info.circle").font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(theme.color(.surfaceElevated))
+                }
                 pageHeader
                 Divider().overlay(theme.color(.border))
                 ZStack(alignment: .topLeading) {
                     if let source = model.currentSource, sourceOriginal || source.metadata.storedFilename.hasSuffix(".txt") {
                         MarkdownEditor(text: .constant(model.body), action: nil, onWikiQuery: { _ in }, editable: false)
-                    } else if model.reading || model.currentSource != nil { MarkdownPreview(blocks: model.preview, onWikiLink: model.followWikiLink) }
-                    else { MarkdownEditor(text: $model.body, action: model.editorAction, onWikiQuery: { model.wikiQuery = $0 }) }
+                    } else if model.currentNote != nil {
+                        RichArticleView(text: $model.body, reading: model.reading, locked: model.editingLocked, action: model.editorAction, onBegin: model.beginEditing, onEnd: model.finishEditing, onWikiLink: model.followWikiLink, onWikiQuery: { model.wikiQuery = $0 }, noteID: model.currentNote?.id, onBlockLink: model.openBlockURL)
+                            .id(model.selectedID)
+                    } else { MarkdownPreview(blocks: model.preview, onWikiLink: model.followWikiLink) }
                     if !model.reading, model.currentNote != nil, model.wikiQuery != nil, !model.linkSuggestions.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Link a page").font(.caption).foregroundStyle(theme.text()).padding(8)
@@ -260,15 +265,33 @@ struct ContentView: View {
                 Label(model.currentSource == nil ? "Personal wiki" : "Raw source", systemImage: model.currentSource == nil ? "book.closed" : "tray.full")
                     .font(.caption.weight(.medium)).foregroundStyle(theme.text())
                 Spacer()
+                if model.currentNote != nil {
+                    Button { model.toggleEditingLock() } label: {
+                        Image(systemName: model.editingLocked ? "lock.fill" : "lock.open")
+                    }.buttonStyle(.plain).foregroundStyle(theme.text())
+                        .help(model.editingLocked ? "Unlock article" : "Lock article against editing")
+                        .accessibilityLabel(model.editingLocked ? "Unlock article" : "Lock article")
+                }
                 if model.currentSource != nil {
                     Label("Read only", systemImage: "lock").font(.caption).foregroundStyle(theme.text())
                 }
             }
             if model.currentNote != nil {
-                TextField("Page title", text: $model.title).textFieldStyle(.plain).font(.system(size: 32, weight: .semibold))
-                HStack {
-                    Image(systemName: "number").foregroundStyle(theme.text())
-                    TextField("Topics, separated by commas", text: $model.tagInput).textFieldStyle(.plain).font(.callout)
+                HStack(alignment: .firstTextBaseline, spacing: 16) {
+                    if model.reading {
+                        Text(model.title).font(.system(size: 32, weight: .semibold)).textSelection(.enabled)
+                            .onTapGesture(count: 2) { model.beginEditing() }
+                    } else {
+                        TextField("Page title", text: $model.title).textFieldStyle(.plain).font(.system(size: 32, weight: .semibold))
+                    }
+                    Spacer()
+
+                }
+                if !model.reading {
+                    HStack {
+                        Image(systemName: "number").foregroundStyle(theme.text())
+                        TextField("Topics, separated by commas", text: $model.tagInput).textFieldStyle(.plain).font(.callout)
+                    }
                 }
                 if let note = model.currentNote, !note.allTags.isEmpty {
                     HStack { ForEach(note.allTags.prefix(8), id: \.self) { tag in Button("#" + tag) { model.changeScope(.tag(tag)) }.font(.caption).foregroundStyle(theme.text(.graphHighlight, on: .background)).buttonStyle(.bordered).tint(theme.color(.graphHighlight)).controlSize(.small) } }
@@ -300,6 +323,7 @@ struct ContentView: View {
                 Spacer()
                 Text("\(model.wordCount) words").font(.caption).foregroundStyle(theme.text())
                 if !model.reading {
+                    Text("/ commands · Esc to finish").font(.caption).foregroundStyle(theme.text())
                     HStack(spacing: 12) {
                         Button { model.format("**", "**") } label: { Label("Bold", systemImage: "bold").labelStyle(.iconOnly) }.help("Bold · ⌘B")
                         Button { model.format("*", "*") } label: { Label("Italic", systemImage: "italic").labelStyle(.iconOnly) }.help("Italic · ⌘I")

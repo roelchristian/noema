@@ -35,8 +35,8 @@ struct MarkdownEditor: NSViewRepresentable {
         view.backgroundColor = theme.native(.surfaceElevated)
         view.insertionPointColor = theme.native(.accentPrimary)
         view.selectedTextAttributes = [
-            .foregroundColor: theme.nativeText(),
-            .backgroundColor: theme.native(.accentPrimary).withAlphaComponent(theme.palette.dark ? 0.35 : 0.18)
+            .foregroundColor: NSColor.selectedTextColor,
+            .backgroundColor: NSColor.selectedTextBackgroundColor
         ]
         view.isEditable = editable
         if view.string != text {
@@ -84,6 +84,7 @@ struct MarkdownEditor: NSViewRepresentable {
                 let selection = (view.string as NSString).substring(with: range)
                 view.insertText(prefix + selection + suffix, replacementRange: range)
                 view.setSelectedRange(NSRange(location: range.location + (prefix as NSString).length, length: (selection as NSString).length))
+            case .block: break
             case .wikiLink(let title):
                 var replacement = wikiRange() ?? range
                 let ns = view.string as NSString
@@ -118,8 +119,8 @@ struct MarkdownPreview: NSViewRepresentable {
         guard let view = scroll.documentView as? NSTextView else { return }
         view.linkTextAttributes = [.foregroundColor: theme.nativeText(.accentSecondary), .underlineStyle: NSUnderlineStyle.single.rawValue]
         view.selectedTextAttributes = [
-            .foregroundColor: theme.nativeText(),
-            .backgroundColor: theme.native(.accentPrimary).withAlphaComponent(theme.palette.dark ? 0.35 : 0.18)
+            .foregroundColor: NSColor.selectedTextColor,
+            .backgroundColor: NSColor.selectedTextBackgroundColor
         ]
         guard context.coordinator.blocks != blocks || context.coordinator.theme != theme else { return }
         let selection = view.selectedRange()
@@ -141,7 +142,7 @@ struct MarkdownPreview: NSViewRepresentable {
                 var font = span.code ? NSFont.monospacedSystemFont(ofSize: size - 1, weight: span.bold ? .semibold : .regular) : NSFont.systemFont(ofSize: size, weight: span.bold ? .semibold : weight)
                 if span.italic { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
                 var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: paragraph]
-                if span.code { attributes[.backgroundColor] = theme.native(.accentPrimary).withAlphaComponent(theme.palette.dark ? 0.18 : 0.08) }
+                if span.code { attributes[.backgroundColor] = theme.native(.accentPrimary).withAlphaComponent(theme.dark ? 0.18 : 0.08) }
                 if let target = span.wikiTarget {
                     var components = URLComponents(); components.scheme = "noema"; components.host = "wiki"
                     components.queryItems = [URLQueryItem(name: "title", value: target)]

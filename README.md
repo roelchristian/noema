@@ -6,7 +6,7 @@ A native macOS personal wiki, with a separate read-only library of raw sources.
 
 The interface uses native macOS Liquid Glass navigation and toolbars, glass search and editing controls, and an orbital glass mark inspired by connected thoughts. Writing and source content retain readable standard backgrounds. The mark shares geometry with the packaged icon; see `Resources/Brand/README.md` for the exported layers and the current `.icns` packaging limitation.
 
-**Midnight Iris appearance:** Open **noema → Settings…** (⌘,) to choose **System**, **Light**, or **Dark**. System is the default; your preference persists between launches. The shared semantic palette colours content, the native editor and Markdown preview, links, topics, and the orbital identity. Indigo marks primary interaction, cyan marks relationships, and violet marks classifications. Foreground variants preserve readable contrast in each appearance. Native chrome, sidebar materials, menus, and control behaviour remain managed by macOS.
+**System appearance:** App chrome, controls, writing surfaces, selection, and previews follow macOS Light/Dark appearance, accent and highlight colors, and accessibility settings. Appearance settings are managed in System Settings; noema no longer overrides them. Midnight Iris colors are confined to the orbital identity and icon exports.
 
 ## Build and run
 
@@ -32,12 +32,22 @@ For a quick tour, open `Examples/Demo Vault`. Its pages contain illustrative per
 1. Click **Create a vault**. Create or choose a dedicated folder, locally or in iCloud Drive. Keep your content vault separate from this source-code folder.
 2. Use **New personal page** for optional Overview / Personal context / Connections headings, or create a blank page with ⌘N.
 3. Add topics in the comma-separated field or write inline `#history` tags. Type `[[` for page suggestions. A link such as `[[Pertinax|my reading]]` can show a friendly label.
-4. Toggle **Edit / Read** to switch between native Markdown editing and preview.
+4. Click **Edit** or double-click the article to start native block editing; click **Done** or press Escape to finish. The lock control prevents article edits.
 5. Select **Sources** to import UTF-8 `.txt` / `.md` files or paste text with an optional original URL. Originals cannot be edited in the app. Imported Markdown also has an Original view.
 
-**⌘S** saves immediately, **⌘K / ⇧⌘F** focuses vault search, **⌘B / ⌘I** adds Markdown emphasis, and **⇧⌘I** imports sources. Editing saves after 500 ms of inactivity. Page title changes keep the filename stable and add the old title as an alias, so links continue working.
+**⌘S** saves immediately, **⌘P / ⇧⌘F** focuses vault search, **⌘B / ⌘I / ⌘U** toggles bold/italic/underline, and **⌘K** edits a hyperlink, and **⇧⌘I** imports sources. Editing saves after 500 ms of inactivity. Page title changes keep the filename stable and add the old title as an alias, so links continue working.
 
 Sources and wiki pages are independent in v1. No AI provider is contacted. Raw data stays distinguishable from your interpretation.
+
+## Block editing
+
+Type `/` in an empty paragraph or after whitespace to search block commands. The compact menu opens above or below the caret according to available space, separates basic and semantic blocks, and shows semantic icon colors. Aliases such as `/h2` and `/ques` and fuzzy matching are supported; use arrows and Return, or Escape to dismiss. Paragraphs, three heading levels, bullets, numbering, tasks, quotes, code, dividers, callouts, and nested toggles share the same command layer.
+
+Question, Idea, Important, Starred, Definition, Example, Insight, Warning, Reference, and Summary add editable semantic icons outside the article margin without replacing a heading or list structure. Bullets, numbering, checkboxes, and toggle arrows sit inside the margin. Semantic blocks, quotes, callouts, and code have extra vertical spacing. Semantic names and statuses remain available to VoiceOver and **Block Actions**; Question and Idea have optional statuses there. Use **⇧⌘B** or the native context menu for conversion, tags, status, duplication, Markdown copy, block links, moving, indentation, deletion, and inline formatting. Hover at the left margin to reveal a drag handle and click it for block actions. Native drag/drop remains an outstanding acceptance issue; use Move up/down or ⌥⌘↑/↓ to reorder a subtree. Tab/Shift Tab explicitly changes nesting.
+
+Return splits a block and continues lists; Return on an empty list item exits. Backspace at the start converts structural blocks to text before merging. Shift Return inserts a newline inside code. **⌘A** selects current-block text; **⌥⌘A** selects the document. **⌥⌘↑/↓** moves a block, and **⇧⌘Return** toggles a task. Native undo/redo covers typing and block commands. Plain text, Markdown, and RTF paste preserve supported formatting; unsupported Markdown stays literal, and pasted RTF attachments retain the original RTF in metadata for recovery.
+
+Blocks persist as readable Markdown with a versioned JSON envelope in a trailing HTML comment. It preserves UUIDs, rich formatting, semantic metadata, and the complete tree. Opening ordinary Markdown does not rewrite it. External Markdown changes take precedence over a stale envelope; its previous payload is kept for recovery and a notice is shown. A future envelope version opens read-only. See [BLOCK_EDITOR.md](BLOCK_EDITOR.md) for the compatibility decision and limits.
 
 ## Portable file format
 
@@ -75,7 +85,7 @@ Interrupted source imports remain in a hidden `.import-<uuid>` directory; comple
 VAULT_BENCHMARK=1 ./scripts/test.sh --filter benchmarkFiveThousandEntries
 ```
 
-Tests use temporary vaults and cover metadata round trips, original bytes, malformed imports, code-excluded links/tags, aliases, stale edits/deletions, trash, recovery drafts, full-text search, backlinks, and rebuilding indexes. The opt-in benchmark measures a 5,000-page initial scan/index, cached loading, and search p95. Cached loading is a service-level measurement; app launch/render time must also be assessed manually.
+Tests use temporary vaults and native editor fixtures, and cover block commands, caret/selection, undo/redo, rich paste, nesting, external-edit recovery, metadata round trips, original bytes, malformed imports, code-excluded links/tags, aliases, stale edits/deletions, trash, recovery drafts, full-text search, backlinks, and rebuilding indexes. The opt-in benchmark measures a 5,000-page initial scan/index, cached loading, and search p95. Cached loading is a service-level measurement; app launch/render time must also be assessed manually.
 
 The test script locates the installed Swift Testing framework and disables cross-import overlays to support this machine’s command-line tools, which ship the Testing binary but omit the Foundation overlay module. Run the script directly in Terminal; a restricted automation environment may additionally require permission for Apple’s file-coordination service.
 

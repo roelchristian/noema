@@ -17,7 +17,7 @@ public struct PreviewBlock: Sendable, Equatable {
 public enum MarkdownService {
     private static let wikiPattern = #"\[\[([^\]\n|]+)(?:\|([^\]\n]+))?\]\]"#
     public static func analyze(_ text: String) -> TextAnalysis {
-        let doc = Document(parsing: text)
+        let doc = Document(parsing: BlockDocumentCodec.markdownBody(text))
         var links: [WikiLink] = [], tags: Set<String> = []
         func visit(_ node: any Markup) {
             if node is CodeBlock || node is InlineCode { return }
@@ -79,7 +79,7 @@ public enum MarkdownService {
             if let html = node as? HTMLBlock { blocks.append(PreviewBlock(style: .code, spans: [PreviewSpan(text: html.rawHTML, code: true)])); return }
             for child in node.children { visit(child, quote: quote || node is BlockQuote, prefix: prefix) }
         }
-        visit(Document(parsing: text))
+        visit(Document(parsing: BlockDocumentCodec.markdownBody(text)))
         return blocks
     }
 }

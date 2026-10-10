@@ -81,11 +81,11 @@ public actor SQLiteSearchIndex: SearchIndex {
         do {
             var present: Set<String> = []
             for note in entries.notes {
-                let id = note.id.uuidString, revision = note.contentHash + note.relativePath
+                let id = note.id.uuidString, revision = note.contentHash + note.relativePath + ":block-markdown-v1"
                 present.insert(id)
                 guard revisions[id] != revision else { continue }
                 try remove(id)
-                try insert(id: id, kind: .wiki, revision: revision, data: encoder.encode(note), title: note.title, body: note.body, aliases: note.aliases.joined(separator: " "))
+                try insert(id: id, kind: .wiki, revision: revision, data: encoder.encode(note), title: note.title, body: BlockDocumentCodec.markdownBody(note.body), aliases: note.aliases.joined(separator: " "))
                 for tag in note.allTags { try run("INSERT INTO tags VALUES(?,?)", [id, tag]) }
                 for link in MarkdownService.analyze(note.body).links { try run("INSERT INTO links VALUES(?,?)", [id, normalized(link.target)]) }
                 next[id] = revision

@@ -25,7 +25,7 @@ public enum NoteCodec {
         }
         if let rawID = string("id"), UUID(uuidString: rawID) == nil { throw VaultError.invalid("\(path) has an invalid note ID.") }
         let fallbackTitle = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
-        return NoteRecord(
+        var note = NoteRecord(
             id: string("id").flatMap(UUID.init(uuidString:)) ?? externalID(vault: vaultID, path: path),
             title: string("title") ?? fallbackTitle,
             aliases: strings("aliases"), tags: normalizeTags(strings("tags")),
@@ -33,9 +33,12 @@ public enum NoteCodec {
             createdAt: string("created_at") ?? "", updatedAt: string("updated_at") ?? "",
             body: body, relativePath: path, contentHash: digest(data), originalHeader: header
         )
+        note.editingLocked = string("editing_locked") == "true"
+        return note
     }
     public static func encode(_ note: NoteRecord) throws -> Data {
         var node = try note.originalHeader.flatMap { try Yams.compose(yaml: $0) } ?? Node([:])
+        if note.editingLocked != nil { node["editing_locked"] = Node(note.isEditingLocked ? "true" : "false") }
         node["id"] = Node(note.id.uuidString.lowercased())
         node["title"] = Node(note.title)
         node["aliases"] = Node(note.aliases.map { Node($0) })

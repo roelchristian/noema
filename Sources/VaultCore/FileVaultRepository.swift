@@ -131,6 +131,10 @@ public actor FileVaultRepository: VaultRepository {
             throw VaultError.invalid("This page is invalid or has a duplicate ID. Inspect the vault notices before saving. Your local draft is preserved.")
         }
         guard !titleExists(title, in: snapshot.notes.filter { $0.id != note.id }) else { throw VaultError.duplicateTitle(title) }
+        if snapshot.notes.first(where: { $0.id == note.id })?.isEditingLocked == true,
+           title != note.title || body != note.body || normalizeTags(tags) != note.tags {
+            throw VaultError.invalid("This article is locked. Unlock it before editing.")
+        }
         var updated = note
         updated.title = title; updated.body = body; updated.tags = normalizeTags(tags)
         updated.updatedAt = timestamp()

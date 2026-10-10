@@ -1,0 +1,217 @@
+import SwiftUI
+import AppKit
+import Testing
+import VaultCore
+@testable import noema
+
+@Test func slashCommandMatchingAndBoundaries() {
+    #expect(BlockCommand.matching("h2").first?.id == "h2")
+    #expect(BlockCommand.matching("ques").first?.id == "question")
+    #expect(BlockCommand.matching("wrn").contains { $0.id == "warning" })
+    #expect(BlockCommand.matching("zzzzzz").isEmpty)
+    #expect(BlockCommand.all.filter { $0.semantic == nil }.count == 12)
+    #expect(BlockCommand.all.filter { $0.semantic?.isEmpty == false }.count == 10)
+    for source in ["/ques", "Some text /h2", "😀 /idea"] {
+        let range = BlockCommand.slashRange(in: source, selection: NSRange(location: source.utf16.count, length: 0))
+        #expect(range != nil); #expect((source as NSString).substring(with: range!).hasPrefix("/"))
+    }
+    for source in ["https://example.com", "word/ques", "/two words"] {
+        #expect(BlockCommand.slashRange(in: source, selection: NSRange(location: source.utf16.count, length: 0)) == nil)
+    }
+    for prefix in ["# ", "## ", "### ", "- ", "* ", "1. ", "[] ", "[ ] ", "> ", "---", "```"] { #expect(BlockCommand.shortcut(prefix) != nil) }
+}
+
+@Test @MainActor func richTextRenderingRetainsFormattingAndCollapsedChildren() {
+    var style = InlineStyle(); style.bold = true; style.italic = true; style.underline = true; style.strike = true; style.highlight = true; style.link = "https://example.com"
+    var metadata = BlockMetadata(); metadata.semantic = "starred"; metadata.collapsed = true
+    let block = EditorBlock(kind: .toggle, runs: [RichRun("Visible😀", style: style)], metadata: metadata, children: [EditorBlock(runs: [RichRun("Hidden")])])
+    let document = BlockDocument(blocks: [block])
+    for dark in [false, true] {
+        let rich = BlockTextStorage.render(document, theme: NoemaTheme(dark: dark))
+        #expect(rich.string == "Visible😀\n")
+        #expect(BlockTextStorage.capture(rich, previous: document).blocks == document.blocks)
+        #expect(rich.attribute(.semanticTag, at: 0, effectiveRange: nil) as? String == "starred")
+        let paragraph = rich.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as! NSParagraphStyle
+        #expect(paragraph.headIndent >= 24) // Leave room inside the margin for the toggle marker.
+        #expect(paragraph.paragraphSpacingBefore > 0)
+        #expect(paragraph.paragraphSpacing > 10)
+    }
+}
+
+@Test @MainActor func blockSpacingAndNestedListAlignment() {
+    for dark in [false, true] {
+        let theme = NoemaTheme(dark: dark)
+        let plain = BlockTextStorage.base(EditorBlock(), depth: 0, theme: theme)[.paragraphStyle] as! NSParagraphStyle
+        for kind in [BlockKind.quote, .callout, .code] {
+            let style = BlockTextStorage.base(EditorBlock(kind: kind), depth: 0, theme: theme)[.paragraphStyle] as! NSParagraphStyle
+            #expect(style.paragraphSpacingBefore > plain.paragraphSpacingBefore)
+            #expect(style.paragraphSpacing > plain.paragraphSpacing)
+        }
+        for kind in [BlockKind.bullet, .numbered, .task, .toggle] {
+            let style = BlockTextStorage.base(EditorBlock(kind: kind), depth: 2, theme: theme)[.paragraphStyle] as! NSParagraphStyle
+            #expect(style.firstLineHeadIndent == style.headIndent)
+            #expect(style.headIndent >= 2 * 24 + 24) // Wrapped text clears its marker at every nesting depth.
+        }
+    }
+}
+
+@MainActor private func editor(_ source: String) -> (RichArticleView.Coordinator, ArticleTextView, NSWindow) {
+    _ = NSApplication.shared
+    let parent = RichArticleView(text: .constant(source), reading: false, locked: false, action: nil, onBegin: {}, onEnd: {}, onWikiLink: { _ in })
+    let coordinator = parent.makeCoordinator()
+    let view = ArticleTextView(frame: NSRect(x: 0, y: 0, width: 900, height: 600)); view.isEditable = true; view.allowsUndo = true; view.isRichText = true
+    let window = NSWindow(contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = view; window.makeFirstResponder(view); view.undoManager?.groupsByEvent = false; view.delegate = coordinator; coordinator.view = view; coordinator.load(source)
+    return (coordinator, view, window)
+}
+
+@Test @MainActor func slashPaletteUsesCompactSectionsAndSemanticSymbols() {
+    let palette = BlockPalette(); palette.update(BlockCommand.matching(""))
+    #expect(palette.preferredContentSize.width <= 280)
+    #expect(palette.stack.arrangedSubviews.compactMap { $0 as? NSBox }.count == 1)
+    let headings = palette.stack.arrangedSubviews.compactMap { ($0 as? NSTextField)?.stringValue }
+    #expect(headings == ["Basic blocks", "Semantic blocks"])
+    let buttons = palette.stack.arrangedSubviews.compactMap { $0 as? NSButton }
+    #expect(buttons.count == BlockCommand.all.count)
+    #expect(buttons.first(where: { $0.title == "Idea" })?.image != nil)
+    palette.move(12)
+    #expect(palette.commands[palette.selected].id == "question")
+    palette.update(BlockCommand.matching("ques"))
+    #expect(palette.commands.first?.id == "question")
+}
+
+@Test @MainActor func semanticDecorationExcludesBlockTerminatorAfterSplit() {
+    let (coordinator, view, window) = editor("Thought")
+    defer { window.close() }
+    coordinator.mutate(.semantic("idea"), name: "Idea")
+    view.setSelectedRange(NSRange(location: 7, length: 0))
+    coordinator.mutate(.split(7), name: "New block")
+    #expect(coordinator.document.blocks.count == 2)
+    #expect(coordinator.document.blocks[0].text == "Thought")
+    #expect(coordinator.document.blocks[1].text.isEmpty)
+    view.layoutManager?.ensureLayout(for: view.textContainer!)
+    let range = BlockTextStorage.ranges(view.textStorage!)[0].1
+    #expect(view.rect(for: range) == view.rect(for: NSRange(location: range.location, length: range.length - 1)))
+    #expect(BlockTextStorage.capture(view.textStorage!, previous: coordinator.document).blocks == coordinator.document.blocks)
+}
+
+@Test @MainActor func editorCommandUndoRedoAndSlashQueryRemoval() {
+    let (coordinator, view, window) = editor("Hello **bold** /h2")
+    defer { window.close() }
+    view.setSelectedRange(NSRange(location: view.string.utf16.count - 1, length: 0))
+    coordinator.slashRange = BlockCommand.slashRange(in: view.string, selection: view.selectedRange())
+    let original = coordinator.document
+    coordinator.apply(BlockCommand.matching("h2")[0], removingQuery: true)
+    #expect(coordinator.document.blocks[0].kind == .heading2)
+    #expect(coordinator.document.blocks[0].text == "Hello bold ")
+    #expect(coordinator.document.blocks[0].runs.contains { $0.style.bold })
+    view.undoManager?.undo()
+    #expect(coordinator.document == original)
+    view.undoManager?.redo()
+    #expect(coordinator.document.blocks[0].kind == .heading2)
+    coordinator.mutate(.duplicate, name: "Duplicate")
+    #expect(coordinator.document.blocks.count == 2)
+    let duplicateID = coordinator.document.blocks[1].id
+    coordinator.mutate(.delete, name: "Delete")
+    #expect(coordinator.document.blocks.count == 1)
+    view.undoManager?.undo()
+    #expect(coordinator.document.blocks[1].id == duplicateID)
+    view.undoManager?.undo()
+    #expect(coordinator.document.blocks.count == 1)
+    view.undoManager?.redo()
+    #expect(coordinator.document.blocks[1].id == duplicateID)
+    coordinator.mutate(.reorder(before: coordinator.document.blocks[0].id), id: duplicateID, name: "Reorder")
+    #expect(coordinator.document.blocks[0].id == duplicateID)
+    view.undoManager?.undo()
+    #expect(coordinator.document.blocks[1].id == duplicateID)
+    view.undoManager?.redo()
+    #expect(coordinator.document.blocks[0].id == duplicateID)
+}
+
+@Test @MainActor func editorFormattingAndPastePreserveSelectionAndContent() {
+    let (coordinator, view, window) = editor("Hello world")
+    defer { window.close() }
+    let selection = NSRange(location: 6, length: 5); view.setSelectedRange(selection)
+    coordinator.format("underline")
+    #expect(view.selectedRange() == selection)
+    #expect(coordinator.document.blocks[0].runs.last?.style.underline == true)
+    coordinator.format("link", link: "https://example.com")
+    #expect(coordinator.document.blocks[0].runs.last?.style.link == "https://example.com")
+    view.setSelectedRange(NSRange(location: 5, length: 0))
+    let pasteboard = NSPasteboard.withUniqueName(); pasteboard.setString("\n- first\n    - nested\n```swift\nlet x = 1\n```", forType: .string)
+    coordinator.paste(pasteboard)
+    let all = coordinator.document.flattened
+    #expect(all.contains { $0.text == "first" && $0.children.first?.text == "nested" })
+    #expect(all.contains { $0.kind == .code && $0.text == "let x = 1" })
+    #expect(all.last?.text == " world")
+    #expect(BlockDocumentCodec.valid(coordinator.document))
+}
+
+@Test @MainActor func editorLongDocumentRenderAndReload() {
+    let blocks = (0..<1000).map { EditorBlock(runs: [RichRun("Paragraph \($0) with sufficient content for wrapping and editing.")]) }
+    let document = BlockDocument(blocks: blocks)
+    let start = Date()
+    let rich = BlockTextStorage.render(document, theme: NoemaTheme())
+    let captured = BlockTextStorage.capture(rich, previous: document)
+    #expect(captured.blocks == blocks)
+    #expect(BlockDocumentCodec.decode(BlockDocumentCodec.encode(captured)).blocks == blocks)
+    print("1,000-block render/capture/serialization: \(Date().timeIntervalSince(start)) s")
+}
+
+@Test @MainActor func editorCrossBlockReplacementPreservesSurvivingChildren() {
+    let (coordinator, view, window) = editor("First\nSecond\n    - Child remains\nLast")
+    defer { window.close() }
+    let ranges = BlockTextStorage.ranges(view.textStorage!)
+    let selection = NSRange(location: 2, length: ranges[1].1.location + 3 - 2)
+    view.setSelectedRange(selection)
+    coordinator.transaction("Delete selection") { coordinator.replaceSelection(with: []) }
+    #expect(coordinator.document.blocks[0].text == "Fiond")
+    #expect(coordinator.document.flattened.contains { $0.text == "Child remains" })
+    #expect(BlockDocumentCodec.valid(coordinator.document))
+    view.undoManager?.undo()
+    #expect(coordinator.document.blocks[0].text == "First")
+    #expect(coordinator.document.blocks[1].children.first?.text == "Child remains")
+}
+
+@Test @MainActor func editorNativeTypingCaretSplitMergeAndUndo() {
+    let (coordinator, view, window) = editor("")
+    defer { window.close() }
+    view.setSelectedRange(NSRange(location: view.string.utf16.count, length: 0))
+    #expect(view.selectedRange().location == 0)
+    view.undoManager?.beginUndoGrouping()
+    view.insertText("hello😀", replacementRange: view.selectedRange())
+    view.undoManager?.endUndoGrouping()
+    #expect(coordinator.document.blocks[0].text == "hello😀")
+    coordinator.mutate(.split(5), name: "Split")
+    #expect(coordinator.document.blocks.count == 2)
+    #expect(coordinator.document.blocks[1].text == "😀")
+    #expect(view.selectedRange().location == 6)
+    coordinator.mutate(.mergeBackward, name: "Merge")
+    #expect(coordinator.document.blocks[0].text == "hello😀")
+    view.undoManager?.undo()
+    #expect(coordinator.document.blocks.count == 2)
+    view.undoManager?.undo()
+    #expect(coordinator.document.blocks.count == 1)
+    view.undoManager?.undo()
+    #expect(view.string == "\n")
+    #expect(coordinator.document.blocks[0].text.isEmpty)
+}
+
+@Test @MainActor func editorRichPasteAndSemanticStatusPreserveFormatting() throws {
+    let (coordinator, view, window) = editor("Initial")
+    defer { window.close() }
+    view.setSelectedRange(NSRange(location: 7, length: 0))
+    let rich = NSAttributedString(string: " Rich", attributes: [.font: NSFont.boldSystemFont(ofSize: 16), .underlineStyle: 1, .link: URL(string: "https://example.com")!])
+    let data = try rich.data(from: NSRange(location: 0, length: rich.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+    let pasteboard = NSPasteboard.withUniqueName(); pasteboard.setData(data, forType: .rtf)
+    coordinator.paste(pasteboard)
+    #expect(coordinator.document.blocks[0].runs.last?.style.bold == true)
+    #expect(coordinator.document.blocks[0].runs.last?.style.underline == true)
+    #expect(coordinator.document.blocks[0].runs.last?.style.link == "https://example.com")
+    coordinator.mutate(.semantic("question"), name: "Question")
+    coordinator.mutate(.status("answered"), name: "Answered")
+    coordinator.mutate(.transform(.heading2), name: "Heading")
+    #expect(coordinator.document.blocks[0].metadata.status == "answered")
+    #expect(coordinator.document.blocks[0].runs.last?.style.bold == true)
+}

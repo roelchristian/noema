@@ -9,7 +9,8 @@ struct NoemaOrbitShape: Shape {
 struct NoemaMark: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
-    @Environment(\.noemaTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
+    private var palette: MidnightIrisPalette { .init(dark: scheme == .dark, increasedContrast: contrast == .increased) }
 
     var body: some View {
         Group {
@@ -26,9 +27,9 @@ struct NoemaMark: View {
 
     private var artwork: some View {
         ZStack {
-            NoemaOrbitShape(component: .orbit).fill(theme.text(.accentPrimary, on: .background))
-            NoemaOrbitShape(component: .satellites).fill(theme.text(.accentSecondary, on: .background))
-            NoemaOrbitShape(component: .nucleus).fill(theme.text(.graphHighlight, on: .background))
+            NoemaOrbitShape(component: .orbit).fill(Color(nsColor: palette.foreground(.accentPrimary, on: .background).nsColor))
+            NoemaOrbitShape(component: .satellites).fill(Color(nsColor: palette.foreground(.accentSecondary, on: .background).nsColor))
+            NoemaOrbitShape(component: .nucleus).fill(Color(nsColor: palette.foreground(.graphHighlight, on: .background).nsColor))
         }
     }
 }

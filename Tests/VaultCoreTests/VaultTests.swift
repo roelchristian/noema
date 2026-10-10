@@ -226,3 +226,19 @@ private func temporaryFolder() throws -> URL {
     #expect(scan.notes.count == 1)
     #expect(scan.sources.count == 1)
 }
+
+@Test func articleLockPersistsAndRejectsEdits() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    var note = try await repo.create(title: "Locked", body: "Original")
+    note.editingLocked = true
+    note = try await repo.save(note: note, title: note.title, body: note.body, tags: note.tags)
+    #expect(note.isEditingLocked)
+    await #expect(throws: (any Error).self) { try await repo.save(note: note, title: "Changed", body: "Changed", tags: []) }
+    #expect(try await repo.scan().notes.first?.isEditingLocked == true)
+    note.editingLocked = false
+    note = try await repo.save(note: note, title: note.title, body: note.body, tags: note.tags)
+    #expect(!note.isEditingLocked)
+    let edited = try await repo.save(note: note, title: note.title, body: "Changed", tags: [])
+    #expect(edited.body == "Changed")
+}

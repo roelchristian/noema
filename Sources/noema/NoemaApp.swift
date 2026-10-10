@@ -4,15 +4,14 @@ import NoemaBrand
 
 @main struct NoemaApp: App {
     @State private var model = AppModel()
-    @AppStorage(AppearancePreference.defaultsKey) private var appearance: AppearancePreference = .system
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     var body: some Scene {
         Window("noema", id: "main") {
             ContentView(model: model)
                 .frame(minWidth: 960, minHeight: 620)
-                .midnightIrisTheme()
-                .preferredColorScheme(appearance.colorScheme)
+                .systemNoemaTheme()
                 .task { delegate.model = model; await model.restore() }
+                .onOpenURL { model.openBlockURL($0) }
         }
         .defaultSize(width: 1280, height: 820)
         .commands {
@@ -36,7 +35,7 @@ import NoemaBrand
             }
             CommandMenu("Vault") {
                 Button("Find in Vault") { model.searchFocusToken += 1 }.keyboardShortcut("f", modifiers: [.command, .shift])
-                Button("Quick Open") { model.searchFocusToken += 1 }.keyboardShortcut("k")
+                Button("Quick Open") { model.searchFocusToken += 1 }.keyboardShortcut("p")
                 Divider()
                 Button("Import Sources…") { model.importFiles() }.keyboardShortcut("i", modifiers: [.command, .shift]).disabled(model.root == nil)
                 Button("Paste a Source…") { model.showPasteSource = true }.disabled(model.root == nil)
@@ -45,15 +44,20 @@ import NoemaBrand
                 Button("Recover Drafts…") { model.showRecovery = true }.disabled(model.recoveredDrafts.isEmpty)
             }
             CommandMenu("Format") {
+                Button("Block Actions…") { model.format("block-actions", "") }.keyboardShortcut("b", modifiers: [.command, .shift]).disabled(model.currentNote == nil || model.reading)
                 Button("Bold") { model.format("**", "**") }.keyboardShortcut("b").disabled(model.currentNote == nil || model.reading)
                 Button("Italic") { model.format("*", "*") }.keyboardShortcut("i").disabled(model.currentNote == nil || model.reading)
+                Button("Underline") { model.format("underline", "") }.keyboardShortcut("u").disabled(model.currentNote == nil || model.reading)
+                Button("Strikethrough") { model.format("strike", "") }.disabled(model.currentNote == nil || model.reading)
+                Button("Inline Code") { model.format("code", "") }.disabled(model.currentNote == nil || model.reading)
+                Button("Highlight") { model.format("highlight", "") }.disabled(model.currentNote == nil || model.reading)
+                Button("Hyperlink…") { model.format("link", "") }.keyboardShortcut("k").disabled(model.currentNote == nil || model.reading)
                 Button("Wiki Link") { model.format("[[", "]]") }.keyboardShortcut("l", modifiers: [.command, .shift]).disabled(model.currentNote == nil || model.reading)
             }
         }
         Settings {
             AppearanceSettings()
-                .midnightIrisTheme()
-                .preferredColorScheme(appearance.colorScheme)
+                .systemNoemaTheme()
         }
     }
 }
