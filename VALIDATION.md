@@ -589,3 +589,9 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 
 - Summary generation and summary content share one full-width native frosted background and a thinner bottom divider. Summary typography remains unchanged, as clarified by the user. Expanded banners initially show three lines with accessible Show more / Show less controls; hiding the banner or replacing summary text resets the preview.
 - `./scripts/test.sh` compiled the test target but the run of 95 tests reported 44 issues, including editor paste/formatting expectations; the regression suite did not pass. Final `./scripts/build.sh debug` compiled and linked successfully (21.07 seconds), then packaging failed at `iconutil` with `Invalid Iconset`. `git diff --check` passed. UI validation, appearance, and accessibility checks were skipped at the user’s request.
+
+## AI summary display preference — 2026-10-11
+
+- Settings → Apple Intelligence adds a persisted Show page summaries picker. Editor when sidebar is closed is the default; Sidebar only suppresses the editor banner and generation indicator regardless of sidebar visibility. Saved summaries remain in the sidebar, and unknown preference values fall back to the default.
+- Expanded the summary editing/preservation regression to exercise both placement choices with the sidebar visible and hidden. The serial regression run reported 44 issues across 95 tests, including temporary-vault write errors and editor paste checks; the suite did not pass. Debug compilation and linking passed. Packaging failed with Invalid Iconset.
+- `git diff --check` passed. Native UI, appearance/accessibility, and preference persistence across an actual app relaunch were not manually exercised, consistent with the session’s no-UI-validation preference.

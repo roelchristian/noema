@@ -30,6 +30,7 @@ struct ContentView: View {
     @State private var deletingSource: SourceRecord?
     @State private var sourceSortOrder = [KeyPathComparator(\LibraryRow.title)]
     @AppStorage(EditorPreferences.aiSummariesKey) private var aiSummaries = false
+    @AppStorage(EditorPreferences.aiSummaryPlacementKey) private var aiSummaryPlacement = AISummaryPlacement.defaultValue.rawValue
     private var tabAnimation: Animation? {
         reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.84, blendDuration: 0.1)
     }
@@ -1164,7 +1165,7 @@ struct ContentView: View {
                     if let source = model.currentSource, sourceOriginal || source.metadata.storedFilename.hasSuffix(".txt") {
                         MarkdownEditor(text: .constant(model.body), action: nil, onWikiQuery: { _ in }, editable: false)
                     } else if model.currentNote != nil {
-                        SummarizedArticleView(model: model, showsSummary: !showPageDetails)
+                        SummarizedArticleView(model: model, showsSummary: (AISummaryPlacement(rawValue: aiSummaryPlacement) ?? .defaultValue).showsInEditor(sidebarVisible: showPageDetails))
                             .id(model.selectedID)
                     } else { MarkdownPreview(blocks: model.preview, onWikiLink: model.followWikiLink) }
                     if !model.reading, model.currentNote != nil, model.wikiQuery != nil, !model.linkSuggestions.isEmpty {

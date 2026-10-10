@@ -4,13 +4,33 @@ import NoemaBrand
 
 enum EditorPreferences {
     static let aiSummariesKey = "enableOnDeviceAISummaries"
+    static let aiSummaryPlacementKey = "aiSummaryPlacement"
     static let showSemanticHeadingsKey = "showSemanticBlockHeadings"
     static let texMacrosKey = TeXMacroStore.defaultsKey
+}
+
+enum AISummaryPlacement: String, CaseIterable {
+    case editorWhenSidebarClosed
+    case sidebarOnly
+
+    static let defaultValue = Self.editorWhenSidebarClosed
+
+    var title: String {
+        switch self {
+        case .editorWhenSidebarClosed: "Editor when sidebar is closed"
+        case .sidebarOnly: "Sidebar only"
+        }
+    }
+
+    func showsInEditor(sidebarVisible: Bool) -> Bool {
+        self == .editorWhenSidebarClosed && !sidebarVisible
+    }
 }
 
 struct NoemaSettings: View {
     @AppStorage(EditorPreferences.showSemanticHeadingsKey) private var showSemanticHeadings = false
     @AppStorage(EditorPreferences.aiSummariesKey) private var aiSummaries = false
+    @AppStorage(EditorPreferences.aiSummaryPlacementKey) private var aiSummaryPlacement = AISummaryPlacement.defaultValue.rawValue
     @AppStorage(EditorPreferences.texMacrosKey) private var texMacrosStorage = ""
 
     @AppStorage(ThemePreference.defaultsKey) private var themePreference = ThemePreference.defaultValue.rawValue
@@ -48,6 +68,13 @@ struct NoemaSettings: View {
             }
             Section("Apple Intelligence") {
                 Toggle("Enable on-device AI summaries", isOn: $aiSummaries)
+                Picker("Show page summaries", selection: $aiSummaryPlacement) {
+                    ForEach(AISummaryPlacement.allCases, id: \.rawValue) { placement in
+                        Text(placement.title).tag(placement.rawValue)
+                    }
+                }
+                Text("Summaries are always available in the page sidebar. By default, they also appear above the editor when the sidebar is closed.")
+                    .font(.callout).foregroundStyle(.secondary)
                 Text("Use Summarize on a page to generate a pinned Summary block on this Mac. Requires Apple Intelligence enabled in System Settings.")
                     .font(.callout).foregroundStyle(.secondary)
                 Text(OnDeviceSummary.unavailabilityReason ?? "On-device model is available.")
