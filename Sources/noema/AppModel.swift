@@ -10,6 +10,30 @@ struct LibraryRow: Identifiable {
     var excerpt: String
     var tags: [String]
     var kind: EntryKind
+    var updatedAt: Date?
+    var hasAISummary = false
+
+    init(note: NoteRecord) {
+        let document = BlockDocumentCodec.decode(note.body)
+        let summary = document.aiSummary?.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        hasAISummary = summary?.isEmpty == false
+        id = note.id; title = note.title; tags = note.allTags; kind = .wiki
+        excerpt = hasAISummary ? summary! : document.withoutAISummary.flattened.map(\.text).filter { !$0.isEmpty }.joined(separator: " ")
+        updatedAt = Self.date(note.updatedAt)
+    }
+
+    init(source: SourceRecord) {
+        id = source.id; title = source.title; tags = []; kind = .source
+        excerpt = BlockDocumentCodec.decode(source.body).flattened.map(\.text).joined(separator: " ")
+        updatedAt = Self.date(source.metadata.capturedAt)
+    }
+
+    private static func date(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions.insert(.withFractionalSeconds)
+        return formatter.date(from: value)
+    }
 }
 struct EditorAction: Equatable {
     enum Operation: Equatable { case wrap(String, String), wikiLink(String), block(UUID) }
@@ -208,7 +232,7 @@ struct EditorAction: Equatable {
                 Task { @MainActor in
                     guard let self, self.generation == ticket, self.progressTicket == scanTicket else { return }
                     self.notes.append(contentsOf: chunk.notes); self.sources.append(contentsOf: chunk.sources)
-                    self.rows = self.notes.map { LibraryRow(id: $0.id, title: $0.title, excerpt: String(BlockDocumentCodec.markdownBody($0.body).prefix(130)), tags: $0.allTags, kind: .wiki) }
+                    self.rows = self.notes.map { LibraryRow(note: $0) }
                 }
             }
             progressTicket = nil
@@ -253,8 +277,8 @@ struct EditorAction: Equatable {
             let noteMap = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let sourceMap = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             rows = hits.compactMap { hit in
-                if hit.kind == .wiki, let note = noteMap[hit.id] { return LibraryRow(id: note.id, title: note.title, excerpt: hit.excerpt, tags: note.allTags, kind: .wiki) }
-                if let source = sourceMap[hit.id] { return LibraryRow(id: source.id, title: source.title, excerpt: hit.excerpt, tags: [], kind: .source) }
+                if hit.kind == .wiki, let note = noteMap[hit.id] { return LibraryRow(note: note) }
+                if let source = sourceMap[hit.id] { return LibraryRow(source: source) }
                 return nil
             }
         } catch { errorMessage = error.localizedDescription }

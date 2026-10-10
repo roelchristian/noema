@@ -4,6 +4,28 @@ import Testing
 import VaultCore
 @testable import noema
 
+@Test func libraryPreviewPrefersPersistedAISummaryAndFallsBackToContent() throws {
+    var note = try NoteCodec.decode(Data("# Opening\n\nFirst **content** line.\nSecond line.".utf8), path: "Wiki/Preview.md", vaultID: UUID())
+    note.updatedAt = "2026-10-10T08:30:00Z"
+    let fallback = LibraryRow(note: note)
+    #expect(!fallback.hasAISummary)
+    #expect(fallback.excerpt == "Opening First content line. Second line.")
+    #expect(fallback.updatedAt != nil)
+    var document = BlockDocumentCodec.decode(note.body)
+    document.setAISummary("A generated synopsis.")
+    note.body = BlockDocumentCodec.encode(document)
+    let summary = LibraryRow(note: note)
+    #expect(summary.hasAISummary)
+    #expect(summary.excerpt == "A generated synopsis.")
+    document.setAISummary("  ")
+    note.body = BlockDocumentCodec.encode(document)
+    note.updatedAt = ""
+    let empty = LibraryRow(note: note)
+    #expect(!empty.hasAISummary)
+    #expect(empty.excerpt == fallback.excerpt)
+    #expect(empty.updatedAt == nil)
+}
+
 @Test func slashCommandMatchingAndBoundaries() {
     #expect(BlockCommand.matching("h2").first?.id == "h2")
     #expect(BlockCommand.matching("ques").first?.id == "question")

@@ -2,6 +2,12 @@
 
 Environment: Apple Silicon Mac, macOS 27.0; Swift 6.2.4; macOS SDK 26.2.
 
+## Padded list rows, dates, and summary previews — three-minute timebox
+
+- Page/source rows have 12 points of additional horizontal padding and 10 points of vertical padding. Page update times and source capture times appear beside titles, using a localized time today or date otherwise; missing metadata leaves the date empty. Saved, nonempty AI summaries provide the two-line preview with a sparkles icon. Other rows show opening plain content, excluding the block metadata envelope.
+- `./scripts/test.sh` passed all 57 entries with native macOS service access, including new summary preference, empty-summary fallback, plain-content, and date checks. `./scripts/build.sh debug` compiled, packaged, and signed the app and archive successfully. Initial restricted checks encountered file-coordination/pasteboard failures and iconutil access limits; reruns passed. `git diff --check` passed; generated brand assets were unchanged.
+- Native visual/interaction, appearance/accent switching, accessibility preferences, and VoiceOver checks were not performed within the timebox. Existing demo-vault edits were preserved.
+
 ## Optional semantic block headings
 
 - Added **Settings… → Block display → Show semantic block headings**, off by default. Turning it on shows semantic names above block text in reading and editing views while retaining the colored icons and accents. The app-wide preference persists across relaunch; headings are display decoration and do not enter page content, selection offsets, or copied text.

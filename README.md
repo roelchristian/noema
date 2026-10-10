@@ -10,6 +10,8 @@ The interface uses native macOS Liquid Glass navigation and toolbars, glass sear
 
 The middle page/source list starts at 385 points wide, about 1.75 times the sidebar's default 220 points. Native split-view dividers remain resizable.
 
+List rows have padded side margins and show the last-updated time for pages (capture time for sources): a time today, or a date for older entries. A saved AI summary appears as a two-line preview with a sparkles icon; pages without one show their opening content instead.
+
 ## Build and run
 
 Requires macOS 26+, Apple’s Swift 6 command-line tools, and internet access for the first dependency download. Full Xcode is optional. The tested development machine runs macOS 27 with Swift 6.2.4 and the macOS 26.2 SDK.

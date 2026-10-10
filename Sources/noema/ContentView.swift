@@ -191,14 +191,26 @@ struct ContentView: View {
                                         .help("Page locked against editing")
                                         .accessibilityLabel("Page locked against editing")
                                 }
+                                Spacer(minLength: 8)
+                                if let date = row.updatedAt {
+                                    Text(date, format: Calendar.current.isDateInToday(date) ? .dateTime.hour().minute() : .dateTime.month(.abbreviated).day().year())
+                                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                                        .help(date.formatted(date: .long, time: .shortened))
+                                        .accessibilityLabel("\(row.kind == .wiki ? "Last updated" : "Captured") \(date.formatted(date: .long, time: .shortened))")
+                                }
                             }.foregroundStyle(theme.text(.textPrimary, on: .background))
-                            Text(row.excerpt.replacingOccurrences(of: "\n", with: " ")).font(.callout)
-                                .foregroundStyle(theme.text(row.id == model.selectedID ? .textPrimary : .textMuted, on: .background)).lineLimit(2)
+                            HStack(alignment: .top, spacing: 5) {
+                                if row.hasAISummary {
+                                    Image(systemName: "sparkles").accessibilityLabel("AI-generated summary")
+                                }
+                                Text(row.excerpt.replacingOccurrences(of: "\n", with: " ")).lineLimit(2)
+                            }.font(.callout)
+                                .foregroundStyle(theme.text(row.id == model.selectedID ? .textPrimary : .textMuted, on: .background))
                             if !row.tags.isEmpty {
                                 Text(row.tags.prefix(3).map { "#" + $0 }.joined(separator: "  ")).font(.caption)
                                     .foregroundStyle(theme.text(row.id == model.selectedID ? .textPrimary : .graphHighlight, on: .background)).lineLimit(1)
                             }
-                        }.padding(.vertical, 7).tag(row.id)
+                        }.padding(.horizontal, 12).padding(.vertical, 10).tag(row.id)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             if row.kind == .wiki {
                                 Button(role: .destructive) { trashPageID = row.id; showTrashConfirmation = true } label: {
