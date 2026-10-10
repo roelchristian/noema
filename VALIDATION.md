@@ -1,5 +1,15 @@
 # Validation — 10 October 2026
 
+## Hanging semantic list icons — 11 October 2026, one-minute timebox
+
+- Placed each semantic result's colored icon in a 20-point leading gutter outside the text column. Type, preview, and owning page now align together; retains requested Pages row padding and spacing.
+- `./scripts/build.sh debug` compiled, packaged, and signed successfully. Changed-file whitespace checks passed; brand assets were unchanged. No regression suite rerun for this layout-only adjustment. Manual visual, appearance/accent, and accessibility checks were not performed.
+
+## Semantic list row padding — 11 October 2026, one-minute timebox
+
+- Matched Semantic Blocks list rows to Pages: 12-point horizontal padding, 10-point vertical padding, and six-point spacing between row contents.
+- `./scripts/build.sh debug` compiled, packaged, and signed successfully. Changed-file whitespace checks passed; generated brand assets were unchanged. No regression suite rerun for this layout-only change. Native visual, appearance/accent, and accessibility checks were not performed.
+
 ## Global semantic block search — 11 October 2026, two-minute timebox
 
 - Added Semantic Blocks below Sources. Native selectable list rows show semantic type/color/icon, one-line block preview, and owning page. Search matches all whitespace-separated terms across block text, semantic type, and page title, case-insensitively. Includes nested blocks and current editor content; omits generated summaries. Snapshot parsing/search runs off the main actor, with query/vault/cancellation checks before publishing. Selection uses existing save-before-navigation and block-jump actions, rendering the same article viewer and page inspector used by Pages.
@@ -484,3 +494,8 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 - Unified page/source inspectors with a fixed Inspector header, compact wrapping document identity, shared native DisclosureGroup section headers/counts/actions, consistent 18-point section and 8-point content spacing, and a resizable 340-point ideal width. Condensed mode collapses references, semantic blocks, and summaries while retaining Properties. Property labels are muted and values primary; exact timestamp tooltips accompany localized dates. Page location reveals the file in Finder; Protection uses the existing lock action. Semantic rows show type, two-line preview, and a visible jump affordance using existing block navigation. Source/page associations retain their existing open/remove behavior and add controls in section headers; empty states are explicit. Summary previews use four lines and inline expansion; generation/delete actions move into headers.
 - Debug compilation/package/signing passed for the redesign. Regression suite passed all 75 tests, including existing locked nested-block navigation and reference-opening coverage. Final copy/accessibility cleanup compiled as part of the regression run; the final debug packaging/signing rerun also passed. `git diff --check` passed. Previous compact-metadata validation also subsequently completed successfully (debug package and 70 tests).
 - Manual inspector resizing/collapse, Finder/lock controls, appearance/accent, accessibility preferences and VoiceOver were not exercised within the timebox. Alias editing, additional semantic context-menu mutations, and persisted summary generation/freshness indicators are not implemented in this UI pass. Existing demo-vault changes were preserved; no storage format changes.
+
+## Semantic inspector row alignment — 2026-10-11
+
+- Semantic inspector buttons and their labels fill the available width with leading alignment. Wrapped type/preview text explicitly uses leading multiline alignment; icons and navigation arrows align to the top of each entry. Existing native button focus and navigation are retained.
+- `./scripts/build.sh debug` compiled, packaged, and signed successfully; `git diff --check` passed. No regression suite rerun for this layout-only change. Native visual, appearance/accent, and accessibility checks were not performed within the one-minute timebox. Unrelated demo-vault and validation edits were preserved.

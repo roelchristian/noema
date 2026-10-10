@@ -622,16 +622,18 @@ struct ContentView: View {
                 })) {
                     ForEach(model.semanticRows) { hit in
                         let presentation = SemanticPresentation.find(hit.semantic)
-                        VStack(alignment: .leading, spacing: 5) {
-                            Label {
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: presentation?.symbol ?? "tag")
+                                .font(.headline)
+                                .foregroundStyle(Color(nsColor: presentation?.accent ?? .secondaryLabelColor))
+                                .frame(width: 20)
+                                .accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: 6) {
                                 Text(presentation?.title ?? hit.semantic.capitalized).font(.headline)
-                            } icon: {
-                                Image(systemName: presentation?.symbol ?? "tag")
-                                    .foregroundStyle(Color(nsColor: presentation?.accent ?? .secondaryLabelColor))
+                                Text(hit.preview.isEmpty ? "Empty block" : hit.preview).lineLimit(1)
+                                Text(hit.pageTitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
-                            Text(hit.preview.isEmpty ? "Empty block" : hit.preview).lineLimit(1)
-                            Text(hit.pageTitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        }.padding(.horizontal, 12).padding(.vertical, 8).tag(hit.id)
+                        }.padding(.horizontal, 12).padding(.vertical, 10).tag(hit.id)
                     }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
             }
