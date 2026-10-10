@@ -33,12 +33,18 @@ public enum NoteCodec {
             createdAt: string("created_at") ?? "", updatedAt: string("updated_at") ?? "",
             body: body, relativePath: path, contentHash: digest(data), originalHeader: header
         )
+        let references = strings("sources")
+        guard references.allSatisfy({ UUID(uuidString: $0) != nil }) else {
+            throw VaultError.invalid("\(path) has an invalid source reference.")
+        }
+        note.sourceIDs = Array(Set(references.compactMap(UUID.init(uuidString:)))).sorted { $0.uuidString < $1.uuidString }
         note.editingLocked = string("editing_locked") == "true"
         return note
     }
     public static func encode(_ note: NoteRecord) throws -> Data {
         var node = try note.originalHeader.flatMap { try Yams.compose(yaml: $0) } ?? Node([:])
         if note.editingLocked != nil { node["editing_locked"] = Node(note.isEditingLocked ? "true" : "false") }
+        node["sources"] = Node(note.linkedSourceIDs.map { Node($0.uuidString.lowercased()) })
         node["id"] = Node(note.id.uuidString.lowercased())
         node["title"] = Node(note.title)
         node["aliases"] = Node(note.aliases.map { Node($0) })

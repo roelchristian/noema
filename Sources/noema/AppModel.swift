@@ -318,11 +318,15 @@ struct EditorAction: Equatable {
             }
         } catch { errorMessage = error.localizedDescription }
     }
-    func select(_ id: UUID?) {
+    func select(_ id: UUID?, scope targetScope: LibraryScope? = nil) {
         Task {
             await waitForSave()
             if !(await finishCurrentPage()) { return }
             autosaveTask?.cancel(); wikiQuery = nil; editorAction = nil
+            if let targetScope {
+                scope = targetScope; searchText = ""
+                await updateRows()
+            }
             selectedID = id; currentSource = nil; currentNote = nil; externalChange = false; errorMessage = nil
             reading = true
             if let note = notes.first(where: { $0.id == id }) { apply(note) }
@@ -373,6 +377,28 @@ struct EditorAction: Equatable {
         editingHint = nil; reading = false
     }
     func finishEditing() { wikiQuery = nil; editorAction = nil; savePage(); reading = true }
+    var updatingSourceReferences = false
+    func setSourceReference(pageID: UUID, sourceID: UUID, linked: Bool) {
+        guard !updatingSourceReferences else { return }
+        updatingSourceReferences = true
+        let ticket = generation
+        Task {
+            defer { updatingSourceReferences = false }
+            if currentNote?.id == pageID, !(await saveCurrent()) { return }
+            guard generation == ticket, let repository,
+                  let note = notes.first(where: { $0.id == pageID }), !note.isEditingLocked,
+                  !(currentNote?.id == pageID && editorReadOnly) else { return }
+            saving = true
+            defer { saving = false }
+            do {
+                let saved = try await repository.setSourceReference(note: note, sourceID: sourceID, linked: linked)
+                guard generation == ticket else { return }
+                if let i = notes.firstIndex(where: { $0.id == pageID }) { notes[i] = saved }
+                if currentNote?.id == pageID { currentNote = saved }
+                scheduleRefresh()
+            } catch { if generation == ticket { errorMessage = error.localizedDescription } }
+        }
+    }
     func toggleEditingLock(_ id: UUID? = nil) {
         guard let targetID = id ?? currentNote?.id else { return }
         Task {

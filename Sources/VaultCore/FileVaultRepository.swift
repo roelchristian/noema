@@ -4,6 +4,7 @@ public protocol VaultRepository: Sendable {
     func scan(progress: (@Sendable (ScanBatch) -> Void)?) async throws -> ScanBatch
     func create(title: String, body: String) async throws -> NoteRecord
     func save(note: NoteRecord, title: String, body: String, tags: [String]) async throws -> NoteRecord
+    func setSourceReference(note: NoteRecord, sourceID: UUID, linked: Bool) async throws -> NoteRecord
     func trashedPages() async throws -> [TrashedPage]
     func restore(_ page: TrashedPage) async throws
     func permanentlyDelete(_ page: TrashedPage) async throws
@@ -149,7 +150,7 @@ public actor FileVaultRepository: VaultRepository {
         }
         guard !titleExists(title, in: snapshot.notes.filter { $0.id != note.id }) else { throw VaultError.duplicateTitle(title) }
         if snapshot.notes.first(where: { $0.id == note.id })?.isEditingLocked == true,
-           title != note.title || body != note.body || normalizeTags(tags) != note.tags {
+           title != note.title || body != note.body || normalizeTags(tags) != note.tags || snapshot.notes.first(where: { $0.id == note.id })?.linkedSourceIDs != note.linkedSourceIDs {
             throw VaultError.invalid("This article is locked. Unlock it before editing.")
         }
         var updated = note
@@ -188,6 +189,18 @@ public actor FileVaultRepository: VaultRepository {
         cache.removeValue(forKey: note.relativePath)
         // Keep the filename stable on title changes: aliases and metadata carry identity.
         return try NoteCodec.decode(data, path: note.relativePath, vaultID: manifest.id)
+    }
+
+    public func setSourceReference(note: NoteRecord, sourceID: UUID, linked: Bool) throws -> NoteRecord {
+        guard !note.isEditingLocked else { throw VaultError.invalid("Unlock this article before editing its sources.") }
+        if linked, !((try scan()).sources.contains { $0.id == sourceID }) {
+            throw VaultError.invalid("This source is unavailable. Refresh before adding it.")
+        }
+        var updated = note
+        var ids = Set(note.linkedSourceIDs)
+        if linked { ids.insert(sourceID) } else { ids.remove(sourceID) }
+        updated.sourceIDs = ids.sorted { $0.uuidString < $1.uuidString }
+        return try save(note: updated, title: note.title, body: note.body, tags: note.tags)
     }
 
     public func trash(note: NoteRecord) throws {

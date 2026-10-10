@@ -20,6 +20,8 @@ public struct NoteRecord: Codable, Identifiable, Sendable, Equatable {
     public var contentHash: String
     public var editingLocked: Bool? = nil
     public var isEditingLocked: Bool { editingLocked == true }
+    public var sourceIDs: [UUID]? = nil
+    public var linkedSourceIDs: [UUID] { sourceIDs ?? [] }
     public var originalHeader: String?
     public var allTags: [String] { Array(Set(tags + inlineTags)).sorted() }
 }

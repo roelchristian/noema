@@ -110,3 +110,7 @@ The test script locates the installed Swift Testing framework and disables cross
 See `VALIDATION.md` for actual results and the outstanding two-Mac iCloud acceptance check.
 
 Error banners and editor/AI notices have a Dismiss control. Vault notices can be dismissed individually or with Dismiss All; identical dismissed vault notices stay hidden for the current vault session. Dismissal clears the message without resolving the underlying save/conflict or file-access condition.
+
+Page details → Sources lets you add or remove source references. Source details → Pages shows the reverse relationship and lets you add/remove pages. Each page can cite multiple sources and each source can be used by multiple pages. Unlock a page before changing its references.
+
+Use the open icon beside a linked page/source to open its page or native source preview. The trash icon removes an association after inline Remove/Cancel confirmation; both the page and source are kept. Locked pages still allow opening their references.

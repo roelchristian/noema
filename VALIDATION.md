@@ -433,3 +433,20 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 - Added a shared native dismiss control to error messages on welcome, Sources, Trash, empty detail, page detail, and paste-source screens, plus editor/AI notices. External-change messages can be hidden without changing the underlying conflict state; switching pages or a new external-change transition resets that presentation. Vault notices can be dismissed individually or all together; identical dismissed scan issues stay hidden until switching vaults.
 - Debug compilation/package/signing passed; regression suite passed all 70 tests with native macOS access. `git diff --check` passed; tracked brand exports were unchanged. Validation completion extended beyond the one-minute timebox. No dedicated new tests for these presentation controls.
 - Native dismissal interaction, appearance/accent, accessibility preferences, and VoiceOver were not exercised. Source availability continues to show the file's actual checked status. Pre-existing editor/UI/README and demo-vault edits were preserved.
+
+
+## Page/source references — 11 October 2026, three-minute timebox
+
+- Added many-to-many references stored as source UUIDs in page YAML, editable from Page details → Sources and Source details → Pages. Existing coordinated page saves reject stale/deleted/locked pages; source originals remain untouched. Missing source references stay visible/removable. Existing UI/documentation/demo-vault changes were preserved.
+- `./scripts/test.sh` passed all 71 tests with native macOS service access, including new many-to-many persistence, removal, stale-write rejection, locked-page rejection, and original checksum preservation coverage. The restricted run encountered file-coordination/clipboard service failures; its failures were environmental and the native rerun passed.
+- `./scripts/build.sh debug` compiled, packaged, and signed the app/archive with native macOS icon-service access; the restricted packaging attempt failed at `iconutil`. `git diff --check` passed. Generated brand assets were unchanged.
+- Native sidebar interaction in a temporary vault, appearance/theme/accent changes, accessibility/VoiceOver, and two-Mac iCloud behavior were not manually exercised within the timebox.
+
+
+## Reference navigation and inline removal — 11 October 2026, two-minute timebox
+
+- Added an open icon beside every page/source association. Source references open the existing native reader; page references switch to Pages, clear search filters, and select the page through the existing save-before-navigation flow. Locked pages retain access to opening references. Missing sources show a disabled open button.
+- Replaced association minus icons with trash icons. Clicking trash reveals native inline Remove/Cancel controls and explains that only the association is removed. Confirmed removal uses the existing stale-checked repository operation; cancellation leaves the association unchanged.
+- `./scripts/test.sh` passed all 72 tests with native macOS service access, including a new source-to-page navigation check for selection, scope, filter clearing, and body preservation. `git diff --check` passed.
+- `./scripts/build.sh debug` compiled, packaged, and signed the app/archive successfully with native macOS service access. Generated brand assets were unchanged.
+- Manual sidebar navigation/confirmation in a temporary vault, theme/accent changes, VoiceOver/accessibility adaptations, and two-Mac iCloud behavior were not exercised within the timebox.

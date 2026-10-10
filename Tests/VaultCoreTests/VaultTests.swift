@@ -534,3 +534,27 @@ private func temporaryFolder() throws -> URL {
     await #expect(throws: VaultError.self) { try await repository.linkSources(at: file, maximumFiles: 5) }
     #expect(try await repository.scan().sources.count == 1)
 }
+
+@Test func pageSourceReferencesAreManyToManyAndStaleSafe() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let first = try await repo.importSource(data: Data("original one".utf8), filename: "one.txt", title: "One", originURL: nil)
+    let second = try await repo.importSource(data: Data("original two".utf8), filename: "two.txt", title: "Two", originURL: nil)
+    let a = try await repo.create(title: "A", body: "Unchanged body")
+    let b = try await repo.create(title: "B", body: "Another body")
+    let linked = try await repo.setSourceReference(note: a, sourceID: first.id, linked: true)
+    let both = try await repo.setSourceReference(note: linked, sourceID: second.id, linked: true)
+    let shared = try await repo.setSourceReference(note: b, sourceID: first.id, linked: true)
+    #expect(Set(both.linkedSourceIDs) == Set([first.id, second.id]))
+    #expect(shared.linkedSourceIDs == [first.id])
+    #expect(both.body == a.body)
+    await #expect(throws: (any Error).self) { try await repo.setSourceReference(note: a, sourceID: second.id, linked: true) }
+    let removed = try await repo.setSourceReference(note: both, sourceID: first.id, linked: false)
+    #expect(removed.linkedSourceIDs == [second.id])
+    let reopened = try await repo.scan()
+    #expect(reopened.notes.first(where: { $0.id == a.id })?.linkedSourceIDs == [second.id])
+    #expect(reopened.sources.first(where: { $0.id == first.id })?.metadata.sha256 == first.metadata.sha256)
+    var locked = removed; locked.editingLocked = true
+    locked = try await repo.save(note: locked, title: locked.title, body: locked.body, tags: locked.tags)
+    await #expect(throws: (any Error).self) { try await repo.setSourceReference(note: locked, sourceID: first.id, linked: true) }
+}

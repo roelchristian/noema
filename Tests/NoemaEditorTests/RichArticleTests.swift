@@ -521,3 +521,18 @@ import VaultCore
     model.markPageViewed(other)
     #expect(model.unseenRenamedPages.isEmpty)
 }
+
+@Test @MainActor func openingReferencedPageLeavesSourcesAndClearsSearch() async throws {
+    let note = try NoteCodec.decode(Data("---\ntitle: Referenced\n---\nPage body".utf8), path: "Wiki/Referenced.md", vaultID: UUID())
+    let model = AppModel()
+    model.notes = [note]; model.scope = .sources; model.searchText = "unrelated filter"
+    model.select(note.id, scope: .wiki)
+    for _ in 0..<50 {
+        if model.currentNote?.id == note.id { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.scope == .wiki)
+    #expect(model.searchText.isEmpty)
+    #expect(model.currentNote?.id == note.id)
+    #expect(model.body == note.body)
+}

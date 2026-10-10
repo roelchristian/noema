@@ -333,6 +333,43 @@ struct ContentView: View {
         }
         .disabled(model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id))
     }
+    private func sourceReferences(_ note: NoteRecord) -> some View {
+        let canEdit = !note.isEditingLocked && !model.editorReadOnly && !model.updatingSourceReferences
+        return VStack(alignment: .leading, spacing: 8) {
+            Label("Sources", systemImage: "books.vertical").font(.headline)
+            ForEach(note.linkedSourceIDs, id: \.self) { id in
+                SourceAssociationRow(
+                    title: model.sources.first(where: { $0.id == id })?.title ?? "Unavailable source",
+                    openLabel: "Open source", canOpen: model.sources.contains { $0.id == id }, canRemove: canEdit,
+                    open: { model.openSource(id) },
+                    remove: { model.setSourceReference(pageID: note.id, sourceID: id, linked: false) }
+                ).id(note.id.uuidString + id.uuidString)
+            }
+            Menu("Add Source") {
+                ForEach(model.sources.filter { !note.linkedSourceIDs.contains($0.id) }) { source in
+                    Button(source.title) { model.setSourceReference(pageID: note.id, sourceID: source.id, linked: true) }
+                }
+            }.disabled(!canEdit || model.sources.allSatisfy { note.linkedSourceIDs.contains($0.id) })
+        }.controlSize(.small)
+    }
+    private func sourcePages(_ source: SourceRecord) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Pages", systemImage: "doc.text").font(.headline)
+            ForEach(model.notes.filter { $0.linkedSourceIDs.contains(source.id) }) { note in
+                SourceAssociationRow(
+                    title: note.title, openLabel: "Open page", canOpen: true,
+                    canRemove: !note.isEditingLocked && !model.updatingSourceReferences,
+                    open: { model.select(note.id, scope: .wiki) },
+                    remove: { model.setSourceReference(pageID: note.id, sourceID: source.id, linked: false) }
+                ).id(source.id.uuidString + note.id.uuidString)
+            }
+            Menu("Add to Page") {
+                ForEach(model.notes.filter { !$0.isEditingLocked && !$0.linkedSourceIDs.contains(source.id) }) { note in
+                    Button(note.title) { model.setSourceReference(pageID: note.id, sourceID: source.id, linked: true) }
+                }
+            }.disabled(model.updatingSourceReferences)
+        }.controlSize(.small)
+    }
     private func sourceInspector(_ source: SourceRecord) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -359,6 +396,7 @@ struct ContentView: View {
                         LabeledContent("Origin", value: origin)
                     }
                 }.font(.callout)
+                sourcePages(source)
                 Divider()
                 Label("AI-generated summary", systemImage: "sparkles").font(.headline)
                 sourceSummaryButton(source)
@@ -406,6 +444,7 @@ struct ContentView: View {
                     }
                     LabeledContent("Editing", value: model.editingLocked ? "Locked" : "Unlocked")
                 }.font(.callout)
+                sourceReferences(note)
                 Divider()
                 Label("AI-generated summary", systemImage: "sparkles").font(.headline)
                 Button(summary == nil ? "Generate AI Summary" : "Regenerate AI Summary") {
@@ -769,5 +808,40 @@ private struct DismissibleNotice: View {
                 Label("Dismiss message", systemImage: "xmark.circle.fill").labelStyle(.iconOnly)
             }.buttonStyle(.borderless).foregroundStyle(.secondary).help("Dismiss message")
         }
+    }
+}
+
+private struct SourceAssociationRow: View {
+    let title: String
+    let openLabel: String
+    let canOpen: Bool
+    let canRemove: Bool
+    let open: () -> Void
+    let remove: () -> Void
+    @State private var confirmingRemoval = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                Spacer()
+                Button(action: open) {
+                    Label(openLabel, systemImage: "arrow.up.forward.square").labelStyle(.iconOnly)
+                }.disabled(!canOpen).help(openLabel)
+                Button { confirmingRemoval = true } label: {
+                    Label("Remove link", systemImage: "trash").labelStyle(.iconOnly)
+                }.disabled(!canRemove || confirmingRemoval).help("Remove link")
+            }
+            if confirmingRemoval {
+                Text("Remove this link? The page and source will be kept.").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Remove", role: .destructive) {
+                        confirmingRemoval = false
+                        remove()
+                    }.disabled(!canRemove)
+                    Button("Cancel") { confirmingRemoval = false }
+                }
+            }
+        }.onChange(of: canRemove) { if !canRemove { confirmingRemoval = false } }
     }
 }
