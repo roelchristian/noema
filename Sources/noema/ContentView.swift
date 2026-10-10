@@ -3,6 +3,7 @@ import VaultCore
 
 struct ContentView: View {
     @Bindable var model: AppModel
+    @Environment(\.noemaTheme) private var theme
     @FocusState private var searchFocused: Bool
     @State private var showTrashConfirmation = false
     @State private var sourceOriginal = false
@@ -20,6 +21,27 @@ struct ContentView: View {
         }
         .toolbar {
             if model.root != nil {
+                if model.currentNote != nil {
+                    ToolbarItemGroup(placement: .primaryAction) {
+                        Picker("Page view", selection: $model.reading) {
+                            Text("Edit").tag(false)
+                            Text("Read").tag(true)
+                        }.pickerStyle(.segmented).frame(minWidth: 140)
+                        Button { showTrashConfirmation = true } label: {
+                            Label("Move page to vault trash", systemImage: "trash")
+                        }.help("Move page to vault trash")
+                    }
+                } else if model.currentSource?.metadata.storedFilename.hasSuffix(".md") == true {
+                    ToolbarItem(placement: .primaryAction) {
+                        Picker("Source view", selection: $sourceOriginal) {
+                            Text("Read").tag(false)
+                            Text("Original").tag(true)
+                        }.pickerStyle(.segmented).frame(minWidth: 160)
+                    }
+                }
+                if model.currentNote != nil || model.currentSource?.metadata.storedFilename.hasSuffix(".md") == true {
+                    ToolbarSpacer(.fixed, placement: .primaryAction)
+                }
                 ToolbarItemGroup(placement: .primaryAction) {
                     if model.scope == .sources {
                         Button { model.importFiles() } label: { Label("Import source", systemImage: "square.and.arrow.down") }
@@ -29,14 +51,19 @@ struct ContentView: View {
                             Button("Blank wiki page") { model.newPage() }
                             Button("Personal page template") { model.newPage(template: true) }
                         } label: { Label("New page", systemImage: "plus") }
+                            .accessibilityLabel("New page")
                     }
+                }
+                ToolbarSpacer(.fixed, placement: .primaryAction)
+                ToolbarItem(placement: .primaryAction) {
                     Menu {
                         Button("Open another vault…") { model.chooseVault(create: false) }
-                        Button("Reveal vault in Finder") { model.revealVault() }
-                        Button("Refresh from files") { Task { await model.refresh() } }
+                        Button { model.revealVault() } label: { Label("Reveal vault in Finder", systemImage: "folder") }
+                        Button { Task { await model.refresh() } } label: { Label("Refresh from files", systemImage: "arrow.clockwise") }
                         Button("Vault notices (\(model.issues.count))") { model.showIssues = true }
                         Button("Recover drafts (\(model.recoveredDrafts.count))") { model.showRecovery = true }.disabled(model.recoveredDrafts.isEmpty)
                     } label: { Label("Vault options", systemImage: "ellipsis.circle") }
+                        .accessibilityLabel("Vault options")
                 }
             }
         }
@@ -46,9 +73,9 @@ struct ContentView: View {
         .sheet(isPresented: Binding(get: { !model.ambiguousMatches.isEmpty }, set: { if !$0 { model.ambiguousMatches = [] } })) {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Choose a page").font(.title2.bold())
-                Text("More than one page matches this title or alias.").foregroundStyle(.secondary)
+                Text("More than one page matches this title or alias.").foregroundStyle(theme.text())
                 ForEach(model.ambiguousMatches) { note in
-                    Button { model.ambiguousMatches = []; model.select(note.id) } label: { VStack(alignment: .leading) { Text(note.title); Text(note.relativePath).font(.caption).foregroundStyle(.secondary) } }
+                    Button { model.ambiguousMatches = []; model.select(note.id) } label: { VStack(alignment: .leading) { Text(note.title); Text(note.relativePath).font(.caption).foregroundStyle(theme.text()) } }
                 }
                 Button("Cancel") { model.ambiguousMatches = [] }.keyboardShortcut(.cancelAction)
             }.padding(28).frame(width: 440)
@@ -62,21 +89,24 @@ struct ContentView: View {
         } message: { Text("The Markdown file stays recoverable in the vault’s .Trash folder.") }
         .onChange(of: model.searchText) { model.queryChanged() }
         .onChange(of: model.searchFocusToken) { searchFocused = true }
+        .onChange(of: model.selectedID) { sourceOriginal = false }
     }
     private var welcome: some View {
         VStack(spacing: 24) {
-            Image(systemName: "books.vertical").font(.system(size: 64, weight: .light)).foregroundStyle(.tint)
+            NoemaMark().frame(width: 116, height: 116).accessibilityHidden(true)
             VStack(spacing: 10) {
-                Text("noema").font(.system(size: 34, weight: .semibold))
+                Text("noema").font(.system(size: 38, weight: .medium))
                 Text("A personal atlas of thought.")
-                    .font(.title3).foregroundStyle(.secondary)
+                    .font(.title3).foregroundStyle(theme.text())
             }
-            HStack(spacing: 14) {
-                Button("Create a vault…") { model.chooseVault(create: true) }.buttonStyle(.glassProminent)
-                Button("Open a vault…") { model.chooseVault(create: false) }.buttonStyle(.glass)
-            }.controlSize(.large)
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 14) {
+                    Button("Create a vault…") { model.chooseVault(create: true) }.buttonStyle(.glassProminent)
+                    Button("Open a vault…") { model.chooseVault(create: false) }.buttonStyle(.glass).tint(nil)
+                }.controlSize(.large)
+            }
             Text("Choose a folder on your Mac or in iCloud Drive. Your files stay yours.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundStyle(theme.text())
             if model.busy { ProgressView() }
             if let error = model.errorMessage { Text(error).foregroundStyle(.red).frame(maxWidth: 560).textSelection(.enabled) }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -84,12 +114,19 @@ struct ContentView: View {
     private var sidebar: some View {
         List(selection: Binding(get: { Optional(model.scope) }, set: { if let scope = $0 { model.changeScope(scope) } })) {
             Section("Library") {
-                Label("Wiki", systemImage: "book.closed").badge(model.notes.count).tag(LibraryScope.wiki)
-                Label("Sources", systemImage: "tray.full").badge(model.sources.count).tag(LibraryScope.sources)
+                navigationLabel("Wiki", symbol: "book.closed").badge(model.notes.count).tag(LibraryScope.wiki)
+                navigationLabel("Sources", symbol: "tray.full").badge(model.sources.count).tag(LibraryScope.sources)
             }
             if !model.tags.isEmpty {
-                Section("Topics") { ForEach(model.tags, id: \.self) { tag in Label(tag, systemImage: "number").tag(LibraryScope.tag(tag)) } }
+                Section("Topics") { ForEach(model.tags, id: \.self) { tag in navigationLabel(tag, symbol: "number", topic: true).tag(LibraryScope.tag(tag)) } }
             }
+        }
+        .safeAreaInset(edge: .top) {
+            HStack(spacing: 4) {
+                NoemaMark().frame(width: 40, height: 40).accessibilityHidden(true)
+                Text("noema").font(.title3.weight(.medium))
+                Spacer()
+            }.padding(.horizontal, 12).padding(.vertical, 6)
         }
         .safeAreaInset(edge: .bottom) {
             VStack(alignment: .leading, spacing: 8) {
@@ -101,21 +138,20 @@ struct ContentView: View {
                 }
                 Button { model.chooseVault(create: false) } label: {
                     HStack { Label(model.vaultName, systemImage: "folder").lineLimit(1); Spacer(); Image(systemName: "chevron.up.chevron.down") }
-                }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary).help("Open another vault")
+                }.buttonStyle(.glass).tint(nil).controlSize(.small).help("Open another vault")
+                    .accessibilityLabel("Open another vault. Current vault: \(model.vaultName)")
             }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+    private func navigationLabel(_ title: String, symbol: String, topic: Bool = false) -> some View {
+        Label {
+            Text(title).foregroundStyle(theme.text(.textPrimary))
+        } icon: {
+            Image(systemName: symbol).foregroundStyle(theme.text(topic ? .graphHighlight : .accentPrimary, on: .background))
         }
     }
     private var library: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack { Text(model.scopeTitle).font(.title2.bold()); Spacer(); if model.busy { ProgressView().controlSize(.small) } }
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search \(model.scope == .sources ? "sources" : "wiki")", text: $model.searchText).textFieldStyle(.plain).focused($searchFocused)
-                    if !model.searchText.isEmpty { Button { model.searchText = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary) }
-                }.padding(9).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 9))
-            }.padding(18)
-            Divider()
             if model.rows.isEmpty {
                 ContentUnavailableView(model.searchText.isEmpty ? "\(model.scopeTitle) is empty" : "No matches", systemImage: model.scope == .sources ? "tray" : "doc.text.magnifyingglass", description: Text(model.searchText.isEmpty ? (model.scope == .sources ? "Import a text file or paste a source to begin." : "Create a page to start building your wiki.") : "Try another word or topic."))
                     .frame(maxHeight: .infinity)
@@ -123,14 +159,40 @@ struct ContentView: View {
                 List(selection: Binding(get: { model.selectedID }, set: { model.select($0) })) {
                     ForEach(model.rows) { row in
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(row.title).font(.headline).lineLimit(1)
-                            Text(row.excerpt.replacingOccurrences(of: "\n", with: " ")).font(.callout).foregroundStyle(.secondary).lineLimit(2)
-                            if !row.tags.isEmpty { Text(row.tags.prefix(3).map { "#" + $0 }.joined(separator: "  ")).font(.caption).foregroundStyle(.tertiary).lineLimit(1) }
+                            Text(row.title).foregroundStyle(theme.text(.textPrimary, on: .background)).font(.headline).lineLimit(1)
+                            Text(row.excerpt.replacingOccurrences(of: "\n", with: " ")).font(.callout)
+                                .foregroundStyle(theme.text(row.id == model.selectedID ? .textPrimary : .textMuted, on: .background)).lineLimit(2)
+                            if !row.tags.isEmpty {
+                                Text(row.tags.prefix(3).map { "#" + $0 }.joined(separator: "  ")).font(.caption)
+                                    .foregroundStyle(theme.text(row.id == model.selectedID ? .textPrimary : .graphHighlight, on: .background)).lineLimit(1)
+                            }
                         }.padding(.vertical, 7).tag(row.id)
                     }
-                }.listStyle(.plain)
+                }.listStyle(.plain).scrollContentBackground(.hidden)
             }
-            HStack { Text(libraryCount); Spacer(); Text("⌘K") }.font(.caption).foregroundStyle(.secondary).padding(12)
+            HStack { Text(libraryCount); Spacer(); Text("⌘K") }.font(.caption).foregroundStyle(theme.text()).padding(12)
+        }
+        .background(theme.color(.background))
+        .safeAreaBar(edge: .top) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack { Text(model.scopeTitle).font(.title2.bold()); Spacer(); if model.busy { ProgressView().controlSize(.small) } }
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(theme.text())
+                    ZStack(alignment: .leading) {
+                        TextField("", text: $model.searchText)
+                            .accessibilityLabel("Search \(model.scope == .sources ? "sources" : "wiki")")
+                            .textFieldStyle(.plain).focused($searchFocused)
+                        if model.searchText.isEmpty {
+                            Text("Search \(model.scope == .sources ? "sources" : "wiki")")
+                                .foregroundStyle(theme.text()).allowsHitTesting(false).accessibilityHidden(true)
+                        }
+                    }
+                    if !model.searchText.isEmpty {
+                        Button { model.searchText = "" } label: { Label("Clear search", systemImage: "xmark.circle.fill").labelStyle(.iconOnly) }
+                            .buttonStyle(.plain).foregroundStyle(theme.text())
+                    }
+                }.padding(10).glassEffect(.regular.interactive(), in: Capsule())
+            }.padding(18)
         }
     }
     @ViewBuilder private var detail: some View {
@@ -155,7 +217,7 @@ struct ContentView: View {
                     }.font(.callout).padding(12).background(.orange.opacity(0.12))
                 }
                 pageHeader
-                Divider()
+                Divider().overlay(theme.color(.border))
                 ZStack(alignment: .topLeading) {
                     if let source = model.currentSource, sourceOriginal || source.metadata.storedFilename.hasSuffix(".txt") {
                         MarkdownEditor(text: .constant(model.body), action: nil, onWikiQuery: { _ in }, editable: false)
@@ -163,24 +225,25 @@ struct ContentView: View {
                     else { MarkdownEditor(text: $model.body, action: model.editorAction, onWikiQuery: { model.wikiQuery = $0 }) }
                     if !model.reading, model.currentNote != nil, model.wikiQuery != nil, !model.linkSuggestions.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("LINK A PAGE").font(.caption2).foregroundStyle(.secondary).padding(8)
+                            Text("Link a page").font(.caption).foregroundStyle(theme.text()).padding(8)
                             ForEach(model.linkSuggestions) { note in
                                 Button { model.suggestLink(note.title) } label: { Label(note.title, systemImage: "link").frame(maxWidth: .infinity, alignment: .leading).padding(8) }.buttonStyle(.plain)
                             }
-                        }.padding(6).frame(width: 270).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 10, y: 4).padding(16)
+                        }.padding(6).frame(width: 270).glassEffect(.regular, in: .rect(cornerRadius: 16)).padding(16)
                     }
                 }.frame(maxWidth: 980).frame(maxWidth: .infinity)
                 if model.currentNote != nil { pageFooter }
             }
+            .background(theme.color(.surfaceElevated))
             .onChange(of: model.body) { model.edited() }
             .onChange(of: model.title) { model.edited() }
             .onChange(of: model.tagInput) { model.edited() }
             .onChange(of: model.reading) { if model.reading { model.generatePreview() } }
         } else {
             VStack(spacing: 18) {
-                Image(systemName: model.scope == .sources ? "tray.full" : "book.pages").font(.system(size: 48, weight: .light)).foregroundStyle(.tertiary)
+                NoemaMark().frame(width: 76, height: 76).accessibilityHidden(true)
                 Text(model.scope == .sources ? "Keep the original. Find your meaning." : "A personal atlas of thought.").font(.title2.weight(.medium))
-                Text(model.scope == .sources ? "Browse raw material here. Your interpretations belong in the wiki." : "Choose a page, or start with a thought you want to connect.").foregroundStyle(.secondary)
+                Text(model.scope == .sources ? "Browse raw material here. Your interpretations belong in the wiki." : "Choose a page, or start with a thought you want to connect.").foregroundStyle(theme.text())
                 if model.scope != .sources { Button("New personal page") { model.newPage(template: true) }.buttonStyle(.glass) }
                 if let error = model.errorMessage { Text(error).foregroundStyle(.red).textSelection(.enabled).frame(maxWidth: 500) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -194,27 +257,21 @@ struct ContentView: View {
     private var pageHeader: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Label(model.currentSource == nil ? "PERSONAL WIKI" : "RAW SOURCE", systemImage: model.currentSource == nil ? "book.closed" : "tray.full")
-                    .font(.caption.weight(.medium)).tracking(1.5).foregroundStyle(.secondary)
+                Label(model.currentSource == nil ? "Personal wiki" : "Raw source", systemImage: model.currentSource == nil ? "book.closed" : "tray.full")
+                    .font(.caption.weight(.medium)).foregroundStyle(theme.text())
                 Spacer()
-                if model.currentNote != nil {
-                    Picker("View", selection: $model.reading) { Text("Edit").tag(false); Text("Read").tag(true) }.labelsHidden().pickerStyle(.segmented).frame(width: 140)
-                    Button { showTrashConfirmation = true } label: { Image(systemName: "trash") }.buttonStyle(.borderless).help("Move page to vault trash")
-                } else {
-                    if model.currentSource?.metadata.storedFilename.hasSuffix(".md") == true {
-                        Picker("Source view", selection: $sourceOriginal) { Text("Read").tag(false); Text("Original").tag(true) }.labelsHidden().pickerStyle(.segmented).frame(width: 160)
-                    }
-                    Label("Read only", systemImage: "lock").font(.caption).foregroundStyle(.secondary)
+                if model.currentSource != nil {
+                    Label("Read only", systemImage: "lock").font(.caption).foregroundStyle(theme.text())
                 }
             }
             if model.currentNote != nil {
                 TextField("Page title", text: $model.title).textFieldStyle(.plain).font(.system(size: 32, weight: .semibold))
                 HStack {
-                    Image(systemName: "number").foregroundStyle(.secondary)
+                    Image(systemName: "number").foregroundStyle(theme.text())
                     TextField("Topics, separated by commas", text: $model.tagInput).textFieldStyle(.plain).font(.callout)
                 }
                 if let note = model.currentNote, !note.allTags.isEmpty {
-                    HStack { ForEach(note.allTags.prefix(8), id: \.self) { tag in Button("#" + tag) { model.changeScope(.tag(tag)) }.font(.caption).buttonStyle(.bordered).controlSize(.small) } }
+                    HStack { ForEach(note.allTags.prefix(8), id: \.self) { tag in Button("#" + tag) { model.changeScope(.tag(tag)) }.font(.caption).foregroundStyle(theme.text(.graphHighlight, on: .background)).buttonStyle(.bordered).tint(theme.color(.graphHighlight)).controlSize(.small) } }
                 }
             } else {
                 Text(model.title).font(.system(size: 32, weight: .semibold)).textSelection(.enabled)
@@ -222,8 +279,8 @@ struct ContentView: View {
                     HStack {
                         Text(source.metadata.originalFilename)
                         Text("· Imported " + String(source.metadata.capturedAt.prefix(10)))
-                        if let address = source.metadata.originURL, let url = URL(string: address) { Link("Original URL", destination: url) }
-                    }.font(.caption).foregroundStyle(.secondary)
+                        if let address = source.metadata.originURL, let url = URL(string: address) { Link("Original URL", destination: url).foregroundStyle(theme.text(.accentSecondary)) }
+                    }.font(.caption).foregroundStyle(theme.text())
                 }
             }
         }.padding(28)
@@ -232,32 +289,35 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 10) {
             if !model.backlinks.isEmpty {
                 HStack(alignment: .top) {
-                    Text("Linked from").font(.caption).foregroundStyle(.secondary)
+                    Text("Linked from").font(.caption).foregroundStyle(theme.text())
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack { ForEach(model.backlinks) { note in Button(note.title) { model.select(note.id) }.buttonStyle(.link).font(.caption) } }
+                        HStack { ForEach(model.backlinks) { note in Button(note.title) { model.select(note.id) }.buttonStyle(.link).foregroundStyle(theme.text(.accentSecondary)).tint(theme.color(.accentSecondary)).font(.caption) } }
                     }
                 }
             }
             HStack {
-                Label(model.saveStatus, systemImage: model.dirty ? "circle.dotted" : "checkmark.circle").font(.caption).foregroundStyle(.secondary)
+                Label(model.saveStatus, systemImage: model.dirty ? "circle.dotted" : "checkmark.circle").font(.caption).foregroundStyle(theme.text())
                 Spacer()
-                Text("\(model.wordCount) words").font(.caption).foregroundStyle(.secondary)
+                Text("\(model.wordCount) words").font(.caption).foregroundStyle(theme.text())
                 if !model.reading {
-                    Button { model.format("**", "**") } label: { Image(systemName: "bold") }.help("Bold · ⌘B")
-                    Button { model.format("*", "*") } label: { Image(systemName: "italic") }.help("Italic · ⌘I")
-                    Button { model.format("[[", "]]") } label: { Image(systemName: "link") }.help("Wiki link")
+                    HStack(spacing: 12) {
+                        Button { model.format("**", "**") } label: { Label("Bold", systemImage: "bold").labelStyle(.iconOnly) }.help("Bold · ⌘B")
+                        Button { model.format("*", "*") } label: { Label("Italic", systemImage: "italic").labelStyle(.iconOnly) }.help("Italic · ⌘I")
+                        Button { model.format("[[", "]]") } label: { Label("Wiki link", systemImage: "link").labelStyle(.iconOnly) }.help("Wiki link")
+                    }.buttonStyle(.borderless).padding(.horizontal, 14).padding(.vertical, 8)
+                        .glassEffect(.regular.interactive(), in: Capsule())
                 }
-            }.buttonStyle(.borderless)
-        }.padding(.horizontal, 28).padding(.vertical, 14).background(.background)
+            }
+        }.padding(.horizontal, 28).padding(.vertical, 14).background(theme.color(.surfaceElevated))
     }
     private var recoverySheet: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Recoverable drafts").font(.title2.bold())
-            Text("Create a new page from a draft to keep the disk version intact.").foregroundStyle(.secondary)
+            Text("Create a new page from a draft to keep the disk version intact.").foregroundStyle(theme.text())
             List(model.recoveredDrafts) { draft in
                 VStack(alignment: .leading, spacing: 8) {
                     Text(draft.title).font(.headline)
-                    Text(draft.body.prefix(240)).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    Text(draft.body.prefix(240)).font(.caption).foregroundStyle(theme.text()).textSelection(.enabled)
                     HStack {
                         Button("Recover as new page") { model.saveDraftAsNewPage(draft) }
                         Button("Discard draft", role: .destructive) { model.discardRecovery(draft) }
@@ -270,7 +330,7 @@ struct ContentView: View {
     private var noticesSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Vault notices").font(.title2.bold())
-            if model.issues.isEmpty { Text("Your vault is up to date locally.").foregroundStyle(.secondary) }
+            if model.issues.isEmpty { Text("Your vault is up to date locally.").foregroundStyle(theme.text()) }
             List(model.issues, id: \.self) { Text($0).font(.callout).textSelection(.enabled) }
             HStack { Button("Reveal vault") { model.revealVault() }; Spacer(); Button("Done") { model.showIssues = false }.keyboardShortcut(.cancelAction) }
         }.padding(24).frame(width: 580, height: 420)
@@ -279,6 +339,7 @@ struct ContentView: View {
 
 struct PasteSourceSheet: View {
     @Bindable var model: AppModel
+    @Environment(\.noemaTheme) private var theme
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
     @State private var text = ""
@@ -287,10 +348,11 @@ struct PasteSourceSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Preserve a source").font(.title2.bold())
-            Text("Store the original text here. Write your understanding in the wiki.").foregroundStyle(.secondary)
+            Text("Store the original text here. Write your understanding in the wiki.").foregroundStyle(theme.text())
             TextField("Source title", text: $title)
             TextField("Original URL (optional)", text: $url)
-            TextEditor(text: $text).font(.system(.body, design: .monospaced)).border(.quaternary)
+            TextEditor(text: $text).font(.system(.body, design: .monospaced))
+                .scrollContentBackground(.hidden).background(theme.color(.surfaceElevated)).border(theme.color(.border))
             if let error = model.errorMessage { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -298,7 +360,7 @@ struct PasteSourceSheet: View {
                 Button("Save source") {
                     importing = true
                     Task { if await model.pasteSource(title: title, text: text, originURL: url) { dismiss() }; importing = false }
-                }.buttonStyle(.borderedProminent).disabled(text.isEmpty || importing).keyboardShortcut(.defaultAction)
+                }.buttonStyle(.glassProminent).disabled(text.isEmpty || importing).keyboardShortcut(.defaultAction)
             }
         }.padding(24).frame(width: 660, height: 540)
     }

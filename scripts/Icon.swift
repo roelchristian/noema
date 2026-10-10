@@ -1,22 +1,71 @@
 import AppKit
 
-let output = CommandLine.arguments[1]
-let sizes = [(16, "icon_16x16"), (32, "icon_16x16@2x"), (32, "icon_32x32"), (64, "icon_32x32@2x"), (128, "icon_128x128"), (256, "icon_128x128@2x"), (256, "icon_256x256"), (512, "icon_256x256@2x"), (512, "icon_512x512"), (1024, "icon_512x512@2x")]
-for (size, name) in sizes {
-    let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-    NSGraphicsContext.saveGraphicsState()
-    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
-    let s = CGFloat(size)
-    let rect = NSRect(x: 0, y: 0, width: s, height: s)
-    let path = NSBezierPath(roundedRect: rect.insetBy(dx: s * 0.03, dy: s * 0.03), xRadius: s * 0.22, yRadius: s * 0.22)
-    let gradient = NSGradient(starting: NSColor(red: 0.25, green: 0.40, blue: 0.49, alpha: 1), ending: NSColor(red: 0.09, green: 0.19, blue: 0.27, alpha: 1))!
-    gradient.draw(in: path, angle: -75)
-    let symbol = NSImage(systemSymbolName: "books.vertical.fill", accessibilityDescription: nil)!
-        .withSymbolConfiguration(.init(pointSize: s * 0.53, weight: .medium))!
-    let tinted = NSImage(size: symbol.size)
-    tinted.lockFocus(); NSColor.white.set(); NSRect(origin: .zero, size: symbol.size).fill()
-    symbol.draw(at: .zero, from: .zero, operation: .destinationIn, fraction: 1); tinted.unlockFocus()
-    tinted.draw(in: NSRect(x: s * 0.20, y: s * 0.22, width: s * 0.60, height: s * 0.56))
-    NSGraphicsContext.restoreGraphicsState()
-    try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: output).appendingPathComponent(name + ".png"))
+@main enum IconGenerator {
+    static func main() throws {
+        let output = URL(fileURLWithPath: CommandLine.arguments[1])
+        let brand = URL(fileURLWithPath: CommandLine.arguments[2])
+        try FileManager.default.createDirectory(at: brand, withIntermediateDirectories: true)
+        let palette = MidnightIrisPalette(dark: true)
+        let components: [(OrbitComponent, ThemeRole)] = [(.orbit, .accentPrimary), (.satellites, .accentSecondary), (.nucleus, .graphHighlight)]
+        let sizes = [(16, "icon_16x16"), (32, "icon_16x16@2x"), (32, "icon_32x32"), (64, "icon_32x32@2x"), (128, "icon_128x128"), (256, "icon_128x128@2x"), (256, "icon_256x256"), (512, "icon_256x256@2x"), (512, "icon_512x512"), (1024, "icon_512x512@2x")]
+        for (size, name) in sizes {
+            let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+            let context = NSGraphicsContext.current!.cgContext
+            let s = CGFloat(size)
+            context.translateBy(x: 0, y: s)
+            context.scaleBy(x: 1, y: -1)
+            let tile = CGRect(x: s * 0.06, y: s * 0.06, width: s * 0.88, height: s * 0.88)
+            context.setFillColor(color(palette.token(.background)))
+            context.addPath(CGPath(roundedRect: tile, cornerWidth: s * 0.2, cornerHeight: s * 0.2, transform: nil))
+            context.fillPath()
+            for (component, role) in components {
+                context.setFillColor(color(palette.token(role)))
+                context.addPath(OrbitGeometry.path(in: CGRect(x: s * 0.12, y: s * 0.12, width: s * 0.76, height: s * 0.76), component: component))
+                context.fillPath()
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            let png = bitmap.representation(using: .png, properties: [:])!
+            try png.write(to: output.appendingPathComponent(name + ".png"))
+            if size == 1024 { try png.write(to: brand.appendingPathComponent("icon-preview.png")) }
+        }
+
+        // Filled layers have no baked-in lighting or mask. Icon Composer supplies glass.
+        for dark in [false, true] {
+            let variant = MidnightIrisPalette(dark: dark)
+            let suffix = dark ? "" : "-light"
+            let frame = CGRect(x: 123, y: 123, width: 778, height: 778)
+            let paths = components.map { component, role in
+                svgPath(path: OrbitGeometry.path(in: frame, component: component), fill: variant.token(role).hexString)
+            }.joined()
+            let foreground = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 1024\"><title>noema Midnight Iris orbital mark</title>\(paths)</svg>\n"
+            try foreground.write(to: brand.appendingPathComponent("orbit" + suffix + ".svg"), atomically: true, encoding: .utf8)
+            let background = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 1024\"><rect width=\"1024\" height=\"1024\" fill=\"\(variant.token(.background).hexString)\"/></svg>\n"
+            try background.write(to: brand.appendingPathComponent("background" + suffix + ".svg"), atomically: true, encoding: .utf8)
+        }
+    }
+
+    static func color(_ rgb: ThemeRGB) -> CGColor {
+        NSColor(srgbRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1).cgColor
+    }
+
+    static func svgPath(path: CGPath, fill: String) -> String {
+        var commands: [String] = []
+        func point(_ p: CGPoint) -> String { String(format: "%.3f %.3f", Double(p.x), Double(p.y)) }
+        path.applyWithBlock { element in
+            let e = element.pointee
+            switch e.type {
+            case .moveToPoint: commands.append("M" + point(e.points[0]))
+            case .addLineToPoint: commands.append("L" + point(e.points[0]))
+            case .addQuadCurveToPoint: commands.append("Q" + point(e.points[0]) + " " + point(e.points[1]))
+            case .addCurveToPoint: commands.append("C" + point(e.points[0]) + " " + point(e.points[1]) + " " + point(e.points[2]))
+            case .closeSubpath: commands.append("Z")
+            @unknown default: break
+            }
+        }
+        return "<path fill=\"\(fill)\" d=\"\(commands.joined(separator: " "))\"/>"
+    }
 }

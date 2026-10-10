@@ -4,6 +4,10 @@
 
 A native macOS personal wiki, with a separate read-only library of raw sources.
 
+The interface uses native macOS Liquid Glass navigation and toolbars, glass search and editing controls, and an orbital glass mark inspired by connected thoughts. Writing and source content retain readable standard backgrounds. The mark shares geometry with the packaged icon; see `Resources/Brand/README.md` for the exported layers and the current `.icns` packaging limitation.
+
+**Midnight Iris appearance:** Open **noema → Settings…** (⌘,) to choose **System**, **Light**, or **Dark**. System is the default; your preference persists between launches. The shared semantic palette colours content, the native editor and Markdown preview, links, topics, and the orbital identity. Indigo marks primary interaction, cyan marks relationships, and violet marks classifications. Foreground variants preserve readable contrast in each appearance. Native chrome, sidebar materials, menus, and control behaviour remain managed by macOS.
+
 ## Build and run
 
 Requires macOS 26+, Apple’s Swift 6 command-line tools, and internet access for the first dependency download. Full Xcode is optional. The tested development machine runs macOS 27 with Swift 6.2.4 and the macOS 26.2 SDK.

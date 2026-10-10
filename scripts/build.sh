@@ -11,7 +11,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary_dir/noema" "$app/Contents/MacOS/noema"
 cp Resources/Info.plist "$app/Contents/Info.plist"
 mkdir -p "$PWD/.build/VaultIcon.iconset"
-swift -module-cache-path "$PWD/.build/ModuleCache" scripts/Icon.swift "$PWD/.build/VaultIcon.iconset"
+swiftc -module-cache-path "$PWD/.build/ModuleCache" Sources/NoemaBrand/OrbitGeometry.swift Sources/NoemaBrand/MidnightIris.swift scripts/Icon.swift -o "$PWD/.build/icon-generator"
+"$PWD/.build/icon-generator" "$PWD/.build/VaultIcon.iconset" "$PWD/Resources/Brand"
 iconutil -c icns "$PWD/.build/VaultIcon.iconset" -o "$app/Contents/Resources/VaultIcon.icns"
 for bundle in "$binary_dir"/*.bundle(N); do cp -R "$bundle" "$app/Contents/Resources/"; done
 # Finder/iCloud metadata on generated assets must not enter the code signature.

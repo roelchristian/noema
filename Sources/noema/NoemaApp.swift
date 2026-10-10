@@ -1,13 +1,17 @@
 import SwiftUI
 import AppKit
+import NoemaBrand
 
 @main struct NoemaApp: App {
     @State private var model = AppModel()
+    @AppStorage(AppearancePreference.defaultsKey) private var appearance: AppearancePreference = .system
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     var body: some Scene {
         Window("noema", id: "main") {
             ContentView(model: model)
                 .frame(minWidth: 960, minHeight: 620)
+                .midnightIrisTheme()
+                .preferredColorScheme(appearance.colorScheme)
                 .task { delegate.model = model; await model.restore() }
         }
         .defaultSize(width: 1280, height: 820)
@@ -45,6 +49,11 @@ import AppKit
                 Button("Italic") { model.format("*", "*") }.keyboardShortcut("i").disabled(model.currentNote == nil || model.reading)
                 Button("Wiki Link") { model.format("[[", "]]") }.keyboardShortcut("l", modifiers: [.command, .shift]).disabled(model.currentNote == nil || model.reading)
             }
+        }
+        Settings {
+            AppearanceSettings()
+                .midnightIrisTheme()
+                .preferredColorScheme(appearance.colorScheme)
         }
     }
 }
