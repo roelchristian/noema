@@ -186,7 +186,19 @@ import VaultCore
                 }
             }
         }
-        requestEditingFromClick()
+        if !isEditable {
+            // Entering edit mode from read mode: place a plain caret at the click
+            // instead of letting the tracking loop start a selection.
+            let index = characterIndexForInsertion(at: point)
+            requestEditingFromClick()
+            let caret = NSRange(location: min(index, (string as NSString).length), length: 0)
+            setSelectedRange(caret)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isEditable, NSEvent.pressedMouseButtons & 1 == 0 else { return }
+                self.setSelectedRange(NSRange(location: min(caret.location, (self.string as NSString).length), length: 0))
+            }
+            return
+        }
         super.mouseDown(with: event)
     }
     override func mouseUp(with event: NSEvent) {

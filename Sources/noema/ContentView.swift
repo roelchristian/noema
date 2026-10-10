@@ -1301,13 +1301,7 @@ struct ContentView: View {
                 if showPageDetails {
                     headerActions
                 }
-                if !model.reading {
-                    HStack {
-                        Image(systemName: "number").foregroundStyle(theme.text())
-                        TextField("Topics, separated by commas", text: $model.tagInput).textFieldStyle(.plain).font(.callout)
-                    }
-                }
-                if let note = model.currentNote, !note.allTags.isEmpty {
+                if model.reading, let note = model.currentNote, !note.allTags.isEmpty {
                     HStack { ForEach(note.allTags.prefix(8), id: \.self) { tag in Button("#" + tag) { model.changeScope(.tag(tag)) }.font(.caption).foregroundStyle(theme.text(.graphHighlight, on: .background)).buttonStyle(.bordered).tint(theme.color(.graphHighlight)).controlSize(.small) } }
                 }
             } else {
