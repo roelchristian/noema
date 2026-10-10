@@ -8,6 +8,9 @@ public protocol VaultRepository: Sendable {
     func restore(_ page: TrashedPage) async throws
     func permanentlyDelete(_ page: TrashedPage) async throws
     func trash(note: NoteRecord) async throws
+    func deleteSource(_ source: SourceRecord) async throws
+    func renameSource(_ source: SourceRecord, title: String, summary: String?) async throws -> SourceRecord
+    func linkSources(at url: URL, maximumFiles: Int) async throws -> [SourceRecord]
     func importSource(data: Data, filename: String, title: String, originURL: String?) async throws -> SourceRecord
 }
 
@@ -91,13 +94,14 @@ public actor FileVaultRepository: VaultRepository {
         for directory in directories {
             guard UUID(uuidString: directory.lastPathComponent) != nil else { continue }
             do {
-                let metadata = try JSONDecoder().decode(SourceMetadata.self, from: Self.coordinatedRead(directory.appendingPathComponent("metadata.json")))
+                var metadata = try JSONDecoder().decode(SourceMetadata.self, from: Self.coordinatedRead(directory.appendingPathComponent("metadata.json")))
                 guard metadata.id.uuidString.lowercased() == directory.lastPathComponent.lowercased(),
                       metadata.storedFilename == URL(fileURLWithPath: metadata.storedFilename).lastPathComponent,
                       !metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Invalid source metadata.") }
-                let data = try Self.coordinatedRead(directory.appendingPathComponent(metadata.storedFilename))
-                guard digest(data) == metadata.sha256 else { throw VaultError.invalid("Original source has changed; its checksum does not match. Restore the original or import a new copy.") }
-                guard let body = String(data: data, encoding: .utf8) else { throw VaultError.invalid("Source is not UTF-8 text.") }
+                let data = try metadata.linkedBookmark.map(Self.readLinkedSource) ?? Self.coordinatedRead(directory.appendingPathComponent(metadata.storedFilename))
+                guard metadata.isLinked || digest(data) == metadata.sha256 else { throw VaultError.invalid("Original source has changed; its checksum does not match. Restore the original or import a new copy.") }
+                metadata.fileSize = data.count
+                let body = try Self.sourceText(data, filename: metadata.originalFilename)
                 let source = SourceRecord(metadata: metadata, body: body)
                 result.sources.append(source); chunk.sources.append(source)
                 if chunk.sources.count >= 128 { progress?(chunk); chunk = ScanBatch() }
@@ -250,14 +254,15 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func importSource(data: Data, filename: String, title: String, originURL: String?) throws -> SourceRecord {
-        guard let body = String(data: data, encoding: .utf8) else { throw VaultError.invalid("Import UTF-8 .txt or .md files. The original was not modified.") }
+        guard data.count <= Self.maximumImportBytes else { throw VaultError.invalid("Files larger than 2 MB must be linked instead of imported.") }
+        let body = try Self.sourceText(data, filename: filename)
         let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
-        guard ["txt", "md"].contains(ext) else { throw VaultError.invalid("Only .txt and .md sources are supported in v1.") }
+        let storedExtension = ext.isEmpty ? "bin" : ext
         if let originURL, !originURL.isEmpty {
             guard let url = URL(string: originURL), ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else { throw VaultError.invalid("The origin URL must be an http or https address.") }
         }
         let id = UUID()
-        let metadata = SourceMetadata(id: id, title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent : title, capturedAt: timestamp(), originalFilename: URL(fileURLWithPath: filename).lastPathComponent, originURL: originURL?.isEmpty == true ? nil : originURL, sha256: digest(data), storedFilename: "original.\(ext)")
+        let metadata = SourceMetadata(id: id, title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent : title, capturedAt: timestamp(), originalFilename: URL(fileURLWithPath: filename).lastPathComponent, originURL: originURL?.isEmpty == true ? nil : originURL, sha256: digest(data), fileSize: data.count, storedFilename: "original.\(storedExtension)")
         let pending = root.appendingPathComponent("Sources/.import-\(id.uuidString)")
         try fm.createDirectory(at: pending, withIntermediateDirectories: true)
         do {
@@ -274,6 +279,109 @@ public actor FileVaultRepository: VaultRepository {
             // Keep an interrupted import in the hidden staging directory for inspection.
             throw error
         }
+    }
+
+    public static let maximumImportBytes = 2_000_000
+
+    private static func sourceText(_ data: Data, filename: String) throws -> String {
+        let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
+        if ["txt", "md", "html", "htm"].contains(ext) {
+            guard let text = String(data: data, encoding: .utf8) else { throw VaultError.invalid("Text sources must use UTF-8 encoding.") }
+            return text
+        }
+        if ext == "pdf", !data.starts(with: Data("%PDF-".utf8)) { throw VaultError.invalid("This file is not a PDF document.") }
+        return ""
+    }
+
+    public static func readLinkedSource(_ bookmark: Data) throws -> Data {
+        var stale = false
+        let url = try URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], bookmarkDataIsStale: &stale)
+        guard !stale else { throw VaultError.unavailable("Linked source permission is stale. Link the file again.") }
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        return try coordinatedRead(url)
+    }
+
+    public func linkSources(at url: URL, maximumFiles: Int) throws -> [SourceRecord] {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
+        let values = try url.resourceValues(forKeys: keys)
+        guard values.isRegularFile == true, values.isSymbolicLink != true else { throw VaultError.invalid("Choose files only. Folder linking is no longer supported.") }
+        let files = [url]
+        // Validate every member before publishing any records.
+        let prepared = try files.sorted { $0.path < $1.path }.map { file -> SourceRecord in
+            let data = try Self.coordinatedRead(file)
+            let body = try Self.sourceText(data, filename: file.lastPathComponent)
+            let bookmark = try file.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil)
+            let metadata = SourceMetadata(id: UUID(), title: file.deletingPathExtension().lastPathComponent, capturedAt: timestamp(), originalFilename: file.lastPathComponent, originURL: nil, sha256: digest(data), fileSize: data.count, linkedBookmark: bookmark, storedFilename: "original." + file.pathExtension.lowercased())
+            return SourceRecord(metadata: metadata, body: body)
+        }
+        for source in prepared {
+            let pending = root.appendingPathComponent("Sources/.import-" + source.id.uuidString)
+            try fm.createDirectory(at: pending, withIntermediateDirectories: true)
+            try Self.coordinatedWrite(encoder.encode(source.metadata), to: pending.appendingPathComponent("metadata.json"))
+            let final = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
+            var failure: Error?, coordinationError: NSError?
+            NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: pending, options: .forMoving, writingItemAt: final, options: [], error: &coordinationError) { from, to in
+                do { try fm.moveItem(at: from, to: to) } catch { failure = error }
+            }
+            if let failure { throw failure }; if let coordinationError { throw coordinationError }
+        }
+        return prepared
+    }
+
+    public func renameSource(_ source: SourceRecord, title: String, summary: String? = nil) throws -> SourceRecord {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, title.count <= 120 else { throw VaultError.invalid("Invalid source title.") }
+        let summary = summary?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let summary, summary.isEmpty { throw VaultError.invalid("Source summary must not be empty.") }
+        let url = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/metadata.json")
+        var result: SourceRecord?, failure: Error?, coordinationError: NSError?
+        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: [], error: &coordinationError) { target in
+            do {
+                var metadata = try JSONDecoder().decode(SourceMetadata.self, from: Data(contentsOf: target))
+                guard metadata.id == source.id, metadata.title == source.title,
+                      metadata.sha256 == source.metadata.sha256, metadata.aiSummary == source.metadata.aiSummary,
+                      metadata.linkedBookmark == source.metadata.linkedBookmark,
+                      metadata.storedFilename == source.metadata.storedFilename else { throw VaultError.invalid("Source changed while its title was generated. Refresh and try again.") }
+                metadata.title = title
+                if let summary { metadata.aiSummary = summary }
+                try encoder.encode(metadata).write(to: target, options: .atomic)
+                result = SourceRecord(metadata: metadata, body: source.body)
+            } catch { failure = error }
+        }
+        if let failure { throw failure }; if let coordinationError { throw coordinationError }
+        guard let result else { throw VaultError.storage("Source title was not saved.") }
+        return result
+    }
+
+    public func deleteSource(_ source: SourceRecord) throws {
+        let directory = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
+        guard directory.resolvingSymlinksInPath().path == directory.standardizedFileURL.path else { throw VaultError.invalid("Source directory cannot be a symbolic link.") }
+        var failure: Error?, coordinationError: NSError?
+        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: directory, options: .forDeleting, error: &coordinationError) { target in
+            do {
+                let metadataURL = target.appendingPathComponent("metadata.json")
+                guard try metadataURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else { throw VaultError.invalid("Invalid source metadata path.") }
+                let metadata = try JSONDecoder().decode(SourceMetadata.self, from: Data(contentsOf: metadataURL))
+                guard metadata.id == source.id, metadata.title == source.title,
+                      metadata.sha256 == source.metadata.sha256, metadata.aiSummary == source.metadata.aiSummary,
+                      metadata.linkedBookmark == source.metadata.linkedBookmark,
+                      metadata.storedFilename == source.metadata.storedFilename,
+                      metadata.storedFilename == URL(fileURLWithPath: metadata.storedFilename).lastPathComponent,
+                      !metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Source changed. Refresh before deleting it.") }
+                guard (NSFileVersion.unresolvedConflictVersionsOfItem(at: metadataURL) ?? []).isEmpty else { throw VaultError.invalid("Resolve source metadata conflicts before deletion.") }
+                if !metadata.isLinked {
+                    let original = target.appendingPathComponent(metadata.storedFilename)
+                    guard (NSFileVersion.unresolvedConflictVersionsOfItem(at: original) ?? []).isEmpty,
+                          digest(try Data(contentsOf: original)) == metadata.sha256 else { throw VaultError.invalid("Imported original changed or has conflicts. Refresh before deleting it.") }
+                }
+                // Linked originals are outside this directory and are never touched.
+                try fm.removeItem(at: target)
+            } catch { failure = error }
+        }
+        if let failure { throw failure }; if let coordinationError { throw coordinationError }
     }
 
     private func titleExists(_ title: String, in notes: [NoteRecord]) -> Bool {

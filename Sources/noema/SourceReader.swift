@@ -1,0 +1,76 @@
+import AppKit
+import Quartz
+import VaultCore
+
+@MainActor final class SourceReader: NSWindowController, NSWindowDelegate {
+    private static var readers: [UUID: SourceReader] = [:]
+    private var sourceID: UUID
+    private var scopedURL: URL?
+
+    private init(id: UUID, window: NSWindow, scopedURL: URL?) {
+        sourceID = id; self.scopedURL = scopedURL
+        super.init(window: window)
+        window.delegate = self
+    }
+    required init?(coder: NSCoder) { fatalError("Not supported") }
+
+    static func open(_ source: SourceRecord, root: URL) async throws {
+        if let existing = readers[source.id] { existing.showWindow(nil); existing.window?.makeKeyAndOrderFront(nil); return }
+        let url: URL
+        var scoped: URL?
+        if let bookmark = source.metadata.linkedBookmark {
+            var stale = false
+            url = try URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], bookmarkDataIsStale: &stale)
+            guard !stale else { throw VaultError.unavailable("Link this source again to renew access.") }
+            if url.startAccessingSecurityScopedResource() { scoped = url }
+        } else {
+            guard source.metadata.storedFilename == URL(fileURLWithPath: source.metadata.storedFilename).lastPathComponent,
+                  !source.metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Invalid source path.") }
+            url = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased()).appendingPathComponent(source.metadata.storedFilename)
+            if root.startAccessingSecurityScopedResource() { scoped = root }
+        }
+        do {
+            let data = try await Task.detached {
+                let data = try FileVaultRepository.coordinatedRead(url)
+                guard source.metadata.isLinked || digest(data) == source.metadata.sha256 else {
+                    throw VaultError.invalid("The in-vault original changed. Refresh from Files to review the checksum notice.")
+                }
+                return data
+            }.value
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            window.title = source.title; window.isReleasedWhenClosed = false
+            let ext = url.pathExtension.lowercased()
+            if ["md", "txt", "html", "htm"].contains(ext) {
+                guard let text = String(data: data, encoding: .utf8) else { throw VaultError.invalid("Text reader requires UTF-8.") }
+                let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+                let reader = NSTextView(frame: window.contentView!.bounds)
+                reader.isEditable = false; reader.isSelectable = true; reader.autoresizingMask = [.width]
+                reader.isVerticallyResizable = true; reader.textContainer?.widthTracksTextView = true
+                reader.textContainerInset = NSSize(width: 24, height: 24)
+                reader.font = .systemFont(ofSize: 15); reader.textColor = .textColor; reader.backgroundColor = .textBackgroundColor
+                if ext == "md", let markdown = try? AttributedString(markdown: text) {
+                    reader.textStorage?.setAttributedString(NSAttributedString(markdown))
+                } else if ["html", "htm"].contains(ext), let html = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil) {
+                    reader.textStorage?.setAttributedString(html)
+                } else { reader.string = text }
+                reader.setAccessibilityLabel(source.title)
+                scroll.documentView = reader; window.contentView = scroll
+            } else {
+                guard let preview = QLPreviewView(frame: window.contentView!.bounds, style: .normal) else { throw VaultError.unavailable("Quick Look is unavailable for this file.") }
+                preview.autoresizingMask = [.width, .height]
+                preview.previewItem = url as NSURL
+                window.contentView = preview
+            }
+            let controller = SourceReader(id: source.id, window: window, scopedURL: scoped)
+            readers[source.id] = controller; window.center(); controller.showWindow(nil); window.makeKeyAndOrderFront(nil)
+        } catch { scoped?.stopAccessingSecurityScopedResource(); throw error }
+    }
+
+    static func updateTitle(id: UUID, title: String) { readers[id]?.window?.title = title }
+    static func close(id: UUID) { readers[id]?.window?.close() }
+
+    func windowWillClose(_ notification: Notification) {
+        scopedURL?.stopAccessingSecurityScopedResource(); scopedURL = nil
+        Self.readers.removeValue(forKey: sourceID)
+    }
+}

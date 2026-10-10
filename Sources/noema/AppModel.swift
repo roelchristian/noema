@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import VaultCore
+import PDFKit
 
 enum LibraryScope: Hashable { case wiki, sources, trash, tag(String) }
 struct LibraryRow: Identifiable {
@@ -12,6 +13,11 @@ struct LibraryRow: Identifiable {
     var kind: EntryKind
     var updatedAt: Date?
     var hasAISummary = false
+    var fileSize = 0
+    var originalFilename = ""
+    var fileKind = ""
+    var sourceLocation = "In vault"
+    var captureSortDate: Date { updatedAt ?? .distantPast }
 
     init(note: NoteRecord) {
         let document = BlockDocumentCodec.decode(note.body)
@@ -26,6 +32,10 @@ struct LibraryRow: Identifiable {
         id = source.id; title = source.title; tags = []; kind = .source
         excerpt = BlockDocumentCodec.decode(source.body).flattened.map(\.text).joined(separator: " ")
         updatedAt = Self.date(source.metadata.capturedAt)
+        fileSize = source.metadata.fileSize ?? source.body.utf8.count
+        sourceLocation = source.metadata.isLinked ? "Linked" : "In vault"
+        originalFilename = source.metadata.originalFilename
+        fileKind = UTType(filenameExtension: URL(fileURLWithPath: source.metadata.originalFilename).pathExtension)?.localizedDescription ?? "File"
     }
 
     private static func date(_ value: String) -> Date? {
@@ -46,6 +56,13 @@ struct EditorAction: Equatable {
     var vaultName = "Noema"
     var notes: [NoteRecord] = []
     var sources: [SourceRecord] = []
+    var generatingSourceTitles: Set<UUID> = []
+    var sourceRenameCompleted = 0
+    var sourceRenameTotal = 0
+    private var sourceNamingOverrides: Set<UUID> = []
+    private var sourceNamingQueue: [SourceRecord] = []
+    private var sourceNamingTask: Task<Void, Never>?
+
     var trashedPages: [TrashedPage] = []
     var rows: [LibraryRow] = []
     var tags: [String] = []
@@ -193,6 +210,8 @@ struct EditorAction: Equatable {
             watcher?.stop()
             if let scopeURL { scopeURL.stopAccessingSecurityScopedResource() }
             self.scopeURL = hasScope ? url : nil
+            sourceNamingTask?.cancel(); sourceNamingTask = nil; sourceNamingQueue = []
+            generatingSourceTitles = []; sourceRenameCompleted = 0; sourceRenameTotal = 0
             generation = UUID(); repository = repo; index = searchIndex; recovery = journal
             unseenRenamedPages.removeAll()
             root = url; vaultName = url.lastPathComponent; scope = .wiki; searchText = ""
@@ -560,24 +579,134 @@ struct EditorAction: Equatable {
     }
     func suggestLink(_ title: String) { guard !reading, !editingLocked else { return }; editorAction = EditorAction(operation: .wikiLink(title)); wikiQuery = nil }
     func format(_ prefix: String, _ suffix: String) { guard !reading, !editingLocked else { return }; editorAction = EditorAction(operation: .wrap(prefix, suffix)) }
-    func importFiles() {
-        let panel = NSOpenPanel(); panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = [UTType.plainText, UTType(filenameExtension: "md") ?? .plainText]
-        panel.prompt = "Import Sources"
+    func importFiles() { addSource() }
+    func linkSources() { addSource() }
+    func addSource() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true; panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true; panel.prompt = "Add Source"
+        panel.message = "Choose up to 5 files. Link by default, or import files up to 2 MB each."
+        let importOption = NSButton(checkboxWithTitle: "Import into vault (maximum 2 MB per file)", target: nil, action: nil)
+        importOption.state = .off; importOption.setFrameSize(NSSize(width: 380, height: 28))
+        panel.accessoryView = importOption; panel.isAccessoryViewDisclosed = true
         presentPanel(panel) { [weak self] response in
             guard response == .OK else { return }
+            let urls = panel.urls
+            guard urls.count <= 5 else { self?.errorMessage = "Add up to 5 files at a time."; return }
+            let shouldImport = importOption.state == .on
             Task { @MainActor in
                 guard let self, let repository = self.repository else { return }
-                for url in panel.urls {
-                    let access = url.startAccessingSecurityScopedResource()
-                    do {
-                        let data = try await Task.detached { try FileVaultRepository.coordinatedRead(url) }.value
-                        _ = try await repository.importSource(data: data, filename: url.lastPathComponent, title: url.deletingPathExtension().lastPathComponent, originURL: nil)
-                    } catch { self.errorMessage = error.localizedDescription }
-                    if access { url.stopAccessingSecurityScopedResource() }
+                guard await self.finishCurrentPage() else { return }
+                self.scope = .sources
+                let ticket = self.generation
+                for url in urls {
+                do {
+                    guard self.generation == ticket else { return }
+                    let added: [SourceRecord]
+                    if shouldImport {
+                        let access = url.startAccessingSecurityScopedResource()
+                        defer { if access { url.stopAccessingSecurityScopedResource() } }
+                        let data = try await Task.detached {
+                            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                            guard values.isRegularFile == true else { throw VaultError.invalid("Choose a regular file. Folders are not supported.") }
+                            guard (values.fileSize ?? 0) <= FileVaultRepository.maximumImportBytes else { throw VaultError.invalid("Files larger than 2 MB must be linked instead of imported.") }
+                            return try FileVaultRepository.coordinatedRead(url)
+                        }.value
+                        added = [try await repository.importSource(data: data, filename: url.lastPathComponent, title: url.deletingPathExtension().lastPathComponent, originURL: nil)]
+                    } else {
+                        added = try await repository.linkSources(at: url, maximumFiles: 5)
+                    }
+                    guard self.generation == ticket else { return }
+                    self.sources.append(contentsOf: added)
+                    self.rows = self.sources.map(LibraryRow.init(source:))
+                    for source in added { self.enqueueSourceTitle(source) }
+                } catch { self.errorMessage = error.localizedDescription }
                 }
-                self.scope = .sources; await self.refresh()
+                await self.refresh()
             }
+        }
+    }
+    private func enqueueSourceTitle(_ source: SourceRecord) {
+        if sourceNamingTask == nil { sourceRenameCompleted = 0; sourceRenameTotal = 0 }
+        sourceNamingQueue.append(source); generatingSourceTitles.insert(source.id); sourceRenameTotal += 1
+        guard sourceNamingTask == nil, let repository, let root else { return }
+        let ticket = generation
+        sourceNamingTask = Task {
+            defer {
+                if generation == ticket { sourceNamingTask = nil; sourceNamingQueue = []; generatingSourceTitles = []; sourceRenameCompleted = 0; sourceRenameTotal = 0 }
+            }
+            while !sourceNamingQueue.isEmpty {
+                guard generation == ticket else { return }
+                let source = sourceNamingQueue.removeFirst()
+                if sourceNamingOverrides.contains(source.id) {
+                    generatingSourceTitles.remove(source.id); sourceRenameCompleted += 1; continue
+                }
+                do {
+                    if let reason = OnDeviceSummary.unavailabilityReason { throw VaultError.unavailable(reason) }
+                    let text = try await Task.detached {
+                        if !source.body.isEmpty {
+                            let ext = URL(fileURLWithPath: source.metadata.originalFilename).pathExtension.lowercased()
+                            let content = ["html", "htm"].contains(ext) ? source.body.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression) : source.body
+                            return BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(content).withoutAISummary))
+                        }
+                        let url = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased()).appendingPathComponent(source.metadata.storedFilename)
+                        let data = try source.metadata.linkedBookmark.map(FileVaultRepository.readLinkedSource) ?? FileVaultRepository.coordinatedRead(url)
+                        if source.metadata.originalFilename.lowercased().hasSuffix(".pdf"), let pdf = PDFDocument(data: data) { return pdf.string ?? "" }
+                        return ""
+                    }.value
+                    guard generation == ticket else { return }
+                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw VaultError.unavailable("No readable text for automatic naming and summary. Original file name retained.") }
+                    async let generatedTitle = OnDeviceSummary().pageTitle(text)
+                    async let generatedSummary = OnDeviceSummary().summarize(String(text.prefix(6000)))
+                    let (titleResult, summary) = try await (generatedTitle, generatedSummary)
+                    guard let title = titleResult else { throw VaultError.unavailable("No valid topic title was generated. Original file name retained.") }
+                    guard generation == ticket else { return }
+                    if sourceNamingOverrides.contains(source.id) {
+                        generatingSourceTitles.remove(source.id); sourceRenameCompleted += 1; continue
+                    }
+                    let renamed = try await repository.renameSource(source, title: title, summary: summary)
+                    guard generation == ticket else { return }
+                    if let position = sources.firstIndex(where: { $0.id == source.id }) { sources[position] = renamed }
+                    if let index { var entries = ScanBatch(); entries.notes = notes; entries.sources = sources; try await index.reconcile(entries) }
+                    await updateRows()
+                } catch { if generation == ticket { errorMessage = "Source naming: " + error.localizedDescription } }
+                generatingSourceTitles.remove(source.id); sourceRenameCompleted += 1
+            }
+        }
+    }
+    func renameSource(_ source: SourceRecord, title: String) {
+        sourceNamingOverrides.insert(source.id); generatingSourceTitles.remove(source.id)
+        Task {
+            guard let repository else { return }
+            let ticket = generation
+            do {
+                let renamed = try await repository.renameSource(source, title: title)
+                guard generation == ticket else { return }
+                SourceReader.updateTitle(id: source.id, title: renamed.title)
+                await refresh()
+            } catch { if generation == ticket { errorMessage = error.localizedDescription } }
+        }
+    }
+    func deleteSource(_ source: SourceRecord) {
+        sourceNamingOverrides.insert(source.id); generatingSourceTitles.remove(source.id)
+        Task {
+            guard let repository else { return }
+            let ticket = generation
+            do {
+                try await repository.deleteSource(source)
+                guard generation == ticket else { return }
+                SourceReader.close(id: source.id)
+                await refresh()
+            } catch { if generation == ticket { errorMessage = error.localizedDescription } }
+        }
+    }
+    func openSource(_ id: UUID?) {
+        Task {
+            await waitForSave()
+            guard await finishCurrentPage() else { return }
+            guard let id, let source = sources.first(where: { $0.id == id }), let root else { return }
+            do { try await SourceReader.open(source, root: root) }
+            catch { errorMessage = error.localizedDescription }
         }
     }
     func pasteSource(title: String, text: String, originURL: String) async -> Bool {

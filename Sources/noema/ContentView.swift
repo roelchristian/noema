@@ -9,15 +9,25 @@ struct ContentView: View {
     @State private var trashPageID: UUID?
     @State private var permanentDeletion: TrashedPage?
     @State private var sourceOriginal = false
+    @State private var sourceSelection: UUID?
+    @State private var renamingSource: SourceRecord?
+    @State private var sourceName = ""
+    @State private var deletingSource: SourceRecord?
+    @State private var sourceSortOrder = [KeyPathComparator(\LibraryRow.title)]
     @AppStorage(EditorPreferences.aiSummariesKey) private var aiSummaries = false
     var body: some View {
         Group {
             if model.root == nil { welcome }
-            else {
+            else if model.scope == .sources {
+                NavigationSplitView {
+                    sidebar.navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
+                } detail: { library }
+                .navigationSplitViewStyle(.balanced)
+            } else {
                 NavigationSplitView {
                     sidebar.navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
                 } content: {
-                    library.navigationSplitViewColumnWidth(min: 385, ideal: 385, max: 490)
+                    library.navigationSplitViewColumnWidth(min: model.scope == .sources ? 520 : 385, ideal: model.scope == .sources ? 620 : 385, max: model.scope == .sources ? 850 : 490)
                 } detail: { detail }
                 .navigationSplitViewStyle(.balanced)
             }
@@ -43,9 +53,29 @@ struct ContentView: View {
         .confirmationDialog("Move this page to vault trash?", isPresented: $showTrashConfirmation) {
             Button("Move to Trash", role: .destructive) { model.trashPage(trashPageID) }
         } message: { Text("The Markdown file stays recoverable in the vault’s .Trash folder.") }
+        .alert("Rename Source", isPresented: Binding(get: { renamingSource != nil }, set: { if !$0 { renamingSource = nil } })) {
+            TextField("File Name", text: $sourceName)
+            Button("Rename") {
+                if let source = renamingSource { model.renameSource(source, title: sourceName) }
+                renamingSource = nil
+            }.disabled(sourceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) { renamingSource = nil }
+        } message: { Text("Changes the source name stored in the vault. The original file name and file stay unchanged.") }
+        .alert("Delete Source?", isPresented: Binding(get: { deletingSource != nil }, set: { if !$0 { deletingSource = nil } })) {
+            Button("Delete", role: .destructive) {
+                if let source = deletingSource { model.deleteSource(source) }
+                deletingSource = nil
+            }
+            Button("Cancel", role: .cancel) { deletingSource = nil }
+        } message: {
+            Text(deletingSource?.metadata.isLinked == true
+                 ? "Remove ‘\(deletingSource?.title ?? "")’ from Sources? Its linked original will remain on your filesystem."
+                 : "Permanently delete ‘\(deletingSource?.title ?? "")’ and its imported original from the vault? This cannot be undone.")
+        }
         .onChange(of: model.searchText) { model.queryChanged() }
         .onChange(of: model.searchFocusToken) { searchFocused = true }
         .onChange(of: model.selectedID) { sourceOriginal = false }
+        .onChange(of: model.root) { sourceSelection = nil; renamingSource = nil; deletingSource = nil }
     }
     private var welcome: some View {
         VStack(spacing: 24) {
@@ -112,7 +142,9 @@ struct ContentView: View {
     }
     private var pageLibrary: some View {
         VStack(spacing: 0) {
-            if model.rows.isEmpty {
+            if model.scope == .sources {
+                sourceTable
+            } else if model.rows.isEmpty {
                 ContentUnavailableView(model.searchText.isEmpty ? "\(model.scopeTitle) is empty" : "No matches", systemImage: model.scope == .sources ? "tray" : "doc.text.magnifyingglass", description: Text(model.searchText.isEmpty ? (model.scope == .sources ? "Import a text file or paste a source to begin." : "Create a page to start building your wiki.") : "Try another word or topic."))
                     .frame(maxHeight: .infinity)
             } else {
@@ -177,12 +209,25 @@ struct ContentView: View {
                     }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
             }
-            HStack { Text(libraryCount); Spacer(); Text("⌘P") }.font(.caption).foregroundStyle(theme.text()).padding(12)
+            HStack {
+                Text(libraryCount)
+                if model.scope == .sources, model.sourceRenameTotal > 0 {
+                    Text("Renaming \(min(model.sourceRenameCompleted + 1, model.sourceRenameTotal)) of \(model.sourceRenameTotal) files…")
+                }
+                Spacer(); Text("⌘P")
+            }.font(.caption).foregroundStyle(.secondary).padding(12)
         }
         .background(theme.color(.background))
         .safeAreaBar(edge: .top) {
             VStack(alignment: .leading, spacing: 12) {
-                HStack { Text(model.scopeTitle).font(.title2.bold()); Spacer(); if model.busy { ProgressView().controlSize(.small) } }
+                HStack {
+                    Text(model.scopeTitle).font(.title2.bold()); Spacer()
+                    if model.scope == .sources { Button("Add Source…") { model.addSource() } }
+                    if model.busy { ProgressView().controlSize(.small) }
+                }
+                if model.scope == .sources, let error = model.errorMessage {
+                    Text(error).foregroundStyle(.red).textSelection(.enabled)
+                }
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").foregroundStyle(theme.text())
                     ZStack(alignment: .leading) {
@@ -201,6 +246,46 @@ struct ContentView: View {
                 }.padding(10).glassEffect(.regular.interactive(), in: Capsule())
             }.padding(18)
         }
+    }
+    private var sourceTable: some View {
+        Table(model.rows.sorted(using: sourceSortOrder),
+              selection: Binding(get: { sourceSelection }, set: { sourceSelection = $0; model.openSource($0) }),
+              sortOrder: $sourceSortOrder) {
+            TableColumn("File Name", value: \.title) { row in
+                if model.generatingSourceTitles.contains(row.id) {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text("Generating title").foregroundStyle(.secondary)
+                    }
+                } else { Label(row.title, systemImage: "doc.text").lineLimit(1).help(row.title) }
+            }.width(min: 160, ideal: 220)
+            TableColumn("Original File Name", value: \.originalFilename) { row in
+                Text(row.originalFilename).lineLimit(1).help(row.originalFilename)
+            }.width(min: 100, ideal: 150)
+            TableColumn("Location", value: \.sourceLocation) { row in
+                Label(row.sourceLocation, systemImage: row.sourceLocation == "Linked" ? "link" : "tray.full")
+                    .help(row.sourceLocation == "Linked" ? "Read-only linked original" : "Original stored in vault")
+            }.width(min: 85, ideal: 95)
+            TableColumn("Kind", value: \.fileKind)
+                .width(min: 80, ideal: 90)
+            TableColumn("Size", value: \.fileSize) { row in
+                Text(ByteCountFormatter.string(fromByteCount: Int64(row.fileSize), countStyle: .file))
+            }.width(min: 70, ideal: 90)
+            TableColumn("Captured", value: \.captureSortDate) { row in
+                if let date = row.updatedAt {
+                    Text(date, format: .dateTime.month(.abbreviated).day().year())
+                        .lineLimit(1).help(date.formatted(date: .long, time: .shortened))
+                } else { Text("—") }
+            }.width(min: 100, ideal: 120)
+        }
+        .contextMenu(forSelectionType: UUID.self) { ids in
+            if ids.count == 1, let id = ids.first, let source = model.sources.first(where: { $0.id == id }) {
+                Button("Open Preview") { model.openSource(id) }
+                Button { sourceName = source.title; renamingSource = source } label: { Label("Rename", systemImage: "pencil") }
+                Button(role: .destructive) { deletingSource = source } label: { Label("Delete", systemImage: "trash") }
+            }
+        } primaryAction: { ids in if let id = ids.first { model.openSource(id) } }
+        .accessibilityLabel("Sources table")
     }
     private var trashLibrary: some View {
         VStack(spacing: 0) {
@@ -331,8 +416,7 @@ struct ContentView: View {
                 }
                 HStack(spacing: 8) {
                     if model.scope == .sources {
-                        Button { model.importFiles() } label: { Label("Import source", systemImage: "square.and.arrow.down") }
-                        Button { model.showPasteSource = true } label: { Label("Paste source", systemImage: "doc.on.clipboard") }
+                        Button("Add Source…") { model.addSource() }
                     } else {
                         Menu {
                             Button("Blank page") { model.newPage() }
@@ -404,7 +488,7 @@ struct ContentView: View {
                 if let source = model.currentSource {
                     HStack {
                         Text(source.metadata.originalFilename)
-                        Text("· Imported " + String(source.metadata.capturedAt.prefix(10)))
+                        Text((source.metadata.isLinked ? "· Linked " : "· Imported ") + String(source.metadata.capturedAt.prefix(10)))
                         if let address = source.metadata.originURL, let url = URL(string: address) { Link("Original URL", destination: url).foregroundStyle(theme.text(.accentSecondary)) }
                     }.font(.caption).foregroundStyle(theme.text())
                 }

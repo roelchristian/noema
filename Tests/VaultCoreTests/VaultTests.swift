@@ -317,3 +317,133 @@ private func temporaryFolder() throws -> URL {
     #expect(try Data(contentsOf: folder.appendingPathComponent(note.relativePath)) == bytes)
     #expect(try await repo.trashedPages().count == 1)
 }
+
+@Test func linkedFolderLimitRejectsBeforePublishingAndCountsNestedFiles() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let vault = folder.appendingPathComponent("Vault")
+    try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
+    let external = folder.appendingPathComponent("External/Nested")
+    try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+    for n in 0..<11 { try Data("Original \(n)".utf8).write(to: external.appendingPathComponent("\(n).txt")) }
+    let repository = try FileVaultRepository.open(root: vault, create: true)
+    await #expect(throws: VaultError.self) { try await repository.linkSources(at: external.deletingLastPathComponent(), maximumFiles: 10) }
+    let scan = try await repository.scan()
+    #expect(scan.sources.isEmpty)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: vault.appendingPathComponent("Sources").path).isEmpty)
+}
+
+@Test func linkedFileReloadsWithoutCopyingOrChangingOriginal() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let file = folder.appendingPathComponent("External.md")
+    let bytes = Data("# Original\n".utf8); try bytes.write(to: file)
+    let vault = folder.appendingPathComponent("Vault")
+    try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
+    let repository = try FileVaultRepository.open(root: vault, create: true)
+    let linked = try await repository.linkSources(at: file, maximumFiles: 10)
+    #expect(linked.count == 1)
+    #expect(linked[0].metadata.isLinked)
+    #expect(try Data(contentsOf: file) == bytes)
+    let sourceFolder = repository.root.appendingPathComponent("Sources/" + linked[0].id.uuidString.lowercased())
+    #expect(!FileManager.default.fileExists(atPath: sourceFolder.appendingPathComponent("original.md").path))
+    try Data("# Changed externally\n".utf8).write(to: file)
+    let scan = try await repository.scan()
+    #expect(scan.sources.first?.body == "# Changed externally\n")
+    #expect(scan.sources.first?.id == linked[0].id)
+}
+
+@Test func importLimitAcceptsBoundaryAndRejectsLargerWithoutPublishing() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repository = try FileVaultRepository.open(root: folder, create: true)
+    let bytes = Data(repeating: 65, count: FileVaultRepository.maximumImportBytes)
+    let source = try await repository.importSource(data: bytes, filename: "boundary.txt", title: "Boundary", originURL: nil)
+    let original = folder.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/original.txt")
+    #expect(try Data(contentsOf: original) == bytes)
+    await #expect(throws: VaultError.self) {
+        try await repository.importSource(data: Data(repeating: 65, count: FileVaultRepository.maximumImportBytes + 1), filename: "too-large.txt", title: "Large", originURL: nil)
+    }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: folder.appendingPathComponent("Sources").path).count == 1)
+}
+
+@Test func binarySourceImportsAndLinksPreserveBytesAndHTMLRemainsReadable() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repository = try FileVaultRepository.open(root: folder, create: true)
+    let bytes = Data("%PDF-1.7\n".utf8) + Data([0xff, 0, 1])
+    let pdf = try await repository.importSource(data: bytes, filename: "paper.pdf", title: "Paper", originURL: nil)
+    #expect(pdf.body.isEmpty)
+    let original = folder.appendingPathComponent("Sources/" + pdf.id.uuidString.lowercased() + "/original.pdf")
+    #expect(try Data(contentsOf: original) == bytes)
+    let linked = try await repository.linkSources(at: original, maximumFiles: 10)
+    #expect(linked.first?.metadata.isLinked == true)
+    #expect(linked.first?.body.isEmpty == true)
+    let html = try await repository.importSource(data: Data("<h1>Hello</h1>".utf8), filename: "page.html", title: "HTML", originURL: nil)
+    #expect(html.body == "<h1>Hello</h1>")
+    #expect(try await repository.scan().sources.count == 3)
+}
+
+@Test func sourceRenamePreservesOriginalSizeAndRejectsStaleMetadata() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repository = try FileVaultRepository.open(root: folder, create: true)
+    let bytes = Data("A specific subject in a document.".utf8)
+    let source = try await repository.importSource(data: bytes, filename: "original.txt", title: "Original", originURL: nil)
+    #expect(source.metadata.fileSize == bytes.count)
+    let renamed = try await repository.renameSource(source, title: "Specific Subject")
+    #expect(renamed.title == "Specific Subject")
+    #expect(renamed.metadata.originalFilename == "original.txt")
+    #expect(renamed.metadata.fileSize == bytes.count)
+    #expect(renamed.id == source.id)
+    let original = folder.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/original.txt")
+    #expect(try Data(contentsOf: original) == bytes)
+    await #expect(throws: VaultError.self) { try await repository.renameSource(source, title: "Stale Result") }
+    #expect(try await repository.scan().sources.first?.title == "Specific Subject")
+}
+
+@Test func deletingLinkedSourceLeavesExternalOriginalAndOtherSourcesIntact() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repository = try FileVaultRepository.open(root: folder, create: true)
+    let external = folder.appendingPathComponent("external.txt")
+    let bytes = Data("External original".utf8); try bytes.write(to: external)
+    let linked = try await repository.linkSources(at: external, maximumFiles: 5)[0]
+    let kept = try await repository.importSource(data: Data("Keep".utf8), filename: "keep.txt", title: "Keep", originURL: nil)
+    try await repository.deleteSource(linked)
+    #expect(try Data(contentsOf: external) == bytes)
+    let scan = try await repository.scan()
+    #expect(scan.sources.map(\.id) == [kept.id])
+    await #expect(throws: (any Error).self) { try await repository.renameSource(linked, title: "Do not recreate") }
+}
+
+@Test func deletingImportedSourceDeletesOriginalAndRejectsStaleOrMutatedFiles() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repository = try FileVaultRepository.open(root: folder, create: true)
+    let source = try await repository.importSource(data: Data("Original".utf8), filename: "original.txt", title: "Original", originURL: nil)
+    let renamed = try await repository.renameSource(source, title: "Renamed")
+    await #expect(throws: VaultError.self) { try await repository.deleteSource(source) }
+    let original = folder.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/original.txt")
+    try Data("Changed".utf8).write(to: original)
+    await #expect(throws: VaultError.self) { try await repository.deleteSource(renamed) }
+    #expect(FileManager.default.fileExists(atPath: original.path))
+    try Data("Original".utf8).write(to: original)
+    try await repository.deleteSource(renamed)
+    #expect(!FileManager.default.fileExists(atPath: original.path))
+    #expect(try await repository.scan().sources.isEmpty)
+}
+
+@Test func sourceAISummaryPersistsWithTitleAndSurvivesManualRename() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repository = try FileVaultRepository.open(root: folder, create: true)
+    let bytes = Data("A source about caring for a sourdough starter.".utf8)
+    let source = try await repository.importSource(data: bytes, filename: "starter.txt", title: "Starter", originURL: nil)
+    #expect(source.metadata.aiSummary == nil)
+    let generated = try await repository.renameSource(source, title: "Sourdough Starter Care", summary: "  Feeding and maintaining a sourdough starter.  ")
+    #expect(generated.metadata.aiSummary == "Feeding and maintaining a sourdough starter.")
+    let scanned = try await repository.scan().sources[0]
+    #expect(scanned.metadata.aiSummary == generated.metadata.aiSummary)
+    #expect(scanned.title == generated.title)
+    let manual = try await repository.renameSource(scanned, title: "My Starter")
+    #expect(manual.metadata.aiSummary == generated.metadata.aiSummary)
+    #expect(manual.metadata.originalFilename == "starter.txt")
+    let original = folder.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/original.txt")
+    #expect(try Data(contentsOf: original) == bytes)
+    await #expect(throws: VaultError.self) { try await repository.renameSource(source, title: "Stale", summary: "Must not overwrite") }
+    await #expect(throws: VaultError.self) { try await repository.renameSource(manual, title: "Bad", summary: "  ") }
+    #expect(try await repository.scan().sources[0].title == "My Starter")
+}

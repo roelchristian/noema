@@ -30,6 +30,10 @@ public struct SourceMetadata: Codable, Identifiable, Sendable, Equatable {
     public var originalFilename: String
     public var originURL: String?
     public var sha256: String
+    public var aiSummary: String? = nil
+    public var fileSize: Int? = nil
+    public var linkedBookmark: Data? = nil
+    public var isLinked: Bool { linkedBookmark != nil }
     public var storedFilename: String
 }
 public struct SourceRecord: Codable, Identifiable, Sendable, Equatable {
