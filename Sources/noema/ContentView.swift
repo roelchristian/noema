@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var showPageDetails = true
     @State private var condensedInspector = false
     @State private var recentSectionExpanded = true
+    @State private var allPagesSectionExpanded = true
     @State private var pageSortOrder: PageSortOrder = .updated
     @State private var sourceSelection: UUID?
     @State private var renamingSource: SourceRecord?
@@ -192,15 +193,23 @@ struct ContentView: View {
                     ForEach(model.recentPages) { note in
                         sidebarPageRow(note)
                     }
-                    sidebarFooterLink("View all pages") {
-                        switchSidebarScope(.wiki)
-                    }
                 }
             } header: {
                 Text(activeSidebarTab == .sources ? "RECENT SOURCES" : activeSidebarTab == .semantic ? "RECENT BLOCKS" : "RECENT PAGES")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .contentTransition(.opacity)
+            }
+            if activeSidebarTab == .wiki {
+                Section(isExpanded: $allPagesSectionExpanded) {
+                    ForEach(model.allPagesByUpdated) { note in
+                        sidebarPageRow(note, showRelativeEditTime: true)
+                    }
+                } header: {
+                    Text("ALL PAGES")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .listStyle(.sidebar)
@@ -418,7 +427,18 @@ struct ContentView: View {
         .help(title)
         .accessibilityLabel(title)
     }
-    private func sidebarPageRow(_ note: NoteRecord) -> some View {
+    private func relativeEditTime(_ value: String) -> String {
+        guard let date = LibraryRow.date(value) else { return "" }
+        let now = Date()
+        if abs(now.timeIntervalSince(date)) < 45 {
+            return "now"
+        }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        formatter.dateTimeStyle = .named
+        return formatter.localizedString(for: min(date, now), relativeTo: now)
+    }
+    private func sidebarPageRow(_ note: NoteRecord, showRelativeEditTime: Bool = false) -> some View {
         let active = model.currentNote?.id == note.id
         return Button {
             model.select(note.id)
@@ -447,6 +467,17 @@ struct ContentView: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .help("Page locked against editing")
+                }
+                if showRelativeEditTime {
+                    let relative = relativeEditTime(note.updatedAt)
+                    if !relative.isEmpty {
+                        Text(relative)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .help("Last edited \(metadataDate(note.updatedAt))")
+                    }
                 }
             }
             .padding(.leading, 2)

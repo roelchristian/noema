@@ -59,7 +59,7 @@ struct LibraryRow: Identifiable {
         fileKind = UTType(filenameExtension: URL(fileURLWithPath: source.metadata.originalFilename).pathExtension)?.localizedDescription ?? "File"
     }
 
-    private static func date(_ value: String) -> Date? {
+    static func date(_ value: String) -> Date? {
         let formatter = ISO8601DateFormatter()
         if let date = formatter.date(from: value) { return date }
         formatter.formatOptions.insert(.withFractionalSeconds)
@@ -173,8 +173,18 @@ struct EditorAction: Equatable {
         let noteMap = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let accessed = recentPageIDs.compactMap { noteMap[$0] }
         let accessedSet = Set(accessed.map(\.id))
-        let remaining = notes.filter { !accessedSet.contains($0.id) }.sorted { $0.updatedAt > $1.updatedAt }
-        return Array((accessed + remaining).prefix(10))
+        let remaining = notes.filter { !accessedSet.contains($0.id) }.sorted {
+            (LibraryRow.date($0.updatedAt) ?? .distantPast) > (LibraryRow.date($1.updatedAt) ?? .distantPast)
+        }
+        return Array((accessed + remaining).prefix(5))
+    }
+    var allPagesByUpdated: [NoteRecord] {
+        notes.sorted {
+            let lhs = LibraryRow.date($0.updatedAt) ?? .distantPast
+            let rhs = LibraryRow.date($1.updatedAt) ?? .distantPast
+            if lhs != rhs { return lhs > rhs }
+            return $0.title.localizedStandardCompare($1.title) == .orderedAscending
+        }
     }
     var recentSources: [SourceRecord] {
         Array(sources.sorted { $0.metadata.capturedAt > $1.metadata.capturedAt }.prefix(10))
