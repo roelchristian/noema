@@ -45,7 +45,7 @@ private struct SystemNoemaThemeModifier: ViewModifier {
 extension View { func systemNoemaTheme() -> some View { modifier(SystemNoemaThemeModifier()) } }
 struct AppearanceSettings: View {
     var body: some View {
-        Form { Text("noema follows macOS appearance, accent and highlight colors, and accessibility settings. Change these in System Settings.").font(.callout) }
+        Form { Text("Noema follows macOS appearance, accent and highlight colors, and accessibility settings. Change these in System Settings.").font(.callout) }
             .formStyle(.grouped).padding(16).frame(width: 460)
     }
 }

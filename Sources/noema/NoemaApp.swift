@@ -6,7 +6,7 @@ import NoemaBrand
     @State private var model = AppModel()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     var body: some Scene {
-        Window("noema", id: "main") {
+        Window("Noema", id: "main") {
             ContentView(model: model)
                 .frame(minWidth: 960, minHeight: 620)
                 .systemNoemaTheme()
@@ -16,15 +16,15 @@ import NoemaBrand
         .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button("About noema") {
+                Button("About Noema") {
                     NSApplication.shared.orderFrontStandardAboutPanel(options: [
-                        .applicationName: "noema",
+                        .applicationName: "Noema",
                         .credits: NSAttributedString(string: "A personal atlas of thought.")
                     ])
                 }
             }
             CommandGroup(replacing: .newItem) {
-                Button("New Wiki Page") { model.newPage() }.keyboardShortcut("n").disabled(model.root == nil)
+                Button("New Page") { model.newPage() }.keyboardShortcut("n").disabled(model.root == nil)
                 Button("New Personal Page") { model.newPage(template: true) }.keyboardShortcut("n", modifiers: [.command, .shift]).disabled(model.root == nil)
                 Divider()
                 Button("Open Vault…") { model.chooseVault(create: false) }.keyboardShortcut("o")

@@ -1,4 +1,4 @@
-# noema
+# Noema
 
 **A personal atlas of thought.**
 
@@ -6,7 +6,7 @@ A native macOS personal wiki, with a separate read-only library of raw sources.
 
 The interface uses native macOS Liquid Glass navigation and toolbars, glass search and editing controls, and an orbital glass mark inspired by connected thoughts. Writing and source content retain readable standard backgrounds. The mark shares geometry with the packaged icon; see `Resources/Brand/README.md` for the exported layers and the current `.icns` packaging limitation.
 
-**System appearance:** App chrome, controls, writing surfaces, selection, and previews follow macOS Light/Dark appearance, accent and highlight colors, and accessibility settings. Appearance settings are managed in System Settings; noema no longer overrides them. Midnight Iris colors are confined to the orbital identity and icon exports.
+**System appearance:** App chrome, controls, writing surfaces, selection, and previews follow macOS Light/Dark appearance, accent and highlight colors, and accessibility settings. Appearance settings are managed in System Settings; Noema no longer overrides them. Midnight Iris colors are confined to the orbital identity and icon exports.
 
 ## Build and run
 
@@ -30,7 +30,7 @@ The script packages and locally signs a sandboxed app and creates `dist/noema.zi
 For a quick tour, open `Examples/Demo Vault`. Its pages contain illustrative personal context, and you can create a separate vault for your own writing.
 
 1. Click **Create a vault**. Create or choose a dedicated folder, locally or in iCloud Drive. Keep your content vault separate from this source-code folder.
-2. Use **New personal page** for optional Overview / Personal context / Connections headings, or create a blank page with ⌘N.
+2. Select **Pages** to browse your writing. Use **New Personal Page** for optional Overview / Personal context / Connections headings, or create a blank page with ⌘N.
 3. Add topics in the comma-separated field or write inline `#history` tags. Type `[[` for page suggestions. A link such as `[[Pertinax|my reading]]` can show a friendly label.
 4. Click **Edit** or click the article text area once to start native block editing; click **Done** or press Escape to finish. The lock control prevents article edits; clicking a locked article shows an unlock reminder beside the lock.
 5. Select **Sources** to import UTF-8 `.txt` / `.md` files or paste text with an optional original URL. Originals cannot be edited in the app. Imported Markdown also has an Original view.

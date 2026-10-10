@@ -19,7 +19,7 @@ struct EditorAction: Equatable {
 
 @MainActor @Observable final class AppModel {
     var root: URL?
-    var vaultName = "noema"
+    var vaultName = "Noema"
     var notes: [NoteRecord] = []
     var sources: [SourceRecord] = []
     var rows: [LibraryRow] = []
@@ -75,7 +75,7 @@ struct EditorAction: Equatable {
         return title != note.title || body != note.body || editedTags != note.tags
     }
     var scopeTitle: String {
-        switch scope { case .wiki: "Wiki"; case .sources: "Sources"; case .tag(let tag): "#" + tag }
+        switch scope { case .wiki: "Pages"; case .sources: "Sources"; case .tag(let tag): "#" + tag }
     }
     var linkSuggestions: [NoteRecord] {
         guard let wikiQuery else { return [] }

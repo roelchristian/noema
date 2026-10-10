@@ -3,8 +3,8 @@
 <plist version="1.0"><dict>
 <!-- Keep the original bundle identity to retain existing bookmarks and recovery drafts. -->
 <key>CFBundleIdentifier</key><string>local.knowledgevault.app</string>
-<key>CFBundleName</key><string>noema</string>
-<key>CFBundleDisplayName</key><string>noema</string>
+<key>CFBundleName</key><string>Noema</string>
+<key>CFBundleDisplayName</key><string>Noema</string>
 <key>CFBundleExecutable</key><string>noema</string>
 <key>CFBundleIconFile</key><string>VaultIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
@@ -13,7 +13,7 @@
 <key>LSMinimumSystemVersion</key><string>26.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>CFBundleURLTypes</key><array><dict>
-<key>CFBundleURLName</key><string>noema block links</string>
+<key>CFBundleURLName</key><string>Noema block links</string>
 <key>CFBundleURLSchemes</key><array><string>noema</string></array>
 </dict></array>
 </dict></plist>

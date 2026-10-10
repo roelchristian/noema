@@ -47,7 +47,7 @@ struct ContentView: View {
                         Button { model.showPasteSource = true } label: { Label("Paste source", systemImage: "doc.on.clipboard") }
                     } else {
                         Menu {
-                            Button("Blank wiki page") { model.newPage() }
+                            Button("Blank page") { model.newPage() }
                             Button("Personal page template") { model.newPage(template: true) }
                         } label: { Label("New page", systemImage: "plus") }
                             .accessibilityLabel("New page")
@@ -94,7 +94,7 @@ struct ContentView: View {
         VStack(spacing: 24) {
             NoemaMark().frame(width: 116, height: 116).accessibilityHidden(true)
             VStack(spacing: 10) {
-                Text("noema").font(.system(size: 38, weight: .medium))
+                Text("Noema").font(.system(size: 38, weight: .medium))
                 Text("A personal atlas of thought.")
                     .font(.title3).foregroundStyle(theme.text())
             }
@@ -113,7 +113,7 @@ struct ContentView: View {
     private var sidebar: some View {
         List(selection: Binding(get: { Optional(model.scope) }, set: { if let scope = $0 { model.changeScope(scope) } })) {
             Section("Library") {
-                navigationLabel("Wiki", symbol: "book.closed").badge(model.notes.count).tag(LibraryScope.wiki)
+                navigationLabel("Pages", symbol: "book.closed").badge(model.notes.count).tag(LibraryScope.wiki)
                 navigationLabel("Sources", symbol: "tray.full").badge(model.sources.count).tag(LibraryScope.sources)
             }
             if !model.tags.isEmpty {
@@ -123,7 +123,7 @@ struct ContentView: View {
         .safeAreaInset(edge: .top) {
             HStack(spacing: 4) {
                 NoemaMark().frame(width: 40, height: 40).accessibilityHidden(true)
-                Text("noema").font(.title3.weight(.medium))
+                Text("Noema").font(.title3.weight(.medium))
                 Spacer()
             }.padding(.horizontal, 12).padding(.vertical, 6)
         }
@@ -179,10 +179,10 @@ struct ContentView: View {
                     Image(systemName: "magnifyingglass").foregroundStyle(theme.text())
                     ZStack(alignment: .leading) {
                         TextField("", text: $model.searchText)
-                            .accessibilityLabel("Search \(model.scope == .sources ? "sources" : "wiki")")
+                            .accessibilityLabel("Search \(model.scope == .sources ? "sources" : "pages")")
                             .textFieldStyle(.plain).focused($searchFocused)
                         if model.searchText.isEmpty {
-                            Text("Search \(model.scope == .sources ? "sources" : "wiki")")
+                            Text("Search \(model.scope == .sources ? "sources" : "pages")")
                                 .foregroundStyle(theme.text()).allowsHitTesting(false).accessibilityHidden(true)
                         }
                     }

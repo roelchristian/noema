@@ -22,7 +22,7 @@ struct NoemaMark: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("noema")
+        .accessibilityLabel("Noema")
     }
 
     private var artwork: some View {

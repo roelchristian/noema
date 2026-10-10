@@ -2,6 +2,12 @@
 
 Environment: Apple Silicon Mac, macOS 27.0; Swift 6.2.4; macOS SDK 26.2.
 
+## Pages section and Noema display name
+
+- Renamed the library section, heading, and search label to Pages; page creation uses New Page / Blank page. Visible app branding, window title, application menu, About panel, appearance copy, and mark accessibility label use Noema.
+- `./scripts/build.sh debug` compiled and packaged the app and archive successfully with macOS icon-service access after restricted packaging failed at `iconutil`. `plutil -lint Resources/Info.plist` and `git diff --check` passed. No regression suite was run for this copy-only change.
+- Native checks in an isolated app identity and temporary empty vault verified the Noema welcome/window/menu/About panel, Pages sidebar/heading/empty state, and Search pages accessibility label. The existing app also displayed Noema and Pages after rebuilding. No demo content was edited. Checks used current Light appearance; appearance/accent changes, editing states, and full VoiceOver/accessibility-preference combinations were not exercised.
+
 ## Block spacing and icon alignment — 3-minute UI timebox
 
 ### Follow-up: first-character caret stability
