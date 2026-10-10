@@ -51,6 +51,7 @@ struct ContentView: View {
             }
         }
         .toolbar(removing: .title)
+        .sheet(isPresented: $model.showURLSource) { URLSourceSheet(model: model) }
         .sheet(isPresented: $model.showPasteSource) { PasteSourceSheet(model: model) }
         .sheet(isPresented: $model.showRecovery) { recoverySheet }
         .sheet(isPresented: $model.showIssues) { noticesSheet }
@@ -251,7 +252,10 @@ struct ContentView: View {
                             Button("Check Availability of All Sources") { model.checkSourceAvailability(model.sources) }
                                 .disabled(model.sources.isEmpty || !model.checkingSourceAvailability.isEmpty)
                         } label: { Label("Source Actions", systemImage: "ellipsis.circle") }
-                        Button("Add Source…") { model.addSource() }
+                        Menu("Add Source") {
+                            Button("From Files…") { model.addSource() }
+                            Button("By URL…") { model.showURLSource = true }
+                        }
                     }
                     if model.busy { ProgressView().controlSize(.small) }
                 }
@@ -678,7 +682,10 @@ struct ContentView: View {
                 }
                 HStack(spacing: 8) {
                     if model.scope == .sources {
-                        Button("Add Source…") { model.addSource() }
+                        Menu("Add Source") {
+                            Button("From Files…") { model.addSource() }
+                            Button("By URL…") { model.showURLSource = true }
+                        }
                     } else {
                         Menu {
                             Button("Blank page") { model.newPage() }
@@ -982,5 +989,33 @@ private struct SourceAssociationRow: View {
                 }
             }
         }.onChange(of: canRemove) { if !canRemove { confirmingRemoval = false } }
+    }
+}
+
+struct URLSourceSheet: View {
+    @Bindable var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @State private var importing = false
+    @State private var failures: [String] = []
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Add Sources by URL").font(.title2.bold())
+            Text("Enter up to 5 http or https URLs, one per line. This Mac fetches each page and keeps a local copy.").foregroundStyle(.secondary)
+            TextEditor(text: $text).font(.system(.body, design: .monospaced))
+                .accessibilityLabel("Source URLs, one per line").disabled(importing)
+            if !failures.isEmpty {
+                ScrollView { Text(failures.joined(separator: "\n")).foregroundStyle(.red).textSelection(.enabled) }.frame(maxHeight: 120)
+            }
+            HStack {
+                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction).disabled(importing)
+                Spacer()
+                if importing { ProgressView().controlSize(.small); Text("Fetching sources…").foregroundStyle(.secondary) }
+                Button("Add Sources") {
+                    importing = true; failures = []
+                    Task { failures = await model.addURLSources(text); importing = false; if failures.isEmpty { dismiss() } }
+                }.keyboardShortcut(.defaultAction).disabled(importing || (try? WebSourceFetcher.lines(text)) == nil)
+            }
+        }.padding(24).frame(width: 600, height: 400).interactiveDismissDisabled(importing)
     }
 }

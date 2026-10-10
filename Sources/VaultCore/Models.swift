@@ -33,6 +33,8 @@ public struct SourceMetadata: Codable, Identifiable, Sendable, Equatable {
     public var originURL: String?
     public var sha256: String
     public var aiSummary: String? = nil
+    public var isURLSource: Bool? = nil
+    public var webAvailabilityIssue: String? = nil
     public var fileSize: Int? = nil
     public var linkedBookmark: Data? = nil
     public var isLinked: Bool { linkedBookmark != nil }

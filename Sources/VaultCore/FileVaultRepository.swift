@@ -112,8 +112,8 @@ public actor FileVaultRepository: VaultRepository {
                 }
                 guard metadata.isLinked || digest(data) == metadata.sha256 else { throw VaultError.invalid("Original source has changed; its checksum does not match. Restore the original or import a new copy.") }
                 metadata.fileSize = data.count
-                let body = try Self.sourceText(data, filename: metadata.originalFilename)
-                let source = SourceRecord(metadata: metadata, body: body)
+                let body = try Self.sourceText(Self.readableSourceData(data, metadata: metadata), filename: metadata.originalFilename)
+                let source = SourceRecord(metadata: metadata, body: body, availabilityIssue: metadata.webAvailabilityIssue)
                 result.sources.append(source); chunk.sources.append(source)
                 if chunk.sources.count >= 128 { progress?(chunk); chunk = ScanBatch() }
             } catch { result.issues.append("Source \(directory.lastPathComponent): \(error.localizedDescription). Incomplete imports are left intact for recovery.") }
@@ -296,16 +296,54 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func importSource(data: Data, filename: String, title: String, originURL: String?) throws -> SourceRecord {
+        try publishSource(data: data, filename: filename, title: title, originURL: originURL, isURLSource: false)
+    }
+
+    public func importURLSource(_ address: String, fetch: @Sendable (URL) async throws -> WebSourceFetch = WebSourceFetcher.fetch) async throws -> SourceRecord {
+        let url = try WebSourceFetcher.validatedURL(address)
+        let fetched = try await fetch(url)
+        return try publishSource(data: fetched.data, filename: fetched.filename, title: url.host ?? address, originURL: url.absoluteString, isURLSource: true)
+    }
+
+    public func checkURLSourceAvailability(_ source: SourceRecord, fetch: @Sendable (URL) async throws -> WebSourceFetch = WebSourceFetcher.fetch) async throws -> String {
+        guard source.metadata.isURLSource == true, let address = source.metadata.originURL else { throw VaultError.invalid("This source was not fetched from a URL.") }
+        let issue: String?
+        do { _ = try await fetch(WebSourceFetcher.validatedURL(address)); issue = nil }
+        catch { issue = "Archived fetch · Unavailable: " + error.localizedDescription }
+        let directory = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
+        guard directory.resolvingSymlinksInPath().path == directory.standardizedFileURL.path else { throw VaultError.invalid("Source directory cannot be a symbolic link.") }
+        let url = directory.appendingPathComponent("metadata.json")
+        var failure: Error?, coordinationError: NSError?
+        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: [], error: &coordinationError) { coordinated in
+            do {
+                guard try coordinated.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true,
+                      (NSFileVersion.unresolvedConflictVersionsOfItem(at: coordinated) ?? []).isEmpty else { throw VaultError.invalid("Resolve the source metadata conflict before checking availability.") }
+                var metadata = try JSONDecoder().decode(SourceMetadata.self, from: Data(contentsOf: coordinated))
+                guard metadata.id == source.id, metadata.sha256 == source.metadata.sha256, metadata.originURL == address, metadata.isURLSource == true else { throw VaultError.invalid("Source changed. Refresh before checking again.") }
+                metadata.webAvailabilityIssue = issue
+                try encoder.encode(metadata).write(to: coordinated, options: .atomic)
+            } catch { failure = error }
+        }
+        if let failure { throw failure }; if let coordinationError { throw coordinationError }
+        return issue ?? "Available"
+    }
+
+    private func publishSource(data: Data, filename: String, title: String, originURL: String?, isURLSource: Bool) throws -> SourceRecord {
         guard data.count <= Self.maximumImportBytes else { throw VaultError.invalid("Files larger than 2 MB must be linked instead of imported.") }
         try rejectDuplicateSource(checksum: digest(data))
-        let body = try Self.sourceText(data, filename: filename)
+        let content: Data
+        if isURLSource, let address = originURL, let url = URL(string: address), ["html", "htm"].contains(URL(fileURLWithPath: filename).pathExtension.lowercased()) {
+            content = try WebSourceFetcher.readableHTML(data, from: url)
+        } else { content = data }
+        let body = try Self.sourceText(content, filename: filename)
         let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
         let storedExtension = ext.isEmpty ? "bin" : ext
         if let originURL, !originURL.isEmpty {
             guard let url = URL(string: originURL), ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else { throw VaultError.invalid("The origin URL must be an http or https address.") }
         }
         let id = UUID()
-        let metadata = SourceMetadata(id: id, title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent : title, capturedAt: timestamp(), originalFilename: URL(fileURLWithPath: filename).lastPathComponent, originURL: originURL?.isEmpty == true ? nil : originURL, sha256: digest(data), fileSize: data.count, storedFilename: "original.\(storedExtension)")
+        var metadata = SourceMetadata(id: id, title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent : title, capturedAt: timestamp(), originalFilename: URL(fileURLWithPath: filename).lastPathComponent, originURL: originURL?.isEmpty == true ? nil : originURL, sha256: digest(data), fileSize: data.count, storedFilename: "original.\(storedExtension)")
+        metadata.isURLSource = isURLSource ? true : nil
         let pending = root.appendingPathComponent("Sources/.import-\(id.uuidString)")
         try fm.createDirectory(at: pending, withIntermediateDirectories: true)
         do {
@@ -325,6 +363,12 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public static let maximumImportBytes = 2_000_000
+
+    public static func readableSourceData(_ data: Data, metadata: SourceMetadata) throws -> Data {
+        guard metadata.isURLSource == true, ["html", "htm"].contains(URL(fileURLWithPath: metadata.originalFilename).pathExtension.lowercased()),
+              let address = metadata.originURL, let url = URL(string: address) else { return data }
+        return try WebSourceFetcher.readableHTML(data, from: url)
+    }
 
     private static func sourceText(_ data: Data, filename: String) throws -> String {
         let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
@@ -414,7 +458,7 @@ public actor FileVaultRepository: VaultRepository {
                 metadata.title = title
                 if let summary { metadata.aiSummary = summary }
                 try encoder.encode(metadata).write(to: target, options: .atomic)
-                result = SourceRecord(metadata: metadata, body: source.body)
+                result = SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue)
             } catch { failure = error }
         }
         if let failure { throw failure }; if let coordinationError { throw coordinationError }

@@ -35,7 +35,7 @@ import VaultCore
                 guard source.metadata.isLinked || digest(data) == source.metadata.sha256 else {
                     throw VaultError.invalid("The in-vault original changed. Refresh from Files to review the checksum notice.")
                 }
-                return data
+                return try FileVaultRepository.readableSourceData(data, metadata: source.metadata)
             }.value
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.title = source.title; window.isReleasedWhenClosed = false

@@ -558,3 +558,84 @@ private func temporaryFolder() throws -> URL {
     locked = try await repo.save(note: locked, title: locked.title, body: locked.body, tags: locked.tags)
     await #expect(throws: (any Error).self) { try await repo.setSourceReference(note: locked, sourceID: first.id, linked: true) }
 }
+
+@Test func urlSourceValidationAndBatchLimits() throws {
+    #expect(try WebSourceFetcher.lines(" https://example.com/a\n\nhttps://example.com/b ").count == 2)
+    for invalid in ["", "file:///tmp/test", "https://", "ftp://example.com", "https://example.com/a b", "https://user:pass@example.com"] {
+        #expect(throws: (any Error).self) { try WebSourceFetcher.validatedURL(invalid) }
+    }
+    #expect(throws: (any Error).self) { try WebSourceFetcher.lines(Array(repeating: "https://example.com", count: 6).joined(separator: "\n")) }
+    #expect(try WebSourceFetcher.validatedURL("https://example.com/a?q=one").host == "example.com")
+}
+
+@Test func urlSourceFailureRetainsArchivedOriginalAndSummary() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let bytes = Data("<html><body>Captured knowledge</body></html>".utf8)
+    let source = try await repo.importURLSource("https://example.com/article", fetch: { _ in WebSourceFetch(data: bytes, filename: "page.html") })
+    let renamed = try await repo.renameSource(source, title: "Captured knowledge", summary: "Saved AI summary")
+    let original = folder.appendingPathComponent("Sources/\(source.id.uuidString.lowercased())/original.html")
+    let status = try await repo.checkURLSourceAvailability(renamed, fetch: { _ in throw VaultError.unavailable("HTTP 404") })
+    #expect(status.contains("Archived fetch"))
+    let archived = try #require(try await repo.scan().sources.first)
+    #expect(archived.body == String(data: bytes, encoding: .utf8))
+    #expect(archived.metadata.aiSummary == "Saved AI summary")
+    #expect(archived.availabilityIssue == status)
+    #expect(try Data(contentsOf: original) == bytes)
+    #expect(try await repo.checkURLSourceAvailability(archived, fetch: { _ in WebSourceFetch(data: Data("Changed remote page".utf8), filename: "page.txt") }) == "Available")
+    #expect(try await repo.scan().sources.first?.availabilityIssue == nil)
+    #expect(try Data(contentsOf: original) == bytes)
+    // Pasted sources with an origin are not automatically treated as fetched pages.
+    let pasted = try await repo.importSource(data: Data("Pasted text".utf8), filename: "pasted.txt", title: "Paste", originURL: "https://example.com")
+    #expect(pasted.metadata.isURLSource == nil)
+}
+
+@Test func urlSourceBatchContinuesAfterItemFailure() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    var failures = 0
+    for address in ["bad URL", "https://example.com/fails", "https://example.com/works"] {
+        do {
+            _ = try await repo.importURLSource(address, fetch: { url in
+                if url.path == "/fails" { throw VaultError.unavailable("HTTP 500") }
+                return WebSourceFetch(data: Data("Unique fetched content".utf8), filename: "page.txt")
+            })
+        } catch { failures += 1 }
+    }
+    #expect(failures == 2)
+    #expect(try await repo.scan().sources.count == 1)
+}
+
+@Test func urlSourceLocalHTTPAcceptance() async throws {
+    guard let base = ProcessInfo.processInfo.environment["NOEMA_URL_FETCH_TEST_BASE"] else { return }
+    let fetched = try await WebSourceFetcher.fetch(WebSourceFetcher.validatedURL(base + "/ok"))
+    #expect(fetched.filename == "page.html")
+    #expect(String(data: fetched.data, encoding: .utf8) == "<html><body>Local HTTP capture</body></html>")
+    for path in ["/missing", "/empty", "/large", "/binary"] {
+        await #expect(throws: (any Error).self) { try await WebSourceFetcher.fetch(WebSourceFetcher.validatedURL(base + path)) }
+    }
+}
+
+@Test func wikipediaMainExtractionExcludesChromeAndRejectsMissingContainer() throws {
+    let url = try WebSourceFetcher.validatedURL("https://en.wikipedia.org/wiki/Article")
+    let main = "<MAIN id=\"content\" data-test=\"a > b\"><h1>Article</h1><p>Knowledge</p></MAIN>"
+    let html = "<!-- <main>Comment</main> --><script>const example='<main>Script</main>';</script><nav>Navigation</nav>" + main + "<footer>Footer</footer>"
+    #expect(try WebSourceFetcher.readableHTML(Data(html.utf8), from: url) == Data(main.utf8))
+    for missing in ["<nav>No article</nav>", "<main>Unclosed", "<mainland>Wrong tag</mainland>"] {
+        #expect(throws: (any Error).self) { try WebSourceFetcher.readableHTML(Data(missing.utf8), from: url) }
+    }
+    for address in ["https://example.com", "https://wikipedia.org.example.com"] {
+        #expect(try WebSourceFetcher.readableHTML(Data(html.utf8), from: WebSourceFetcher.validatedURL(address)) == Data(html.utf8))
+    }
+}
+
+@Test func wikipediaCapturePreservesOriginalAndDerivesOnlyMain() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let bytes = Data("<html><nav>Navigation</nav><main><p>Article only</p></main><footer>Footer</footer></html>".utf8)
+    let source = try await repo.importURLSource("https://en.wikipedia.org/wiki/Article", fetch: { _ in WebSourceFetch(data: bytes, filename: "page.html") })
+    #expect(source.body == "<main><p>Article only</p></main>")
+    #expect(try await repo.scan().sources.first?.body == source.body)
+    #expect(try Data(contentsOf: folder.appendingPathComponent("Sources/\(source.id.uuidString.lowercased())/original.html")) == bytes)
+    #expect(source.metadata.sha256 == digest(bytes))
+}

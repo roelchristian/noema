@@ -128,6 +128,7 @@ struct EditorAction: Equatable {
     }
     var recoveredDrafts: [DraftRecord] = []
     var showRecovery = false
+    var showURLSource = false
     var showPasteSource = false
     var showIssues = false
     var ambiguousMatches: [NoteRecord] = []
@@ -712,6 +713,25 @@ struct EditorAction: Equatable {
             }
         }
     }
+    func addURLSources(_ text: String) async -> [String] {
+        guard let repository, await finishCurrentPage() else { return ["Open a vault and finish saving before adding sources."] }
+        let lines: [String]
+        do { lines = try WebSourceFetcher.lines(text) } catch { return [error.localizedDescription] }
+        let ticket = generation
+        scope = .sources
+        var failures: [String] = []
+        for address in lines {
+            guard generation == ticket else { return failures + ["Vault changed; remaining URLs were not added."] }
+            do {
+                let source = try await repository.importURLSource(address)
+                guard generation == ticket else { return failures }
+                sources.append(source); rows = sources.map(LibraryRow.init(source:))
+                enqueueSourceTitle(source)
+            } catch { failures.append(address + ": " + error.localizedDescription) }
+        }
+        if generation == ticket { await refresh() }
+        return failures
+    }
     func availabilityLabel(_ id: UUID) -> String {
         sourceAvailability[id] ?? sources.first(where: { $0.id == id })?.availabilityIssue ?? "Available"
     }
@@ -727,7 +747,13 @@ struct EditorAction: Equatable {
             while !sourceAvailabilityQueue.isEmpty {
                 guard generation == ticket, !Task.isCancelled else { return }
                 let source = sourceAvailabilityQueue.removeFirst()
-                let status = await Task.detached { FileVaultRepository.checkSourceAvailability(source, root: root) }.value
+                let status: String
+                if source.metadata.isURLSource == true, let repository {
+                    do { status = try await repository.checkURLSourceAvailability(source) }
+                    catch { status = "Availability check: " + error.localizedDescription }
+                } else {
+                    status = await Task.detached { FileVaultRepository.checkSourceAvailability(source, root: root) }.value
+                }
                 guard generation == ticket else { return }
                 if sources.contains(where: { $0.id == source.id }) { sourceAvailability[source.id] = status }
                 checkingSourceAvailability.remove(source.id)

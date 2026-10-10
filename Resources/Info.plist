@@ -16,4 +16,8 @@
 <key>CFBundleURLName</key><string>Noema block links</string>
 <key>CFBundleURLSchemes</key><array><string>noema</string></array>
 </dict></array>
+<key>NSAppTransportSecurity</key><dict>
+<!-- User-selected URL sources may use HTTP as well as HTTPS. -->
+<key>NSAllowsArbitraryLoads</key><true/>
+</dict>
 </dict></plist>

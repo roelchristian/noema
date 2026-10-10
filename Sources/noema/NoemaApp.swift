@@ -38,6 +38,7 @@ import NoemaBrand
                 Button("Quick Open") { model.searchFocusToken += 1 }.keyboardShortcut("p")
                 Divider()
                 Button("Add Source…") { model.addSource() }.keyboardShortcut("i", modifiers: [.command, .shift]).disabled(model.root == nil)
+                Button("Add Sources by URL…") { model.showURLSource = true }.disabled(model.root == nil)
                 Button("Paste a Source…") { model.showPasteSource = true }.disabled(model.root == nil)
                 Button("Reveal Vault in Finder") { model.revealVault() }.disabled(model.root == nil)
                 Button("Refresh from Files") { Task { await model.refresh() } }.disabled(model.root == nil)
