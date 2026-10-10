@@ -571,3 +571,9 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 - Read-mode page titles and actions use native SwiftUI ViewThatFits: actions move below the title when the complete horizontal row no longer fits. The stacked title can wrap with its full available width. Details-open and editing layouts retain their existing arrangement.
 - `./scripts/build.sh debug` compiled and linked the app successfully (19.73 seconds), then failed packaging at `iconutil` with `Invalid Iconset`. Generated tracked brand exports were discarded if changed.
 - `git diff --check` passed. UI validation was skipped at the user’s request; narrow-window behavior, appearance, and accessibility have not been manually checked. No regression suite was run for this layout-only change.
+
+## Full-width AI summary banner — 2026-10-11
+
+- Removed the enclosing page-content width cap and applied the existing 980-point limit to the summary text, generation indicator, and article editor. Expanded/collapsed summary material and divider now span the main pane while text stays centered with the article. Source previews retain their existing width.
+- Initial build detected an input edited during compilation; retried after edits completed. The debug build retry exceeded its 35-second limit. Compilation is unverified.
+- `git diff --check` passed. UI validation was skipped at the user’s request; wide-window, theme, and accessibility behavior remain manually unverified. No regression suite was run for this layout-only change.

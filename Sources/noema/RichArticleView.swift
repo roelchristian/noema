@@ -96,6 +96,7 @@ struct SummarizedArticleView: View {
                 }
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.horizontal, 80).padding(.vertical, 8)
+                    .frame(maxWidth: 980).frame(maxWidth: .infinity)
             }
             if showsSummary, let summary = document.aiSummary {
                 Group {
@@ -126,11 +127,13 @@ struct SummarizedArticleView: View {
                     }
                 }
                 .padding(.horizontal, 80).padding(.vertical, disclosure.collapsed ? 16 : 24)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: 980, alignment: .leading)
+                .frame(maxWidth: .infinity)
                 .background(.ultraThinMaterial)
                 Divider()
             }
             RichArticleView(text: editorText, reading: model.reading, locked: model.editingLocked, action: model.editorAction, onBegin: model.beginEditing, onEnd: model.finishEditing, onWikiLink: model.followWikiLink, onWikiQuery: { model.wikiQuery = $0 }, noteID: model.currentNote?.id, onBlockLink: model.openBlockURL, onScrollOffset: { disclosure.scrolled(to: $0) })
+                .frame(maxWidth: 980).frame(maxWidth: .infinity)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: disclosure.collapsed)
     }

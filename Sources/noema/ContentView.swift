@@ -1175,7 +1175,7 @@ struct ContentView: View {
                             }
                         }.padding(6).frame(width: 270).glassEffect(.regular, in: .rect(cornerRadius: 16)).padding(16)
                     }
-                }.frame(maxWidth: 980).frame(maxWidth: .infinity)
+                }.frame(maxWidth: model.currentNote != nil ? .infinity : 980).frame(maxWidth: .infinity)
                 if model.currentNote != nil { pageFooter }
             }
             .background(theme.color(.surfaceElevated))
