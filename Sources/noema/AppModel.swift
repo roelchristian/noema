@@ -81,6 +81,7 @@ struct EditorAction: Equatable {
     var checkingSourceAvailability: Set<UUID> = []
     private var sourceAvailabilityQueue: [SourceRecord] = []
     private var sourceAvailabilityTask: Task<Void, Never>?
+    var generatingSourcePages: Set<UUID> = []
     var generatingSourceSummaries: Set<UUID> = []
     var generatingSourceTitles: Set<UUID> = []
     var sourceRenameCompleted = 0
@@ -128,6 +129,8 @@ struct EditorAction: Equatable {
     }
     var recoveredDrafts: [DraftRecord] = []
     var showRecovery = false
+    var showTopicPage = false
+    var generatingTopicPage = false
     var showURLSource = false
     var showPasteSource = false
     var showIssues = false
@@ -249,6 +252,8 @@ struct EditorAction: Equatable {
             sourceNamingTask?.cancel(); sourceNamingTask = nil; sourceNamingQueue = []
             sourceAvailabilityTask?.cancel(); sourceAvailabilityTask = nil; sourceAvailabilityQueue = []
             sourceAvailability = [:]; checkingSourceAvailability = []
+            showTopicPage = false; generatingTopicPage = false
+            generatingSourcePages = []
             generatingSourceSummaries = []
             generatingSourceTitles = []; sourceRenameCompleted = 0; sourceRenameTotal = 0
             dismissedVaultNotices = []
@@ -576,6 +581,37 @@ struct EditorAction: Equatable {
         }
     }
     private func updateTags() { tags = Array(Set(notes.flatMap(\.allTags))).sorted() }
+    func createPageFromTopic(_ input: String) async -> Bool {
+        let topic = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !topic.isEmpty, topic.count <= 120, !generatingTopicPage, let repository else { return false }
+        if let reason = OnDeviceSummary.unavailabilityReason { errorMessage = reason; return false }
+        let ticket = generation
+        generatingTopicPage = true; errorMessage = nil
+        defer { if generation == ticket { generatingTopicPage = false } }
+        do {
+            guard await finishCurrentPage(), generation == ticket else { return false }
+            let results = try await WebTopicResearch.research(topic)
+            guard generation == ticket else { return false }
+            let context = results.enumerated().map { offset, result in
+                "[\(offset + 1)] " + result.title + "\n" + result.url.absoluteString + "\n" + result.text
+            }.joined(separator: "\n\n")
+            var article = try await OnDeviceSummary().pageFromTopic(topic, context: context)
+            article += "\n\n*AI-generated draft based on web results retrieved " + timestamp() + ".*"
+            let references: [String] = results.enumerated().map { offset, result in
+                let title = result.title.replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
+                return "- [\(offset + 1)] [\(title)](<\(result.url.absoluteString)>)"
+            }
+            article += "\n\n## Web references\n\n" + references.joined(separator: "\n")
+            guard generation == ticket, await finishCurrentPage(), generation == ticket else { return false }
+            let note = try await repository.create(title: topic, body: article)
+            guard generation == ticket else { return false }
+            errorMessage = nil; searchText = ""; scope = .wiki; reading = false
+            notes.insert(note, at: 0); selectedID = note.id; currentSource = nil; apply(note)
+            await refresh()
+            return generation == ticket
+        } catch { if generation == ticket { errorMessage = "Create topic page: " + error.localizedDescription }; return false }
+    }
+
     func newPage(template: Bool = false, named name: String = "Untitled") {
         Task {
             if !(await finishCurrentPage()) { return }
@@ -773,6 +809,32 @@ struct EditorAction: Equatable {
             return ""
         }.value
     }
+    func createPageFromSource(_ source: SourceRecord) {
+        guard !generatingSourcePages.contains(source.id), let repository, let root else { return }
+        if let reason = OnDeviceSummary.unavailabilityReason { errorMessage = reason; return }
+        let ticket = generation
+        generatingSourcePages.insert(source.id)
+        Task {
+            defer { if generation == ticket { generatingSourcePages.remove(source.id) } }
+            do {
+                let text = try await sourceSummaryContent(source, root: root)
+                guard generation == ticket else { return }
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw VaultError.unavailable("No readable text for a wiki page.")
+                }
+                let generator = OnDeviceSummary()
+                let article = try await generator.pageFromSource(text)
+                let pageTitle = try await generator.pageTitle(article) ?? source.title
+                guard generation == ticket, await finishCurrentPage(), generation == ticket else { return }
+                let note = try await repository.create(title: pageTitle, body: article, source: source)
+                guard generation == ticket else { return }
+                errorMessage = nil; searchText = ""; scope = .wiki; reading = false
+                notes.insert(note, at: 0); selectedID = note.id; currentSource = nil; apply(note)
+                await refresh()
+            } catch { if generation == ticket { errorMessage = "Create page: " + error.localizedDescription } }
+        }
+    }
+
     func generateSourceSummary(_ source: SourceRecord) {
         guard !generatingSourceTitles.contains(source.id), !generatingSourceSummaries.contains(source.id),
               let repository, let root else { return }

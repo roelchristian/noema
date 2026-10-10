@@ -32,6 +32,7 @@ struct ContentView: View {
                             sourceInspector(source).frame(minWidth: 280, idealWidth: 340, maxWidth: 400)
                         }
                     }
+                    .ignoresSafeArea(.container, edges: .top)
                 }
                 .navigationSplitViewStyle(.balanced)
             } else {
@@ -46,11 +47,13 @@ struct ContentView: View {
                             pageInspector(note).frame(minWidth: 280, idealWidth: 340, maxWidth: 400)
                         }
                     }
+                    .ignoresSafeArea(.container, edges: .top)
                 }
                 .navigationSplitViewStyle(.balanced)
             }
         }
         .toolbar(removing: .title)
+        .sheet(isPresented: $model.showTopicPage) { TopicPageSheet(model: model) }
         .sheet(isPresented: $model.showURLSource) { URLSourceSheet(model: model) }
         .sheet(isPresented: $model.showPasteSource) { PasteSourceSheet(model: model) }
         .sheet(isPresented: $model.showRecovery) { recoverySheet }
@@ -210,7 +213,7 @@ struct ContentView: View {
                                 Text(row.tags.prefix(3).map { "#" + $0 }.joined(separator: "  ")).font(.caption)
                                     .foregroundStyle(theme.text(row.id == model.selectedID ? .textPrimary : .graphHighlight, on: .background)).lineLimit(1)
                             }
-                        }.padding(.horizontal, 12).padding(.vertical, 10).tag(row.id)
+                        }.padding(.horizontal, 12).padding(.vertical, 8).tag(row.id)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             if row.kind == .wiki {
                                 Button(role: .destructive) { trashPageID = row.id; showTrashConfirmation = true } label: {
@@ -244,7 +247,7 @@ struct ContentView: View {
         }
         .background(theme.color(.background))
         .safeAreaBar(edge: .top) {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text(model.scopeTitle).font(.title2.bold()); Spacer()
                     if model.scope == .sources {
@@ -277,9 +280,10 @@ struct ContentView: View {
                         Button { model.searchText = "" } label: { Label("Clear search", systemImage: "xmark.circle.fill").labelStyle(.iconOnly) }
                             .buttonStyle(.plain).foregroundStyle(theme.text())
                     }
-                }.padding(10).glassEffect(.regular.interactive(), in: Capsule())
-            }.padding(18)
+                }.padding(.horizontal, 10).padding(.vertical, 8).glassEffect(.regular.interactive(), in: Capsule())
+            }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
         }
+        .ignoresSafeArea(.container, edges: .top)
     }
     private var sourceTable: some View {
         Table(model.rows.sorted(using: sourceSortOrder),
@@ -318,6 +322,7 @@ struct ContentView: View {
         .contextMenu(forSelectionType: UUID.self) { ids in
             if ids.count == 1, let id = ids.first, let source = model.sources.first(where: { $0.id == id }) {
                 Button("Open Preview") { model.openSource(id) }
+                createSourcePageButton(source)
                 sourceSummaryButton(source)
                 Button("Check Availability") { model.checkSourceAvailability([source]) }
                     .disabled(model.checkingSourceAvailability.contains(id))
@@ -337,6 +342,13 @@ struct ContentView: View {
             Text(model.availabilityLabel(id)).lineLimit(1).help(model.availabilityLabel(id))
         }
     }
+    private func createSourcePageButton(_ source: SourceRecord) -> some View {
+        Button { model.createPageFromSource(source) } label: {
+            Label(model.generatingSourcePages.contains(source.id) ? "Creating Page…" : "Create Page with AI", systemImage: "sparkles")
+        }
+        .disabled(model.generatingSourcePages.contains(source.id) || model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id))
+    }
+
     private func sourceSummaryButton(_ source: SourceRecord, compact: Bool = false) -> some View {
         let hasSummary = source.metadata.aiSummary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         return Button(compact ? (hasSummary ? "Regenerate" : "Generate") : (hasSummary ? "Regenerate AI Summary" : "Generate AI Summary")) {
@@ -363,7 +375,7 @@ struct ContentView: View {
             Button(action: close) {
                 Label("Close inspector", systemImage: "xmark").labelStyle(.iconOnly)
             }.buttonStyle(.borderless).help("Close inspector")
-        }.controlSize(.small).padding(.horizontal, 20).padding(.vertical, 10)
+        }.controlSize(.small).padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 8)
     }
     private func inspectorIdentity(title: String, kind: String, date: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -409,6 +421,8 @@ struct ContentView: View {
             }
         } actions: {
             Menu("Add") {
+                createSourcePageButton(source)
+                Divider()
                 ForEach(model.notes.filter { !$0.isEditingLocked && !$0.linkedSourceIDs.contains(source.id) }) { note in
                     Button(note.title) { model.setSourceReference(pageID: note.id, sourceID: source.id, linked: true) }
                 }
@@ -420,7 +434,7 @@ struct ContentView: View {
             inspectorToolbar { sourceSelection = nil }
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 14) {
                     inspectorIdentity(title: source.title, kind: source.metadata.originalFilename.split(separator: ".").last.map { $0.uppercased() } ?? "Source", date: source.metadata.capturedAt)
                     InspectorSection(title: "Properties", condensed: false) {
                         LabeledContent("Availability") { sourceAvailabilityStatus(source.id) }.font(.caption)
@@ -442,6 +456,9 @@ struct ContentView: View {
                         .menuStyle(.borderlessButton).fixedSize().help("Source actions")
                     }
                     sourcePages(source)
+                    if model.generatingSourcePages.contains(source.id) {
+                        HStack { ProgressView().controlSize(.mini); Text("Creating page…").foregroundStyle(.secondary) }
+                    }
                     InspectorSection(title: "AI summary", condensed: condensedInspector) {
                         if model.generatingSourceSummaries.contains(source.id) || model.generatingSourceTitles.contains(source.id) {
                             HStack { ProgressView().controlSize(.mini); Text("Generating summary…").foregroundStyle(.secondary) }
@@ -451,9 +468,9 @@ struct ContentView: View {
                             Text("AI-generated").font(.caption).foregroundStyle(.secondary)
                         } else { Text("No AI summary available.").foregroundStyle(.secondary) }
                     } actions: { sourceSummaryButton(source, compact: true).labelStyle(.titleOnly) }
-                }.textSelection(.enabled).padding(20)
+                }.textSelection(.enabled).padding(.horizontal, 20).padding(.vertical, 14)
             }
-        }.frame(maxHeight: .infinity).background(theme.color(.background)).accessibilityLabel("Source inspector")
+        }.frame(maxHeight: .infinity).background(theme.color(.background)).ignoresSafeArea(.container, edges: .top).accessibilityLabel("Source inspector")
     }
     private func pageInspector(_ note: NoteRecord) -> some View {
         let document = BlockDocumentCodec.decode(model.body)
@@ -462,7 +479,7 @@ struct ContentView: View {
             inspectorToolbar { showPageDetails = false }
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 14) {
                     inspectorIdentity(title: model.title, kind: "Markdown", date: note.updatedAt)
                     InspectorSection(title: "Properties", condensed: false) {
                         LabeledContent("Location") {
@@ -511,9 +528,9 @@ struct ContentView: View {
                         } label: { Label("Summary actions", systemImage: "ellipsis").labelStyle(.iconOnly) }
                         .menuStyle(.borderlessButton).fixedSize().help("Summary actions")
                     }
-                }.textSelection(.enabled).padding(20)
+                }.textSelection(.enabled).padding(.horizontal, 20).padding(.vertical, 14)
             }
-        }.frame(maxHeight: .infinity).background(theme.color(.background)).accessibilityLabel("Page inspector")
+        }.frame(maxHeight: .infinity).background(theme.color(.background)).ignoresSafeArea(.container, edges: .top).accessibilityLabel("Page inspector")
     }
     private var trashLibrary: some View {
         VStack(spacing: 0) {
@@ -539,7 +556,8 @@ struct ContentView: View {
             Text("\(model.trashedPages.count) deleted pages").font(.caption).foregroundStyle(.secondary).padding(12)
             if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil }.padding(12) }
         }
-        .safeAreaBar(edge: .top) { Text("Trash").font(.title2.bold()).frame(maxWidth: .infinity, alignment: .leading).padding(18) }
+        .safeAreaBar(edge: .top) { Text("Trash").font(.title2.bold()).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10) }
+        .ignoresSafeArea(.container, edges: .top)
         .alert("Permanently delete this page?", isPresented: Binding(get: { permanentDeletion != nil }, set: { if !$0 { permanentDeletion = nil } })) {
             Button("Delete permanently", role: .destructive) {
                 if let page = permanentDeletion { model.permanentlyDeleteTrashedPage(page) }
@@ -597,6 +615,7 @@ struct ContentView: View {
                 if model.currentNote != nil { pageFooter }
             }
             .background(theme.color(.surfaceElevated))
+            .ignoresSafeArea(.container, edges: .top)
             .onChange(of: model.body) { model.edited() }
             .onChange(of: model.title) { model.edited() }
             .onChange(of: model.tagInput) { model.edited() }
@@ -609,7 +628,8 @@ struct ContentView: View {
                 if model.scope != .sources { Button("New personal page") { model.newPage(template: true) }.buttonStyle(.glass) }
                 if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil }.frame(maxWidth: 500) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                .safeAreaBar(edge: .top) { HStack { Spacer(); headerActions }.padding(.horizontal, 28).padding(.vertical, 8) }
+                .safeAreaBar(edge: .top) { HStack { Spacer(); headerActions }.padding(.horizontal, 28).padding(.top, 14).padding(.bottom, 6) }
+                .ignoresSafeArea(.container, edges: .top)
         }
     }
     private var semanticBlockList: some View {
@@ -637,7 +657,7 @@ struct ContentView: View {
                                 Text(hit.preview.isEmpty ? "Empty block" : hit.preview).lineLimit(1)
                                 Text(hit.pageTitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
-                        }.padding(.horizontal, 12).padding(.vertical, 10).tag(hit.id)
+                        }.padding(.horizontal, 12).padding(.vertical, 8).tag(hit.id)
                     }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
             }
@@ -688,6 +708,7 @@ struct ContentView: View {
                         }
                     } else {
                         Menu {
+                            Button("From topic with AI…") { model.showTopicPage = true }
                             Button("Blank page") { model.newPage() }
                             Button("Personal page template") { model.newPage(template: true) }
                         } label: { Label("New page", systemImage: "square.and.pencil") }
@@ -711,7 +732,7 @@ struct ContentView: View {
         }.labelStyle(.iconOnly).buttonStyle(.glass).fixedSize(horizontal: true, vertical: false)
     }
     private var pageHeader: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 10) {
             if let notice = model.aiSummaryNotice { DismissibleNotice(message: notice, isError: false) { model.aiSummaryNotice = nil }.font(.caption) }
             if model.currentSource != nil || model.editingHint != nil {
                 HStack {
@@ -767,7 +788,7 @@ struct ContentView: View {
                     }.font(.caption).foregroundStyle(theme.text())
                 }
             }
-        }.padding(.horizontal, 28).padding(.top, 8).padding(.bottom, 20)
+        }.padding(.horizontal, 28).padding(.top, 14).padding(.bottom, 12)
     }
     private var pageFooter: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1017,5 +1038,31 @@ struct URLSourceSheet: View {
                 }.keyboardShortcut(.defaultAction).disabled(importing || (try? WebSourceFetcher.lines(text)) == nil)
             }
         }.padding(24).frame(width: 600, height: 400).interactiveDismissDisabled(importing)
+    }
+}
+
+struct TopicPageSheet: View {
+    @Bindable var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var topic = ""
+    @FocusState private var topicFocused: Bool
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Create Page from Topic").font(.title2.bold())
+            Text("Searches the web with Bing and reads up to three top results. Apple Intelligence summarizes them on this Mac and adds web references. Your topic is sent to the search service.").font(.callout).foregroundStyle(.secondary)
+            TextField("Topic", text: $topic).textFieldStyle(.roundedBorder).focused($topicFocused)
+                .disabled(model.generatingTopicPage)
+            if model.generatingTopicPage { HStack { ProgressView().controlSize(.small); Text("Searching web and creating page…") } }
+            if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil } }
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction).disabled(model.generatingTopicPage)
+                Button("Create with AI") {
+                    Task { if await model.createPageFromTopic(topic) { dismiss() } }
+                }.keyboardShortcut(.defaultAction)
+                .disabled(topic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || topic.trimmingCharacters(in: .whitespacesAndNewlines).count > 120 || model.generatingTopicPage)
+            }
+        }.padding(24).frame(width: 460).interactiveDismissDisabled(model.generatingTopicPage)
+        .onAppear { topicFocused = true }
     }
 }

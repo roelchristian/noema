@@ -3,6 +3,7 @@ import Foundation
 public protocol VaultRepository: Sendable {
     func scan(progress: (@Sendable (ScanBatch) -> Void)?) async throws -> ScanBatch
     func create(title: String, body: String) async throws -> NoteRecord
+    func create(title: String, body: String, source: SourceRecord) async throws -> NoteRecord
     func save(note: NoteRecord, title: String, body: String, tags: [String]) async throws -> NoteRecord
     func setSourceReference(note: NoteRecord, sourceID: UUID, linked: Bool) async throws -> NoteRecord
     func trashedPages() async throws -> [TrashedPage]
@@ -128,13 +129,31 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func create(title: String = "Untitled", body: String = "") throws -> NoteRecord {
+        try createPage(title: title, body: body, source: nil)
+    }
+
+    public func create(title: String, body: String, source: SourceRecord) throws -> NoteRecord {
+        try createPage(title: title, body: body, source: source)
+    }
+
+    private func createPage(title: String, body: String, source: SourceRecord?) throws -> NoteRecord {
         let snapshot = try scan()
+        if let source {
+            guard let current = snapshot.sources.first(where: { $0.id == source.id }),
+                  current.metadata.sha256 == source.metadata.sha256,
+                  current.metadata.linkedBookmark == source.metadata.linkedBookmark,
+                  current.metadata.storedFilename == source.metadata.storedFilename,
+                  current.body == source.body else {
+                throw VaultError.invalid("Source changed or was removed. Refresh before creating a page.")
+            }
+        }
         var actualTitle = title, suffix = 2
         while titleExists(actualTitle, in: snapshot.notes) {
             actualTitle = "\(title) \(suffix)"; suffix += 1
         }
         let now = timestamp()
         var note = NoteRecord(id: UUID(), title: actualTitle, aliases: [], tags: [], inlineTags: [], createdAt: now, updatedAt: now, body: body, relativePath: "", contentHash: "", originalHeader: nil)
+        note.sourceIDs = source.map { [$0.id] }
         note.relativePath = availablePath(title: actualTitle)
         let data = try NoteCodec.encode(note)
         try Self.coordinatedWrite(data, to: root.appendingPathComponent(note.relativePath), mustNotExist: true)

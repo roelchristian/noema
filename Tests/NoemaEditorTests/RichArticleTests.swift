@@ -573,3 +573,17 @@ import VaultCore
     #expect(model.currentNote?.id == note.id)
     #expect(model.body == note.body)
 }
+
+@Test func topicPagePromptRetainsTopicAndBoundsVaultContext() {
+    let prompt = OnDeviceSummary.topicPrompt(topic: "Roman history", context: String(repeating: "x", count: 7000))
+    #expect(prompt.hasPrefix("Topic (data):\nRoman history"))
+    #expect(prompt.filter { $0 == "x" }.count == 6000)
+}
+
+@Test @MainActor func topicPageRejectsEmptyOrExcessiveTopicWithoutCreatingPage() async {
+    let model = AppModel()
+    #expect(await model.createPageFromTopic("   ") == false)
+    #expect(await model.createPageFromTopic(String(repeating: "x", count: 121)) == false)
+    #expect(model.notes.isEmpty)
+    #expect(!model.generatingTopicPage)
+}

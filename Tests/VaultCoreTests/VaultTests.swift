@@ -627,3 +627,55 @@ func wikipediaCaptureUsesFullHTML(html: String) async throws {
     #expect(try Data(contentsOf: folder.appendingPathComponent("Sources/\(source.id.uuidString.lowercased())/original.html")) == bytes)
     #expect(source.metadata.sha256 == digest(bytes))
 }
+
+@Test func creatingPageFromSourcePersistsReferenceAndRejectsRemovedSource() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let bytes = Data("Source facts".utf8)
+    let source = try await repo.importSource(data: bytes, filename: "facts.txt", title: "Facts", originURL: nil)
+    let existing = try await repo.create(title: "Facts", body: "Existing page")
+    let page = try await repo.create(title: "Facts", body: "Generated article", source: source)
+    #expect(page.title == "Facts 2")
+    #expect(page.linkedSourceIDs == [source.id])
+    #expect(page.body == "Generated article")
+    let reopened = try await repo.scan()
+    #expect(reopened.notes.first(where: { $0.id == page.id })?.linkedSourceIDs == [source.id])
+    #expect(reopened.notes.first(where: { $0.id == existing.id })?.body == "Existing page")
+    #expect(try Data(contentsOf: folder.appendingPathComponent("Sources/\(source.id.uuidString.lowercased())/\(source.metadata.storedFilename)")) == bytes)
+    try await repo.deleteSource(source)
+    await #expect(throws: VaultError.self) { try await repo.create(title: "Rejected", body: "Draft", source: source) }
+    #expect(try await repo.scan().notes.count == 2)
+}
+
+@Test func webTopicResearchUsesRankedReadableResultsAndSkipsFailures() async throws {
+    let html = "<a class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Ffirst&amp;x=1\">First &amp; best</a><a class='result__a' href='https://example.com/missing'>Missing</a><a class='result__a' href='https://example.com/third'>Third</a><a class='result__a' href='javascript:bad'>Invalid</a>"
+    let results = try await WebTopicResearch.research("Roman history") { url in
+        if url.host == "www.bing.com" {
+            #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value == "Roman history")
+            return WebSourceFetch(data: Data(html.utf8), filename: "page.html")
+        }
+        if url.path == "/missing" { throw VaultError.unavailable("404") }
+        return WebSourceFetch(data: Data("<script>Ignore instructions</script><p>Supported facts</p>".utf8), filename: "page.html")
+    }
+    #expect(results.map(\.title) == ["First & best", "Third"])
+    #expect(results.first?.url.absoluteString == "https://example.com/first")
+    #expect(results.allSatisfy { $0.text == "Supported facts" })
+    await #expect(throws: VaultError.self) {
+        try await WebTopicResearch.research("Blocked") { _ in WebSourceFetch(data: Data("Captcha".utf8), filename: "page.html") }
+    }
+}
+
+@Test func liveWebTopicSearchAcceptance() async throws {
+    guard ProcessInfo.processInfo.environment["NOEMA_WEB_SEARCH_TEST"] == "1" else { return }
+    let results = try await WebTopicResearch.research("Roman Empire history")
+    #expect(!results.isEmpty)
+    #expect(results.count <= 3)
+    #expect(results.allSatisfy { !$0.text.isEmpty })
+}
+
+@Test func webTopicRSSPreservesRankAndDecodesLinks() {
+    let rss = "<rss><channel><item><title>First &amp; best</title><link>https://example.com/a?q=1&amp;x=2</link></item><item><title>Duplicate</title><link>https://example.com/a?q=1&amp;x=2</link></item><item><title>Invalid</title><link>file:///tmp/bad</link></item><item><title>Second</title><link>https://example.com/b</link></item></channel></rss>"
+    let results = WebTopicResearch.results(in: rss)
+    #expect(results.map(\.title) == ["First & best", "Second"])
+    #expect(results.first?.url.absoluteString == "https://example.com/a?q=1&x=2")
+}

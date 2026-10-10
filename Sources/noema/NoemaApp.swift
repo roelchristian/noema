@@ -24,6 +24,7 @@ import NoemaBrand
                 }
             }
             CommandGroup(replacing: .newItem) {
+                Button("New Page from Topic with AI…") { model.showTopicPage = true }.disabled(model.root == nil)
                 Button("New Page") { model.newPage() }.keyboardShortcut("n").disabled(model.root == nil)
                 Button("New Personal Page") { model.newPage(template: true) }.keyboardShortcut("n", modifiers: [.command, .shift]).disabled(model.root == nil)
                 Divider()

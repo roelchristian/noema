@@ -24,6 +24,14 @@ public enum WebSourceFetcher {
     }
 
     public static func fetch(_ url: URL) async throws -> WebSourceFetch {
+        try await fetch(url, allowXML: false)
+    }
+
+    public static func fetchSearchFeed(_ url: URL) async throws -> WebSourceFetch {
+        try await fetch(url, allowXML: true)
+    }
+
+    private static func fetch(_ url: URL, allowXML: Bool) async throws -> WebSourceFetch {
         _ = try validatedURL(url.absoluteString)
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         request.setValue("text/html, text/plain, application/pdf", forHTTPHeaderField: "Accept")
@@ -45,6 +53,9 @@ public enum WebSourceFetcher {
         case "text/html", "application/xhtml+xml": ext = "html"
         case "text/plain": ext = "txt"
         case "application/pdf": ext = "pdf"
+        case "text/xml", "application/xml", "application/rss+xml":
+            guard allowXML else { throw VaultError.invalid("This URL must return HTML, plain text, or PDF content.") }
+            ext = "txt"
         default: throw VaultError.invalid("This URL must return HTML, plain text, or PDF content.")
         }
         return WebSourceFetch(data: data, filename: "page." + ext)
