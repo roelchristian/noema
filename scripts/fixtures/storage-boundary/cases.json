@@ -1,0 +1,218 @@
+[
+  {
+    "name": "indirect local helper cannot hide a known byte reader",
+    "fixture": "indirect-helper.swift",
+    "path": "Sources/VaultCore/NewStorageHelper.swift",
+    "expected": {
+      "unreviewed": 1,
+      "stale": 0,
+      "construction": 0
+    }
+  },
+  {
+    "name": "initializer method reference cannot hide a reader",
+    "fixture": "reader-reference.swift",
+    "path": "Sources/VaultCore/NewStorageHelper.swift",
+    "expected": {
+      "unreviewed": 1,
+      "stale": 0,
+      "construction": 0
+    }
+  },
+  {
+    "name": "Foundation mutation and handle APIs require review",
+    "fixture": "foundation-apis.swift",
+    "path": "Sources/VaultCore/NewStorageHelper.swift",
+    "expected": {
+      "unreviewed": 8,
+      "stale": 0,
+      "construction": 0
+    }
+  },
+  {
+    "name": "POSIX calls and qualified function references require review",
+    "fixture": "posix-apis.swift",
+    "path": "Sources/VaultCore/NewStorageHelper.swift",
+    "expected": {
+      "unreviewed": 8,
+      "stale": 0,
+      "construction": 0
+    }
+  },
+  {
+    "name": "adapter type alias requires construction review",
+    "fixture": "adapter-alias.swift",
+    "path": "Sources/VaultCore/NewStorageHelper.swift",
+    "expected": {
+      "unreviewed": 0,
+      "stale": 0,
+      "construction": 1
+    }
+  },
+  {
+    "name": "adapter metatype requires construction review",
+    "fixture": "adapter-metatype.swift",
+    "path": "Sources/VaultCore/NewStorageHelper.swift",
+    "expected": {
+      "unreviewed": 0,
+      "stale": 0,
+      "construction": 1
+    }
+  },
+  {
+    "name": "moving an exception to a different file is rejected",
+    "fixture": "exception-read.swift",
+    "path": "Sources/VaultCore/NewStorageHelper.swift",
+    "expected": {
+      "unreviewed": 1,
+      "stale": 1,
+      "construction": 0
+    },
+    "allowed": [
+      {
+        "path": "Sources/VaultCore/ExternalOwner.swift",
+        "statement": "return try Data(contentsOf: url)",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "name": "duplicating an exception exceeds its reviewed count",
+    "fixture": "exception-duplicate.swift",
+    "path": "Sources/VaultCore/ExternalOwner.swift",
+    "expected": {
+      "unreviewed": 1,
+      "stale": 0,
+      "construction": 0
+    },
+    "allowed": [
+      {
+        "path": "Sources/VaultCore/ExternalOwner.swift",
+        "statement": "return try Data(contentsOf: url)",
+        "count": 1
+      }
+    ]
+  },
+  {
+    "name": "canonical target substituted beneath identical allowed text needs semantic review",
+    "fixture": "exception-retarget.swift",
+    "path": "Sources/VaultCore/ExternalOwner.swift",
+    "expected": {
+      "unreviewed": 0,
+      "stale": 0,
+      "construction": 0
+    },
+    "allowed": [
+      {
+        "path": "Sources/VaultCore/ExternalOwner.swift",
+        "statement": "return try Data(contentsOf: url)",
+        "count": 1
+      }
+    ],
+    "review_only": true,
+    "reason": "The URL now points inside the vault, but the allowed byte-read statement and file are unchanged."
+  },
+  {
+    "name": "same-file exception moved into a canonical helper needs semantic review",
+    "fixture": "exception-relocated-helper.swift",
+    "path": "Sources/VaultCore/ExternalOwner.swift",
+    "expected": {
+      "unreviewed": 0,
+      "stale": 0,
+      "construction": 0
+    },
+    "allowed": [
+      {
+        "path": "Sources/VaultCore/ExternalOwner.swift",
+        "statement": "return try Data(contentsOf: url)",
+        "count": 1
+      }
+    ],
+    "review_only": true,
+    "reason": "Occurrence counts do not encode the enclosing function or callers; reviewer must trace ownership even when the expression is unchanged."
+  },
+  {
+    "name": "external reader serving canonical bytes requires review",
+    "fixture": "external-reader-misuse.swift",
+    "path": "Sources/VaultCore/NewStorageHelper.swift",
+    "expected": {
+      "unreviewed": 1,
+      "stale": 0,
+      "construction": 0
+    }
+  },
+  {
+    "name": "opaque imported helper needs semantic review",
+    "fixture": "opaque-helper.swift",
+    "path": "Sources/VaultCore/NewStorageHelper.swift",
+    "expected": {
+      "unreviewed": 0,
+      "stale": 0,
+      "construction": 0
+    },
+    "review_only": true,
+    "reason": "An unknown library method has no known lexical I/O token; reviewer must inspect or verify its implementation and targets."
+  },
+  {
+    "name": "ambiguous unqualified POSIX reference needs semantic review",
+    "fixture": "ambiguous-posix-reference.swift",
+    "path": "Sources/VaultCore/NewStorageHelper.swift",
+    "expected": {
+      "unreviewed": 0,
+      "stale": 0,
+      "construction": 0
+    },
+    "review_only": true,
+    "reason": "Without type resolution an unqualified read reference is indistinguishable from an ordinary Swift helper; reviewer must trace its binding."
+  },
+  {
+    "name": "canonical protocol access is accepted",
+    "fixture": "protocol-access.swift",
+    "path": "Sources/VaultCore/NewStorageHelper.swift",
+    "expected": {
+      "unreviewed": 0,
+      "stale": 0,
+      "construction": 0
+    }
+  },
+  {
+    "name": "adapter implementation remains the only byte-I/O scan exemption",
+    "fixture": "indirect-helper.swift",
+    "path": "Sources/VaultCore/PlaintextVaultContentStore.swift",
+    "expected": {
+      "unreviewed": 0,
+      "stale": 0,
+      "construction": 0
+    }
+  },
+  {
+    "name": "provider may reference and select the adapter",
+    "fixture": "adapter-metatype.swift",
+    "path": "Sources/VaultCore/VaultStorageProvider.swift",
+    "expected": {
+      "unreviewed": 0,
+      "stale": 0,
+      "construction": 0
+    }
+  },
+  {
+    "name": "handle byte calls and references require review",
+    "fixture": "handle-byte-apis.swift",
+    "path": "Sources/VaultCore/NewStorageHelper.swift",
+    "expected": {
+      "unreviewed": 4,
+      "stale": 0,
+      "construction": 0
+    }
+  },
+  {
+    "name": "filesystem attribute mutation requires review",
+    "fixture": "file-attributes.swift",
+    "path": "Sources/VaultCore/NewStorageHelper.swift",
+    "expected": {
+      "unreviewed": 1,
+      "stale": 0,
+      "construction": 0
+    }
+  }
+]
