@@ -210,9 +210,17 @@ struct AISuggestionReviewSheet: View {
         suggestion.action == .suggestTitle ? "Suggested Title" : "Suggested LCC Classification"
     }
 
+    private var targetTitle: String {
+        switch suggestion.target {
+        case .page(let id): model.notes.first(where: { $0.id == id })?.title ?? "Page"
+        case .source(let id): model.sources.first(where: { $0.id == id })?.title ?? "Source"
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
             Text(title).font(.title2.bold())
+            Text(targetTitle).foregroundStyle(.secondary)
             AIProviderBadge(provider: suggestion.provider)
             Text(suggestion.value).font(.headline).textSelection(.enabled)
             if let rationale = suggestion.rationale, !rationale.isEmpty {
