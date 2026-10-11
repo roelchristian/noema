@@ -6,7 +6,7 @@ Noema is a native macOS personal wiki paired with a read-only library of raw sou
 
 ## Highlights
 
-- **Three-pane workspace:** A hierarchical sidebar (`250–290 pt`) with global search (`⌘K` / `⌘P` / `⇧⌘F`) and top-level **Pages**, **Sources**, and **Semantic Blocks** collections; a distraction-free main workspace; and a resizable right inspector for properties, provenance references, semantic blocks, and AI summaries.
+- **Three-pane workspace:** A hierarchical sidebar (`250–290 pt`) with global search (`⌘K` / `⌘P` / `⇧⌘F`) and top-level **Pages**, **Sources**, and **Semantic Blocks** collections; a distraction-free main workspace; and a resizable right inspector with **Links**, **References**, **Tags**, **Properties**, and **Insights** tabs for pages. Sources use **References**, **Properties**, and **Insights**. Toggle the inspector with `⌥⌘I`.
 - **Native appearance & themes:** Starts with the **Midnight Iris** palette. **Settings → Appearance** offers **System**, **Midnight Iris**, **Forest**, **Amber**, and **Rose**, with live dropdown previews and a toggle to apply the full palette or accent color only. Every theme adapts to macOS Light/Dark appearance and accessibility settings.
 - **Brand & identity:** Uses an orbital glass mark that shares geometry with the packaged icon (see [Resources/Brand/README.md](Resources/Brand/README.md)). **Noema → About Noema** presents the Greek and phenomenological background of the name in a fixed `660 × 560 pt` window.
 
@@ -38,8 +38,8 @@ For a quick tour, open `Examples/Demo Vault`. Keep your personal content vaults 
 ### Pages
 - **Browse & organize:** Select **Pages** to search, sort (by update date or title), and filter by tag in the main workspace, or use **Recent Pages** and **All Pages** in the sidebar. Create a blank page (`⌘N`) or use **New Personal Page** for an Overview / Personal context / Connections template.
 - **Links & tags:** Add comma-separated topics or inline `#tags`. Type `[[` for wiki-link suggestions (`[[Pertinax|my reading]]`). Renaming a page keeps its filename stable and records the old title as an alias so existing links continue to resolve.
-- **Editing lock:** Toggle **Lock Editing** via row swipe, hover/focus button, toolbar, context menu, or the inspector **Protection** row. Locking prevents accidental content or reference edits without encrypting the file or changing its `updated_at` timestamp.
-- **Provenance references:** Link pages and sources many-to-many under **Page details → Sources** or **Source details → Pages**. Linked items can be opened directly from the inspector even when a page is locked.
+- **Editing lock:** Toggle **Lock Editing** via row swipe, hover/focus button, toolbar, context menu, or **Properties → Status → Editing** in the inspector. Locking prevents accidental content or reference edits without encrypting the file or changing its `updated_at` timestamp.
+- **Provenance references:** Link pages and sources many-to-many under **References → Sources** for a page or **References → Referring pages** for a source. Linked items can be opened directly from the inspector even when a page is locked.
 
 ### Sources
 - **Add sources (`⇧⌘I`):** Select up to 5 files at a time via **Add Source → From Files…**, paste text from the **Vault** menu, or capture up to 5 HTTP/HTTPS pages (HTML, plain text, or PDF up to 2 MB, 20-second timeout) via **Add Source → By URL…**.
