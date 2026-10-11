@@ -162,6 +162,8 @@ struct EditorAction: Equatable {
         dismissedVaultNotices.formUnion(issues); issues = []
     }
     var recoveredDrafts: [DraftRecord] = []
+    var damagedRecoveryEntries: [DamagedRecoveryEntry] = []
+    var hasRecoveryEntries: Bool { !recoveredDrafts.isEmpty || !damagedRecoveryEntries.isEmpty }
     var showRecovery = false
     var showTopicPage = false
     var generatingTopicPage = false
@@ -510,7 +512,7 @@ struct EditorAction: Equatable {
     }
 
     private func clearSessionUIState() {
-        notes = []; sources = []; rows = []; semanticRows = []; trashedPages = []; recoveredDrafts = []; issues = []
+        notes = []; sources = []; rows = []; semanticRows = []; trashedPages = []; recoveredDrafts = []; damagedRecoveryEntries = []; issues = []
         dismissedVaultNotices = []
         tags = []; backlinks = []; outgoingLinkTargets = []; preview = []; recentPageIDs = []; unseenRenamedPages = []
         searchText = ""; sidebarSearchResults = SidebarSearchResults(); scope = .wiki
@@ -832,7 +834,7 @@ struct EditorAction: Equatable {
                     accessGate: gate
                 )
                 let cachedEntries = try await idx.cachedEntries()
-                let recovered = try await recoveryStore.drafts()
+                let recovered = try await recoveryStore.listing()
                 return (idx, recoveryStore, cachedEntries, recovered)
             }.value
             try requireLifecycleState(.open, action: "open", session: session)
@@ -852,7 +854,7 @@ struct EditorAction: Equatable {
             title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0; reading = true
             notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
             updateTags()
-            recoveredDrafts = drafts
+            applyRecoveryListing(drafts)
             if persistSecurityScopedBookmark {
                 try remember(url)
             }
@@ -943,7 +945,7 @@ struct EditorAction: Equatable {
             presentLifecycleFailure(error)
             saveStatus = "Lock failed · edits retained"
             if let recovery, sessionManager.accessGate.currentState.phase == .open {
-                do { recoveredDrafts = try await recovery.drafts() }
+                do { applyRecoveryListing(try await recovery.listing()) }
                 catch {
                     errorMessage = (errorMessage ?? "Lock failed.") + " Recovery reload failed: " + error.localizedDescription
                 }
@@ -1009,7 +1011,7 @@ struct EditorAction: Equatable {
                     accessGate: gate
                 )
                 let cached = try await idx.cachedEntries()
-                let drafts = try await recoveryStore.drafts()
+                let drafts = try await recoveryStore.listing()
                 return (idx, recoveryStore, cached, drafts)
             }.value
             try requireLifecycleState(.open, action: "unlock", session: session)
@@ -1036,7 +1038,7 @@ struct EditorAction: Equatable {
             title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0; reading = true
             notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
             updateTags()
-            recoveredDrafts = drafts
+            applyRecoveryListing(drafts)
             watcher = VaultWatcher(url: candidateURL) { [weak self] in Task { @MainActor in self?.scheduleRefresh() } }
             busy = false
             await updateRows()
@@ -1616,7 +1618,7 @@ struct EditorAction: Equatable {
             }
             if !dirty { try await recovery.remove(saved.id) }
             saveStatus = dirty ? "Unsaved changes" : "Saved locally"
-            recoveredDrafts = try await recovery.drafts(); errorMessage = nil; externalChange = false
+            applyRecoveryListing(try await recovery.listing()); errorMessage = nil; externalChange = false
             saving = false
             scheduleRefresh()
             if dirty { edited() }
@@ -1627,9 +1629,9 @@ struct EditorAction: Equatable {
             errorMessage = error.localizedDescription
             if case VaultError.conflict = error { externalChange = true }
             do {
-                let drafts = try await recovery.drafts()
+                let drafts = try await recovery.listing()
                 guard generation == ticket, canOperateOnLoadedContent else { return false }
-                recoveredDrafts = drafts
+                applyRecoveryListing(drafts)
             } catch {
                 if generation == ticket, canOperateOnLoadedContent {
                     errorMessage = (errorMessage ?? "Save failed.") + " Recovery reload failed: " + error.localizedDescription
@@ -1861,9 +1863,9 @@ struct EditorAction: Equatable {
             if dirty, let note = currentNote, let recovery {
                 do {
                     try await recovery.store(DraftRecord(note: note, title: title, body: body, tags: editedTags))
-                    let drafts = try await recovery.drafts()
+                    let drafts = try await recovery.listing()
                     guard isCompletionValid(completionTicket, operation: "reloadDiskVersion.drafts") else { return }
-                    recoveredDrafts = drafts
+                    applyRecoveryListing(drafts)
                 } catch {
                     if isCompletionValid(completionTicket, operation: "reloadDiskVersion.recoveryError") {
                         errorMessage = "Could not preserve your draft: " + error.localizedDescription
@@ -1890,9 +1892,9 @@ struct EditorAction: Equatable {
                 var note = try await repository.create(title: (recovered?.title ?? title) + " (recovered)", body: recovered?.body ?? body)
                 note = try await repository.save(note: note, title: note.title, body: note.body, tags: recovered?.tags ?? editedTags)
                 if let originalID { try await recovery?.remove(originalID) }
-                let drafts = try await recovery?.drafts() ?? []
+                let drafts = try await recovery?.listing() ?? RecoveryListing()
                 guard isCompletionValid(completionTicket, operation: "saveDraftAsNewPage") else { return }
-                recoveredDrafts = drafts
+                applyRecoveryListing(drafts)
                 notes.insert(note, at: 0); scope = .wiki; currentSource = nil; selectedID = note.id; apply(note)
                 errorMessage = nil; showRecovery = false; await refresh()
             } catch { if isCompletionValid(completionTicket, operation: "saveDraftAsNewPage.error") { errorMessage = error.localizedDescription } }
@@ -1905,11 +1907,15 @@ struct EditorAction: Equatable {
             guard isCompletionValid(completionTicket, operation: "discardRecovery.start") else { return }
             do {
                 try await recovery?.remove(draft.id)
-                let drafts = try await recovery?.drafts() ?? []
+                let drafts = try await recovery?.listing() ?? RecoveryListing()
                 guard isCompletionValid(completionTicket, operation: "discardRecovery") else { return }
-                recoveredDrafts = drafts
+                applyRecoveryListing(drafts)
             } catch { if isCompletionValid(completionTicket, operation: "discardRecovery.error") { errorMessage = error.localizedDescription } }
         }
+    }
+    private func applyRecoveryListing(_ listing: RecoveryListing) {
+        recoveredDrafts = listing.drafts
+        damagedRecoveryEntries = listing.damagedEntries
     }
     func updateBacklinks() async {
         guard canOperateOnLoadedContent, let note = currentNote, let index else { backlinks = []; outgoingLinkTargets = []; return }

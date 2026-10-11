@@ -42,7 +42,7 @@ import NoemaBrand
                 Button("Paste a Source…") { model.showPasteSource = true }.disabled(!model.isVaultAvailable)
                 Button("Reveal Vault in Finder") { model.revealVault() }.disabled(!model.isVaultAvailable)
                 Button("Refresh from Files") { Task { await model.refresh() } }.disabled(!model.isVaultAvailable)
-                Button("Recover Drafts…") { model.showRecovery = true }.disabled(!model.isVaultAvailable || model.recoveredDrafts.isEmpty)
+                Button("Recover Drafts…") { model.showRecovery = true }.disabled(!model.isVaultAvailable || !model.hasRecoveryEntries)
                 Divider()
                 if model.isLocked {
                     Button("Unlock Vault") { Task { await model.unlockVault() } }

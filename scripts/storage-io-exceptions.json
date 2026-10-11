@@ -31,25 +31,7 @@
   },
   {
     "path": "Sources/VaultCore/RecoveryStore.swift",
-    "statement": ".map { try JSONDecoder().decode(DraftRecord.self, from: Data(contentsOf: $0)) }",
-    "count": 1,
-    "reason": "App-local unsaved draft journal; preservation data separate from canonical vault storage."
-  },
-  {
-    "path": "Sources/VaultCore/RecoveryStore.swift",
-    "statement": "if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }",
-    "count": 1,
-    "reason": "App-local unsaved draft journal; preservation data separate from canonical vault storage."
-  },
-  {
-    "path": "Sources/VaultCore/RecoveryStore.swift",
     "statement": "try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)",
-    "count": 1,
-    "reason": "App-local unsaved draft journal; preservation data separate from canonical vault storage."
-  },
-  {
-    "path": "Sources/VaultCore/RecoveryStore.swift",
-    "statement": "try JSONEncoder().encode(draft).write(to: directory.appendingPathComponent(draft.id.uuidString + \".json\"), options: .atomic)",
     "count": 1,
     "reason": "App-local unsaved draft journal; preservation data separate from canonical vault storage."
   },
@@ -124,5 +106,35 @@
     "statement": "public func remove() { try? FileManager.default.removeItem(at: directory) }",
     "count": 1,
     "reason": "Disposable app-local preview copy of adapter-validated bytes; never reads or mutates canonical vault paths."
+  },
+  {
+    "path": "Sources/VaultCore/RecoveryStore.swift",
+    "statement": "do { bytes = try Data(contentsOf: file) }",
+    "count": 1,
+    "reason": "App-local unsaved recovery journal; isolates damaged entries and preserves their original bytes before same-page replacement. Never canonical vault storage."
+  },
+  {
+    "path": "Sources/VaultCore/RecoveryStore.swift",
+    "statement": "guard let bytes = try? Data(contentsOf: url),",
+    "count": 1,
+    "reason": "App-local unsaved recovery journal; isolates damaged entries and preserves their original bytes before same-page replacement. Never canonical vault storage."
+  },
+  {
+    "path": "Sources/VaultCore/RecoveryStore.swift",
+    "statement": "try FileManager.default.moveItem(at: url, to: preserved)",
+    "count": 1,
+    "reason": "App-local unsaved recovery journal; isolates damaged entries and preserves their original bytes before same-page replacement. Never canonical vault storage."
+  },
+  {
+    "path": "Sources/VaultCore/RecoveryStore.swift",
+    "statement": "try FileManager.default.removeItem(at: url)",
+    "count": 1,
+    "reason": "App-local unsaved recovery journal; isolates damaged entries and preserves their original bytes before same-page replacement. Never canonical vault storage."
+  },
+  {
+    "path": "Sources/VaultCore/RecoveryStore.swift",
+    "statement": "try bytes.write(to: url, options: .atomic)",
+    "count": 1,
+    "reason": "App-local unsaved recovery journal; isolates damaged entries and preserves their original bytes before same-page replacement. Never canonical vault storage."
   }
 ]
