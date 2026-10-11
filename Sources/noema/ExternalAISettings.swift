@@ -17,6 +17,10 @@ struct ExternalAISettings: View {
     var body: some View {
         Section("External AI — OpenAI") {
             LabeledContent("Credential", value: credentialDescription)
+            if service.credentialStatus?.presence == .inaccessible {
+                Text("Noema cannot access this saved key. Remove it here, then save the key again. If removal fails, unlock the login Keychain in Keychain Access.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             LabeledContent("Session authorization", value: authorizationDescription)
             if let expiresAt = service.credentialStatus?.localPolicyExpiresAt {
                 LabeledContent("Local policy ends") {
@@ -31,6 +35,23 @@ struct ExternalAISettings: View {
                     .disabled(isBusy || modelEntry == service.configuration.model)
             }
             Text("Configured model: \(service.configuration.model). Changing it revokes current session authorization.")
+                .font(.caption).foregroundStyle(.secondary)
+            Picker("Reasoning effort", selection: Binding(
+                get: { service.configuration.reasoningEffort },
+                set: { effort in
+                    service.setReasoningEffort(effort)
+                    feedback = "Reasoning effort saved. Session access revoked."
+                    failed = false
+                })) {
+                ForEach(ExternalAIReasoningEffort.allCases, id: \.self) { effort in
+                    Text(effort.displayName).tag(effort)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(isBusy || !service.configuration.supportsReasoningEffort)
+            Text(service.configuration.supportsReasoningEffort
+                 ? "Low is Noema's default. None uses no reasoning; Medium allows more reasoning and can take longer and use more tokens. Changes are saved automatically and revoke session access."
+                 : "Reasoning effort selection is available for gpt-6-luna. Your selection is retained when switching models.")
                 .font(.caption).foregroundStyle(.secondary)
             SecureField(service.credentialStatus?.isAvailable == true ? "Replacement API key" : "OpenAI API key", text: $enteredKey)
                 .textFieldStyle(.roundedBorder)

@@ -43,6 +43,70 @@ private final class CredentialRevocationCounter: @unchecked Sendable {
 
 private let testCredential = "sk-test-credential-for-unit-tests-only"
 
+private final class ReadbackTestKeychain: ExternalAIKeychain, @unchecked Sendable {
+    enum Mode: Sendable { case exact, unavailable, missing, stale }
+    private let lock = NSLock()
+    private var mode: Mode = .exact
+    private var storage: Data?
+    private var lastWritten: Data?
+    private var deletionCount = 0
+
+    func setMode(_ value: Mode) { lock.withLock { mode = value } }
+    var deletions: Int { lock.withLock { deletionCount } }
+    var writtenVersion: UUID? {
+        lock.withLock {
+            guard let lastWritten,
+                  let object = try? JSONSerialization.jsonObject(with: lastWritten) as? [String: Any],
+                  let version = object["version"] as? String else { return nil }
+            return UUID(uuidString: version)
+        }
+    }
+    func read() throws -> Data? {
+        try lock.withLock {
+            if mode == .unavailable { throw ExternalAIError.credentialUnavailable }
+            return mode == .missing ? nil : storage
+        }
+    }
+    func write(_ data: Data) throws {
+        lock.withLock {
+            lastWritten = data
+            if mode != .stale { storage = data }
+        }
+    }
+    func delete() throws { lock.withLock { storage = nil; deletionCount += 1 } }
+}
+
+@Test(arguments: [ReadbackTestKeychain.Mode.unavailable, .missing, .stale])
+private func credentialStoreRequiresReadableExactRecordBeforeGrantingAuthority(mode: ReadbackTestKeychain.Mode) async throws {
+    let keychain = ReadbackTestKeychain()
+    let broker = ExternalAICredentialBroker(keychain: keychain)
+    try await broker.store(testCredential)
+    let originalVersion = try await broker.credentialVersion()
+    let counter = CredentialRevocationCounter()
+    _ = await broker.addChangeHandler { counter.increment() }
+    keychain.setMode(mode)
+
+    await #expect(throws: ExternalAIError.credentialUnavailable) {
+        try await broker.replace(testCredential + "-replacement", policy: .thirtyDays)
+    }
+    let attemptedVersion = try #require(keychain.writtenVersion)
+    #expect(attemptedVersion != originalVersion) // The write succeeded independently of read access.
+    #expect(counter.value == 1)
+    #expect(keychain.deletions == 0) // Failed verification must preserve the stored item.
+    for version in [originalVersion, attemptedVersion] {
+        #expect(throws: ExternalAIError.authorizationRevoked) {
+            try broker.withValidatedCredential(version: version) {}
+        }
+    }
+
+    keychain.setMode(.exact)
+    try await broker.store(testCredential + "-recovered")
+    let recoveredVersion = try await broker.credentialVersion()
+    #expect(await broker.status().isAvailable)
+    #expect(recoveredVersion != attemptedVersion)
+    try broker.withValidatedCredential(version: recoveredVersion) {}
+}
+
 @Test func credentialBrokerMissingMalformedAndInaccessibleAreRedacted() async throws {
     let keychain = CredentialTestKeychain()
     let broker = ExternalAICredentialBroker(keychain: keychain)

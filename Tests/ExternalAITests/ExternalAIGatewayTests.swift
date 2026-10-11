@@ -38,7 +38,8 @@ private struct GatewayFixture {
     let broker: ExternalAICredentialBroker
     let manager: ExternalAISessionManager
     let gateway: ExternalAIGateway
-    init(transport: GatewayMockTransport, gate: VaultAccessGate? = nil, session: VaultSession? = nil) async throws {
+    init(transport: GatewayMockTransport, gate: VaultAccessGate? = nil, session: VaultSession? = nil,
+         configuration: ExternalAIModelConfiguration = .default) async throws {
         self.session = session ?? VaultSession(vaultID: UUID(), root: URL(fileURLWithPath: "/tmp/gateway-test"), generation: 4)
         self.gate = gate ?? VaultAccessGate(initialState: .open(self.session))
         broker = ExternalAICredentialBroker(keychain: GatewayKeychain())
@@ -46,12 +47,26 @@ private struct GatewayFixture {
         manager = ExternalAISessionManager(accessGate: self.gate, credentialBroker: broker,
                                          authenticator: GatewayAuthenticator(), observeSystemEvents: false)
         gateway = ExternalAIGateway(credentialBroker: broker, sessionManager: manager,
-                                  accessGate: self.gate, transport: transport)
+                                  accessGate: self.gate, configuration: configuration, transport: transport)
     }
     func request(content: String = "selected document text", target: ExternalAISummaryTarget = .page(UUID())) throws -> ExternalAISummaryRequest {
         try ExternalAISummaryRequest(authority: ExternalAIVaultAuthority(session: session), target: target,
                                      contentRevision: UUID(), content: content)
     }
+}
+
+@Test(arguments: ExternalAIReasoningEffort.allCases)
+func gatewayDispatchesConfiguredReasoningEffort(effort: ExternalAIReasoningEffort) async throws {
+    let mock = GatewayMockTransport()
+    let configuration = try ExternalAIModelConfiguration(model: "gpt-6-luna", reasoningEffort: effort)
+    let fixture = try await GatewayFixture(transport: mock, configuration: configuration)
+    let request = try fixture.request()
+    _ = try await fixture.gateway.summarizePage(request, consent: ExternalAIContentConsent(approving: request))
+    let sent = try #require(await mock.requests.first)
+    let body = try #require(sent.httpBody)
+    let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+    #expect((object["reasoning"] as? [String: String]) == ["effort": effort.rawValue])
+    #expect(object["model"] as? String == configuration.model)
 }
 
 @Test func gatewaySendsOnlyExactTextFixedInstructionAndNoStore() async throws {
@@ -141,11 +156,9 @@ private struct GatewayFixture {
     }
 }
 
-@Test func gatewayRejectsMalformedOversizedRefusedAndIncompleteOutput() throws {
+@Test func gatewayRejectsMalformedOversizedAndUnexpectedOutput() throws {
     for body in [Data("not-json".utf8),
-                 Data(#"{"object":"response","status":"incomplete","output":[]}"#.utf8),
-                 Data(#"{"object":"response","status":"completed","output":[{"type":"function_call"}]}"#.utf8),
-                 Data(#"{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"refusal"}]}]}"#.utf8)] {
+                 Data(#"{"object":"response","status":"completed","output":[{"type":"function_call"}]}"#.utf8)] {
         #expect(throws: ExternalAIError.invalidResponse) { try ExternalAIGateway.summary(from: body) }
     }
     #expect(throws: ExternalAIError.responseTooLarge) {
@@ -156,6 +169,28 @@ private struct GatewayFixture {
             ["type": "output_text", "text": String(repeating: "a", count: ExternalAILimits.maximumSummaryBytes + 1)]]]]]
     let body = try JSONSerialization.data(withJSONObject: object)
     #expect(throws: ExternalAIError.responseTooLarge) { try ExternalAIGateway.summary(from: body) }
+}
+
+@Test func gatewayIncompleteAndRefusedSummariesFailWithoutRetryOrPublication() async throws {
+    let responses: [(Data, ExternalAIError)] = [
+        (Data(#"{"object":"response","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}"#.utf8), .summaryOutputLimitReached),
+        (Data(#"{"object":"response","status":"incomplete","output":[]}"#.utf8), .summaryIncomplete),
+        (Data(#"{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"refusal","refusal":"synthetic-private-provider-text"}]}]}"#.utf8), .summaryRefused)
+    ]
+    for (body, failure) in responses {
+        let mock = GatewayMockTransport(body: body)
+        let f = try await GatewayFixture(transport: mock)
+        let request = try f.request()
+        await #expect(throws: failure) {
+            try await f.gateway.summarizePage(request, consent: ExternalAIContentConsent(approving: request))
+        }
+        #expect(await mock.requests.count == 1)
+        #expect(f.gate.registrySnapshot().activeCount == 0)
+        let unissued = try ExternalAISummaryResult(request: request, summary: "Partial summary",
+                                                  provenance: ExternalAIProvenance(model: "gpt-4.1-mini"))
+        await #expect(throws: ExternalAIError.authorizationRevoked) { try await f.gateway.validatePublication(of: unissued) }
+        #expect(!failure.localizedDescription.contains("synthetic-private-provider-text"))
+    }
 }
 
 @Test func gatewayConnectionValidationUsesNoVaultContent() async throws {
