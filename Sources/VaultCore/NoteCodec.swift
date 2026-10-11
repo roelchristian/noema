@@ -76,7 +76,7 @@ public enum NoteCodec {
 
     private static func provenanceNode(_ provenance: SummaryProvenance?) -> Node? {
         guard let provenance else { return nil }
-        var node = Node([:])
+        var node = Node.mapping(Node.Mapping([]))
         node["provider"] = Node(provenance.provider)
         node["model"] = Node(provenance.model)
         node["generated_at"] = Node(ISO8601DateFormatter().string(from: provenance.generatedAt))
