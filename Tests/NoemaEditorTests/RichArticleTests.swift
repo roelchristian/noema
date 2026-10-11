@@ -165,8 +165,8 @@ import VaultCore
                 }
                 let first = storage.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as! NSParagraphStyle
                 let second = storage.attribute(.paragraphStyle, at: 11, effectiveRange: nil) as! NSParagraphStyle
-                #expect(first.paragraphSpacingBefore == (enabled ? 12 + BlockTextStorage.semanticHeadingSpace : 0))
-                #expect(second.paragraphSpacingBefore == (enabled ? 12 : 0))
+                #expect(first.paragraphSpacingBefore == (enabled ? view.typography.semanticHeadingSpace : 0))
+                #expect(second.paragraphSpacingBefore == 0)
             }
         }
     }

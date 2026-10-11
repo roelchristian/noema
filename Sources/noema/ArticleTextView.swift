@@ -21,12 +21,13 @@ import VaultCore
     var end: (() -> Void)?
     var locked = false
     var theme = NoemaTheme()
+    var typography = EditorTypography()
     var showSemanticHeadings = false
     private(set) var semanticHeadingTopInset: CGFloat = 0
     func updateSemanticHeadingTopInset() {
         // AppKit ignores paragraphSpacingBefore on the document's first paragraph.
         let tag = textStorage.flatMap { $0.length > 0 ? $0.attribute(.semanticTag, at: 0, effectiveRange: nil) as? String : nil }
-        let inset = showSemanticHeadings && SemanticPresentation.find(tag) != nil ? BlockTextStorage.semanticHeadingSpace + 1 : 0
+        let inset = showSemanticHeadings && SemanticPresentation.find(tag) != nil ? typography.semanticHeadingSpace : 0
         if inset != semanticHeadingTopInset {
             textContainerInset.height += inset - semanticHeadingTopInset
             semanticHeadingTopInset = inset
@@ -68,7 +69,7 @@ import VaultCore
             // block decoration on the native insertion line so it won't jump.
             let line = layoutManager.lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
             let used = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphs.location, effectiveRange: nil)
-            let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont ?? EditorTypography.current.font()
+            let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont ?? typography.font(for: .body)
             let paragraph = storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle
             // The newline's fragment omits leading paragraph spacing after the first block.
             let leadingSpace = range.location > 0 ? (paragraph?.paragraphSpacingBefore ?? 0) : 0
@@ -83,7 +84,7 @@ import VaultCore
             var ascender: CGFloat = 0, descender: CGFloat = 0
             let characters = layoutManager.characterRange(forGlyphRange: included, actualGlyphRange: nil)
             storage.enumerateAttribute(.font, in: characters) { value, _, _ in
-                let font = value as? NSFont ?? EditorTypography.current.font()
+                let font = value as? NSFont ?? self.typography.font(for: .body)
                 ascender = max(ascender, font.ascender); descender = max(descender, -font.descender)
             }
             bounds = bounds.union(NSRect(x: used.minX, y: baseline - ascender, width: used.width, height: ascender + descender))
@@ -99,10 +100,64 @@ import VaultCore
         let glyph = layoutManager.glyphIndexForCharacter(at: range.location)
         let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
         let x = textContainerOrigin.x + line.minX + layoutManager.location(forGlyphAt: glyph).x
-        return NSRect(x: x, y: body.minY - BlockTextStorage.semanticHeadingSpace,
+        return NSRect(x: x, y: body.minY - typography.semanticHeadingSpace,
                       width: max(0, bounds.width - textContainerOrigin.x - x),
-                      height: BlockTextStorage.semanticHeadingSpace - 8)
+                      height: typography.semanticLabelHeight)
     }
+    /// Both drawn markers and their hit targets use the content's first baseline.
+    func firstBaseline(for range: NSRange) -> CGFloat {
+        guard let layoutManager, let storage = textStorage, range.length > 0 else { return 0 }
+        let glyph = layoutManager.glyphIndexForCharacter(at: range.location)
+        let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        if (storage.string as NSString).substring(with: range) == "\n" {
+            let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont ?? typography.font(for: .body)
+            return rect(for: range).minY + font.ascender
+        }
+        return textContainerOrigin.y + line.minY + layoutManager.location(forGlyphAt: glyph).y
+    }
+
+    func markerRect(for range: NSRange, depth: Int, callout: Bool = false) -> NSRect {
+        let font = typography.font(for: .semanticLabel)
+        // The structural gutter is 24 pt. Enlarged icons remain inside it.
+        let size = min(18, font.pointSize)
+        return NSRect(x: textContainerOrigin.x + CGFloat(depth * 24) + (callout ? -23 : 1),
+                      y: firstBaseline(for: range) - size * 0.8, width: size, height: size)
+    }
+
+    func semanticSymbolRect(for range: NSRange, depth: Int, heading: NSRect?) -> NSRect? {
+        let labelFont = typography.font(for: .semanticLabel)
+        let baseline = heading.map { $0.minY + labelFont.ascender } ?? firstBaseline(for: range)
+        let size = min(18, labelFont.pointSize)
+        let rect = NSRect(x: max(30, textContainerOrigin.x - 46) + CGFloat(depth * 24),
+                          y: baseline - size * 0.8, width: size, height: size)
+        // Tiny viewports may have no room between the drag and content gutters.
+        guard rect.maxX <= textContainerOrigin.x + CGFloat(depth * 24) - 12 else { return nil }
+        return rect
+    }
+
+    /// A preview occupies only unused horizontal space on a single raw-source line.
+    /// At narrow widths, or for wrapped source, the source remains the sole display.
+    func mathPreviewRect(for range: NSRange) -> NSRect? {
+        guard let layoutManager, range.length > 0 else { return nil }
+        let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        var lines = 0
+        var fragment = NSRect.zero
+        layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { line, _, _, _, _ in
+            lines += 1; fragment = line
+        }
+        guard lines == 1 else { return nil }
+        let content = rect(for: range)
+        let start = content.maxX + typography.semanticLabelGap * 3
+        let width = min(260, bounds.width - textContainerOrigin.x - start)
+        guard width >= typography.pointSize(for: .semanticLabel) * 6 else { return nil }
+        let font = typography.font(for: .math)
+        let preview = NSRect(x: start, y: firstBaseline(for: range) - font.ascender,
+                             width: width, height: font.ascender - font.descender)
+        let line = fragment.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+        guard preview.minY >= line.minY, preview.maxY <= line.maxY else { return nil }
+        return preview
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         guard let storage = textStorage else { super.draw(dirtyRect); return }
         let ranges = BlockTextStorage.ranges(storage)
@@ -139,24 +194,33 @@ import VaultCore
             case .callout: structureSymbol = metadata.icon ?? "info.circle"
             default: break
             }
-            if let symbol = structureSymbol { drawSymbol(symbol, at: NSRect(x: structuralX, y: rect.minY + 3, width: 14, height: 14), color: .secondaryLabelColor) }
-            if let text = structureText { (text as NSString).draw(at: NSPoint(x: structuralX, y: rect.minY + 2), withAttributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.secondaryLabelColor]) }
+            if let symbol = structureSymbol { drawSymbol(symbol, at: markerRect(for: range, depth: depth, callout: kind == .callout), color: .secondaryLabelColor) }
+            if let text = structureText {
+                var font = typography.font(for: .semanticLabel, weight: .medium)
+                let measured = (text as NSString).size(withAttributes: [.font: font]).width
+                if measured > 21 { font = NSFontManager.shared.convert(font, toSize: font.pointSize * 21 / measured) }
+                (text as NSString).draw(at: NSPoint(x: structuralX, y: firstBaseline(for: range) - font.ascender),
+                                       withAttributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor])
+            }
             if let semantic = SemanticPresentation.find(metadata.semantic) {
                 if let headingRect {
-                    (semantic.title as NSString).draw(in: headingRect, withAttributes: [.font: BlockTextStorage.semanticHeadingFont, .foregroundColor: theme.nativeText()])
+                    (semantic.title as NSString).draw(in: headingRect, withAttributes: [.font: typography.font(for: .semanticLabel), .foregroundColor: theme.nativeText()])
                 }
-                drawSymbol(semantic.symbol, at: NSRect(x: textContainerOrigin.x - 46, y: headingRect == nil ? rect.minY + 3 : decorationRect.midY - 7, width: 14, height: 14), color: semantic.accent)
+                if let icon = semanticSymbolRect(for: range, depth: depth, heading: headingRect) {
+                    drawSymbol(semantic.symbol, at: icon, color: semantic.accent)
+                }
             } else if kind == .code, let language = metadata.language {
-                (language as NSString).draw(in: NSRect(x: 30, y: rect.minY + 3, width: max(0, textContainerOrigin.x - 38), height: 34), withAttributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor])
+                (language as NSString).draw(in: NSRect(x: 30, y: firstBaseline(for: range) - NSFont.systemFont(ofSize: 10).ascender, width: max(0, textContainerOrigin.x - 38), height: 34), withAttributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor])
             } else if kind == .math {
-                drawSymbol("function", at: NSRect(x: textContainerOrigin.x - 46, y: rect.minY + 3, width: 14, height: 14), color: .secondaryLabelColor)
+                if let icon = semanticSymbolRect(for: range, depth: depth, heading: nil) {
+                    drawSymbol("function", at: icon, color: .secondaryLabelColor)
+                }
                 let rawBlock = (storage.string as NSString).substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
                 let rendered = TeXMath.render(rawBlock, display: true)
-                if !rendered.isEmpty {
+                if !rendered.isEmpty, let previewRect = mathPreviewRect(for: range) {
                     let previewStyle = NSMutableParagraphStyle(); previewStyle.alignment = .right
-                    let previewRect = NSRect(x: max(textContainerOrigin.x + 120, bounds.width - textContainerOrigin.x - 260), y: decorationRect.minY, width: 260, height: decorationRect.height)
                     (rendered as NSString).draw(in: previewRect, withAttributes: [
-                        .font: NSFont.systemFont(ofSize: 14, weight: .medium),
+                        .font: typography.font(for: .math),
                         .foregroundColor: theme.nativeText(.accentSecondary),
                         .paragraphStyle: previewStyle
                     ])
@@ -192,7 +256,8 @@ import VaultCore
             if point.x < 29, isEditable { dragStart = (id, point); setSelectedRange(NSRange(location: range.location, length: 0)); return }
             let depth = storage.attribute(.blockDepth, at: range.location, effectiveRange: nil) as? Int ?? 0
             let accessoryX = textContainerOrigin.x + CGFloat(depth * 24) + 1
-            if point.x >= accessoryX - 3 && point.x <= accessoryX + 19 {
+            let marker = markerRect(for: range, depth: depth).insetBy(dx: -3, dy: -3)
+            if point.x >= accessoryX - 3 && point.x <= accessoryX + 19 && point.y >= marker.minY && point.y <= marker.maxY {
                 let kind = storage.attribute(.blockKind, at: range.location, effectiveRange: nil) as? String
                 if kind == BlockKind.task.rawValue || kind == BlockKind.toggle.rawValue {
                     if !isEditable { isEditable = true; begin?() }

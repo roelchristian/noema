@@ -13,8 +13,6 @@ extension NSAttributedString.Key {
 }
 
 @MainActor enum BlockTextStorage {
-    static var semanticHeadingFont: NSFont { EditorTypography.current.font(weight: .semibold) }
-    static var semanticHeadingSpace: CGFloat { ceil(semanticHeadingFont.ascender - semanticHeadingFont.descender) + 8 }
     struct VisibleBlock { var block: EditorBlock; var depth: Int; var number: Int }
     static func visible(_ document: BlockDocument) -> [VisibleBlock] {
         func walk(_ blocks: [EditorBlock], depth: Int) -> [VisibleBlock] {
@@ -74,7 +72,7 @@ extension NSAttributedString.Key {
             result.append(NSAttributedString(string: "\n", attributes: base(block, depth: value.depth, theme: theme, typography: typography)))
         }
         updateParagraphRhythm(result, typography: typography)
-        if showSemanticHeadings { updateSemanticHeadingSpacing(result) }
+        if showSemanticHeadings { updateSemanticHeadingSpacing(result, typography: typography) }
         return result
     }
     /// Normalize paragraph attributes after rendering and native editing. A
@@ -112,8 +110,13 @@ extension NSAttributedString.Key {
 
     // Reserve display space only above the first paragraph. Labels never enter
     // the editable string, selection offsets, clipboard, or canonical document.
-    static func updateSemanticHeadingSpacing(_ storage: NSMutableAttributedString, in affectedRange: NSRange? = nil) {
+    static func updateSemanticHeadingSpacing(_ storage: NSMutableAttributedString, in affectedRange: NSRange? = nil, typography: EditorTypography = .init()) {
+        var previous: EditorTypography.Role?
         for (_, range) in ranges(storage) {
+            let kind = BlockKind(rawValue: storage.attribute(.blockKind, at: range.location, effectiveRange: nil) as? String ?? "paragraph")
+            let role = EditorTypography.role(for: kind)
+            let boundary = typography.boundarySpacing(before: role, after: previous)
+            previous = role
             if let affectedRange, NSIntersectionRange(range, affectedRange).length == 0 { continue }
             let tag = storage.attribute(.semanticTag, at: range.location, effectiveRange: nil) as? String
             guard SemanticPresentation.find(tag) != nil else { continue }
@@ -123,7 +126,7 @@ extension NSAttributedString.Key {
                 guard let original = value as? NSParagraphStyle else { return }
                 let leading = NSIntersectionRange(part, first)
                 let rest = NSRange(location: max(part.location, NSMaxRange(first)), length: max(0, NSMaxRange(part) - max(part.location, NSMaxRange(first))))
-                for (segment, spacing) in [(leading, 12 + semanticHeadingSpace), (rest, CGFloat(12))] {
+                for (segment, spacing) in [(leading, boundary + typography.semanticHeadingSpace), (rest, CGFloat(0))] {
                     guard segment.length > 0, original.paragraphSpacingBefore != spacing,
                           let style = original.mutableCopy() as? NSMutableParagraphStyle else { continue }
                     style.paragraphSpacingBefore = spacing; styles.append((segment, style))

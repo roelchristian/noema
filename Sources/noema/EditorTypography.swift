@@ -9,21 +9,21 @@ import VaultCore
     let size: Double
 
     enum Role: CaseIterable {
-        case heading1, heading2, heading3, body, quote, list, code, mathSource, math, supporting
+        case heading1, heading2, heading3, body, quote, list, code, mathSource, math, supporting, semanticLabel
 
         var scale: CGFloat {
             switch self {
             case .heading1: 1.93
             case .heading2: 1.53
             case .heading3: 1.27
-            case .code, .mathSource, .supporting: 0.88
+            case .code, .mathSource, .supporting, .semanticLabel: 0.88
             case .body, .quote, .list, .math: 1
             }
         }
 
         var weight: NSFont.Weight {
             switch self {
-            case .heading1, .heading2, .heading3: .semibold
+            case .heading1, .heading2, .heading3, .semanticLabel: .semibold
             default: .regular
             }
         }
@@ -72,6 +72,8 @@ import VaultCore
         switch role {
         case .code, .mathSource:
             return .monospacedSystemFont(ofSize: pointSize, weight: weight)
+        case .semanticLabel:
+            return .systemFont(ofSize: pointSize, weight: weight)
         case .math:
             return mathematicalFont(ofSize: pointSize, weight: weight)
         default:
@@ -136,6 +138,15 @@ import VaultCore
         paragraph.paragraphSpacingBefore = boundarySpacing(before: role, after: previous)
         return paragraph
     }
+
+    /// Semantic headings are interface labels, independent of the reading family.
+    /// The reservation includes the native glyph height and a small optical gap.
+    var semanticLabelHeight: CGFloat {
+        let label = font(for: .semanticLabel)
+        return ceil(label.ascender - label.descender)
+    }
+    var semanticLabelGap: CGFloat { max(2, CGFloat(size) * 0.2) }
+    var semanticHeadingSpace: CGFloat { semanticLabelHeight + semanticLabelGap }
 
     // Compatibility for document callers that need a specific weight or offset.
     func font(offset: CGFloat = 0, weight: NSFont.Weight = .regular) -> NSFont {
