@@ -327,6 +327,24 @@ public actor VaultSessionManager {
         }
     }
 
+    private func commitAccessSession(
+        _ session: VaultSession,
+        binding: AccessCommitBinding?,
+        action: String,
+        commit: () -> Void
+    ) throws {
+        // Metadata validation happens before the policy lock; no storage or await occurs below it.
+        try validateCommitBinding(binding, session: session, action: action)
+        if let binding {
+            try accessPolicy.withUnchangedSnapshot(for: binding.vaultID, matching: binding.policy, action: action) {
+                if Task.isCancelled { throw VaultSessionError.cancelled(action: action) }
+                commit()
+            }
+        } else {
+            commit() // Internal loader fixtures only.
+        }
+    }
+
     /// Changing either direction requires a fresh native attempt for the exact active session.
     public func setAccessAuthenticationRequired(
         _ required: Bool,
@@ -337,12 +355,12 @@ public actor VaultSessionManager {
             throw VaultSessionError.cancelled(action: "changeVaultAccessPolicy")
         }
         guard accessPolicy.snapshot(for: expectedSession.vaultID).authenticationRequired != required else { return }
-        _ = try await authenticateAdmission(
+        let admittedPolicy = try await authenticateAdmission(
             root: expectedSession.root, vaultID: expectedSession.vaultID,
             action: "changeVaultAccessPolicy", purpose: .changeVaultAccessPolicy,
             storageProvider: storageProvider, alwaysAuthenticate: true
         )
-        accessPolicy.setRequired(required, for: expectedSession.vaultID)
+        try accessPolicy.setRequired(required, for: expectedSession.vaultID, matching: admittedPolicy)
     }
 
     /// Registers an opt-in only for the fresh UUID created by the existing staged publisher.
@@ -630,11 +648,12 @@ public actor VaultSessionManager {
             }
             if Task.isCancelled { throw VaultSessionError.cancelled(action: "open") }
             if activeTransitionID == id {
-                try validateCommitBinding(activeOpenTask?.binding, session: session, action: "open")
-                activeTransitionID = nil
-                activeOpenTask = nil
-                generation = session.generation
-                setState(.open(session))
+                try commitAccessSession(session, binding: activeOpenTask?.binding, action: "open") {
+                    activeTransitionID = nil
+                    activeOpenTask = nil
+                    generation = session.generation
+                    setState(.open(session))
+                }
             }
             guard state == .open(session), case .open(let committed) = state else {
                 throw VaultSessionError.cancelled(action: "open")
@@ -956,11 +975,12 @@ public actor VaultSessionManager {
             }
             if Task.isCancelled { throw VaultSessionError.cancelled(action: "unlock") }
             if activeTransitionID == id {
-                try validateCommitBinding(activeUnlockTask?.binding, session: session, action: "unlock")
-                activeTransitionID = nil
-                activeUnlockTask = nil
-                generation = session.generation
-                setState(.open(session))
+                try commitAccessSession(session, binding: activeUnlockTask?.binding, action: "unlock") {
+                    activeTransitionID = nil
+                    activeUnlockTask = nil
+                    generation = session.generation
+                    setState(.open(session))
+                }
             }
             guard state == .open(session), case .open(let committed) = state else {
                 throw VaultSessionError.cancelled(action: "unlock")
