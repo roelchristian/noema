@@ -14,6 +14,8 @@ struct ContentView: View {
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @Namespace private var sidebarTabNamespace
     @FocusState private var searchFocused: Bool
+    @State private var searchFocusPending = false
+    @State private var sidebarSearchMounted = false
     @State private var showTrashConfirmation = false
     @State private var hoveredSidebarPageID: UUID?
     @State private var trashPageID: UUID?
@@ -23,7 +25,9 @@ struct ContentView: View {
     @State private var emptyTrashPages: [TrashedItem] = []
     @State private var dismissedExternalChange = false
     @State private var sourceOriginal = false
-    @State private var inspectorState = InspectorState()
+    @State private var inspectorState: InspectorState
+    @State private var paneState: WorkspacePaneState
+    @State private var workspaceWidth: CGFloat = 1280
     @State private var recentSectionExpanded = true
     @State private var allPagesSectionExpanded = true
     @State private var pageSortOrder: PageSortOrder = .updated
@@ -34,6 +38,50 @@ struct ContentView: View {
     @State private var deletingSource: SourceRecord?
     @AppStorage(EditorPreferences.aiSummariesKey) private var aiSummaries = false
     @AppStorage(EditorPreferences.aiSummaryPlacementKey) private var aiSummaryPlacement = AISummaryPlacement.defaultValue.rawValue
+    init(model: AppModel) {
+        self.model = model
+        let panes = WorkspacePaneState()
+        _paneState = State(initialValue: panes)
+        _inspectorState = State(initialValue: InspectorState(paneState: panes))
+    }
+    private var workspaceMinimum: CGFloat {
+        model.scope == .sources && model.currentNote == nil && model.currentSource == nil ? 520 : 420
+    }
+    private var panePresentation: WorkspacePanePresentation {
+        paneState.presentation(width: workspaceWidth, mainMinimum: workspaceMinimum, inspectorAvailable: inspectorContext.isInspectable)
+    }
+    private var isInspectorPresented: Bool { model.isVaultAvailable && panePresentation.inspector }
+    private var paneActions: WorkspacePaneActions {
+        WorkspacePaneActions(
+            toggleSidebar: toggleSidebarPane,
+            toggleInspector: toggleInspectorPane,
+            sidebarPresented: model.isVaultAvailable && panePresentation.sidebar,
+            inspectorPresented: isInspectorPresented,
+            canToggleSidebar: model.isVaultAvailable && workspaceWidth >= workspaceMinimum + WorkspacePaneState.sidebarMinimum + 1,
+            canToggleInspector: model.isVaultAvailable && inspectorContext.isInspectable && workspaceWidth >= workspaceMinimum + InspectorState.minWidth + 1
+        )
+    }
+    private func toggleSidebarPane() {
+        guard paneActions.canToggleSidebar else { return }
+        paneState.toggleSidebar(presented: panePresentation.sidebar)
+        if !paneState.isSidebarVisible { searchFocused = false; searchFocusPending = false }
+    }
+    private func toggleInspectorPane() {
+        guard paneActions.canToggleInspector else { return }
+        paneState.toggleInspector(presented: isInspectorPresented)
+    }
+    private func revealSidebarSearch() {
+        guard model.isVaultAvailable else { return }
+        searchFocusPending = true
+        paneState.revealSidebar()
+        // Wait for SwiftUI to mount a previously hidden sidebar before requesting focus.
+        Task { @MainActor in
+            await Task.yield()
+            guard model.isVaultAvailable && panePresentation.sidebar && sidebarSearchMounted else { return }
+            searchFocused = true
+            searchFocusPending = false
+        }
+    }
     private var inspectorContext: InspectorContext {
         InspectorContext.resolve(model: model, librarySourceSelection: sourceSelection)
     }
@@ -63,6 +111,7 @@ struct ContentView: View {
         dismissedExternalChange = false
         sourceOriginal = false
         searchFocused = false
+        searchFocusPending = false
     }
     var body: some View {
         Group {
@@ -71,21 +120,34 @@ struct ContentView: View {
             } else if !model.isVaultAvailable {
                 welcome
             } else {
-                HSplitView {
-                    sidebar.frame(minWidth: 250, idealWidth: 265, maxWidth: 280, maxHeight: .infinity)
-                    mainWorkspace.frame(minWidth: model.scope == .sources && model.currentNote == nil && model.currentSource == nil ? 520 : 420, maxHeight: .infinity).transaction { $0.animation = nil }
-                    if inspectorState.shouldPresent(for: inspectorContext) {
-                        InspectorContainer(
-                            model: model,
-                            state: inspectorState,
-                            context: inspectorContext,
-                            onCloseSourceSelection: { sourceSelection = nil }
-                        )
-                        .transaction { $0.animation = nil }
+                GeometryReader { geometry in
+                    let presentation = paneState.presentation(width: geometry.size.width, mainMinimum: workspaceMinimum, inspectorAvailable: inspectorContext.isInspectable)
+                    HSplitView {
+                        if presentation.sidebar {
+                            sidebar.frame(minWidth: WorkspacePaneState.sidebarMinimum, idealWidth: paneState.sidebarWidth, maxWidth: WorkspacePaneState.sidebarMaximum, maxHeight: .infinity)
+                        }
+                        mainWorkspace
+                            .frame(minWidth: workspaceMinimum, maxHeight: .infinity)
+                            .transaction { $0.animation = nil }
+                            .background(WorkspaceSplitViewPersistence(state: paneState, presentation: presentation, mainMinimum: workspaceMinimum))
+                        if presentation.inspector {
+                            InspectorContainer(
+                                model: model,
+                                state: inspectorState,
+                                context: inspectorContext,
+                                onCloseSourceSelection: { sourceSelection = nil }
+                            )
+                            .transaction { $0.animation = nil }
+                        }
                     }
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .transaction { $0.animation = nil }
                 }
+                // Measure the available container, not the split's aggregate pane minimum.
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { workspaceWidth = $0 }
             }
         }
+        .focusedSceneValue(\.workspacePaneActions, paneActions)
         .toolbar(removing: .sidebarToggle)
         .toolbar { workspaceToolbar }
         .sheet(isPresented: $model.showVaultCreation) {
@@ -141,7 +203,8 @@ struct ContentView: View {
         }
         .onChange(of: model.body) { if model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.title) { if model.scope == .semantic { model.queryChanged() } }
-        .onChange(of: model.searchFocusToken) { if model.isVaultAvailable { searchFocused = true } }
+        .onChange(of: model.searchFocusToken) { revealSidebarSearch() }
+        .onChange(of: panePresentation.sidebar) { if !panePresentation.sidebar { searchFocused = false } }
         .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false }
         .onChange(of: model.externalChange) { dismissedExternalChange = false }
         // UI.R.REM02: Reconcile even while the inspector is hidden or unmounted.
@@ -282,6 +345,11 @@ struct ContentView: View {
                             .textFieldStyle(.plain)
                             .font(.system(size: 12.5))
                             .focused($searchFocused)
+                            .onAppear {
+                                sidebarSearchMounted = true
+                                if searchFocusPending { revealSidebarSearch() }
+                            }
+                            .onDisappear { sidebarSearchMounted = false }
                         if model.searchText.isEmpty {
                             Text("Search")
                                 .font(.system(size: 12.5))
@@ -988,7 +1056,7 @@ struct ContentView: View {
                     if let source = model.currentSource, sourceOriginal || source.metadata.storedFilename.hasSuffix(".txt") {
                         MarkdownEditor(text: .constant(model.body), action: nil, onWikiQuery: { _ in }, editable: false)
                     } else if model.currentNote != nil {
-                        SummarizedArticleView(model: model, showsSummary: (AISummaryPlacement(rawValue: aiSummaryPlacement) ?? .defaultValue).showsInEditor(sidebarVisible: inspectorState.isVisible))
+                        SummarizedArticleView(model: model, showsSummary: (AISummaryPlacement(rawValue: aiSummaryPlacement) ?? .defaultValue).showsInEditor(sidebarVisible: isInspectorPresented))
                             .id(model.selectedID)
                     } else { MarkdownPreview(blocks: model.preview, onWikiLink: model.followWikiLink) }
                     if !model.reading, model.currentNote != nil, model.wikiQuery != nil, !model.linkSuggestions.isEmpty {
@@ -1057,21 +1125,31 @@ struct ContentView: View {
     }
     private var inspectorToolbarToggle: some View {
         Button {
-            inspectorState.toggleVisibility()
+            toggleInspectorPane()
         } label: {
             Label(
-                inspectorState.isVisible ? "Hide Inspector" : "Show Inspector",
+                isInspectorPresented ? "Hide Inspector" : "Show Inspector",
                 systemImage: "sidebar.right"
             )
         }
-        .disabled(!inspectorContext.isInspectable)
+        .disabled(!paneActions.canToggleInspector)
         .keyboardShortcut("i", modifiers: [.command, .option])
-        .help(inspectorState.isVisible ? "Hide Inspector (⌥⌘I)" : "Show Inspector (⌥⌘I)")
-        .accessibilityLabel(inspectorState.isVisible ? "Hide Inspector" : "Show Inspector")
-        .accessibilityValue(inspectorState.isVisible ? "Shown" : "Hidden")
+        .help(isInspectorPresented ? "Hide Inspector (⌥⌘I)" : "Show Inspector (⌥⌘I)")
+        .accessibilityLabel(isInspectorPresented ? "Hide Inspector" : "Show Inspector")
+        .accessibilityValue(isInspectorPresented ? "Shown" : "Hidden")
     }
     @ToolbarContentBuilder private var workspaceToolbar: some ToolbarContent {
         if model.isVaultAvailable {
+            ToolbarItem(placement: .navigation) {
+                Button(action: toggleSidebarPane) {
+                    Label(panePresentation.sidebar ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
+                }
+                .disabled(!paneActions.canToggleSidebar)
+                .keyboardShortcut("s", modifiers: [.command, .control])
+                .help(panePresentation.sidebar ? "Hide Sidebar (⌃⌘S)" : "Show Sidebar (⌃⌘S)")
+                .accessibilityLabel(panePresentation.sidebar ? "Hide Sidebar" : "Show Sidebar")
+                .accessibilityValue(panePresentation.sidebar ? "Shown" : "Hidden")
+            }
             ToolbarItem(placement: .navigation) {
                 Button {
                     switchSidebarScope(model.scope)
@@ -1180,7 +1258,7 @@ struct ContentView: View {
                 }
             }
             if model.currentNote != nil {
-                if model.reading && !inspectorState.isVisible {
+                if model.reading && !isInspectorPresented {
                     ViewThatFits(in: .horizontal) {
                         HStack(alignment: .center, spacing: 16) {
                             pageTitle.fixedSize(horizontal: true, vertical: false)
@@ -1195,12 +1273,12 @@ struct ContentView: View {
                 } else {
                     HStack(alignment: .center, spacing: 16) {
                         pageTitle
-                        if !inspectorState.isVisible {
+                        if !isInspectorPresented {
                             Spacer()
                             headerActions
                         }
                     }
-                    if inspectorState.isVisible {
+                    if isInspectorPresented {
                         headerActions
                     }
                 }
