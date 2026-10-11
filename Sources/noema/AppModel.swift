@@ -90,6 +90,7 @@ struct EditorAction: Equatable {
 }
 
 @MainActor @Observable final class AppModel {
+    var showVaultCreation = false
     var root: URL?
     var vaultName = "Noema"
     var notes: [NoteRecord] = []
@@ -294,14 +295,39 @@ struct EditorAction: Equatable {
         } catch { errorMessage = "Reselect your vault folder to restore access. " + error.localizedDescription }
     }
     func chooseVault(create: Bool) {
+        if create { showVaultCreation = true; return }
         let panel = NSOpenPanel()
-        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = create
-        panel.prompt = create ? "Create Vault Here" : "Open Vault"
-        panel.message = create ? "Choose or create a folder. You can select a folder in iCloud Drive." : "Choose the folder containing your vault.json file."
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = false
+        panel.prompt = "Open Vault"
+        panel.message = "Choose the folder containing your vault.json file."
         presentPanel(panel) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            Task { @MainActor in await self?.open(url, create: create) }
+            Task { @MainActor in await self?.open(url, create: false) }
         }
+    }
+    func chooseVaultParent(completion: @escaping (URL) -> Void) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.canCreateDirectories = false; panel.allowsMultipleSelection = false
+        panel.prompt = "Choose Parent Folder"
+        panel.message = "Choose the existing parent folder, such as Noema in iCloud Drive. The vault will be created inside it after confirmation."
+        presentPanel(panel) { response in
+            guard response == .OK, let url = panel.url else { return }
+            completion(url)
+        }
+    }
+    func createVault(parent: URL, name: String, encryptionRequested: Bool) async throws {
+        // A UI bypass must never silently create plaintext for an encrypted request.
+        guard !encryptionRequested else { throw VaultError.invalid(VaultCreation.encryptionUnavailable) }
+        guard await finishCurrentPage() else { throw VaultError.invalid("Save the current page before creating a vault.") }
+        let hasScope = parent.startAccessingSecurityScopedResource()
+        defer { if hasScope { parent.stopAccessingSecurityScopedResource() } }
+        let url = try await Task.detached {
+            try FileVaultRepository.createNewVault(parent: parent, name: name, encryptionRequested: encryptionRequested)
+        }.value
+        await open(url, create: false)
+        if root == url { showVaultCreation = false }
+        else { throw VaultError.storage(errorMessage ?? "The vault was created but could not be opened. Use Open Vault to retry.") }
     }
     private func presentPanel(_ panel: NSOpenPanel, completion: @escaping (NSApplication.ModalResponse) -> Void) {
         if let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible }) {

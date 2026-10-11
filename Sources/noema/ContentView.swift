@@ -68,6 +68,9 @@ struct ContentView: View {
         .toolbar(removing: .title)
         .toolbar(removing: .sidebarToggle)
         .background(TrafficLightEnforcer())
+        .sheet(isPresented: $model.showVaultCreation) {
+            VaultCreationSheet(model: model).systemNoemaTheme()
+        }
         .sheet(isPresented: $model.showTopicPage) { TopicPageSheet(model: model) }
         .sheet(isPresented: $model.showURLSource) { URLSourceSheet(model: model) }
         .sheet(isPresented: $model.showPasteSource) { PasteSourceSheet(model: model) }

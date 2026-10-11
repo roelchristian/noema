@@ -1,0 +1,53 @@
+import Foundation
+
+/// Creation intent is transient; it is never an encryption claim in the manifest.
+public enum VaultCreation {
+    public static let encryptionUnavailable = "Encrypted vault creation is unavailable. Encryption, recovery-key setup, and protected indexing must be implemented and tested before it can be enabled."
+
+    public static func validatedName(_ name: String) throws -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != ".", trimmed != "..",
+              !trimmed.contains("/"), !trimmed.contains(":"),
+              !trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            throw VaultError.invalid("Enter a folder name without slashes, colons, or control characters.")
+        }
+        return trimmed
+    }
+}
+
+extension FileVaultRepository {
+    /// Publishes a complete plaintext vault by a same-parent move, never merging an existing folder.
+    public static func createNewVault(parent: URL, name: String, encryptionRequested: Bool) throws -> URL {
+        guard !encryptionRequested else { throw VaultError.invalid(VaultCreation.encryptionUnavailable) }
+        let name = try VaultCreation.validatedName(name)
+        let parent = parent.standardizedFileURL.resolvingSymlinksInPath()
+        let fm = FileManager.default
+        let values = try parent.resourceValues(forKeys: [.isDirectoryKey, .volumeIsReadOnlyKey])
+        guard values.isDirectory == true, values.volumeIsReadOnly != true,
+              fm.isWritableFile(atPath: parent.path) else {
+            throw VaultError.storage("Choose an existing writable parent folder.")
+        }
+        let destination = parent.appendingPathComponent(name, isDirectory: true)
+        var coordinationError: NSError?
+        var result: Result<URL, Error> = .failure(VaultError.storage("Could not coordinate vault creation."))
+        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: destination, options: [], error: &coordinationError) { destination in
+            result = Result {
+                guard !fm.fileExists(atPath: destination.path) else {
+                    throw VaultError.invalid("A folder with this name already exists. Choose another name or open the existing vault.")
+                }
+                let staging = parent.appendingPathComponent(".noema-create-\(UUID().uuidString)", isDirectory: true)
+                try fm.createDirectory(at: staging, withIntermediateDirectories: false)
+                defer { try? fm.removeItem(at: staging) }
+                for directory in ["Wiki", "Sources", trashDirectoryName, "Conflicts"] {
+                    try fm.createDirectory(at: staging.appendingPathComponent(directory), withIntermediateDirectories: false)
+                }
+                try JSONEncoder().encode(VaultManifest()).write(to: staging.appendingPathComponent("vault.json"), options: .atomic)
+                // moveItem refuses an occupied destination, including one created after the check.
+                try fm.moveItem(at: staging, to: destination)
+                return destination
+            }
+        }
+        if let coordinationError { throw coordinationError }
+        return try result.get()
+    }
+}
