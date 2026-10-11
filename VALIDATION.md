@@ -10,6 +10,8 @@ Environment: Apple Silicon Mac, macOS 27.0; Swift 6.2.4; macOS SDK 26.2.
 
 ### Not yet verified
 
+- **D02A device/provider acceptance:** Touch ID success/cancellation, permitted macOS fallback, signed-app Keychain access and real sleep/screen-session notification delivery remain pending. No live provider call was made by automated tests. Complete the [D02A checklist](#d02a-device-acceptance-checklist) before device/provider release sign-off.
+
 - **Two-Mac iCloud sync:** Two-Mac iCloud Drive transport, offline concurrent edits, cloud-only placeholders, and real `NSFileVersion` cloud conflicts. Automated stale-file conflict and hydration-error tests pass on a single machine, but cross-device sync reliability remains unverified until the procedure below passes.
 - **Accessibility & VoiceOver matrix:** System accessibility preference combinations (Reduce Transparency, Reduce Motion, Increase Contrast) and a full end-to-end VoiceOver navigation pass across all five themes (`System`, `Midnight Iris`, `Forest`, `Amber`, `Rose`) in both Light and Dark appearances.
 - **Native block drag-and-drop (Block Editor Deliverable 18):** The drag handle, scoped pasteboard, insertion drawing, and shared reorder/undo commands are implemented and keyboard/menu reordering passes automated undo/redo coverage, but live pointer drag attempts did not complete a drop.
@@ -35,6 +37,25 @@ Environment: Apple Silicon Mac, macOS 27.0; Swift 6.2.4; macOS SDK 26.2.
 ---
 
 ## Active Milestone Log
+
+### D02A external AI security and summary integration — 2026-10-12
+
+- **Boundary review:** Keychain is the only persistent credential store; preferences contain only a validated model identifier. UI keeps the entry field transient/masked. Finite public errors and redacted request/result/credential representations omit raw secrets, bodies and platform error text. Reviewed production logging/persistence and the storage exception ledger; no canonical byte bypass was added. In-process arbitrary code/memory inspection remains outside this boundary.
+- **Dispatch/lifecycle evidence:** `ExternalAISessionManagerTests` and `ExternalAIGatewayTests` cover precise session/generation, coalesced/failed/cancelled/outdated authentication, authorization reuse, idle/absolute expiry and clock rollback, lock at resume, credential replacement/removal, exact-content consent/replay and bounded retry. `ExternalAIAdversarialTests` adds metadata-validation replacement before resume, local credential expiry before dispatch/publication without timer delivery, removal during exchange, revocation preventing retry, predispatch caller cancellation, delayed closed-session responses, forged result/publication permit rejection and sanitized provider diagnostics. Metadata validation was hardened with a synchronous credential-version dispatch registry and cancellable worker; final dispatch/publication check local credential expiry without relying on timer delivery. Gateway publication bindings retain summary digests rather than plaintext result text across lock. Production initialization fixes native authentication, clock and revocation observation; dependency injection is internal to the testable security module.
+- **Actual transport evidence:** `OpenAITransportSecurityTests` runs the production URLSession delegate with an internal URLProtocol seam: cross-host redirects never load the destination; unknown-length chunks accept exactly 128 KiB and reject overflow while receiving; oversized advertised lengths, wrong URLs, non-HTTP/non-JSON responses and redirect statuses are rejected; errors are sanitized. All fixtures intercept every URL and use no live key/network.
+- **Publication evidence:** The application/repository tests check page/source provenance, lock/switch/delete/cancel and changed content/summary rejection. A synchronized UI request predicate closes the last actor-hop admission race and detects editor/selection ABA. Canonical compare-and-swap preserves independently changed bytes. A synchronous write already admitted can finish concurrently with revocation; separate linked originals and metadata are not transactional. Existing lifecycle/storage limitations above still apply.
+- **Execution:** The combined pre-main-integration native wrapper run passed **312 tests in 32 suites** (`/private/tmp/noema-d02a-final-tests.log`). The storage guard passed all 11 regression cases, 18 adversarial fixtures and 40 reviewed exceptional calls; source parsing and `git diff --check` passed. The final integration commit records validation after the subsequent API-seam tightening and latest-main reconciliation, including release packaging. Device/provider checks below remain pending regardless of automated success.
+
+### D02A device acceptance checklist
+
+All items are **pending**; this checklist is a device/provider release gate, not an automated pass record.
+
+1. Launch the signed development bundle. Save/replace/remove a test key without a vault open; restart and verify status without prefilling the field. Inspect preferences, a test vault and application diagnostics for absence of the key. Verify Keychain access follows the intended signing identity without a sharing entitlement.
+2. Open a test vault and confirm a page summary disclosure. Exercise Touch ID success, cancellation/failure and permitted password fallback. Confirm a second explicitly approved page/source summary reuses authentication while ordinary editing/status reads do not renew expiry.
+3. During a pending authentication prompt and active request, lock/close/switch the vault, replace/remove the key, sleep/wake and lock/unlock the macOS screen session. Verify requests cancel and the next summary needs fresh authentication; aborted vault lock still requires it. Test shortened injected deadlines for expiry and a real idle/absolute session boundary as appropriate.
+4. With a disposable provider key and nonsensitive content, confirm page/source summaries and connection validation work, provider/model labels and generation metadata persist after reopening, local Apple Intelligence title/LCC/source processing still works independently, and provider failures leave canonical content intact. Change/delete content or its prior summary, switch selection and cancel while a response is delayed; verify stale results do not publish.
+5. Review provider account expiry/spending limits and data-retention policy. Verify the disclosure communicates outbound text, possible billing/retry transmission, and the inability to recall already-sent text. Keep the in-process and plaintext-vault limitations visible.
+
 
 ### D02.REM08–D02.REM10 recovery, preview cleanup and storage review — 2026-10-12
 

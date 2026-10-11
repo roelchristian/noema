@@ -1,5 +1,7 @@
 import Foundation
+import LocalAuthentication
 import Security
+import Synchronization
 
 /// A local use policy, independent of expiration or spending limits enforced by OpenAI.
 public enum ExternalAICredentialPolicy: Sendable, Equatable {
@@ -37,7 +39,9 @@ private struct SystemExternalAIKeychain: ExternalAIKeychain {
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         // Never ask Keychain to interact: session authentication is owned by LocalAuthentication.
-        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        query[kSecUseAuthenticationContext as String] = context
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
@@ -114,11 +118,41 @@ public actor ExternalAICredentialBroker {
     }
 
     private let keychain: any ExternalAIKeychain
-    private let now: @Sendable () -> Date
+    private nonisolated let now: @Sendable () -> Date
     private var observedVersion: UUID?
     private var changeHandlers: [UUID: @Sendable () -> Void] = [:]
     private var expiryTask: Task<Void, Never>?
     private var scheduledVersion: UUID?
+    private struct DispatchAuthority: Sendable {
+        var version: UUID?
+        var expiresAt: Date?
+        var cancellations: [UUID: @Sendable () -> Void] = [:]
+    }
+    private nonisolated let dispatchAuthority = Mutex(DispatchAuthority())
+
+    /// Metadata validation has no vault authority, but must still serialize dispatch with
+    /// credential replacement/removal and cancel its active exchange on those events.
+    nonisolated func withValidatedCredential(version: UUID, body: @Sendable () -> Void) throws {
+        try dispatchAuthority.withLock {
+            guard $0.version == version else { throw ExternalAIError.authorizationRevoked }
+            if let expiry = $0.expiresAt, now() >= expiry { throw ExternalAIError.credentialExpired }
+            try Task.checkCancellation()
+            body()
+        }
+    }
+
+    nonisolated func registerCredentialCancellation(version: UUID, cancel: @escaping @Sendable () -> Void) throws -> UUID {
+        try dispatchAuthority.withLock {
+            guard $0.version == version else { throw ExternalAIError.authorizationRevoked }
+            let id = UUID()
+            $0.cancellations[id] = cancel
+            return id
+        }
+    }
+
+    nonisolated func unregisterCredentialCancellation(_ id: UUID) {
+        _ = dispatchAuthority.withLock { $0.cancellations.removeValue(forKey: id) }
+    }
 
     public init() {
         keychain = SystemExternalAIKeychain()
@@ -161,6 +195,7 @@ public actor ExternalAICredentialBroker {
         do { try keychain.write(JSONEncoder().encode(record)) }
         catch { throw ExternalAIError.credentialUnavailable }
         observedVersion = record.version
+        dispatchAuthority.withLock { $0.version = record.version; $0.expiresAt = record.localPolicyExpiresAt }
         scheduleExpiry(record)
     }
 
@@ -229,6 +264,7 @@ public actor ExternalAICredentialBroker {
         if let expiry = record.localPolicyExpiresAt, now() >= expiry { throw ExternalAIError.credentialExpired }
         if let previous = observedVersion, previous != record.version { revokeCapabilities() }
         observedVersion = record.version
+        dispatchAuthority.withLock { $0.version = record.version; $0.expiresAt = record.localPolicyExpiresAt }
         scheduleExpiry(record)
         return record
     }
@@ -242,6 +278,14 @@ public actor ExternalAICredentialBroker {
         expiryTask = nil
         scheduledVersion = nil
         observedVersion = nil
+        let cancellations = dispatchAuthority.withLock {
+            $0.version = nil
+            $0.expiresAt = nil
+            let cancellations = Array($0.cancellations.values)
+            $0.cancellations.removeAll()
+            return cancellations
+        }
+        for cancel in cancellations { cancel() }
         for handler in changeHandlers.values { handler() }
     }
 

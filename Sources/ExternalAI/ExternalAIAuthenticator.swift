@@ -2,14 +2,14 @@ import Foundation
 import LocalAuthentication
 
 /// Authentication authorizes the external-AI session, independently of Keychain reads.
-public protocol ExternalAIAuthenticating: Sendable {
+protocol ExternalAIAuthenticating: Sendable {
     func authenticate() async throws
 }
 
-public struct LocalExternalAIAuthenticator: ExternalAIAuthenticating {
-    public init() {}
+struct LocalExternalAIAuthenticator: ExternalAIAuthenticating {
+    init() {}
 
-    public func authenticate() async throws {
+    func authenticate() async throws {
         let context = AuthenticationContext()
         try await withTaskCancellationHandler {
             try Task.checkCancellation()

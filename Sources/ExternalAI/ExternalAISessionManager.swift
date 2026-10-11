@@ -24,9 +24,20 @@ public actor ExternalAISessionManager {
     private var gateObservation: UUID?
     private var expiryTask: Task<Void, Never>?
 
-    public init(
+    /// Production callers cannot substitute authentication, freeze deadlines or disable
+    /// native revocation notifications. Those controls belong to internal test injection.
+    public init(accessGate: VaultAccessGate, credentialBroker: ExternalAICredentialBroker,
+                policy: ExternalAISessionPolicy = .default) {
+        gate = accessGate
+        broker = credentialBroker
+        authenticator = LocalExternalAIAuthenticator()
+        registry = ExternalAIAuthorizationRegistry(gate: accessGate, policy: policy, now: { Date() })
+        notifications = ExternalAISystemObservations(registry: registry, enabled: true)
+    }
+
+    init(
         accessGate: VaultAccessGate, credentialBroker: ExternalAICredentialBroker,
-        authenticator: any ExternalAIAuthenticating = LocalExternalAIAuthenticator(),
+        authenticator: any ExternalAIAuthenticating,
         policy: ExternalAISessionPolicy = .default,
         now: @escaping @Sendable () -> Date = { Date() },
         observeSystemEvents: Bool = true

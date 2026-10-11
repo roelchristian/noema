@@ -13,11 +13,14 @@ struct OpenAIHTTPResponse: Sendable {
 }
 
 struct OpenAITransport: OpenAITransporting {
+    // Internal URLProtocol seam exercises the actual session delegate without live network.
+    private let protocolClasses: [AnyClass]?
+    init(protocolClasses: [AnyClass]? = nil) { self.protocolClasses = protocolClasses }
     func perform(_ request: URLRequest, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void) async throws -> OpenAIHTTPResponse {
         let exchange = OpenAIHTTPExchange()
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
-            return try await exchange.execute(request, beforeDispatch: beforeDispatch)
+            return try await exchange.execute(request, protocolClasses: protocolClasses, beforeDispatch: beforeDispatch)
         } onCancel: { exchange.cancel() }
     }
 }
@@ -36,9 +39,10 @@ private final class OpenAIHTTPExchange: NSObject, URLSessionDataDelegate, @unche
     }
     private let state = Mutex(State())
 
-    func execute(_ request: URLRequest, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void) async throws -> OpenAIHTTPResponse {
+    func execute(_ request: URLRequest, protocolClasses: [AnyClass]?, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void) async throws -> OpenAIHTTPResponse {
         try await withCheckedThrowingContinuation { continuation in
             let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = protocolClasses ?? configuration.protocolClasses
             configuration.timeoutIntervalForRequest = ExternalAILimits.requestTimeout
             configuration.timeoutIntervalForResource = ExternalAILimits.requestTimeout
             configuration.urlCache = nil

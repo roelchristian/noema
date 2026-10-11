@@ -48,10 +48,17 @@ For a quick tour, open `Examples/Demo Vault`. Keep your personal content vaults 
 - **Check availability:** Use **Check Availability** (per source or via **Source Actions → Check Availability of All Sources**) to verify linked files, imported checksums, or URL reachability off the main actor. Unreachable URL captures are marked archived while keeping their captured bytes, title, and summary intact.
 
 ### On-device Apple Intelligence
-No remote AI provider is contacted; all inference runs locally via Apple Intelligence (**Noema → Settings… → Apple Intelligence**):
+These workflows run locally via Apple Intelligence (**Noema → Settings… → Apple Intelligence**):
 - **Automatic titles & source naming:** Untitled new pages receive a concise topic title in the detected language when you save, switch views, or quit (and on explicit `⌘S` / **Done** for reopened `Untitled` pages). Pages renamed in the background display a session blue dot. Newly added text, Markdown, HTML, and text-bearing PDF sources queue concurrent on-device title (2–6 words, max 8) and summary generation (`aiSummary`).
 - **Page & source summaries:** Click **Summarize** on an unlocked page (or **Generate / Regenerate AI Summary** in the page or source inspector). Page summaries pin a collapsible **AI-generated summary** banner above the editor and in the inspector; **Show page summaries** can be set to **Editor when sidebar is closed** (default) or **Sidebar only**.
 - **Create pages with AI:** Choose **Create Page with AI** on a source to draft an editable wiki page from its first 6,000 characters with the source linked automatically. Choose **New page → From topic with AI…** to query Bing web search, fetch up to 3 readable top results (≤ 2 MB each), and synthesize a cited article on-device (fails cleanly without a model-knowledge fallback if search/results are unreadable).
+
+### Optional OpenAI summaries
+Configure a key in **Settings → External AI — OpenAI**, then choose **Summarize with OpenAI** for an individual page or source. Review the exact text and confirm **Send to OpenAI** for each submission. The separate Apple Intelligence actions remain local, including automatic titles, LCC and source processing.
+
+The key is stored in macOS Keychain; settings show status and never prefill the saved key. macOS authentication is reused for the current vault session for up to 30 minutes without authorized AI activity and four hours total. Locking, closing or switching the vault, device sleep, screen-session lock, credential changes and expiry revoke access. The optional 30-day policy limits Noema locally; configure actual key expiry and spending limits with OpenAI. **Validate connection** requests model metadata without vault text.
+
+Selected text leaves the device and API use may incur charges. Cloud summaries carry OpenAI/model/date provenance and replace a prior summary only while the original item, content, selection and session remain valid. Cancellation blocks further requests and stale publication; it cannot recall text already sent. `store: false` is not a guarantee of zero provider retention. Noema's vault remains plaintext, and the in-process beta broker cannot resist arbitrary compromised application code. See [EXTERNAL_AI_SECURITY.md](EXTERNAL_AI_SECURITY.md) and the pending [device acceptance checklist](VALIDATION.md#d02a-device-acceptance-checklist).
 
 ## Block and math editing
 
@@ -93,7 +100,7 @@ My Vault/
 ```
 
 - **Wiki frontmatter:** `id`, `title`, `aliases`, `tags`, optional `lcc` (Library of Congress Classification code), `created_at`, `updated_at`, and optional `sources` UUID references and lock state. Unknown YAML fields are preserved semantically; external Markdown files receive frontmatter only on their first app save.
-- **Source metadata:** `id`, `title`, `capturedAt`, `originalFilename`, optional `originURL`, optional `lcc`, `sha256`, `storedFilename`, and optional `aiSummary`, `fileSize`, `linkedBookmark`, `isURLSource`, and `webAvailabilityIssue`. Imported originals are stored byte-for-byte via staged `.import-<uuid>` directories and published only once both original and metadata exist.
+- **Source metadata:** `id`, `title`, `capturedAt`, `originalFilename`, optional `originURL`, optional `lcc`, `sha256`, `storedFilename`, and optional `aiSummary`, `aiSummaryProvenance`, `fileSize`, `linkedBookmark`, `isURLSource`, and `webAvailabilityIssue`. Imported originals are stored byte-for-byte via staged `.import-<uuid>` directories and published only once both original and metadata exist.
 - **App-local storage:** `AppModel` places `search.sqlite` (and SQLite-managed `search.sqlite-wal` / `search.sqlite-shm` while present) and `Drafts/<note UUID>.json` under `<Application Support URL>/KnowledgeVault/<vault UUID>/`, outside the synced vault. The base is the runtime URL returned by Foundation for the user's Application Support directory; a sandboxed app can resolve it inside its app container. An unsandboxed example is `~/Library/Application Support/KnowledgeVault/<vault UUID>/`. Tests can substitute the base with `localStorageRoot`. Keep `Drafts` if you have unsaved recovery work; the search index is rebuildable. These files remain plaintext when the vault is locked.
 
 ## iCloud, conflicts, and Trash

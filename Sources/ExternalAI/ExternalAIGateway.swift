@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import VaultCore
 import Synchronization
 
@@ -14,7 +15,10 @@ public actor ExternalAIGateway: ExternalAISummarizing {
     private var consumedRequests: Set<UUID> = []
     private struct Publication: Sendable {
         let capability: ExternalAICapability
-        let result: ExternalAISummaryResult
+        let target: ExternalAISummaryTarget
+        let contentRevision: UUID
+        let summaryDigest: Data
+        let provenance: ExternalAIProvenance
     }
     private var publicationCapabilities: [UUID: Publication] = [:]
 
@@ -53,9 +57,10 @@ public actor ExternalAIGateway: ExternalAISummarizing {
         do {
             try Task.checkCancellation()
             guard let issued = publicationCapabilities[result.requestID],
-                  issued.result.authority == result.authority, issued.result.target == result.target,
-                  issued.result.contentRevision == result.contentRevision, issued.result.summary == result.summary,
-                  issued.result.provenance == result.provenance else { throw ExternalAIError.authorizationRevoked }
+                  issued.capability.authority == result.authority, issued.target == result.target,
+                  issued.contentRevision == result.contentRevision,
+                  issued.summaryDigest == Data(SHA256.hash(data: Data(result.summary.utf8))),
+                  issued.provenance == result.provenance else { throw ExternalAIError.authorizationRevoked }
             let capability = issued.capability
             try await sessions.validate(capability)
             try Task.checkCancellation()
@@ -68,7 +73,7 @@ public actor ExternalAIGateway: ExternalAISummarizing {
     public func publicationPermit(for result: ExternalAISummaryResult) async throws -> ExternalAIPublicationPermit {
         try await validatePublication(of: result)
         guard let issued = publicationCapabilities[result.requestID] else { throw ExternalAIError.authorizationRevoked }
-        return ExternalAIPublicationPermit(sessions: sessions, capability: issued.capability)
+        return ExternalAIPublicationPermit(sessions: sessions, broker: broker, capability: issued.capability)
     }
 
     /// Fixed provider metadata request. No vault selection or content is read or submitted.
@@ -78,17 +83,23 @@ public actor ExternalAIGateway: ExternalAISummarizing {
             try Task.checkCancellation()
             let version = try await broker.credentialVersion()
             let model = configuration.model
-            let response = try await broker.withCredential(version: version) { [transport] credential in
-                var request = URLRequest(url: URL(string: "https://api.openai.com/v1/models/" + model)!)
-                request.httpMethod = "GET"
-                request.timeoutInterval = ExternalAILimits.requestTimeout
-                request.setValue("application/json", forHTTPHeaderField: "Accept")
-                try credential.authorizeConnectionValidation(&request)
-                return try await transport.perform(request) { resume in
-                    try Task.checkCancellation()
-                    resume()
+            let cancellationScope = ExternalAIRequestCancellation<OpenAIHTTPResponse>()
+            let cancellation = try broker.registerCredentialCancellation(version: version) { cancellationScope.cancel() }
+            defer { broker.unregisterCredentialCancellation(cancellation) }
+            let worker = Task { [broker, transport] in
+                try await broker.withCredential(version: version) { credential in
+                    var request = URLRequest(url: URL(string: "https://api.openai.com/v1/models/" + model)!)
+                    request.httpMethod = "GET"
+                    request.timeoutInterval = ExternalAILimits.requestTimeout
+                    request.setValue("application/json", forHTTPHeaderField: "Accept")
+                    try credential.authorizeConnectionValidation(&request)
+                    return try await transport.perform(request) { resume in
+                        try broker.withValidatedCredential(version: version, body: resume)
+                    }
                 }
             }
+            cancellationScope.install(worker)
+            let response = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
             try Self.checkStatus(response.statusCode)
             guard response.body.count <= ExternalAILimits.maximumResponseBytes,
                   let metadata = try? JSONDecoder().decode(ModelMetadata.self, from: response.body),
@@ -122,7 +133,7 @@ public actor ExternalAIGateway: ExternalAISummarizing {
             defer { registration.complete(disposition: Task.isCancelled ? .cancelled : .completed) }
             try await sessions.validate(capability, activity: true)
             let body = try Self.summaryBody(content: request.content, model: configuration.model)
-            let cancellationScope = ExternalAISummaryCancellation()
+            let cancellationScope = ExternalAIRequestCancellation<String>()
             let cancellation = try sessions.registerCancellation(for: capability) { cancellationScope.cancel() }
             defer { sessions.unregisterCancellation(cancellation) }
             let worker = Task { [broker, sessions, gate, transport] in
@@ -144,7 +155,9 @@ public actor ExternalAIGateway: ExternalAISummarizing {
                             return try await transport.perform(networkRequest) { resume in
                                 try Task.checkCancellation()
                                 try gate.withOpenSession(lease: lease, operation: "externalAISummary.dispatch") {
-                                    try sessions.withValidatedAuthorization(capability) { resume() }
+                                    try sessions.withValidatedAuthorization(capability) {
+                                        try broker.withValidatedCredential(version: capability.credentialVersion, body: resume)
+                                    }
                                 }
                             }
                         }
@@ -169,11 +182,13 @@ public actor ExternalAIGateway: ExternalAISummarizing {
             try Task.checkCancellation()
             try await sessions.validate(capability)
             try sessions.validateSynchronously(capability)
-            // Retain only a bounded recent set for the caller's final publication guard.
+            // Retain bounded identity/digest bindings, never plaintext summaries across vault lock.
             if publicationCapabilities.count >= 256 { publicationCapabilities.removeAll() }
             let provenance = try ExternalAIProvenance(model: configuration.model)
             let result = try ExternalAISummaryResult(request: request, summary: summary, provenance: provenance)
-            publicationCapabilities[request.id] = Publication(capability: capability, result: result)
+            publicationCapabilities[request.id] = Publication(capability: capability, target: result.target,
+                contentRevision: result.contentRevision, summaryDigest: Data(SHA256.hash(data: Data(summary.utf8))),
+                provenance: provenance)
             return result
         } catch { throw sanitized(error) }
     }
@@ -240,13 +255,13 @@ private struct SummaryResponse: Decodable {
 }
 
 /// Registration precedes worker creation; revocation in between still cancels the installed task.
-private final class ExternalAISummaryCancellation: Sendable {
+private final class ExternalAIRequestCancellation<Value: Sendable>: Sendable {
     private struct State: Sendable {
         var cancelled = false
-        var task: Task<String, Error>?
+        var task: Task<Value, Error>?
     }
     private let state = Mutex(State())
-    func install(_ task: Task<String, Error>) {
+    func install(_ task: Task<Value, Error>) {
         state.withLock {
             if $0.cancelled { task.cancel() }
             else { $0.task = task }
@@ -261,14 +276,17 @@ private final class ExternalAISummaryCancellation: Sendable {
 /// callers can place it immediately before persistence inside their repository actor. Do not
 /// hold authorization locks across gated storage; that would invert D02's gate lock order.
 public struct ExternalAIPublicationPermit: Sendable {
+    private let broker: ExternalAICredentialBroker
     private let sessions: ExternalAISessionManager
     private let capability: ExternalAICapability
-    init(sessions: ExternalAISessionManager, capability: ExternalAICapability) {
+    init(sessions: ExternalAISessionManager, broker: ExternalAICredentialBroker, capability: ExternalAICapability) {
+        self.broker = broker
         self.sessions = sessions
         self.capability = capability
     }
     public func validateSynchronously() throws {
         try Task.checkCancellation()
         try sessions.validateSynchronously(capability)
+        try broker.withValidatedCredential(version: capability.credentialVersion) {}
     }
 }
