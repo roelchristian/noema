@@ -84,12 +84,10 @@ struct ContentView: View {
                         .transaction { $0.animation = nil }
                     }
                 }
-                .ignoresSafeArea(.container, edges: .top)
             }
         }
-        .toolbar(removing: .title)
         .toolbar(removing: .sidebarToggle)
-        .background(TrafficLightEnforcer())
+        .toolbar { workspaceToolbar }
         .sheet(isPresented: $model.showVaultCreation) {
             VaultCreationSheet(model: model).systemNoemaTheme()
         }
@@ -299,7 +297,7 @@ struct ContentView: View {
                                 .font(.system(size: 11))
                         }.buttonStyle(.plain).foregroundStyle(.secondary)
                     } else {
-                        Text("⌘K")
+                        Text("⇧⌘F")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.tertiary)
                     }
@@ -357,7 +355,7 @@ struct ContentView: View {
                 }
             }
             .padding(.horizontal, 12)
-            .padding(.top, 32)
+            .padding(.top, 12)
             .padding(.bottom, 6)
 
             List {
@@ -504,7 +502,6 @@ struct ContentView: View {
             if theme.usesFullPalette { theme.color(.background).ignoresSafeArea() }
             else { SidebarMaterialView().ignoresSafeArea() }
         }
-        .ignoresSafeArea(.container, edges: .top)
     }
     @ViewBuilder private var searchResultSections: some View {
         if model.sidebarSearchResults.query != model.searchText {
@@ -743,7 +740,6 @@ struct ContentView: View {
                 .padding(.top, 14)
                 .padding(.bottom, 10)
             }
-            .ignoresSafeArea(.container, edges: .top)
         } else {
             pageLibraryContent
         }
@@ -858,10 +854,6 @@ struct ContentView: View {
                             Button("Check Availability of All Sources") { model.checkSourceAvailability(model.sources) }
                                 .disabled(model.sources.isEmpty || !model.checkingSourceAvailability.isEmpty)
                         } label: { Label("Source Actions", systemImage: "ellipsis.circle") }
-                        Menu("Add Source") {
-                            Button("From Files…") { model.addSource() }
-                            Button("By URL…") { model.showURLSource = true }
-                        }
                     } else {
                         headerActions
                     }
@@ -892,7 +884,6 @@ struct ContentView: View {
                 }
             }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
         }
-        .ignoresSafeArea(.container, edges: .top)
     }
     private func metadataDate(_ value: String) -> String {
         InspectorFormatting.metadataDate(value)
@@ -950,7 +941,6 @@ struct ContentView: View {
                     .disabled(model.trashedPages.isEmpty || model.trashOperationInProgress)
             }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
         }
-        .ignoresSafeArea(.container, edges: .top)
         .alert("Permanently delete this item?", isPresented: $showPermanentDeletion, presenting: permanentDeletion) { page in
             Button("Delete permanently", role: .destructive) {
                 model.permanentlyDeleteTrashedPage(page)
@@ -1013,7 +1003,6 @@ struct ContentView: View {
                 if model.currentNote != nil { pageFooter }
             }
             .background(theme.color(.surfaceElevated))
-            .ignoresSafeArea(.container, edges: .top)
             .onChange(of: model.body) { model.edited() }
             .onChange(of: model.title) { model.edited() }
             .onChange(of: model.tagInput) { model.edited() }
@@ -1027,7 +1016,6 @@ struct ContentView: View {
                 if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil }.frame(maxWidth: 500) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 .safeAreaBar(edge: .top) { HStack { Spacer(); headerActions }.padding(.horizontal, 28).padding(.top, 14).padding(.bottom, 6) }
-                .ignoresSafeArea(.container, edges: .top)
         }
     }
     private var semanticBlockList: some View {
@@ -1082,72 +1070,94 @@ struct ContentView: View {
         .accessibilityLabel(inspectorState.isVisible ? "Hide Inspector" : "Show Inspector")
         .accessibilityValue(inspectorState.isVisible ? "Shown" : "Hidden")
     }
+    @ToolbarContentBuilder private var workspaceToolbar: some ToolbarContent {
+        if model.isVaultAvailable {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    switchSidebarScope(model.scope)
+                } label: {
+                    Label("Return to Library", systemImage: "chevron.backward")
+                }
+                .disabled(model.currentNote == nil && model.currentSource == nil)
+                .help("Return to the current library")
+                .accessibilityLabel("Return to Library")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    model.searchFocusToken += 1
+                } label: {
+                    Label("Find in Vault", systemImage: "magnifyingglass")
+                }
+                .help("Find in Vault (⇧⌘F)")
+                .accessibilityLabel("Find in Vault")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("Blank Page") { model.newPage() }
+                    Button("Personal Page") { model.newPage(template: true) }
+                    Button("Page from Topic with AI…") { model.showTopicPage = true }
+                        .disabled(model.generatingTopicPage)
+                    Divider()
+                    Button("Source from Files…") { model.addSource() }
+                    Button("Source by URL…") { model.showURLSource = true }
+                    Button("Paste a Source…") { model.showPasteSource = true }
+                } label: {
+                    Label("Add Page or Source", systemImage: "plus")
+                }
+                .disabled(model.busy)
+                .help("Add a page or source")
+                .accessibilityLabel("Add Page or Source")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("Open Another Vault…") { model.chooseVault(create: false) }
+                    Button { model.revealVault() } label: { Label("Reveal Vault in Finder", systemImage: "folder") }
+                    Button { Task { await model.refresh() } } label: { Label("Refresh from Files", systemImage: "arrow.clockwise") }
+                        .disabled(model.busy)
+                    Button { switchSidebarScope(.trash) } label: { Label("Trash", systemImage: "trash") }
+                    Button("Vault Notices (\(model.issues.count))") { model.showIssues = true }
+                    Button("Recover Drafts (\(model.recoveredDrafts.count))") { model.showRecovery = true }
+                        .disabled(model.recoveredDrafts.isEmpty)
+                    Divider()
+                    Button { Task { _ = await model.lockVault() } } label: { Label("Lock Vault", systemImage: "lock") }
+                        .disabled(model.busy)
+                    Button { Task { _ = await model.closeVault() } } label: { Label("Close Vault", systemImage: "xmark.circle") }
+                        .disabled(model.busy)
+                } label: {
+                    Label("Vault Options", systemImage: "ellipsis.circle")
+                }
+                .help("Vault options")
+                .accessibilityLabel("Vault Options")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                inspectorToolbarToggle
+            }
+        }
+    }
+    // Document actions stay with the document heading; window actions live in the native toolbar.
     private var headerActions: some View {
-        HStack(spacing: 16) {
-            if model.root != nil {
-                if model.currentNote != nil {
-                    HStack(spacing: 8) {
-                        inspectorToolbarToggle
-                        if aiSummaries {
-                            Button { model.summarizePage() } label: { Label("Summarize", systemImage: "sparkles") }
-                                .disabled(model.editingLocked || model.generatingAISummary)
-                                .help("Generate an on-device AI summary")
-                        }
-                        Button { if model.reading { model.beginEditing() } else { model.finishEditing() } } label: {
-                            Label(model.reading ? "Edit" : "Done", systemImage: model.reading ? "pencil" : "checkmark")
-                        }.disabled(model.editingLocked)
-                        Button { model.toggleEditingLock() } label: {
-                            Label(model.currentNote?.isEditingLocked == true ? "Unlock Editing" : "Lock Editing", systemImage: model.currentNote?.isEditingLocked == true ? "lock.fill" : "lock.open")
-                        }.help(model.currentNote?.isEditingLocked == true ? "Unlock Editing" : "Lock Editing")
-                        .disabled(model.currentNote.map { model.editingLockOperations.contains($0.id) } ?? true)
-                        Button { trashPageID = model.currentNote?.id; showTrashConfirmation = true } label: {
-                            Label("Move page to vault trash", systemImage: "trash")
-                        }.help("Move page to vault trash")
-                    }
-                } else {
-                    HStack(spacing: 8) {
-                        if inspectorContext.isInspectable {
-                            inspectorToolbarToggle
-                        }
-                        if model.currentSource?.metadata.storedFilename.hasSuffix(".md") == true {
-                            Picker("Source view", selection: $sourceOriginal) {
-                                Text("Read").tag(false)
-                                Text("Original").tag(true)
-                            }.pickerStyle(.segmented).frame(minWidth: 160)
-                        }
-                    }
+        HStack(spacing: 8) {
+            if model.isVaultAvailable, model.currentNote != nil {
+                if aiSummaries {
+                    Button { model.summarizePage() } label: { Label("Summarize", systemImage: "sparkles") }
+                        .disabled(model.editingLocked || model.generatingAISummary)
+                        .help("Generate an on-device AI summary")
                 }
-                HStack(spacing: 8) {
-                    if model.scope == .sources {
-                        Menu("Add Source") {
-                            Button("From Files…") { model.addSource() }
-                            Button("By URL…") { model.showURLSource = true }
-                        }
-                    } else {
-                        Menu {
-                            Button("From topic with AI…") { model.showTopicPage = true }
-                            Button("Blank page") { model.newPage() }
-                            Button("Personal page template") { model.newPage(template: true) }
-                        } label: { Label("New page", systemImage: "square.and.pencil") }
-                            .labelStyle(.iconOnly)
-                            .buttonBorderShape(.roundedRectangle)
-                            .help("New page")
-                            .accessibilityLabel("New page")
-                    }
-                }
-                HStack(spacing: 8) {
-                    Menu {
-                        Button("Open another vault…") { model.chooseVault(create: false) }
-                        Button { model.revealVault() } label: { Label("Reveal vault in Finder", systemImage: "folder") }
-                        Button { Task { await model.refresh() } } label: { Label("Refresh from files", systemImage: "arrow.clockwise") }
-                        Button("Vault notices (\(model.issues.count))") { model.showIssues = true }
-                        Button("Recover drafts (\(model.recoveredDrafts.count))") { model.showRecovery = true }.disabled(model.recoveredDrafts.isEmpty)
-                        Divider()
-                        Button { Task { _ = await model.lockVault() } } label: { Label("Lock vault", systemImage: "lock") }
-                        Button { Task { _ = await model.closeVault() } } label: { Label("Close vault", systemImage: "xmark.circle") }
-                    } label: { Label("Vault options", systemImage: "ellipsis.circle") }
-                        .accessibilityLabel("Vault options")
-                }
+                Button { if model.reading { model.beginEditing() } else { model.finishEditing() } } label: {
+                    Label(model.reading ? "Edit" : "Done", systemImage: model.reading ? "pencil" : "checkmark")
+                }.disabled(model.editingLocked)
+                Button { model.toggleEditingLock() } label: {
+                    Label(model.currentNote?.isEditingLocked == true ? "Unlock Editing" : "Lock Editing", systemImage: model.currentNote?.isEditingLocked == true ? "lock.fill" : "lock.open")
+                }.help(model.currentNote?.isEditingLocked == true ? "Unlock Editing" : "Lock Editing")
+                .disabled(model.currentNote.map { model.editingLockOperations.contains($0.id) } ?? true)
+                Button { trashPageID = model.currentNote?.id; showTrashConfirmation = true } label: {
+                    Label("Move page to vault trash", systemImage: "trash")
+                }.help("Move page to vault trash")
+            } else if model.isVaultAvailable, model.currentSource?.metadata.storedFilename.hasSuffix(".md") == true {
+                Picker("Source view", selection: $sourceOriginal) {
+                    Text("Read").tag(false)
+                    Text("Original").tag(true)
+                }.pickerStyle(.segmented).frame(minWidth: 160)
             }
         }.labelStyle(.iconOnly).buttonStyle(.glass).fixedSize(horizontal: true, vertical: false)
     }
