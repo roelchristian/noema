@@ -94,6 +94,11 @@ user/system cancellation, unavailable authentication, app switching during a pro
 keyboard navigation and VoiceOver in the signed development bundle. Verify repeated
 operations create independent prompts and a cancelled attempt cannot complete a
 later operation. Automated success does not close these device/accessibility gaps.
+For an authentication-enabled plaintext vault, verify first open, explicit unlock,
+close/reopen, app restart and same-folder permission recovery each authenticate before
+showing content. Cancel each operation and retry; check that changing either direction
+of the access preference authenticates, and a cancelled first open preserves the newly
+created vault. Unprotected legacy vaults should keep their ordinary open behavior.
 
 <a id="d02a-device-acceptance-checklist"></a>
 
