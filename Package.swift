@@ -15,7 +15,9 @@ let package = Package(
             .product(name: "Markdown", package: "swift-markdown"),
             .product(name: "Yams", package: "Yams")
         ], linkerSettings: [.linkedLibrary("sqlite3")]),
-        .executableTarget(name: "noema", dependencies: ["VaultCore", "NoemaBrand"]),
+        .target(name: "ExternalAI", dependencies: ["VaultCore"]),
+        .executableTarget(name: "noema", dependencies: ["VaultCore", "NoemaBrand", "ExternalAI"]),
+        .testTarget(name: "ExternalAITests", dependencies: ["ExternalAI", "VaultCore"]),
         .testTarget(name: "VaultCoreTests", dependencies: ["VaultCore"]),
         .testTarget(name: "NoemaBrandTests", dependencies: ["NoemaBrand"]),
         .testTarget(name: "NoemaEditorTests", dependencies: ["noema"])
