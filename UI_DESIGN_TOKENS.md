@@ -40,6 +40,9 @@ func native(for role: NoemaColorRole, active: Bool = true) -> NSColor
 func text(for role: NoemaColorRole = .textSecondary,
           on surface: NoemaColorRole = .canvas,
           active: Bool = true) -> Color
+func nativeText(for role: NoemaColorRole = .textSecondary,
+                on surface: NoemaColorRole = .canvas,
+                active: Bool = true) -> NSColor
 ```
 
 `text(for:on:)` resolves a foreground against its actual backing surface. Foreground callers use text/emphasis roles; `on:` callers use surface/state roles. A role parameter is not a request to change native controls' inherited foreground. New custom chrome calls the labeled API; legacy editor/palette consumers keep the existing API until separately reviewed.
@@ -117,12 +120,23 @@ UI.TK04 extends `DesignTokens.swift` with `NoemaMetrics` static `CGFloat` proper
 | `radiusStandard` | 8 | Search and grouped custom control containers |
 | `radiusLarge` | 12 | Larger custom containers, only where a real consumer exists |
 | `borderWidth` | 0.5 | Custom group/search hairline; increased contrast may strengthen |
+| `focusRingWidth` | 2 | Visible keyboard-focus and selected-press outlines on custom controls |
 | `controlGroupInset` | 3 | Optical inset around tab groups |
 | `iconWidth` | 16 | Shared chrome icon column |
 | `toolbarControlHeight` | 28 | Custom compact action target reference |
 | `readingMeasure` | 680 | Future reading-container reference in the 600–760pt range; not a block editor migration |
 
 Prefer minimum heights and content-driven width for text-bearing custom controls. Do not clip essential actions to enforce a metric. Preserve current pane constraints and window minimum until visual validation establishes a justified change. `readingMeasure` may be deferred if it has no migrated consumer; it must not replace the editor's existing 980pt container and 80/85pt gutter alignment in this series.
+
+## Integrated implementation
+
+UI.TK02–06 implement the contract in `Theme.swift`, `DesignTokens.swift` and `ChromeInteractionStyle.swift`, with consumers in `ContentView.swift` and the inspector views. The AppKit `nativeText(for:on:active:)` companion resolves the same actual-surface foreground as the SwiftUI API.
+
+Custom controls use `NoemaChromeButtonStyle` and state-aware leaf foregrounds. Selection persists through hover, press and inactive-window states; pressing a selected control adds an outline. Focus adds a separate native-colored ring. Native controls retain their own state drawing. The sidebar List no longer animates as a whole, and retained local transitions respect Reduce Motion.
+
+Custom icon actions have at least 28-point widths and navigation targets use minimum heights. The wider action targets can truncate long sidebar titles sooner at the minimum pane width; the page button exposes the full title through its accessibility text and tooltip.
+
+`radiusLarge` remains a reference for future larger custom containers; it is not applied to native container shapes. Reading measure and a density preference remain deferred. The inventory below retains baseline expressions for traceability. Actual test results, selected before/after captures and unverified live accessibility checks are recorded in [UI_DESIGN_TOKENS_VALIDATION.md](UI_DESIGN_TOKENS_VALIDATION.md).
 
 ## Baseline styling audit and migration map
 

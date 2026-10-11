@@ -632,6 +632,7 @@ struct ContentView: View {
             .buttonStyle(NoemaChromeButtonStyle(selected: active, drawsSelection: false,
                                                 focused: sidebarPageFocused == note.id))
             .focused($sidebarPageFocused, equals: note.id)
+            .help(note.title)
             SidebarEditingLockControl(locked: note.isEditingLocked,
                                       selected: active,
                                       visible: active || hoveredSidebarPageID == note.id,
