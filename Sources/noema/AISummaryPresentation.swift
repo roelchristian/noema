@@ -195,7 +195,9 @@ struct AISummaryProviderNotice: View {
 }
 
 func aiSummaryProvenanceLabel(provider: String?, model: String?) -> String {
-    guard let provider, !provider.isEmpty else { return "AI-generated on device" }
+    guard let provider, !provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return "AI-generated · Provider unspecified"
+    }
     let name = provider == "openAI" ? "OpenAI" : provider
     guard let model, !model.isEmpty else { return name }
     return "\(name) · \(model)"

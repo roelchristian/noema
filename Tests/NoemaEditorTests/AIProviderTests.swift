@@ -188,6 +188,19 @@ struct AIProviderTests {
         #expect(AIAction.configurableActions == [.summarizePage, .suggestTitle, .classifyLCC])
     }
 
+    @Test
+    func provenancePresentationNeverInfersProviderForLegacyArtifacts() {
+        for missingProvider in [nil, "", "   "] as [String?] {
+            #expect(aiSummaryProvenanceLabel(provider: missingProvider, model: nil)
+                    == "AI-generated · Provider unspecified")
+            #expect(aiSummaryProvenanceLabel(provider: missingProvider, model: "legacy-model")
+                    == "AI-generated · Provider unspecified")
+        }
+        #expect(aiSummaryProvenanceLabel(provider: "openAI", model: "model") == "OpenAI · model")
+        #expect(aiSummaryProvenanceLabel(provider: "On-device", model: "Apple Intelligence")
+                == "On-device · Apple Intelligence")
+    }
+
     private func resolve(_ action: AIAction, _ settings: AIProviderSettings, temporary: AIProvider? = nil) -> AIProviderResolution {
         AIProviderResolver.resolve(action: action, settings: settings, temporaryOverride: temporary, availability: available)
     }
