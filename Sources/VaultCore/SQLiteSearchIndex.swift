@@ -124,9 +124,17 @@ public actor SQLiteSearchIndex: SearchIndex {
             }
             for source in entries.sources {
                 try validateAccess("searchIndex.reconcile")
-                let id = source.id.uuidString, revision = digest(try encoder.encode(source.metadata))
+                let id = source.id.uuidString
                 present.insert(id)
+                if source.contentState == .unavailable {
+                    try remove(id); next.removeValue(forKey: id)
+                    continue
+                }
+                let revision = try sourceRevision(source, entries: entries)
                 guard revisions[id] != revision else { continue }
+                guard source.contentState == .loaded else {
+                    throw VaultError.invalid("Source content must be loaded before updating the search index: " + source.title)
+                }
                 try remove(id)
                 try insert(id: id, kind: .source, revision: revision, data: encoder.encode(source), title: source.title, body: source.body, aliases: "")
                 next[id] = revision
@@ -136,6 +144,25 @@ public actor SQLiteSearchIndex: SearchIndex {
             try run("COMMIT"); revisions = next
         } catch { try? run("ROLLBACK"); throw error }
     }
+    /// Metadata-only batches may retain unchanged indexed content, but never replace it
+    /// with an empty placeholder. A new/rebuilt index requests all available originals.
+    public func sourcesRequiringContent(in entries: ScanBatch) throws -> Set<UUID> {
+        try validateAccess("searchIndex.sourcesRequiringContent")
+        if revisions.isEmpty { _ = try cachedEntries() }
+        var required: Set<UUID> = []
+        for source in entries.sources where source.contentState == .notLoaded {
+            if try revisions[source.id.uuidString] != sourceRevision(source, entries: entries) { required.insert(source.id) }
+        }
+        try validateAccess("searchIndex.sourcesRequiringContent.complete")
+        return required
+    }
+
+    private func sourceRevision(_ source: SourceRecord, entries: ScanBatch) throws -> String {
+        let content = entries.sourceContentRevisions[source.id]
+            ?? (source.contentState == .loaded ? digest(Data(source.body.utf8)) : "unloaded")
+        return digest(try encoder.encode(source.metadata)) + ":source-text-v2:" + content
+    }
+
     private func insert(id: String, kind: EntryKind, revision: String, data: Data, title: String, body: String, aliases: String) throws {
         let s = try statement("INSERT INTO entries VALUES(?,?,?,?)", [id, kind.rawValue, revision, String(decoding: data, as: UTF8.self)]); defer { sqlite3_finalize(s) }
         guard sqlite3_step(s) == SQLITE_DONE else { throw failure() }
