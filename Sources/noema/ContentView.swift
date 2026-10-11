@@ -143,7 +143,7 @@ struct ContentView: View {
     }
     private var welcome: some View {
         VStack(spacing: 24) {
-            NoemaMark().frame(width: 116, height: 116).accessibilityHidden(true)
+            NoemaMark(presentation: .identity).frame(width: 116, height: 116).accessibilityHidden(true)
             VStack(spacing: 10) {
                 Text("Noema").font(.system(size: 38, weight: .medium))
                 Text("A personal atlas of thought.")
@@ -177,7 +177,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
-                    NoemaMark().frame(width: 20, height: 20).accessibilityHidden(true)
+                    NoemaMark(presentation: .glyph).frame(width: 20, height: 20).accessibilityHidden(true)
                     Text("Noema").font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary)
                     Spacer()
                 }
@@ -1269,7 +1269,7 @@ struct ContentView: View {
             .onChange(of: model.reading) { if model.reading { model.generatePreview() } }
         } else {
             VStack(spacing: 18) {
-                NoemaMark().frame(width: 76, height: 76).accessibilityHidden(true)
+                NoemaMark(presentation: .identity).frame(width: 76, height: 76).accessibilityHidden(true)
                 Text(model.scope == .sources ? "Keep the original. Find your meaning." : "A personal atlas of thought.").font(.title2.weight(.medium))
                 Text(model.scope == .sources ? "Browse raw material here. Your interpretations belong in the wiki." : "Choose a page, or start with a thought you want to connect.").foregroundStyle(theme.text())
                 if model.scope != .sources { Button("New personal page") { model.newPage(template: true) }.buttonStyle(.glass) }
