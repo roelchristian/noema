@@ -50,12 +50,14 @@ extension VaultUIIntegrationTests {
             let panes = WorkspacePaneState(defaults: defaults)
             let originalSidebarWidth = panes.sidebarWidth
             let originalInspectorVisible = panes.isInspectorVisible
+            let originalNavigationToken = model.workspaceNavigationToken
 
             for (index, item) in [WorkspaceSearchMenuCommand.quickOpen, .vault, .quickOpen].enumerated() {
                 #expect(model.canPerformWorkspaceCommand(item.command))
                 model.performWorkspaceCommand(item.command)
                 #expect(model.searchMode == (item == .vault ? .vault : .quickOpen))
                 #expect(model.searchFocusToken == index + 1)
+                #expect(model.workspaceNavigationToken == originalNavigationToken)
                 #expect(model.scope == .sources && model.searchText == "Command")
                 #expect(model.currentNote?.id == note.id && model.selectedID == note.id)
                 #expect(model.title == note.title && model.body == note.body)
@@ -63,6 +65,44 @@ extension VaultUIIntegrationTests {
                 #expect(panes.isInspectorVisible == originalInspectorVisible)
                 #expect(defaults.bool(forKey: WorkspacePaneState.sidebarVisibilityKey) == false)
             }
+            model.performWorkspaceCommand(.returnToLibrary)
+            #expect(model.workspaceNavigationToken == originalNavigationToken + 1)
+            #expect(model.scope == .sources && model.currentNote == nil)
+            _ = await model.closeVault()
+        }
+
+        @Test @MainActor
+        func sameScopeTrashCommandEmitsNavigationEvenWithoutSelectedDocument() async throws {
+            let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaSameScopeCommand-\(UUID())")
+            let root = base.appendingPathComponent("Vault")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: base) }
+            let model = AppModel()
+            model.localStorageRoot = base.appendingPathComponent("Local")
+            model.persistSecurityScopedBookmark = false
+            await model.open(root, create: true)
+            #expect(model.isVaultAvailable)
+            model.scope = .trash
+            let initialToken = model.workspaceNavigationToken
+            for offset in 1...2 {
+                #expect(model.canPerformWorkspaceCommand(.showTrash))
+                model.performWorkspaceCommand(.showTrash)
+                #expect(model.workspaceNavigationToken == initialToken + offset)
+                #expect(model.scope == .trash)
+                #expect(model.selectedID == nil && model.currentNote == nil && model.currentSource == nil)
+            }
+            let admittedToken = model.workspaceNavigationToken
+            // Return to Library requires a selected document, even in an available vault.
+            #expect(!model.canPerformWorkspaceCommand(.returnToLibrary))
+            model.performWorkspaceCommand(.returnToLibrary)
+            #expect(model.workspaceNavigationToken == admittedToken)
+            model.busy = true
+            for command in [WorkspaceCommand.showTrash, .newPage, .newPersonalPage] {
+                #expect(!model.canPerformWorkspaceCommand(command))
+                model.performWorkspaceCommand(command)
+                #expect(model.workspaceNavigationToken == admittedToken)
+            }
+            model.busy = false
             _ = await model.closeVault()
         }
 
@@ -75,6 +115,7 @@ extension VaultUIIntegrationTests {
                 #expect(!model.canPerformWorkspaceCommand(item.command))
                 #expect(model.performWorkspaceCommand(item.command) == nil)
                 #expect(model.searchMode == .quickOpen && model.searchFocusToken == 0)
+                #expect(model.workspaceNavigationToken == 0)
                 #expect(model.searchText == "Preserved")
             }
         }

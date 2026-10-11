@@ -103,10 +103,18 @@ extension AppModel {
         case .quickOpen:
             setSearchMode(.quickOpen)
             searchFocusToken += 1
-        case .returnToLibrary: changeScope(scope)
-        case .showTrash: changeScope(.trash)
-        case .newPage: newPage()
-        case .newPersonalPage: newPage(template: true)
+        case .returnToLibrary:
+            workspaceNavigationToken += 1
+            changeScope(scope)
+        case .showTrash:
+            workspaceNavigationToken += 1
+            changeScope(.trash)
+        case .newPage:
+            workspaceNavigationToken += 1
+            newPage()
+        case .newPersonalPage:
+            workspaceNavigationToken += 1
+            newPage(template: true)
         case .newTopicPage: showTopicPage = true
         case .save: savePage()
         case .addSource: addSource()
