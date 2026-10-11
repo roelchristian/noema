@@ -191,7 +191,7 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
                             networkRequest.setValue("application/json", forHTTPHeaderField: "Accept")
                             networkRequest.httpBody = body
                             try credential.authorize(&networkRequest)
-                            return try await transport.perform(networkRequest, beforeDispatch: { resume in
+                            let response = try await transport.perform(networkRequest, beforeDispatch: { resume in
                                 try Task.checkCancellation()
                                 try gate.withOpenSession(lease: lease, operation: "externalAISummary.dispatch") {
                                     try sessions.withValidatedAuthorization(capability) {
@@ -199,9 +199,15 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
                                     }
                                 }
                             }, didDispatch: { observation.dispatched() })
+                            // Usage remains diagnostic metadata even if the broker subsequently
+                            // rejects this completed exchange after cancellation or revocation.
+                            // Observe it before that check without granting output authority.
+                            if response.statusCode == 200 {
+                                observation.received(Self.reportedUsage(from: response.body))
+                            }
+                            return response
                         }
                         try Self.checkStatus(response.statusCode)
-                        observation.received(Self.reportedUsage(from: response.body))
                         let summary = try Self.output(from: response.body, action: request.action)
                         try await sessions.validate(capability)
                         try Task.checkCancellation()
