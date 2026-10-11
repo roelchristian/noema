@@ -28,14 +28,9 @@ extension NSAttributedString.Key {
     }
     static func base(_ block: EditorBlock, depth: Int, theme: NoemaTheme, typography: EditorTypography = .init()) -> [NSAttributedString.Key: Any] {
         let role = EditorTypography.role(for: block.kind)
-        let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 5; paragraph.paragraphSpacing = 10
+        let paragraph = typography.paragraphStyle(for: role)
         let hasInsideMarker = [.bullet, .numbered, .task, .toggle].contains(block.kind)
         paragraph.headIndent = CGFloat(depth * 24 + (hasInsideMarker ? 24 : (block.kind == .quote ? 18 : 0))); paragraph.firstLineHeadIndent = paragraph.headIndent
-        if [.heading1, .heading2, .heading3].contains(role) { paragraph.paragraphSpacingBefore = 12 }
-        if block.metadata.semantic != nil || [.quote, .callout, .code, .math].contains(block.kind) {
-            paragraph.paragraphSpacingBefore = 12
-            paragraph.paragraphSpacing = 18
-        }
         var attrs: [NSAttributedString.Key: Any] = [
             .font: typography.font(for: role),
             .foregroundColor: theme.nativeText(), .paragraphStyle: paragraph,
@@ -78,9 +73,43 @@ extension NSAttributedString.Key {
             }
             result.append(NSAttributedString(string: "\n", attributes: base(block, depth: value.depth, theme: theme, typography: typography)))
         }
+        updateParagraphRhythm(result, typography: typography)
         if showSemanticHeadings { updateSemanticHeadingSpacing(result) }
         return result
     }
+    /// Normalize paragraph attributes after rendering and native editing. A
+    /// newline inside one block keeps its line rhythm, without another block gap.
+    static func updateParagraphRhythm(_ storage: NSMutableAttributedString, typography: EditorTypography = .init()) {
+        var previous: EditorTypography.Role?
+        let text = storage.string as NSString
+        var changes: [(NSRange, NSMutableParagraphStyle)] = []
+        for (_, blockRange) in ranges(storage) {
+            let kind = BlockKind(rawValue: storage.attribute(.blockKind, at: blockRange.location, effectiveRange: nil) as? String ?? "paragraph")
+            let role = EditorTypography.role(for: kind)
+            let first = NSIntersectionRange(text.paragraphRange(for: NSRange(location: blockRange.location, length: 0)), blockRange)
+            let rhythm = typography.paragraphStyle(for: role, previous: previous)
+            storage.enumerateAttribute(.paragraphStyle, in: blockRange) { value, part, _ in
+                guard let original = value as? NSParagraphStyle else { return }
+                let leading = NSIntersectionRange(part, first)
+                let restStart = max(part.location, NSMaxRange(first))
+                let rest = NSRange(location: restStart, length: max(0, NSMaxRange(part) - restStart))
+                for (segment, before) in [(leading, rhythm.paragraphSpacingBefore), (rest, CGFloat(0))] {
+                    guard segment.length > 0,
+                          original.lineSpacing != rhythm.lineSpacing || original.paragraphSpacing != 0 || original.paragraphSpacingBefore != before,
+                          let style = original.mutableCopy() as? NSMutableParagraphStyle else { continue }
+                    style.lineSpacing = rhythm.lineSpacing
+                    style.paragraphSpacing = 0
+                    style.paragraphSpacingBefore = before
+                    changes.append((segment, style))
+                }
+            }
+            previous = role
+        }
+        storage.beginEditing()
+        for (range, style) in changes { storage.addAttribute(.paragraphStyle, value: style, range: range) }
+        storage.endEditing()
+    }
+
     // Reserve display space only above the first paragraph. Labels never enter
     // the editable string, selection offsets, clipboard, or canonical document.
     static func updateSemanticHeadingSpacing(_ storage: NSMutableAttributedString, in affectedRange: NSRange? = nil) {

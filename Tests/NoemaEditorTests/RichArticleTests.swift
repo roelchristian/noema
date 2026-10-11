@@ -129,8 +129,8 @@ import VaultCore
         #expect(rich.attribute(.semanticTag, at: 0, effectiveRange: nil) as? String == "starred")
         let paragraph = rich.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as! NSParagraphStyle
         #expect(paragraph.headIndent >= 24) // Leave room inside the margin for the toggle marker.
-        #expect(paragraph.paragraphSpacingBefore > 0)
-        #expect(paragraph.paragraphSpacing > 10)
+        #expect(paragraph.paragraphSpacingBefore == 0)
+        #expect(paragraph.paragraphSpacing == 0)
     }
 }
 
@@ -165,8 +165,8 @@ import VaultCore
                 }
                 let first = storage.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as! NSParagraphStyle
                 let second = storage.attribute(.paragraphStyle, at: 11, effectiveRange: nil) as! NSParagraphStyle
-                #expect(first.paragraphSpacingBefore == 12 + (enabled ? BlockTextStorage.semanticHeadingSpace : 0))
-                #expect(second.paragraphSpacingBefore == 12)
+                #expect(first.paragraphSpacingBefore == (enabled ? 12 + BlockTextStorage.semanticHeadingSpace : 0))
+                #expect(second.paragraphSpacingBefore == (enabled ? 12 : 0))
             }
         }
     }
@@ -206,8 +206,9 @@ import VaultCore
         let plain = BlockTextStorage.base(EditorBlock(), depth: 0, theme: theme)[.paragraphStyle] as! NSParagraphStyle
         for kind in [BlockKind.quote, .callout, .code] {
             let style = BlockTextStorage.base(EditorBlock(kind: kind), depth: 0, theme: theme)[.paragraphStyle] as! NSParagraphStyle
-            #expect(style.paragraphSpacingBefore > plain.paragraphSpacingBefore)
-            #expect(style.paragraphSpacing > plain.paragraphSpacing)
+            #expect(style.paragraphSpacingBefore == plain.paragraphSpacingBefore)
+            #expect(style.paragraphSpacing == 0)
+            #expect(style.lineSpacing >= 0)
         }
         for kind in [BlockKind.bullet, .numbered, .task, .toggle] {
             let style = BlockTextStorage.base(EditorBlock(kind: kind), depth: 2, theme: theme)[.paragraphStyle] as! NSParagraphStyle

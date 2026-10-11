@@ -106,8 +106,11 @@ extension RichArticleView {
                 } else { capture() }
             } else { capture() }
             pendingSingleBlock = nil
-            if view.showSemanticHeadings, let storage = view.textStorage {
-                changing = true; BlockTextStorage.updateSemanticHeadingSpacing(storage, in: current()?.1); changing = false
+            if let storage = view.textStorage {
+                changing = true
+                BlockTextStorage.updateParagraphRhythm(storage, typography: parent.typography)
+                if view.showSemanticHeadings { BlockTextStorage.updateSemanticHeadingSpacing(storage) }
+                changing = false
             }
             view.updateSemanticHeadingTopInset()
             if let (block, _) = current(), block.kind != .code, block.kind != .math, let command = BlockCommand.shortcut(block.text) {
@@ -138,7 +141,9 @@ extension RichArticleView {
                         exited.rawMath = nil
                         exited.code = false
                         let depth = storage.attribute(.blockDepth, at: blockRange.location, effectiveRange: nil) as? Int ?? 0
+                        let paragraph = attrs[.paragraphStyle]
                         attrs = BlockTextStorage.attributes(exited, block: block, depth: depth, theme: parent.theme, typography: parent.typography)
+                        attrs[.paragraphStyle] = paragraph
                     }
                 } else {
                     // Inherit the preceding run when typing immediately after formatted content.

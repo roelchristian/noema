@@ -86,6 +86,47 @@ import VaultCore
         return font
     }
 
+    struct LineMetrics {
+        let nativeHeight: CGFloat
+        let baselineSeparation: CGFloat
+        var extraLeading: CGFloat { max(0, baselineSeparation - nativeHeight) }
+    }
+
+    /// Extra leading grows the native line box; no maximum height is imposed, so
+    /// tall fonts, fallback glyphs and inline mathematics can expand naturally.
+    func lineMetrics(for role: Role) -> LineMetrics {
+        let font = font(for: role)
+        let native = NSLayoutManager().defaultLineHeight(for: font)
+        let ratio: CGFloat
+        switch role {
+        case .heading1, .heading2, .heading3: ratio = 1.2
+        case .code, .mathSource: ratio = 1.4
+        default: ratio = 1.5
+        }
+        return LineMetrics(nativeHeight: native, baselineSeparation: max(native, font.pointSize * ratio))
+    }
+
+    /// Every boundary is owned by the incoming paragraph. Outgoing spacing is
+    /// always zero. Consecutive headings use the larger need, never their sum.
+    /// `nil` means document start; continuation paragraphs within a block use 0.
+    func boundarySpacing(before role: Role, after previous: Role?) -> CGFloat {
+        guard let previous else { return 0 }
+        let headings: [Role] = [.heading1, .heading2, .heading3]
+        if headings.contains(role) { return CGFloat(size) * 0.9 }
+        if headings.contains(previous) { return CGFloat(size) * 0.45 }
+        if role == .list && previous == .list { return CGFloat(size) * 0.15 }
+        if role == .quote && previous == .quote { return CGFloat(size) * 0.35 }
+        return CGFloat(size) * 0.65
+    }
+
+    func paragraphStyle(for role: Role, previous: Role? = nil) -> NSMutableParagraphStyle {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = lineMetrics(for: role).extraLeading
+        paragraph.paragraphSpacing = 0
+        paragraph.paragraphSpacingBefore = boundarySpacing(before: role, after: previous)
+        return paragraph
+    }
+
     // Compatibility for document callers that need a specific weight or offset.
     func font(offset: CGFloat = 0, weight: NSFont.Weight = .regular) -> NSFont {
         familyFont(ofSize: max(1, CGFloat(size) + offset), weight: weight)
