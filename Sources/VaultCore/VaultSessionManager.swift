@@ -141,6 +141,50 @@ public actor VaultSessionManager {
 
     public nonisolated var currentLease: VaultSessionLease? { accessGate.currentLease }
 
+    public nonisolated var admissionBarrier: VaultLockAdmissionBarrier { accessGate.admissionBarrier }
+
+    public nonisolated func operationRegistrySnapshot() -> VaultOperationRegistrySnapshot {
+        accessGate.registrySnapshot()
+    }
+
+    public nonisolated func admitOperation(
+        _ operation: String,
+        lease: VaultSessionLease? = nil,
+        targetRoot: URL? = nil,
+        targetVaultID: UUID? = nil,
+        id: UUID = UUID()
+    ) throws -> VaultOperationRegistration {
+        try accessGate.admitOperation(
+            operation: operation,
+            lease: lease,
+            targetRoot: targetRoot,
+            targetVaultID: targetVaultID,
+            id: id
+        )
+    }
+
+    public nonisolated func withAdmittedOperation<T: Sendable>(
+        _ operation: String,
+        lease: VaultSessionLease? = nil,
+        targetRoot: URL? = nil,
+        targetVaultID: UUID? = nil,
+        id: UUID = UUID(),
+        body: @Sendable (VaultOperationRegistration) async throws -> T
+    ) async throws -> T {
+        try await accessGate.admissionBarrier.withAdmittedOperation(
+            operation,
+            lease: lease,
+            targetRoot: targetRoot,
+            targetVaultID: targetVaultID,
+            id: id,
+            body: body
+        )
+    }
+
+    public func awaitAdmittedOperations(forSessionID sessionID: UUID? = nil) async throws {
+        try await accessGate.awaitInFlightOperations(forSessionID: sessionID)
+    }
+
     public func issueLease(for root: URL? = nil, vaultID: UUID? = nil) throws -> VaultSessionLease {
         try accessGate.issueLease(for: root, vaultID: vaultID)
     }
@@ -342,6 +386,8 @@ public actor VaultSessionManager {
                 try Task.checkCancellation()
                 try await teardown(session)
                 try Task.checkCancellation()
+                try await accessGate.awaitInFlightOperations(forSessionID: session.id)
+                try Task.checkCancellation()
             }
             activeLockTask = (transitionID, task)
             try await awaitLockTask(task, id: transitionID)
@@ -378,7 +424,9 @@ public actor VaultSessionManager {
                 activeLockTask = nil
                 setState(.open(session))
             }
-            if error is CancellationError || Task.isCancelled {
+            if error is CancellationError
+                || Task.isCancelled
+                || (error as? VaultOperationAdmissionError) == .cancelled(operation: "awaitInFlightOperations") {
                 throw VaultSessionError.cancelled(action: "lock")
             }
             if let sessionError = error as? VaultSessionError {

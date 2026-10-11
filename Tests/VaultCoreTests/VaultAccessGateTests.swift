@@ -312,4 +312,235 @@ struct VaultAccessGateTests {
             _ = try FileVaultRepository.readSourceOriginal(sourceInA, root: rootB, contentStore: repoA.contentStore)
         }
     }
+
+    @Test func lockAdmissionBarrierAtomicallyRejectsNewOperationsAndDrainsAdmittedOperations() async throws {
+        let root = try makeTempVault()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let manager = VaultSessionManager()
+        let barrier = manager.admissionBarrier
+        #expect(!barrier.isOpen)
+
+        // Admission while closed fails with typed barrierClosed error.
+        #expect(throws: VaultOperationAdmissionError.barrierClosed(
+            phase: .closed,
+            vaultID: nil,
+            root: nil,
+            generation: 0,
+            operation: "preOpenRead"
+        )) {
+            _ = try manager.admitOperation("preOpenRead")
+        }
+
+        let (session, lease, repo) = try await manager.openRepository(root: root)
+        #expect(barrier.isOpen)
+        #expect(barrier.activeCount == 0)
+
+        let op1Entered = AsyncStream.makeStream(of: Void.self)
+        let releaseOp1 = AsyncStream.makeStream(of: Void.self)
+        let op2Entered = AsyncStream.makeStream(of: Void.self)
+        let releaseOp2 = AsyncStream.makeStream(of: Void.self)
+
+        // Admit two concurrent protected operations while the session is .open.
+        let op1Task = Task {
+            try await manager.withAdmittedOperation("saveNote1", lease: lease) { reg in
+                #expect(reg.sessionID == session.id)
+                #expect(reg.generation == session.generation)
+                op1Entered.continuation.yield(())
+                for await _ in releaseOp1.stream { break }
+                // Admitted operation can still complete its repository write while .locking is draining!
+                return try await repo.create(title: "Admitted Note 1", body: "Completed during locking drain")
+            }
+        }
+
+        let op2Task = Task {
+            try await manager.withAdmittedOperation("saveNote2", lease: lease) { _ in
+                op2Entered.continuation.yield(())
+                for await _ in releaseOp2.stream { break }
+                return try await repo.create(title: "Admitted Note 2", body: "Also completed during locking drain")
+            }
+        }
+
+        for await _ in op1Entered.stream { break }
+        for await _ in op2Entered.stream { break }
+        #expect(barrier.activeCount == 2)
+        #expect(Set(barrier.activeOperations.map(\.name)) == ["saveNote1", "saveNote2"])
+
+        // Start two concurrent lock attempts; both must transition open -> locking atomically,
+        // close the barrier to new operations, and coalesce while waiting for op1 and op2 to finish.
+        let lockingObserved = AsyncStream.makeStream(of: Void.self)
+        let lockTask1 = Task {
+            try await manager.lock { _ in
+                lockingObserved.continuation.yield(())
+            }
+        }
+        for await _ in lockingObserved.stream { break }
+
+        let lockTask2 = Task {
+            try await manager.lock()
+        }
+
+        #expect(await manager.state == .locking(session))
+        #expect(!barrier.isOpen)
+        #expect(barrier.activeCount == 2)
+
+        // New protected operations attempted after open -> locking are atomically rejected!
+        #expect(throws: VaultOperationAdmissionError.barrierClosed(
+            phase: .locking,
+            vaultID: session.vaultID,
+            root: session.root,
+            generation: session.generation,
+            operation: "lateOperation"
+        )) {
+            _ = try manager.admitOperation("lateOperation", lease: lease)
+        }
+        await #expect(throws: VaultOperationAdmissionError.barrierClosed(
+            phase: .locking,
+            vaultID: session.vaultID,
+            root: session.root,
+            generation: session.generation,
+            operation: "lateScopedOperation"
+        )) {
+            _ = try await manager.withAdmittedOperation("lateScopedOperation", lease: lease) { _ in
+                try await repo.create(title: "Should Not Run", body: "Denied")
+            }
+        }
+        // Unadmitted direct repository calls during .locking are also rejected.
+        await #expect(throws: VaultAccessError.sessionLocked(vaultID: session.vaultID, root: session.root, operation: "create")) {
+            _ = try await repo.create(title: "Unadmitted Direct Call", body: "Denied")
+        }
+
+        // Release op1: lock must still wait for op2.
+        releaseOp1.continuation.yield(())
+        let created1 = try await op1Task.value
+        #expect(created1.title == "Admitted Note 1")
+        #expect(barrier.activeCount == 1)
+        #expect(await manager.state == .locking(session))
+
+        // Release op2: both admitted operations complete, and both concurrent lock tasks finish cleanly.
+        releaseOp2.continuation.yield(())
+        let created2 = try await op2Task.value
+        #expect(created2.title == "Admitted Note 2")
+
+        try await lockTask1.value
+        try await lockTask2.value
+
+        #expect(await manager.state.phase == .locked)
+        let snapshot = manager.operationRegistrySnapshot()
+        #expect(!snapshot.isBarrierOpen)
+        #expect(snapshot.activeCount == 0)
+        #expect(snapshot.totalAdmittedCount == 2)
+        #expect(snapshot.totalCompletedCount == 2)
+        #expect(snapshot.totalCancelledCount == 0)
+        #expect(snapshot.totalAbandonedCount == 0)
+    }
+
+    @Test func lockAdmissionBarrierHandlesCancellationAbandonedRegistrationsAndInvalidLeasesWithoutLeaksOrDeadlocks() async throws {
+        let rootA = try makeTempVault()
+        let rootB = try makeTempVault()
+        defer {
+            try? FileManager.default.removeItem(at: rootA)
+            try? FileManager.default.removeItem(at: rootB)
+        }
+
+        let manager = VaultSessionManager()
+        let (session1, lease1, _) = try await manager.openRepository(root: rootA)
+        let manifestB = try FileVaultRepository.inspectManifest(at: rootB)
+
+        // 1. Wrong-vault lease is rejected by admission barrier with typed error.
+        let wrongLease = VaultSessionLease(
+            sessionID: session1.id,
+            vaultID: manifestB.id,
+            root: rootB,
+            generation: session1.generation
+        )
+        #expect(throws: VaultOperationAdmissionError.self) {
+            _ = try manager.admitOperation("wrongVaultOp", lease: wrongLease)
+        }
+
+        // 2. Duplicate explicit operation ID is rejected without leaking.
+        let fixedID = UUID()
+        let explicitReg = try manager.admitOperation("firstExplicit", lease: lease1, id: fixedID)
+        #expect(throws: VaultOperationAdmissionError.duplicateOperationID(fixedID, operation: "duplicateExplicit")) {
+            _ = try manager.admitOperation("duplicateExplicit", lease: lease1, id: fixedID)
+        }
+        explicitReg.complete()
+        #expect(manager.admissionBarrier.activeCount == 0)
+
+        // 3. Abandoned registration (dropped without calling complete()) automatically unregisters on deinit
+        // and never deadlocks a waiting lock transition.
+        let lockEnteredForAbandoned = AsyncStream.makeStream(of: Void.self)
+        var abandonedReg: VaultOperationRegistration? = try manager.admitOperation("abandonedOp", lease: lease1)
+        #expect(abandonedReg?.isActive == true)
+        #expect(manager.admissionBarrier.activeCount == 1)
+
+        let lockWaitingOnAbandoned = Task {
+            try await manager.lock { _ in
+                lockEnteredForAbandoned.continuation.yield(())
+            }
+        }
+        for await _ in lockEnteredForAbandoned.stream { break }
+        #expect(await manager.state == .locking(session1))
+
+        // Drop the reference without calling complete(): deinit marks it abandoned and unblocks lock().
+        abandonedReg = nil
+        try await lockWaitingOnAbandoned.value
+        #expect(await manager.state.phase == .locked)
+        #expect(manager.operationRegistrySnapshot().activeCount == 0)
+        #expect(manager.operationRegistrySnapshot().totalAbandonedCount == 1)
+
+        // 4. Unlock (generation 2), verify stale lease (generation 1) is rejected at admission,
+        // and test lock cancellation while an admitted operation is still in flight.
+        let session2 = try await manager.unlock()
+        #expect(session2.generation == 2)
+        #expect(throws: VaultOperationAdmissionError.invalidLease(.staleLease(
+            leaseGeneration: 1,
+            activeGeneration: 2,
+            operation: "staleOp"
+        ))) {
+            _ = try manager.admitOperation("staleOp", lease: lease1)
+        }
+
+        let longRunningReg = try manager.admitOperation("longRunningOp", lease: session2.lease)
+        let lockEnteredForCancel = AsyncStream.makeStream(of: Void.self)
+        let cancelledLockTask = Task {
+            try await manager.lock { _ in
+                lockEnteredForCancel.continuation.yield(())
+            }
+        }
+        for await _ in lockEnteredForCancel.stream { break }
+        #expect(await manager.state == .locking(session2))
+        #expect(!manager.admissionBarrier.isOpen)
+
+        // Cancel the lock transition while longRunningReg is still active.
+        await manager.cancelActiveTransition()
+        await #expect(throws: VaultSessionError.cancelled(action: "lock")) {
+            try await cancelledLockTask.value
+        }
+
+        // Session rolls back to .open(session2), barrier re-opens, and longRunningReg remains accounted for!
+        #expect(await manager.state == .open(session2))
+        #expect(manager.admissionBarrier.isOpen)
+        #expect(manager.admissionBarrier.activeCount == 1)
+        #expect(manager.admissionBarrier.activeOperations.first?.id == longRunningReg.id)
+
+        // Also verify cancelling a direct awaitAdmittedOperations waiter does not leak or disturb active operations.
+        let waiterTask = Task {
+            try await manager.awaitAdmittedOperations(forSessionID: session2.id)
+        }
+        await Task.yield()
+        waiterTask.cancel()
+        await #expect(throws: VaultOperationAdmissionError.cancelled(operation: "awaitInFlightOperations")) {
+            try await waiterTask.value
+        }
+        #expect(manager.admissionBarrier.activeCount == 1)
+
+        // Now complete longRunningReg and lock cleanly.
+        longRunningReg.cancel()
+        #expect(manager.admissionBarrier.activeCount == 0)
+        #expect(manager.operationRegistrySnapshot().totalCancelledCount == 1)
+
+        try await manager.lock()
+        #expect(await manager.state.phase == .locked)
+    }
 }

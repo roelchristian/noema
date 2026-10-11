@@ -68,17 +68,273 @@ public enum VaultAccessError: Error, Sendable, Equatable, LocalizedError {
     }
 }
 
-/// Synchronously revalidates session leases when protected storage or repository I/O executes.
+/// Descriptor for an operation admitted through the central lock admission barrier.
+public struct VaultAdmittedOperation: Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let name: String
+    public let sessionID: UUID
+    public let vaultID: UUID
+    public let root: URL
+    public let generation: UInt64
+    public let lease: VaultSessionLease
+    public var epoch: UInt64 { generation }
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        lease: VaultSessionLease
+    ) {
+        self.id = id
+        self.name = name
+        self.sessionID = lease.sessionID
+        self.vaultID = lease.vaultID
+        self.root = lease.root
+        self.generation = lease.generation
+        self.lease = lease
+    }
+}
+
+public enum VaultOperationDisposition: String, Sendable, Equatable, CaseIterable {
+    case completed
+    case cancelled
+    case abandoned
+}
+
+public struct VaultOperationRegistrySnapshot: Sendable, Equatable {
+    public let isBarrierOpen: Bool
+    public let phase: VaultSessionPhase
+    public let sessionID: UUID?
+    public let generation: UInt64
+    public let activeOperations: [VaultAdmittedOperation]
+    public let totalAdmittedCount: Int
+    public let totalCompletedCount: Int
+    public let totalCancelledCount: Int
+    public let totalAbandonedCount: Int
+
+    public var activeCount: Int { activeOperations.count }
+}
+
+public enum VaultOperationAdmissionError: Error, Sendable, Equatable, LocalizedError {
+    case barrierClosed(
+        phase: VaultSessionPhase,
+        vaultID: UUID?,
+        root: URL?,
+        generation: UInt64,
+        operation: String
+    )
+    case invalidLease(VaultAccessError)
+    case duplicateOperationID(UUID, operation: String)
+    case cancelled(operation: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .barrierClosed(let phase, _, _, _, let operation):
+            "Cannot admit operation '\(operation)' while lock barrier is closed (session is \(phase.rawValue))."
+        case .invalidLease(let accessError):
+            accessError.errorDescription
+        case .duplicateOperationID(let id, let operation):
+            "Operation '\(operation)' with ID \(id.uuidString) is already registered."
+        case .cancelled(let operation):
+            "Operation '\(operation)' was cancelled."
+        }
+    }
+}
+
+/// Tracks an admitted protected operation and guarantees registration release on completion, cancellation, or abandonment.
+public final class VaultOperationRegistration: Sendable {
+    public let descriptor: VaultAdmittedOperation
+    private let state: Mutex<VaultOperationDisposition?>
+    private let onFinish: @Sendable (UUID, UUID, VaultOperationDisposition) -> Void
+
+    public var id: UUID { descriptor.id }
+    public var name: String { descriptor.name }
+    public var lease: VaultSessionLease { descriptor.lease }
+    public var sessionID: UUID { descriptor.sessionID }
+    public var vaultID: UUID { descriptor.vaultID }
+    public var root: URL { descriptor.root }
+    public var generation: UInt64 { descriptor.generation }
+    public var epoch: UInt64 { descriptor.generation }
+
+    init(
+        descriptor: VaultAdmittedOperation,
+        onFinish: @escaping @Sendable (UUID, UUID, VaultOperationDisposition) -> Void
+    ) {
+        self.descriptor = descriptor
+        self.state = Mutex(nil)
+        self.onFinish = onFinish
+    }
+
+    public var disposition: VaultOperationDisposition? {
+        state.withLock { $0 }
+    }
+
+    public var isActive: Bool {
+        state.withLock { $0 == nil }
+    }
+
+    public func complete(disposition: VaultOperationDisposition = .completed) {
+        let shouldNotify = state.withLock { current -> Bool in
+            guard current == nil else { return false }
+            current = disposition
+            return true
+        }
+        if shouldNotify {
+            onFinish(descriptor.id, descriptor.sessionID, disposition)
+        }
+    }
+
+    public func cancel() {
+        complete(disposition: .cancelled)
+    }
+
+    public func abandon() {
+        complete(disposition: .abandoned)
+    }
+
+    /// Executes `body` with this registration bound as the active task-local admitted operation so
+    /// already-admitted repository and content-store calls may finish while the lock barrier is draining.
+    public func withScope<T>(
+        completeOnExit: Bool = false,
+        _ body: () async throws -> T
+    ) async rethrows -> T {
+        defer {
+            if completeOnExit {
+                complete(disposition: Task.isCancelled ? .cancelled : .completed)
+            }
+        }
+        return try await VaultLockAdmissionBarrier.$currentOperationID.withValue(descriptor.id) {
+            try await body()
+        }
+    }
+
+    deinit {
+        let shouldAbandon = state.withLock { current -> Bool in
+            guard current == nil else { return false }
+            current = .abandoned
+            return true
+        }
+        if shouldAbandon {
+            onFinish(descriptor.id, descriptor.sessionID, .abandoned)
+        }
+    }
+}
+
+/// Central lock admission barrier and operation registry synchronized with `VaultAccessGate` and `VaultSessionManager`.
+public final class VaultLockAdmissionBarrier: Sendable {
+    @TaskLocal public static var currentOperationID: UUID?
+
+    private let gate: VaultAccessGate
+
+    public init(gate: VaultAccessGate) {
+        self.gate = gate
+    }
+
+    public var isOpen: Bool {
+        gate.registrySnapshot().isBarrierOpen
+    }
+
+    public var activeOperations: [VaultAdmittedOperation] {
+        gate.registrySnapshot().activeOperations
+    }
+
+    public var activeCount: Int {
+        gate.registrySnapshot().activeCount
+    }
+
+    public func snapshot() -> VaultOperationRegistrySnapshot {
+        gate.registrySnapshot()
+    }
+
+    public func admit(
+        operation: String,
+        lease: VaultSessionLease? = nil,
+        targetRoot: URL? = nil,
+        targetVaultID: UUID? = nil,
+        id: UUID = UUID()
+    ) throws -> VaultOperationRegistration {
+        try gate.admitOperation(
+            operation: operation,
+            lease: lease,
+            targetRoot: targetRoot,
+            targetVaultID: targetVaultID,
+            id: id
+        )
+    }
+
+    public func withAdmittedOperation<T: Sendable>(
+        _ operation: String,
+        lease: VaultSessionLease? = nil,
+        targetRoot: URL? = nil,
+        targetVaultID: UUID? = nil,
+        id: UUID = UUID(),
+        body: @Sendable (VaultOperationRegistration) async throws -> T
+    ) async throws -> T {
+        let registration = try admit(
+            operation: operation,
+            lease: lease,
+            targetRoot: targetRoot,
+            targetVaultID: targetVaultID,
+            id: id
+        )
+        do {
+            let result = try await VaultLockAdmissionBarrier.$currentOperationID.withValue(registration.id) {
+                try await body(registration)
+            }
+            registration.complete(disposition: Task.isCancelled ? .cancelled : .completed)
+            return result
+        } catch {
+            if error is CancellationError || Task.isCancelled {
+                registration.cancel()
+            } else {
+                registration.complete(disposition: .completed)
+            }
+            throw error
+        }
+    }
+
+    public func awaitInFlightOperations(forSessionID sessionID: UUID? = nil) async throws {
+        try await gate.awaitInFlightOperations(forSessionID: sessionID)
+    }
+}
+
+/// Synchronously revalidates session leases when protected storage or repository I/O executes,
+/// and atomically coordinates the lock admission barrier and active operation registry.
 public final class VaultAccessGate: Sendable {
+    private struct DrainWaiter: Sendable {
+        let id: UUID
+        let sessionID: UUID?
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
     private struct GateState: Sendable {
         var sessionState: VaultSessionState
         var highestGeneration: UInt64
+        var trackedSessionID: UUID?
+        var activeOperations: [UUID: VaultAdmittedOperation] = [:]
+        var activeOrder: [UUID] = []
+        var totalAdmittedCount: Int = 0
+        var totalCompletedCount: Int = 0
+        var totalCancelledCount: Int = 0
+        var totalAbandonedCount: Int = 0
+        var drainWaiters: [UUID: DrainWaiter] = [:]
     }
 
     private let state: Mutex<GateState>
 
     public init(initialState: VaultSessionState = .closed) {
-        self.state = Mutex(GateState(sessionState: initialState, highestGeneration: initialState.generation))
+        let initialSessionID: UUID? = switch initialState {
+        case .open(let session), .locking(let session): session.id
+        default: nil
+        }
+        self.state = Mutex(GateState(
+            sessionState: initialState,
+            highestGeneration: initialState.generation,
+            trackedSessionID: initialSessionID
+        ))
+    }
+
+    public var admissionBarrier: VaultLockAdmissionBarrier {
+        VaultLockAdmissionBarrier(gate: self)
     }
 
     public var currentState: VaultSessionState {
@@ -90,11 +346,44 @@ public final class VaultAccessGate: Sendable {
     }
 
     public func updateState(_ next: VaultSessionState) {
-        state.withLock { gate in
+        let waitersToResume: [CheckedContinuation<Void, Error>] = state.withLock { gate in
             gate.sessionState = next
             if next.generation > gate.highestGeneration {
                 gate.highestGeneration = next.generation
             }
+
+            switch next {
+            case .open(let session):
+                if gate.trackedSessionID != session.id {
+                    let abandonedCount = gate.activeOperations.count
+                    if abandonedCount > 0 {
+                        gate.totalAbandonedCount += abandonedCount
+                        gate.activeOperations.removeAll()
+                        gate.activeOrder.removeAll()
+                    }
+                    gate.trackedSessionID = session.id
+                    return Self.collectReadyWaiters(&gate)
+                }
+                return []
+
+            case .locking(let session):
+                gate.trackedSessionID = session.id
+                return Self.collectReadyWaiters(&gate)
+
+            case .closed, .opening, .locked, .unlocking:
+                let abandonedCount = gate.activeOperations.count
+                if abandonedCount > 0 {
+                    gate.totalAbandonedCount += abandonedCount
+                    gate.activeOperations.removeAll()
+                    gate.activeOrder.removeAll()
+                }
+                gate.trackedSessionID = nil
+                return Self.collectReadyWaiters(&gate)
+            }
+        }
+
+        for continuation in waitersToResume {
+            continuation.resume()
         }
     }
 
@@ -241,6 +530,19 @@ public final class VaultAccessGate: Sendable {
                         operation: operation
                     )
                 }
+                if lease.sessionID != session.id {
+                    throw VaultAccessError.invalidLeaseSession(
+                        expectedSessionID: session.id,
+                        actualSessionID: lease.sessionID,
+                        operation: operation
+                    )
+                }
+                if let activeOpID = VaultLockAdmissionBarrier.currentOperationID,
+                   let registered = gate.activeOperations[activeOpID],
+                   registered.sessionID == session.id,
+                   registered.generation == session.generation {
+                    return
+                }
                 throw VaultAccessError.sessionLocked(vaultID: session.vaultID, root: session.root, operation: operation)
 
             case .opening(let openingRoot, let candidateGen):
@@ -309,6 +611,270 @@ public final class VaultAccessGate: Sendable {
                     )
                 }
             }
+        }
+    }
+
+    public func registrySnapshot() -> VaultOperationRegistrySnapshot {
+        state.withLock { gate in
+            let ordered = gate.activeOrder.compactMap { gate.activeOperations[$0] }
+            let isOpen: Bool = if case .open = gate.sessionState { true } else { false }
+            return VaultOperationRegistrySnapshot(
+                isBarrierOpen: isOpen,
+                phase: gate.sessionState.phase,
+                sessionID: gate.trackedSessionID,
+                generation: gate.sessionState.generation,
+                activeOperations: ordered,
+                totalAdmittedCount: gate.totalAdmittedCount,
+                totalCompletedCount: gate.totalCompletedCount,
+                totalCancelledCount: gate.totalCancelledCount,
+                totalAbandonedCount: gate.totalAbandonedCount
+            )
+        }
+    }
+
+    public func admitOperation(
+        operation: String,
+        lease: VaultSessionLease? = nil,
+        targetRoot: URL? = nil,
+        targetVaultID: UUID? = nil,
+        id: UUID = UUID()
+    ) throws -> VaultOperationRegistration {
+        if Task.isCancelled {
+            throw VaultOperationAdmissionError.cancelled(operation: operation)
+        }
+        let normalizedTarget = targetRoot?.standardizedFileURL.resolvingSymlinksInPath()
+
+        let descriptor: VaultAdmittedOperation = try state.withLock { gate in
+            if let lease {
+                let checkRoot = normalizedTarget ?? lease.root
+                if lease.root != checkRoot || (targetVaultID != nil && lease.vaultID != targetVaultID) {
+                    throw VaultOperationAdmissionError.invalidLease(.wrongVault(
+                        expectedVaultID: targetVaultID,
+                        expectedRoot: checkRoot,
+                        actualVaultID: lease.vaultID,
+                        actualRoot: lease.root,
+                        operation: operation
+                    ))
+                }
+            }
+
+            switch gate.sessionState {
+            case .open(let activeSession):
+                let resolvedLease = lease ?? activeSession.lease
+                let checkRoot = normalizedTarget ?? resolvedLease.root
+                if resolvedLease.generation != activeSession.generation {
+                    throw VaultOperationAdmissionError.invalidLease(.staleLease(
+                        leaseGeneration: resolvedLease.generation,
+                        activeGeneration: activeSession.generation,
+                        operation: operation
+                    ))
+                }
+                if activeSession.root != checkRoot
+                    || (targetVaultID != nil && activeSession.vaultID != targetVaultID)
+                    || resolvedLease.vaultID != activeSession.vaultID
+                    || resolvedLease.root != activeSession.root {
+                    throw VaultOperationAdmissionError.invalidLease(.wrongVault(
+                        expectedVaultID: targetVaultID ?? resolvedLease.vaultID,
+                        expectedRoot: checkRoot,
+                        actualVaultID: activeSession.vaultID,
+                        actualRoot: activeSession.root,
+                        operation: operation
+                    ))
+                }
+                if resolvedLease.sessionID != activeSession.id {
+                    throw VaultOperationAdmissionError.invalidLease(.invalidLeaseSession(
+                        expectedSessionID: activeSession.id,
+                        actualSessionID: resolvedLease.sessionID,
+                        operation: operation
+                    ))
+                }
+                if gate.activeOperations[id] != nil {
+                    throw VaultOperationAdmissionError.duplicateOperationID(id, operation: operation)
+                }
+                let admitted = VaultAdmittedOperation(id: id, name: operation, lease: resolvedLease)
+                gate.trackedSessionID = activeSession.id
+                gate.activeOperations[id] = admitted
+                gate.activeOrder.append(id)
+                gate.totalAdmittedCount += 1
+                return admitted
+
+            case .locking(let session):
+                if let lease {
+                    if lease.generation != session.generation {
+                        throw VaultOperationAdmissionError.invalidLease(.staleLease(
+                            leaseGeneration: lease.generation,
+                            activeGeneration: max(session.generation, gate.highestGeneration),
+                            operation: operation
+                        ))
+                    }
+                    let checkRoot = normalizedTarget ?? lease.root
+                    if session.root != checkRoot
+                        || (targetVaultID != nil && session.vaultID != targetVaultID)
+                        || lease.vaultID != session.vaultID
+                        || lease.root != session.root {
+                        throw VaultOperationAdmissionError.invalidLease(.wrongVault(
+                            expectedVaultID: targetVaultID ?? lease.vaultID,
+                            expectedRoot: checkRoot,
+                            actualVaultID: session.vaultID,
+                            actualRoot: session.root,
+                            operation: operation
+                        ))
+                    }
+                }
+                throw VaultOperationAdmissionError.barrierClosed(
+                    phase: .locking,
+                    vaultID: session.vaultID,
+                    root: session.root,
+                    generation: session.generation,
+                    operation: operation
+                )
+
+            case .locked(let lockedID, let lockedRoot, _, let lockedGen):
+                if let lease, lease.generation != lockedGen {
+                    throw VaultOperationAdmissionError.invalidLease(.staleLease(
+                        leaseGeneration: lease.generation,
+                        activeGeneration: max(lockedGen, gate.highestGeneration),
+                        operation: operation
+                    ))
+                }
+                throw VaultOperationAdmissionError.barrierClosed(
+                    phase: .locked,
+                    vaultID: lockedID,
+                    root: lockedRoot,
+                    generation: lockedGen,
+                    operation: operation
+                )
+
+            case .closed:
+                if let lease, gate.highestGeneration > 0 && lease.generation < gate.highestGeneration {
+                    throw VaultOperationAdmissionError.invalidLease(.staleLease(
+                        leaseGeneration: lease.generation,
+                        activeGeneration: gate.highestGeneration,
+                        operation: operation
+                    ))
+                }
+                throw VaultOperationAdmissionError.barrierClosed(
+                    phase: .closed,
+                    vaultID: nil,
+                    root: nil,
+                    generation: gate.highestGeneration,
+                    operation: operation
+                )
+
+            case .opening(let openingRoot, let candidateGen):
+                if let lease, lease.generation < gate.highestGeneration {
+                    throw VaultOperationAdmissionError.invalidLease(.staleLease(
+                        leaseGeneration: lease.generation,
+                        activeGeneration: candidateGen,
+                        operation: operation
+                    ))
+                }
+                throw VaultOperationAdmissionError.barrierClosed(
+                    phase: .opening,
+                    vaultID: nil,
+                    root: openingRoot,
+                    generation: candidateGen,
+                    operation: operation
+                )
+
+            case .unlocking(let unlockingID, let unlockingRoot, _, let candidateGen):
+                if let lease, lease.generation < gate.highestGeneration {
+                    throw VaultOperationAdmissionError.invalidLease(.staleLease(
+                        leaseGeneration: lease.generation,
+                        activeGeneration: candidateGen,
+                        operation: operation
+                    ))
+                }
+                throw VaultOperationAdmissionError.barrierClosed(
+                    phase: .unlocking,
+                    vaultID: unlockingID,
+                    root: unlockingRoot,
+                    generation: candidateGen,
+                    operation: operation
+                )
+            }
+        }
+
+        return VaultOperationRegistration(descriptor: descriptor) { [weak self] opID, sessionID, disposition in
+            self?.finishOperation(id: opID, sessionID: sessionID, disposition: disposition)
+        }
+    }
+
+    private func finishOperation(id: UUID, sessionID: UUID, disposition: VaultOperationDisposition) {
+        let waitersToResume: [CheckedContinuation<Void, Error>] = state.withLock { gate in
+            guard let existing = gate.activeOperations.removeValue(forKey: id),
+                  existing.sessionID == sessionID else {
+                return []
+            }
+            gate.activeOrder.removeAll { $0 == id }
+            switch disposition {
+            case .completed:
+                gate.totalCompletedCount += 1
+            case .cancelled:
+                gate.totalCancelledCount += 1
+            case .abandoned:
+                gate.totalAbandonedCount += 1
+            }
+            return Self.collectReadyWaiters(&gate)
+        }
+
+        for continuation in waitersToResume {
+            continuation.resume()
+        }
+    }
+
+    private static func hasMatchingActiveOperations(in gate: GateState, sessionID: UUID?) -> Bool {
+        guard let sessionID else {
+            return !gate.activeOperations.isEmpty
+        }
+        return gate.activeOperations.values.contains { $0.sessionID == sessionID }
+    }
+
+    private static func collectReadyWaiters(_ gate: inout GateState) -> [CheckedContinuation<Void, Error>] {
+        var readyIDs: [UUID] = []
+        var readyContinuations: [CheckedContinuation<Void, Error>] = []
+        for (waiterID, waiter) in gate.drainWaiters {
+            if !hasMatchingActiveOperations(in: gate, sessionID: waiter.sessionID) {
+                readyIDs.append(waiterID)
+                readyContinuations.append(waiter.continuation)
+            }
+        }
+        for waiterID in readyIDs {
+            gate.drainWaiters.removeValue(forKey: waiterID)
+        }
+        return readyContinuations
+    }
+
+    public func awaitInFlightOperations(forSessionID sessionID: UUID? = nil) async throws {
+        if Task.isCancelled {
+            throw VaultOperationAdmissionError.cancelled(operation: "awaitInFlightOperations")
+        }
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let shouldResumeImmediately: Result<Void, Error>? = state.withLock { gate in
+                    if Task.isCancelled {
+                        return .failure(VaultOperationAdmissionError.cancelled(operation: "awaitInFlightOperations"))
+                    }
+                    if !Self.hasMatchingActiveOperations(in: gate, sessionID: sessionID) {
+                        return .success(())
+                    }
+                    gate.drainWaiters[waiterID] = DrainWaiter(
+                        id: waiterID,
+                        sessionID: sessionID,
+                        continuation: continuation
+                    )
+                    return nil
+                }
+                if let shouldResumeImmediately {
+                    continuation.resume(with: shouldResumeImmediately)
+                }
+            }
+        } onCancel: {
+            let cancelledWaiter: CheckedContinuation<Void, Error>? = state.withLock { gate in
+                gate.drainWaiters.removeValue(forKey: waiterID)?.continuation
+            }
+            cancelledWaiter?.resume(throwing: VaultOperationAdmissionError.cancelled(operation: "awaitInFlightOperations"))
         }
     }
 }
