@@ -27,18 +27,17 @@ extension NSAttributedString.Key {
         return walk(document.blocks, depth: 0)
     }
     static func base(_ block: EditorBlock, depth: Int, theme: NoemaTheme, typography: EditorTypography = .init()) -> [NSAttributedString.Key: Any] {
-        let sizes: [BlockKind: CGFloat] = [.heading1: 14, .heading2: 8, .heading3: 4]
+        let role = EditorTypography.role(for: block.kind)
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 5; paragraph.paragraphSpacing = 10
         let hasInsideMarker = [.bullet, .numbered, .task, .toggle].contains(block.kind)
         paragraph.headIndent = CGFloat(depth * 24 + (hasInsideMarker ? 24 : (block.kind == .quote ? 18 : 0))); paragraph.firstLineHeadIndent = paragraph.headIndent
-        if sizes[block.kind] != nil { paragraph.paragraphSpacingBefore = 12 }
+        if [.heading1, .heading2, .heading3].contains(role) { paragraph.paragraphSpacingBefore = 12 }
         if block.metadata.semantic != nil || [.quote, .callout, .code, .math].contains(block.kind) {
             paragraph.paragraphSpacingBefore = 12
             paragraph.paragraphSpacing = 18
         }
-        let isMonoBlock = block.kind == .code || block.kind == .math
         var attrs: [NSAttributedString.Key: Any] = [
-            .font: isMonoBlock ? NSFont.monospacedSystemFont(ofSize: CGFloat(typography.size) - 2, weight: .regular) : typography.font(offset: sizes[block.kind] ?? 0, weight: sizes[block.kind] == nil ? .regular : .semibold),
+            .font: typography.font(for: role),
             .foregroundColor: theme.nativeText(), .paragraphStyle: paragraph,
             .blockID: block.id.uuidString, .blockKind: block.kind.rawValue, .blockDepth: depth
         ]
@@ -49,15 +48,8 @@ extension NSAttributedString.Key {
     }
     static func attributes(_ style: InlineStyle, block: EditorBlock, depth: Int, theme: NoemaTheme, typography: EditorTypography = .init()) -> [NSAttributedString.Key: Any] {
         var attrs = base(block, depth: depth, theme: theme, typography: typography)
-        var font = attrs[.font] as! NSFont
-        if style.code { font = .monospacedSystemFont(ofSize: font.pointSize, weight: .regular) }
-        else if style.math {
-            font = NSFontDescriptor.preferredFontDescriptor(forTextStyle: .body).withDesign(.serif).flatMap { NSFont(descriptor: $0, size: font.pointSize) } ?? font
-            font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
-        }
-        if style.bold { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
-        if style.italic { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
-        attrs[.font] = font; attrs[.inlineStyle] = try? JSONEncoder().encode(style)
+        attrs[.font] = typography.font(for: EditorTypography.role(for: block.kind), style: style)
+        attrs[.inlineStyle] = try? JSONEncoder().encode(style)
         if style.underline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
         if style.strike { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
         if style.highlight || style.code || style.math { attrs[.backgroundColor] = theme.native(.graphHighlight).withAlphaComponent(theme.dark ? 0.22 : 0.10) }
@@ -128,8 +120,12 @@ extension NSAttributedString.Key {
         style.underline = (attrs[.underlineStyle] as? Int ?? 0) != 0
         style.strike = (attrs[.strikethroughStyle] as? Int ?? 0) != 0
         style.highlight = attrs[.backgroundColor] != nil && !style.code && !style.math
-        if let link = attrs[.link] { style.link = String(describing: link) }
         style.wikiTarget = attrs[.wikiTarget] as? String ?? style.wikiTarget
+        // The rendered wiki URL is navigation metadata, not an external link.
+        // Retain explicitly serialized links instead of normalizing their bytes.
+        if let link = attrs[.link], style.wikiTarget == nil, style.link == nil {
+            style.link = String(describing: link)
+        }
         return style
     }
     static func runs(_ storage: NSAttributedString, range: NSRange) -> [RichRun] {
