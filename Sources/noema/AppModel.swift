@@ -68,7 +68,8 @@ struct LibraryRow: Identifiable, Equatable {
 
     init(source: SourceRecord) {
         id = source.id; title = source.title; tags = []; kind = .source
-        excerpt = BlockDocumentCodec.decode(source.body).flattened.map(\.text).joined(separator: " ")
+        // Sources tables and search results display metadata; previews decode content on demand.
+        excerpt = ""
         updatedAt = Self.date(source.metadata.capturedAt)
         fileSize = source.metadata.fileSize ?? source.body.utf8.count
         sourceLocation = source.metadata.isLinked ? "Linked" : "In vault"

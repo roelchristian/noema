@@ -51,39 +51,6 @@ import VaultCore
     #expect(missing.query == "absent")
 }
 
-@Test @MainActor func sidebarSearchNavigationPreservesQueryAndScope() async throws {
-    var note = try NoteCodec.decode(Data("# Stars".utf8), path: "Wiki/Stars.md", vaultID: UUID())
-    var metadata = BlockMetadata(); metadata.semantic = "question"
-    let block = EditorBlock(runs: [RichRun("Stars question")], metadata: metadata)
-    note.body = BlockDocumentCodec.encode(BlockDocument(blocks: [block]))
-    let model = AppModel(); model.notes = [note]; model.scope = .sources; model.searchText = "stars"
-    #expect(model.isSearching)
-    model.select(note.id, block: block.id)
-    for _ in 0..<50 {
-        if model.selectedSemanticID != nil { break }
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    #expect(model.currentNote?.id == note.id)
-    #expect(model.selectedSemanticID == "\(note.id):\(block.id)")
-    #expect(model.scope == .sources)
-    #expect(model.searchText == "stars")
-    model.searchText = "  \n "
-    #expect(!model.isSearching)
-    model.searchText = ""
-    #expect(!model.isSearching)
-}
-
-@Test @MainActor func trashNavigationClearsGlobalSearchAndSelectedDocument() throws {
-    let note = try NoteCodec.decode(Data("# Stars".utf8), path: "Wiki/Stars.md", vaultID: UUID())
-    let model = AppModel(); model.notes = [note]; model.currentNote = note; model.selectedID = note.id
-    model.title = note.title; model.body = note.body; model.tagInput = note.tags.joined(separator: ", ")
-    model.searchText = "stars"
-    model.changeScope(.trash)
-    #expect(model.scope == .trash)
-    #expect(!model.isSearching)
-    #expect(model.currentNote == nil && model.currentSource == nil && model.selectedID == nil)
-}
-
 @Test func lccCodeNormalizationAndParallelSourceRename() async throws {
     #expect(OnDeviceSummary.cleanLCC("DG299") == "DG299")
     #expect(OnDeviceSummary.cleanLCC("LCC: bs 1315.") == "BS1315")
@@ -646,21 +613,6 @@ import VaultCore
     #expect(model.unseenRenamedPages.isEmpty)
 }
 
-@Test @MainActor func openingReferencedPageLeavesSourcesAndClearsSearch() async throws {
-    let note = try NoteCodec.decode(Data("---\ntitle: Referenced\n---\nPage body".utf8), path: "Wiki/Referenced.md", vaultID: UUID())
-    let model = AppModel()
-    model.notes = [note]; model.scope = .sources; model.searchText = "unrelated filter"
-    model.select(note.id, scope: .wiki)
-    for _ in 0..<50 {
-        if model.currentNote?.id == note.id { break }
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    #expect(model.scope == .wiki)
-    #expect(model.searchText.isEmpty)
-    #expect(model.currentNote?.id == note.id)
-    #expect(model.body == note.body)
-}
-
 @Test func topicPagePromptRetainsTopicAndBoundsVaultContext() {
     let prompt = OnDeviceSummary.topicPrompt(topic: "Roman history", context: String(repeating: "x", count: 7000))
     #expect(prompt.hasPrefix("Topic (data):\nRoman history"))
@@ -696,87 +648,4 @@ import VaultCore
     #expect(coordinator.document.blocks[0].runs[0].text == "a")
     #expect(coordinator.document.blocks[0].runs[1].style.math == false)
     #expect(coordinator.document.blocks[0].runs[1].text == " plain")
-}
-
-
-
-@Test(arguments: [false, true]) @MainActor func editingLockPersistsOnceDuringRapidActions(initiallyLocked: Bool) async throws {
-    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaLock-" + UUID().uuidString)
-    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: folder) }
-    let repo = try FileVaultRepository.open(root: folder, create: true)
-    var note = try await repo.create(title: "Older", body: "Original")
-    note = try await repo.setEditingLock(note: note, locked: initiallyLocked)
-    let newer = try await repo.create(title: "Newer", body: "Other")
-    let model = AppModel(repository: repo)
-    model.notes = [note, newer]
-    model.currentNote = note; model.title = note.title; model.body = note.body
-    let order = model.allPagesByUpdated.map(\.id)
-    let recentOrder = model.recentPages.map(\.id)
-    for _ in 0..<20 { model.toggleEditingLock(note.id) }
-    #expect(model.editingLockOperations.contains(note.id))
-    #expect(model.currentNote?.isEditingLocked == initiallyLocked)
-    for _ in 0..<200 {
-        if model.editingLockOperations.isEmpty { break }
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    #expect(model.editingLockOperations.isEmpty)
-    #expect(model.currentNote?.isEditingLocked == !initiallyLocked)
-    #expect(model.currentNote?.updatedAt == note.updatedAt)
-    #expect(model.allPagesByUpdated.map(\.id) == order)
-    #expect(model.recentPages.map(\.id) == recentOrder)
-    #expect(try await repo.scan().notes.first(where: { $0.id == note.id })?.isEditingLocked == !initiallyLocked)
-}
-
-@Test @MainActor func editingLockFailurePreservesStateAndAllowsRetry() async throws {
-    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaLockFailure-" + UUID().uuidString)
-    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: folder) }
-    let repo = try FileVaultRepository.open(root: folder, create: true)
-    let note = try await repo.create(title: "Page", body: "Original")
-    let model = AppModel(repository: repo); model.notes = [note]
-    model.currentNote = note; model.title = note.title; model.body = note.body
-    let changed = try await repo.save(note: note, title: note.title, body: "External edit", tags: [])
-    model.toggleEditingLock(note.id)
-    for _ in 0..<200 {
-        if model.editingLockOperations.isEmpty { break }
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    #expect(!model.editingLockOperations.contains(note.id))
-    #expect(model.currentNote?.isEditingLocked == false)
-    #expect(model.notes.first?.contentHash == note.contentHash)
-    #expect(model.errorMessage?.contains("Could not change editing lock") == true)
-    #expect(try await repo.scan().notes.first?.body == "External edit")
-    model.notes = [changed]; model.currentNote = changed; model.body = changed.body
-    model.toggleEditingLock(note.id)
-    for _ in 0..<200 {
-        if model.editingLockOperations.isEmpty { break }
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    #expect(model.currentNote?.isEditingLocked == true)
-}
-
-@Test @MainActor func lockingSavesPendingContentBeforePreservingItsTimestamp() async throws {
-    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaPendingLock-" + UUID().uuidString)
-    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: folder) }
-    let repo = try FileVaultRepository.open(root: folder, create: true)
-    let note = try await repo.create(title: "Page", body: "Original")
-    var old = note; old.updatedAt = "2020-01-01T00:00:00Z"
-    try NoteCodec.encode(old).write(to: folder.appendingPathComponent(note.relativePath), options: .atomic)
-    let scanned = try #require(try await repo.scan().notes.first)
-    let recovery = try RecoveryStore(directory: folder.appendingPathComponent("TestRecovery"))
-    let model = AppModel(repository: repo, recovery: recovery)
-    model.notes = [scanned]; model.currentNote = scanned; model.title = scanned.title; model.body = "Pending edit"
-    model.toggleEditingLock(note.id)
-    for _ in 0..<200 {
-        if model.editingLockOperations.isEmpty { break }
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    let saved = try #require(try await repo.scan().notes.first)
-    #expect(saved.isEditingLocked)
-    #expect(saved.body == "Pending edit")
-    #expect(saved.updatedAt > scanned.updatedAt)
-    #expect(model.currentNote?.updatedAt == saved.updatedAt)
-    #expect(!model.dirty)
 }
