@@ -48,7 +48,13 @@ struct AIProviderIntegrationTests {
         model.cloudSummaryOverride = { request, consent in
             #expect(consent.approves(request))
             await probe.record("cloud", request.content)
-            return try ExternalAISummaryResult(request: request, summary: "Cloud fixture summary",
+            let output: String
+            switch request.action {
+            case .summarizePage, .summarizeSource: output = "Cloud fixture summary"
+            case .suggestTitle: output = "Cloud Fixture Title"
+            case .lccClassification: output = "{\"code\":\"QA\",\"rationale\":\"The document concerns mathematics.\"}"
+            }
+            return try ExternalAISummaryResult(request: request, summary: output,
                 provenance: ExternalAIProvenance(model: "gpt-4.1-mini"))
         }
         model.cloudPublicationOverride = { _ in { try Task.checkCancellation() } }
@@ -109,21 +115,13 @@ struct AIProviderIntegrationTests {
         #expect(f.model.preferredAIProvider(for: .summarizeSource) == .onDevice)
     }
 
-    @Test @MainActor func unsupportedCloudActionsRejectBeforeAnyProviderExecutes() async throws {
+    @Test @MainActor func unsupportedSourceDraftingRejectsBeforeAnyProviderExecutes() async throws {
         let f = try await fixture(); defer { f.cleanup() }
         let selected = try await source(f)
         let probe = ProviderProbe(); mock(f.model, probe: probe)
-        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
-        f.model.suggestPageTitle()
+        f.model.createPageFromSource(selected, provider: .openAI)
         #expect(f.model.aiProviderNotice != nil)
-        f.model.refreshPageLCC()
-        #expect(f.model.aiProviderNotice != nil)
-        f.model.refreshSourceLCC(selected)
-        #expect(f.model.aiProviderNotice != nil)
-        f.model.createPageFromSource(selected)
-        #expect(f.model.aiProviderNotice != nil)
-        #expect(!f.model.generatingPageTitle && !f.model.generatingPageLCC)
-        #expect(f.model.generatingSourceLCCs.isEmpty && f.model.generatingSourcePages.isEmpty)
+        #expect(f.model.generatingSourcePages.isEmpty)
         #expect(f.model.cloudSummaryConfirmation == nil)
         #expect(await probe.total == 0)
         #expect(try await f.repository.scan().notes.count == 1)
@@ -170,14 +168,24 @@ struct AIProviderIntegrationTests {
         let saved = f.defaults.data(forKey: AIProviderPreferences.preferenceKey)
         f.model.suggestPageTitle(provider: .onDevice)
         try await waitUntil { !f.model.generatingPageTitle }
+        #expect(f.model.title == "Fixture")
+        #expect(f.model.pendingAISuggestion?.value == "Native Fixture Title")
+        f.model.acceptAISuggestion()
+        await f.model.aiSuggestionAcceptanceTaskForTesting?.value
         #expect(f.model.title == "Native Fixture Title")
-        #expect(await f.model.saveCurrent())
         f.model.refreshPageLCC(provider: .onDevice)
         try await waitUntil { !f.model.generatingPageLCC }
-        #expect(f.model.currentNote?.lcc == "QA76")
+        #expect(f.model.currentNote?.lcc == nil)
+        #expect(f.model.pendingAISuggestion?.value == "QA")
+        f.model.acceptAISuggestion()
+        await f.model.aiSuggestionAcceptanceTaskForTesting?.value
+        #expect(f.model.currentNote?.lcc == "QA")
         f.model.refreshSourceLCC(selected, provider: .onDevice)
         try await waitUntil { !f.model.generatingSourceLCCs.contains(selected.id) }
-        #expect(try await f.repository.loadSource(id: selected.id).metadata.lcc == "QA76")
+        #expect(try await f.repository.loadSource(id: selected.id).metadata.lcc == nil)
+        f.model.acceptAISuggestion()
+        await f.model.aiSuggestionAcceptanceTaskForTesting?.value
+        #expect(try await f.repository.loadSource(id: selected.id).metadata.lcc == "QA")
         f.model.createPageFromSource(selected, provider: .onDevice)
         try await waitUntil { !f.model.generatingSourcePages.contains(selected.id) }
         let created = try #require(try await f.repository.scan().notes.first { $0.id != f.note.id })
@@ -187,6 +195,169 @@ struct AIProviderIntegrationTests {
         #expect(await probe.count("lccCode") == 2)
         #expect(await probe.count("cloud") == 0)
         #expect(f.defaults.data(forKey: AIProviderPreferences.preferenceKey) == saved)
+    }
+
+    @Test @MainActor func cloudMetadataSuggestionsRequireReviewAndPreserveUnrelatedArtifactsOnReopen() async throws {
+        let f = try await fixture(); defer { f.cleanup() }
+        let selected = try await source(f)
+        _ = try await f.repository.renameSource(selected, title: selected.title, summary: "Prior source summary", lcc: "DG299")
+        f.model.setPageLCC("DG299")
+        try await waitUntil { (try? await f.repository.scan().notes.first { $0.id == f.note.id }?.lcc) == "DG299" }
+        await f.model.refresh()
+        let probe = ProviderProbe(); mock(f.model, probe: probe)
+        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+        for target in [ExternalAISummaryTarget.page(f.note.id), .source(selected.id)] {
+            for action in [AIAction.suggestTitle, .classifyLCC] {
+                if action == .suggestTitle {
+                    if case .page = target { f.model.suggestPageTitle() }
+                    else { f.model.suggestSourceTitle(try await f.repository.loadSource(id: target.id)) }
+                } else {
+                    if case .page = target { f.model.refreshPageLCC() }
+                    else { f.model.refreshSourceLCC(try await f.repository.loadSource(id: target.id)) }
+                }
+                try await waitUntil { f.model.cloudSummaryConfirmation != nil }
+                let confirmation = try #require(f.model.cloudSummaryConfirmation)
+                #expect(confirmation.request.action == (action == .suggestTitle ? .suggestTitle : .lccClassification))
+                f.model.confirmCloudSummary()
+                await f.model.cloudSummaryTaskForTesting?.value
+                #expect(f.model.pendingAISuggestion?.action == action)
+                if case .page = target {
+                    #expect(f.model.title == (action == .suggestTitle ? "Fixture" : "Cloud Fixture Title"))
+                    #expect(f.model.currentNote?.lcc == "DG299")
+                } else {
+                    let before = try await f.repository.loadSource(id: target.id)
+                    #expect(before.title == (action == .suggestTitle ? "Source fixture" : "Cloud Fixture Title"))
+                    #expect(before.metadata.lcc == "DG299")
+                }
+                f.model.acceptAISuggestion()
+                // Native sheet dismissal must not cancel the accepted canonical write.
+                f.model.didDismissAISuggestionReview()
+                await f.model.aiSuggestionAcceptanceTaskForTesting?.value
+                #expect(f.model.aiProviderNotice == nil)
+            }
+        }
+        f.model.aiProviderPreferences.setDefaultProvider(.onDevice)
+        f.model.aiProviderPreferences.setOverride(.specific(.openAI), for: .suggestTitle)
+        await f.model.open(f.root, create: false)
+        let stored = try #require(try await f.repository.scan().notes.first { $0.id == f.note.id })
+        #expect(stored.title == "Cloud Fixture Title")
+        #expect(stored.relativePath == f.note.relativePath)
+        #expect(stored.lcc == "QA")
+        #expect(BlockDocumentCodec.decode(stored.body).aiSummary?.text == "Prior summary")
+        #expect(stored.aiTitleProvenance?.provider == "OpenAI")
+        #expect(stored.aiLCCProvenance?.sourceRevision != nil)
+        let storedSource = try await f.repository.loadSource(id: selected.id)
+        #expect(storedSource.metadata.aiSummary == "Prior source summary")
+        #expect(storedSource.title == "Cloud Fixture Title" && storedSource.metadata.lcc == "QA")
+        #expect(await probe.count("cloud") == 4)
+        #expect(await probe.count("summarize") == 0)
+    }
+
+    @Test @MainActor func delayedCloudTitleKeepsCapturedProviderAndRejectsStaleAcceptance() async throws {
+        let f = try await fixture(); defer { f.cleanup() }
+        let probe = ProviderProbe(holdSummary: true); mock(f.model, probe: probe)
+        f.model.cloudSummaryOverride = { request, consent in
+            #expect(consent.approves(request))
+            _ = try await probe.summarize(request.content)
+            return try ExternalAISummaryResult(request: request, summary: "Cloud Fixture Title",
+                provenance: ExternalAIProvenance(model: "gpt-4.1-mini"))
+        }
+        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+        f.model.suggestPageTitle()
+        try await waitUntil { f.model.cloudSummaryConfirmation != nil }
+        f.model.confirmCloudSummary()
+        let worker = try #require(f.model.cloudSummaryTaskForTesting)
+        try await waitUntil { await probe.count("summarize") == 1 }
+        f.model.aiProviderPreferences.setDefaultProvider(.onDevice)
+        try await probe.releaseSummary()
+        await worker.value
+        #expect(f.model.pendingAISuggestion?.provider == .openAI)
+        f.model.title = "Manual correction"
+        f.model.acceptAISuggestion()
+        await f.model.aiSuggestionAcceptanceTaskForTesting?.value
+        #expect(f.model.title == "Manual correction")
+        #expect(f.model.aiProviderNotice == ExternalAIError.staleContent.localizedDescription)
+        let stored = try #require(try await f.repository.scan().notes.first { $0.id == f.note.id })
+        #expect(stored.title == "Fixture")
+        #expect(BlockDocumentCodec.decode(stored.body).aiSummary?.text == "Prior summary")
+    }
+
+    @Test @MainActor func pageTitleSuggestionWaitsForPendingManualClassification() async throws {
+        for provider in AIProvider.allCases {
+            let f = try await fixture(); defer { f.cleanup() }
+            let probe = ProviderProbe(); mock(f.model, probe: probe)
+            f.model.aiProviderPreferences.setDefaultProvider(provider)
+            f.model.setPageLCC("DG299")
+            f.model.suggestPageTitle()
+            if provider == .openAI {
+                try await waitUntil { f.model.cloudSummaryConfirmation != nil || f.model.cloudSummaryError != nil }
+                #expect(f.model.cloudSummaryError == nil)
+                f.model.confirmCloudSummary()
+                await f.model.cloudSummaryTaskForTesting?.value
+            } else { await f.model.aiSuggestionTaskForTesting?.value }
+            #expect(f.model.pendingAISuggestion != nil)
+            f.model.acceptAISuggestion()
+            await f.model.aiSuggestionAcceptanceTaskForTesting?.value
+            let stored = try #require(try await f.repository.scan().notes.first { $0.id == f.note.id })
+            #expect(stored.lcc == "DG299")
+            #expect(stored.title == (provider == .openAI ? "Cloud Fixture Title" : "Native Fixture Title"))
+            #expect(BlockDocumentCodec.decode(stored.body).aiSummary?.text == "Prior summary")
+        }
+    }
+
+    @Test @MainActor func debouncedSourceCorrectionCannotBeOverwrittenByAcceptedTitle() async throws {
+        let f = try await fixture(); defer { f.cleanup() }
+        let selected = try await source(f)
+        let probe = ProviderProbe(); mock(f.model, probe: probe)
+        f.model.suggestSourceTitle(selected)
+        await f.model.aiSuggestionTaskForTesting?.value
+        #expect(f.model.pendingAISuggestion?.value == "Native Fixture Title")
+        f.model.updateSourceLCC(selected, lcc: "DG299")
+        f.model.acceptAISuggestion()
+        await f.model.aiSuggestionAcceptanceTaskForTesting?.value
+        #expect(f.model.aiProviderNotice == ExternalAIError.staleContent.localizedDescription)
+        try await waitUntil { (try? await f.repository.loadSource(id: selected.id).metadata.lcc) == "DG299" }
+        let stored = try await f.repository.loadSource(id: selected.id)
+        #expect(stored.title == selected.title)
+        #expect(stored.metadata.lcc == "DG299")
+    }
+
+    @Test @MainActor func metadataFailureAndCancellationPreserveAllStoredArtifacts() async throws {
+        for action in [AIAction.suggestTitle, .classifyLCC] {
+            let f = try await fixture(); defer { f.cleanup() }
+            let probe = ProviderProbe(); mock(f.model, probe: probe)
+            f.model.cloudSummaryOverride = { _, _ in throw ExternalAIError.providerUnavailable }
+            f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+            if action == .suggestTitle { f.model.suggestPageTitle() } else { f.model.refreshPageLCC() }
+            try await waitUntil { f.model.cloudSummaryConfirmation != nil }
+            f.model.confirmCloudSummary()
+            await f.model.cloudSummaryTaskForTesting?.value
+            #expect(f.model.cloudSummaryError == ExternalAIError.providerUnavailable.localizedDescription)
+            #expect(f.model.pendingAISuggestion == nil)
+            f.model.cancelCloudSummary()
+            if action == .suggestTitle { f.model.suggestPageTitle() } else { f.model.refreshPageLCC() }
+            try await waitUntil { f.model.cloudSummaryConfirmation != nil }
+            f.model.cancelCloudSummary()
+            f.model.confirmCloudSummary()
+            let stored = try #require(try await f.repository.scan().notes.first { $0.id == f.note.id })
+            #expect(stored.title == "Fixture" && stored.lcc == nil)
+            #expect(BlockDocumentCodec.decode(stored.body).aiSummary?.text == "Prior summary")
+            #expect(stored.aiTitleProvenance == nil && stored.aiLCCProvenance == nil)
+            #expect(await probe.total == 0)
+        }
+    }
+
+    @Test @MainActor func nativeSummaryNeverInvokesClassificationOrOverwritesManualLCC() async throws {
+        let f = try await fixture(); defer { f.cleanup() }
+        f.model.setPageLCC("DG299")
+        try await waitUntil { (try? await f.repository.scan().notes.first { $0.id == f.note.id }?.lcc) == "DG299" }
+        let probe = ProviderProbe(); mock(f.model, probe: probe)
+        f.model.requestPageSummary(id: f.note.id)
+        await f.model.nativePageSummaryTaskForTesting?.value
+        #expect(await f.model.saveCurrent())
+        #expect(f.model.currentNote?.lcc == "DG299")
+        #expect(await probe.count("inferLCC") == 0)
+        #expect(await probe.count("lccCode") == 0)
     }
 
     @Test @MainActor func automaticPageAndSourceNamingRemainNativeWithCloudDefault() async throws {
