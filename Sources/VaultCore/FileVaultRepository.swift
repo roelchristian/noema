@@ -28,7 +28,7 @@ public actor FileVaultRepository: VaultRepository {
     private static let legacyTrashDirectoryName = ".Trash"
     public nonisolated let root: URL
     public nonisolated let manifest: VaultManifest
-    private let contentStore: any VaultContentStore
+    public nonisolated let contentStore: any VaultContentStore
     private var cache: [String: (Date?, Int?, NoteRecord)] = [:]
     private var downloadingSources: [UUID: SourceRecord] = [:]
     private let fm = FileManager.default
@@ -36,7 +36,7 @@ public actor FileVaultRepository: VaultRepository {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; return encoder
     }()
 
-    public static func open(root: URL, create: Bool = false, contentStore: (any VaultContentStore)? = nil) throws -> FileVaultRepository {
+    public static func open(root: URL, create: Bool = false, contentStore: (any VaultContentStore)? = nil, storageProvider: VaultStorageProvider = .plaintext) throws -> FileVaultRepository {
         let accessRoot = root
         let root = root.standardizedFileURL.resolvingSymlinksInPath()
         let fm = FileManager.default
@@ -44,7 +44,7 @@ public actor FileVaultRepository: VaultRepository {
         guard create || fm.fileExists(atPath: manifestURL.path) else {
             throw VaultError.invalid("Choose a vault folder containing vault.json, or create a new vault.")
         }
-        let store = try contentStore ?? PlaintextVaultContentStore(root: accessRoot)
+        let store = try contentStore ?? storageProvider.makeStore(root: accessRoot)
         let manifest: VaultManifest
         if fm.fileExists(atPath: manifestURL.path) {
             manifest = try JSONDecoder().decode(VaultManifest.self, from: store.read(at: "vault.json"))
@@ -489,25 +489,24 @@ public actor FileVaultRepository: VaultRepository {
         return "Unavailable: " + error.localizedDescription
     }
 
-    public static func checkSourceAvailability(_ source: SourceRecord, root: URL) -> String {
+    public static func checkSourceAvailability(_ source: SourceRecord, root: URL, contentStore: any VaultContentStore) -> String {
         do {
             guard source.metadata.storedFilename == URL(fileURLWithPath: source.metadata.storedFilename).lastPathComponent,
                   !source.metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Invalid source path.") }
             let access = root.startAccessingSecurityScopedResource()
             defer { if access { root.stopAccessingSecurityScopedResource() } }
-            let data = try readSourceOriginal(source, root: root)
+            let data = try readSourceOriginal(source, root: root, contentStore: contentStore)
             guard source.metadata.isLinked || digest(data) == source.metadata.sha256 else { throw VaultError.invalid("Original checksum does not match.") }
             return "Available"
         } catch { return sourceAvailabilityMessage(error, linked: source.metadata.isLinked) }
     }
 
     /// Linked originals have external ownership and never pass through vault storage.
-    public static func readSourceOriginal(_ source: SourceRecord, root: URL, contentStore: (any VaultContentStore)? = nil) throws -> Data {
+    public static func readSourceOriginal(_ source: SourceRecord, root: URL, contentStore: any VaultContentStore) throws -> Data {
         if let bookmark = source.metadata.linkedBookmark { return try readLinkedSource(bookmark) }
         let filename = source.metadata.storedFilename
         guard filename == URL(fileURLWithPath: filename).lastPathComponent, !filename.hasPrefix(".") else { throw VaultError.invalid("Invalid source path.") }
-        let store = try contentStore ?? PlaintextVaultContentStore(root: root)
-        let data = try store.read(at: "Sources/" + source.id.uuidString.lowercased() + "/" + filename)
+        let data = try contentStore.read(at: "Sources/" + source.id.uuidString.lowercased() + "/" + filename)
         guard digest(data) == source.metadata.sha256 else { throw VaultError.invalid("Original checksum does not match.") }
         return data
     }

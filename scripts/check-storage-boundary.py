@@ -26,6 +26,11 @@ def inventory(sources):
 def violations(actual, allowed):
     return actual - allowed, allowed - actual
 
+def construction_bypasses(sources):
+    return [path for path, source in sources.items()
+            if re.search(r"\bPlaintextVaultContentStore\s*\(", source)
+            and path != "Sources/VaultCore/VaultStorageProvider.swift"]
+
 def selftest():
     sample = {'Sources/VaultCore/NewStore.swift': 'try Data(contentsOf: url)'}
     assert violations(inventory(sample), collections.Counter())[0]
@@ -37,7 +42,10 @@ def selftest():
     assert violations(collections.Counter(), allowed)[1]
     assert inventory({'Sources/noema/New.swift': 'FileVaultRepository.coordinatedRead(url)'})
     assert not inventory({'Sources/noema/New.swift': 'try contentStore.read(at: path)\ntry contentStore.write(data, at: path, condition: .createOnly)'})
-    print('Storage boundary guard selftest passed (8 cases).')
+    assert construction_bypasses({'Sources/noema/Reader.swift': 'try PlaintextVaultContentStore(root: root)'})
+    assert construction_bypasses({'Sources/VaultCore/VaultCreation.swift': 'try PlaintextVaultContentStore(\nroot: root)'})
+    assert not construction_bypasses({'Sources/VaultCore/VaultStorageProvider.swift': 'try PlaintextVaultContentStore(root: root)'})
+    print('Storage boundary guard selftest passed (11 cases).')
 
 def main():
     if '--selftest' in sys.argv:
@@ -48,6 +56,10 @@ def main():
         assert entry['reason'], 'Every exception needs a reviewed ownership reason'
         allowed[(entry['path'], entry['statement'])] += entry['count']
     actual = inventory({str(p.relative_to(ROOT)): p.read_text() for p in (ROOT / 'Sources').rglob('*.swift')})
+    bypasses = construction_bypasses({str(p.relative_to(ROOT)): p.read_text() for p in (ROOT / 'Sources').rglob('*.swift')})
+    if bypasses:
+        print("Unreviewed adapter construction: " + ", ".join(bypasses), file=sys.stderr)
+        return 1
     new, stale = violations(actual, allowed)
     for kind, items in [('Unreviewed I/O', new), ('Stale exception', stale)]:
         for (path, statement), count in sorted(items.items()):

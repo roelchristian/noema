@@ -7,15 +7,16 @@ import VaultCore
     private static var readers: [UUID: SourceReader] = [:]
     private var sourceID: UUID
     private var scopedURL: URL?
+    private let previewSnapshot: SourcePreviewSnapshot?
 
-    private init(id: UUID, window: NSWindow, scopedURL: URL?) {
-        sourceID = id; self.scopedURL = scopedURL
+    private init(id: UUID, window: NSWindow, scopedURL: URL?, previewSnapshot: SourcePreviewSnapshot?) {
+        sourceID = id; self.scopedURL = scopedURL; self.previewSnapshot = previewSnapshot
         super.init(window: window)
         window.delegate = self
     }
     required init?(coder: NSCoder) { fatalError("Not supported") }
 
-    static func open(_ source: SourceRecord, root: URL) async throws {
+    static func open(_ source: SourceRecord, root: URL, contentStore: any VaultContentStore) async throws {
         if let existing = readers[source.id] { existing.showWindow(nil); existing.window?.makeKeyAndOrderFront(nil); return }
         let url: URL
         var scoped: URL?
@@ -30,9 +31,10 @@ import VaultCore
             url = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased()).appendingPathComponent(source.metadata.storedFilename)
             if root.startAccessingSecurityScopedResource() { scoped = root }
         }
+        var snapshot: SourcePreviewSnapshot?
         do {
             let data = try await Task.detached {
-                let data = try source.metadata.isLinked ? FileVaultRepository.coordinatedRead(url) : FileVaultRepository.readSourceOriginal(source, root: root)
+                let data = try source.metadata.isLinked ? FileVaultRepository.coordinatedRead(url) : FileVaultRepository.readSourceOriginal(source, root: root, contentStore: contentStore)
                 guard source.metadata.isLinked || digest(data) == source.metadata.sha256 else {
                     throw VaultError.invalid("The in-vault original changed. Refresh from Files to review the checksum notice.")
                 }
@@ -61,19 +63,24 @@ import VaultCore
             } else {
                 guard let preview = QLPreviewView(frame: window.contentView!.bounds, style: .normal) else { throw VaultError.unavailable("Quick Look is unavailable for this file.") }
                 preview.autoresizingMask = [.width, .height]
-                preview.previewItem = url as NSURL
+                if !source.metadata.isLinked {
+                    snapshot = try await Task.detached { try SourcePreviewSnapshot(data: data, filename: source.metadata.storedFilename) }.value
+                }
+                preview.previewItem = (snapshot?.url ?? url) as NSURL
                 window.contentView = preview
             }
-            let controller = SourceReader(id: source.id, window: window, scopedURL: scoped)
+            let controller = SourceReader(id: source.id, window: window, scopedURL: scoped, previewSnapshot: snapshot)
             readers[source.id] = controller; window.center(); controller.showWindow(nil); window.makeKeyAndOrderFront(nil)
-        } catch { scoped?.stopAccessingSecurityScopedResource(); throw error }
+        } catch { snapshot?.remove(); scoped?.stopAccessingSecurityScopedResource(); throw error }
     }
 
     static func updateTitle(id: UUID, title: String) { readers[id]?.window?.title = title }
     static func close(id: UUID) { readers[id]?.window?.close() }
+    static func closeAll() { for reader in Array(readers.values) { reader.window?.close() } }
 
     func windowWillClose(_ notification: Notification) {
         scopedURL?.stopAccessingSecurityScopedResource(); scopedURL = nil
+        previewSnapshot?.remove()
         Self.readers.removeValue(forKey: sourceID)
     }
 }

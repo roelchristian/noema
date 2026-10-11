@@ -17,7 +17,7 @@ public enum VaultCreation {
 
 extension FileVaultRepository {
     /// Publishes a complete plaintext vault by a same-parent move, never merging an existing folder.
-    public static func createNewVault(parent: URL, name: String, encryptionRequested: Bool) throws -> URL {
+    public static func createNewVault(parent: URL, name: String, encryptionRequested: Bool, storageProvider: VaultStorageProvider = .plaintext) throws -> URL {
         guard !encryptionRequested else { throw VaultError.invalid(VaultCreation.encryptionUnavailable) }
         let name = try VaultCreation.validatedName(name)
         let parent = parent.standardizedFileURL.resolvingSymlinksInPath()
@@ -38,7 +38,7 @@ extension FileVaultRepository {
                 let staging = parent.appendingPathComponent(".noema-create-\(UUID().uuidString)", isDirectory: true)
                 try fm.createDirectory(at: staging, withIntermediateDirectories: false)
                 defer { try? fm.removeItem(at: staging) }
-                _ = try FileVaultRepository.open(root: staging, create: true)
+                _ = try FileVaultRepository.open(root: staging, create: true, storageProvider: storageProvider)
                 // moveItem refuses an occupied destination, including one created after the check.
                 try fm.moveItem(at: staging, to: destination)
                 return destination

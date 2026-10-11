@@ -3,7 +3,7 @@ import Synchronization
 import Testing
 @testable import VaultCore
 
-private final class SourceStoreProbe: VaultContentStore {
+final class SourceStoreProbe: VaultContentStore {
     struct State {
         var operations: [String] = []
         var failPublication = false
@@ -75,7 +75,7 @@ struct SourceAdapterTests {
         let loaded = try #require(try await reopened.scan().sources.first)
         #expect(loaded == classified)
         #expect(try FileVaultRepository.readSourceOriginal(loaded, root: root, contentStore: store) == original)
-        #expect(FileVaultRepository.checkSourceAvailability(loaded, root: root) == "Available")
+        #expect(FileVaultRepository.checkSourceAvailability(loaded, root: root, contentStore: store) == "Available")
         await #expect(throws: (any Error).self) { try await repo.renameSource(source, title: "Stale") }
         try await repo.deleteSource(loaded)
         let trash = try #require(try await repo.trashItems().first)
@@ -92,7 +92,7 @@ struct SourceAdapterTests {
         let corrupt = try await repo.scan()
         #expect(corrupt.sources.isEmpty)
         #expect(corrupt.issues.contains { $0.contains("checksum") })
-        #expect(FileVaultRepository.checkSourceAvailability(other, root: root).contains("checksum"))
+        #expect(FileVaultRepository.checkSourceAvailability(other, root: root, contentStore: store).contains("checksum"))
         #expect(throws: (any Error).self) { try FileVaultRepository.readSourceOriginal(other, root: root, contentStore: store) }
         await #expect(throws: (any Error).self) { try await repo.deleteSource(other) }
         #expect(store.state.withLock { $0.operations.contains("read " + path + "/metadata.json") })

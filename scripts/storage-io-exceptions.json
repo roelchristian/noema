@@ -91,14 +91,38 @@
   },
   {
     "path": "Sources/noema/SourceReader.swift",
-    "statement": "let data = try source.metadata.isLinked ? FileVaultRepository.coordinatedRead(url) : FileVaultRepository.readSourceOriginal(source, root: root)",
+    "statement": "let data = try source.metadata.isLinked ? FileVaultRepository.coordinatedRead(url) : FileVaultRepository.readSourceOriginal(source, root: root, contentStore: contentStore)",
     "count": 1,
-    "reason": "External linked-file read, or native Quick Look URL preview after adapter checksum validation."
+    "reason": "External linked-file read/preview; imported Quick Look reads a disposable adapter-validated byte snapshot."
   },
   {
     "path": "Sources/noema/SourceReader.swift",
-    "statement": "preview.previewItem = url as NSURL",
+    "statement": "preview.previewItem = (snapshot?.url ?? url) as NSURL",
     "count": 1,
-    "reason": "External linked-file read, or native Quick Look URL preview after adapter checksum validation."
+    "reason": "External linked-file read/preview; imported Quick Look reads a disposable adapter-validated byte snapshot."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewSnapshot.swift",
+    "statement": "try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)",
+    "count": 1,
+    "reason": "Disposable app-local preview copy of adapter-validated bytes; never reads or mutates canonical vault paths."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewSnapshot.swift",
+    "statement": "do { try data.write(to: url, options: .atomic) }",
+    "count": 1,
+    "reason": "Disposable app-local preview copy of adapter-validated bytes; never reads or mutates canonical vault paths."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewSnapshot.swift",
+    "statement": "catch { try? FileManager.default.removeItem(at: directory); throw error }",
+    "count": 1,
+    "reason": "Disposable app-local preview copy of adapter-validated bytes; never reads or mutates canonical vault paths."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewSnapshot.swift",
+    "statement": "public func remove() { try? FileManager.default.removeItem(at: directory) }",
+    "count": 1,
+    "reason": "Disposable app-local preview copy of adapter-validated bytes; never reads or mutates canonical vault paths."
   }
 ]

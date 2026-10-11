@@ -171,6 +171,7 @@ struct EditorAction: Equatable {
     var wikiQuery: String?
     var editorAction: EditorAction?
     var searchFocusToken = 0
+    private let storageProvider: VaultStorageProvider
     private var repository: FileVaultRepository?
     private var index: SQLiteSearchIndex?
     private var recovery: RecoveryStore?
@@ -188,7 +189,8 @@ struct EditorAction: Equatable {
     private var generation = UUID()
     private var progressTicket: UUID?
 
-    init(repository: FileVaultRepository? = nil, recovery: RecoveryStore? = nil) {
+    init(repository: FileVaultRepository? = nil, recovery: RecoveryStore? = nil, storageProvider: VaultStorageProvider = .plaintext) {
+        self.storageProvider = storageProvider
         self.repository = repository
         self.recovery = recovery
     }
@@ -317,8 +319,9 @@ struct EditorAction: Equatable {
         guard await finishCurrentPage() else { throw VaultError.invalid("Save the current page before creating a vault.") }
         let hasScope = parent.startAccessingSecurityScopedResource()
         defer { if hasScope { parent.stopAccessingSecurityScopedResource() } }
+        let storageProvider = self.storageProvider
         let url = try await Task.detached {
-            try FileVaultRepository.createNewVault(parent: parent, name: name, encryptionRequested: encryptionRequested)
+            try FileVaultRepository.createNewVault(parent: parent, name: name, encryptionRequested: encryptionRequested, storageProvider: storageProvider)
         }.value
         await open(url, create: false)
         if root == url { showVaultCreation = false }
@@ -338,13 +341,15 @@ struct EditorAction: Equatable {
         busy = true; errorMessage = nil
         let hasScope = url.startAccessingSecurityScopedResource()
         do {
-            let repo = try await Task.detached { try FileVaultRepository.open(root: url, create: create) }.value
+            let storageProvider = self.storageProvider
+            let repo = try await Task.detached { try FileVaultRepository.open(root: url, create: create, storageProvider: storageProvider) }.value
             let vaultID = repo.manifest.id
             let localBase = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 .appendingPathComponent("KnowledgeVault/\(vaultID.uuidString)")
             let (searchIndex, journal) = try await Task.detached {
                 (try SQLiteSearchIndex(url: localBase.appendingPathComponent("search.sqlite")), try RecoveryStore(directory: localBase.appendingPathComponent("Drafts")))
             }.value
+            SourceReader.closeAll()
             watcher?.stop()
             if let scopeURL { scopeURL.stopAccessingSecurityScopedResource() }
             self.scopeURL = hasScope ? url : nil
@@ -1198,7 +1203,7 @@ struct EditorAction: Equatable {
         return sourceAvailability[id] ?? sources.first(where: { $0.id == id })?.availabilityIssue ?? "Available"
     }
     func checkSourceAvailability(_ requested: [SourceRecord]) {
-        guard let root else { return }
+        guard let repository, let root else { return }
         for source in requested where !checkingSourceAvailability.contains(source.id) && !downloadingSources.contains(source.id) {
             checkingSourceAvailability.insert(source.id); sourceAvailabilityQueue.append(source)
         }
@@ -1210,11 +1215,11 @@ struct EditorAction: Equatable {
                 guard generation == ticket, !Task.isCancelled else { return }
                 let source = sourceAvailabilityQueue.removeFirst()
                 let status: String
-                if source.metadata.isURLSource == true, let repository {
+                if source.metadata.isURLSource == true {
                     do { status = try await repository.checkURLSourceAvailability(source) }
                     catch { status = "Availability check: " + error.localizedDescription }
                 } else {
-                    status = await Task.detached { FileVaultRepository.checkSourceAvailability(source, root: root) }.value
+                    status = await Task.detached { FileVaultRepository.checkSourceAvailability(source, root: root, contentStore: repository.contentStore) }.value
                 }
                 guard generation == ticket else { return }
                 if sources.contains(where: { $0.id == source.id }) { sourceAvailability[source.id] = status }
@@ -1223,13 +1228,14 @@ struct EditorAction: Equatable {
         }
     }
     func sourceSummaryContent(_ source: SourceRecord, root: URL) async throws -> String {
+        guard let contentStore = repository?.contentStore else { throw VaultError.unavailable("Open a vault before reading a source.") }
         return try await Task.detached {
             if !source.body.isEmpty {
                 let ext = URL(fileURLWithPath: source.metadata.originalFilename).pathExtension.lowercased()
                 let content = ["html", "htm"].contains(ext) ? source.body.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression) : source.body
                 return BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(content).withoutAISummary))
             }
-            let data = try FileVaultRepository.readSourceOriginal(source, root: root)
+            let data = try FileVaultRepository.readSourceOriginal(source, root: root, contentStore: contentStore)
             if source.metadata.originalFilename.lowercased().hasSuffix(".pdf"), let pdf = PDFDocument(data: data) { return pdf.string ?? "" }
             return ""
         }.value
@@ -1362,8 +1368,8 @@ struct EditorAction: Equatable {
         Task {
             await waitForSave()
             guard await finishCurrentPage() else { return }
-            guard let id, !downloadingSources.contains(id), let source = sources.first(where: { $0.id == id }), let root else { return }
-            do { try await SourceReader.open(source, root: root) }
+            guard let id, !downloadingSources.contains(id), let source = sources.first(where: { $0.id == id }), let repository, let root else { return }
+            do { try await SourceReader.open(source, root: root, contentStore: repository.contentStore) }
             catch { errorMessage = error.localizedDescription }
         }
     }

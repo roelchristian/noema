@@ -632,31 +632,31 @@ private func temporaryFolder() throws -> URL {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let repository = try FileVaultRepository.open(root: root, create: true)
     let source = try await repository.linkSources(at: file, maximumFiles: 1)[0]
-    #expect(FileVaultRepository.checkSourceAvailability(source, root: root) == "Available")
+    #expect(FileVaultRepository.checkSourceAvailability(source, root: root, contentStore: repository.contentStore) == "Available")
     try FileManager.default.removeItem(at: file)
-    #expect(FileVaultRepository.checkSourceAvailability(source, root: root) != "Available")
+    #expect(FileVaultRepository.checkSourceAvailability(source, root: root, contentStore: repository.contentStore) != "Available")
     let broken = try await repository.scan()
     #expect(broken.sources.first?.id == source.id)
     #expect(broken.sources.first?.availabilityIssue != nil)
     #expect(broken.sources.first?.body == "")
     try bytes.write(to: file)
     // Replacing the deleted file invalidates the old security bookmark; relinking restores access.
-    #expect(FileVaultRepository.checkSourceAvailability(source, root: root).contains("stale"))
+    #expect(FileVaultRepository.checkSourceAvailability(source, root: root, contentStore: repository.contentStore).contains("stale"))
     try await repository.deleteSource(source)
     let relinked = try await repository.linkSources(at: file, maximumFiles: 1)[0]
-    #expect(FileVaultRepository.checkSourceAvailability(relinked, root: root) == "Available")
+    #expect(FileVaultRepository.checkSourceAvailability(relinked, root: root, contentStore: repository.contentStore) == "Available")
     #expect(try await repository.scan().sources.first(where: { $0.id == relinked.id })?.availabilityIssue == nil)
 }
 @Test func importedAvailabilityRejectsMissingAndChangedOriginals() async throws {
     let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
     let repository = try FileVaultRepository.open(root: root, create: true)
     let source = try await repository.importSource(data: Data("Original".utf8), filename: "source.txt", title: "Source", originURL: nil)
-    #expect(FileVaultRepository.checkSourceAvailability(source, root: root) == "Available")
+    #expect(FileVaultRepository.checkSourceAvailability(source, root: root, contentStore: repository.contentStore) == "Available")
     let file = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/original.txt")
     try Data("Changed".utf8).write(to: file)
-    #expect(FileVaultRepository.checkSourceAvailability(source, root: root) != "Available")
+    #expect(FileVaultRepository.checkSourceAvailability(source, root: root, contentStore: repository.contentStore) != "Available")
     try FileManager.default.removeItem(at: file)
-    #expect(FileVaultRepository.checkSourceAvailability(source, root: root) == "File not found")
+    #expect(FileVaultRepository.checkSourceAvailability(source, root: root, contentStore: repository.contentStore) == "File not found")
 }
 
 @Test func duplicateSourceRejectsSameBytesAcrossModesAndBatchContinues() async throws {
@@ -882,7 +882,7 @@ func wikipediaCaptureUsesFullHTML(html: String) async throws {
     let completedImport = try await repo.completeSourceDownload(id: pendingImport.id, at: importedFile, data: importedBytes, shouldImport: true)
     #expect(completedImport.id == pendingImport.id)
     #expect(completedImport.body == "# Downloaded Markdown")
-    #expect(FileVaultRepository.checkSourceAvailability(completedImport, root: root) == "Available")
+    #expect(FileVaultRepository.checkSourceAvailability(completedImport, root: root, contentStore: repo.contentStore) == "Available")
 }
 
 
