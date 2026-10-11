@@ -52,4 +52,48 @@ struct ExternalAISettingsTests {
         #expect(service.configuration == .default)
         #expect(ExternalAIService.loadConfiguration(from: defaults) == .default)
     }
+
+    @Test @MainActor
+    func reasoningPreferencesPersistAcrossModelChangesAndRevokeOldGateway() async throws {
+        let domain = "noema-external-ai-reasoning-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        // Existing installations with only a model preference keep their effective low effort.
+        defaults.set("gpt-6-luna", forKey: ExternalAIService.modelPreferenceKey)
+        let service = ExternalAIService(accessGate: VaultAccessGate(), defaults: defaults)
+        #expect(service.configuration.reasoningEffort == .low)
+        #expect(service.configuration.supportsReasoningEffort)
+        for effort in [ExternalAIReasoningEffort.none, .medium, .low] {
+            let oldGateway = service.gateway
+            service.setReasoningEffort(effort)
+            #expect(service.gateway !== oldGateway)
+            #expect(await service.gateway.configuration.reasoningEffort == effort)
+            #expect(service.authorizationState == .revoked)
+            #expect(await service.sessionManager.state == .revoked)
+            #expect(ExternalAIService.loadConfiguration(from: defaults).reasoningEffort == effort)
+            let sameGateway = service.gateway
+            service.setReasoningEffort(effort)
+            #expect(service.gateway === sameGateway)
+        }
+        service.setReasoningEffort(.medium)
+        try service.setModel("gpt-4.1-mini")
+        #expect(!service.configuration.supportsReasoningEffort)
+        #expect(service.configuration.reasoningEffort == .medium)
+        try service.setModel("gpt-6-luna")
+        #expect(ExternalAIService.loadConfiguration(from: defaults) == service.configuration)
+        #expect(Set((defaults.persistentDomain(forName: domain) ?? [:]).keys)
+                == [ExternalAIService.modelPreferenceKey, ExternalAIService.reasoningPreferenceKey])
+    }
+
+    @Test @MainActor
+    func corruptedStoredReasoningFallsBackToLowWithoutDiscardingModel() throws {
+        let domain = "noema-external-ai-corrupt-reasoning-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        defaults.set("gpt-6-luna", forKey: ExternalAIService.modelPreferenceKey)
+        defaults.set("synthetic-unsupported-effort", forKey: ExternalAIService.reasoningPreferenceKey)
+        let loaded = ExternalAIService.loadConfiguration(from: defaults)
+        #expect(loaded.model == "gpt-6-luna")
+        #expect(loaded.reasoningEffort == .low)
+    }
 }

@@ -14,6 +14,8 @@ codesign --verify --deep --strict dist/noema.app
 
 Run commands at the repository root. The build packages and locally signs a sandboxed development app and creates `dist/noema.zip`; outputs remain untracked in `.build` and `dist`. This is ad-hoc signing, not notarization. Native file coordination, pasteboard, security scopes and icon packaging can require execution outside a restricted automation sandbox. See [validation](validation.md) for environment and acceptance limits.
 
+External AI keys in these ad-hoc builds use the local login Keychain, with access restricted to the creating app. After rebuilding, an inaccessible saved key can be removed in External AI settings and saved again for the new build. Noema suppresses login-Keychain password dialogs for credential operations; if the Keychain is locked, unlock it separately in Keychain Access. A certificate-signed distribution requires provisioned app identity entitlements for the data-protection Keychain; changing signing modes does not migrate credentials. See the [credential contract](contracts/external-ai.md#authorization-lifecycle-contract).
+
 ## Repository retention
 
 Permanent content is source, tests, fixtures, canonical resources, current contracts and reproducible procedures. PRs retain concise commands/outcomes, environment, exceptions and unresolved acceptance. Logs, screenshots, benchmark samples, transcripts, investigations and intermediate reports are temporary local evidence.

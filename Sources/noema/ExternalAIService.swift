@@ -8,6 +8,7 @@ import VaultCore
 @MainActor @Observable
 final class ExternalAIService {
     static let modelPreferenceKey = "externalAIModel"
+    static let reasoningPreferenceKey = "externalAIReasoningEffort"
 
     let credentialBroker: ExternalAICredentialBroker
     let sessionManager: ExternalAISessionManager
@@ -33,11 +34,10 @@ final class ExternalAIService {
     }
 
     static func loadConfiguration(from defaults: UserDefaults) -> ExternalAIModelConfiguration {
-        guard let model = defaults.string(forKey: modelPreferenceKey),
-              let configuration = try? ExternalAIModelConfiguration(model: model) else {
-            return .default
-        }
-        return configuration
+        let model = defaults.string(forKey: modelPreferenceKey) ?? ExternalAIModelConfiguration.default.model
+        let effort = defaults.string(forKey: reasoningPreferenceKey)
+            .flatMap(ExternalAIReasoningEffort.init(rawValue:)) ?? .low
+        return (try? ExternalAIModelConfiguration(model: model, reasoningEffort: effort)) ?? .default
     }
 
     func refreshStatus() async {
@@ -46,14 +46,25 @@ final class ExternalAIService {
     }
 
     func setModel(_ model: String) throws {
-        let selected = try ExternalAIModelConfiguration(model: model)
+        let selected = try ExternalAIModelConfiguration(model: model, reasoningEffort: configuration.reasoningEffort)
+        applyConfiguration(selected)
+        defaults.set(selected.model, forKey: Self.modelPreferenceKey)
+    }
+
+    func setReasoningEffort(_ effort: ExternalAIReasoningEffort) {
+        // The existing model was validated on construction; effort is a finite enum.
+        guard let selected = try? ExternalAIModelConfiguration(model: configuration.model, reasoningEffort: effort) else { return }
+        applyConfiguration(selected)
+        defaults.set(effort.rawValue, forKey: Self.reasoningPreferenceKey)
+    }
+
+    private func applyConfiguration(_ selected: ExternalAIModelConfiguration) {
         guard selected != configuration else { return }
         // Revoke first so requests using the old gateway cannot dispatch or publish results.
         sessionManager.revoke()
         configuration = selected
         gateway = ExternalAIGateway(credentialBroker: credentialBroker, sessionManager: sessionManager,
                                    accessGate: accessGate, configuration: selected)
-        defaults.set(selected.model, forKey: Self.modelPreferenceKey)
         authorizationState = .revoked
     }
 

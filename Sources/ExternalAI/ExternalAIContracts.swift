@@ -211,6 +211,7 @@ public enum ExternalAIError: String, Error, Sendable, Equatable, CaseIterable, L
     case authenticationFailed, authenticationCancelled, authorizationRequired, authorizationExpired, authorizationRevoked
     case vaultUnavailable, staleSession, consentRequired, consentAlreadyUsed, unsupportedAction
     case emptyContent, payloadTooLarge, responseTooLarge, invalidConfiguration, invalidResponse
+    case summaryIncomplete, summaryOutputLimitReached, summaryRefused
     case networkUnavailable, timedOut, rateLimited, providerUnavailable, providerRejected, redirectRejected
     case cancelled, staleContent
 
@@ -235,6 +236,9 @@ public enum ExternalAIError: String, Error, Sendable, Equatable, CaseIterable, L
         case .responseTooLarge: "OpenAI returned a response exceeding the size limit."
         case .invalidConfiguration: "The external AI configuration is invalid."
         case .invalidResponse: "OpenAI returned an invalid summary."
+        case .summaryIncomplete: "OpenAI did not finish generating the summary. Try again."
+        case .summaryOutputLimitReached: "OpenAI reached the generation limit before finishing the summary. Try a shorter article or another model."
+        case .summaryRefused: "OpenAI declined to summarize this content."
         case .networkUnavailable: "OpenAI could not be reached."
         case .timedOut: "The OpenAI request timed out."
         case .rateLimited: "OpenAI is temporarily rate limited."

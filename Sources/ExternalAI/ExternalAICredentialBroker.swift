@@ -24,17 +24,127 @@ protocol ExternalAIKeychain: Sendable {
     func delete() throws
 }
 
-private struct SystemExternalAIKeychain: ExternalAIKeychain {
-    // No access group or sharing entitlement: default access is the application's signing identity.
+enum ExternalAIKeychainBackend: Sendable {
+    case dataProtection, login
+
+    static func forSigningFlags(_ flags: UInt32) -> Self {
+        flags & SecCodeSignatureFlags.adhoc.rawValue == 0 ? .dataProtection : .login
+    }
+
+    static func currentProcess() -> Self? {
+        var code: SecCode?
+        var staticCode: SecStaticCode?
+        var information: CFDictionary?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
+              SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
+              SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation),
+                                            &information) == errSecSuccess,
+              let dictionary = information as? [String: Any],
+              let flags = dictionary[kSecCodeInfoFlags as String] as? NSNumber else { return nil }
+        return forSigningFlags(flags.uint32Value)
+    }
+}
+
+/// Internal Security seam tests OSStatus handling without touching a user's Keychain.
+protocol ExternalAIKeychainOperations: Sendable {
+    func read(_ query: [String: Any]) throws -> (OSStatus, Data?)
+    func update(_ query: [String: Any], attributes: [String: Any]) throws -> OSStatus
+    func add(_ attributes: [String: Any]) throws -> OSStatus
+    func delete(_ query: [String: Any]) throws -> OSStatus
+}
+
+protocol ExternalAIKeychainInteraction: Sendable {
+    func getAllowed() -> (OSStatus, Bool)
+    func setAllowed(_ allowed: Bool) -> OSStatus
+}
+
+private struct SystemExternalAIKeychainInteraction: ExternalAIKeychainInteraction {
+    func getAllowed() -> (OSStatus, Bool) {
+        var allowed = DarwinBoolean(false)
+        let status = SecKeychainGetUserInteractionAllowed(&allowed)
+        return (status, allowed.boolValue)
+    }
+    func setAllowed(_ allowed: Bool) -> OSStatus {
+        SecKeychainSetUserInteractionAllowed(allowed)
+    }
+}
+
+/// File-based Keychain ignores SecItem's per-query UI controls. Its legacy UI
+/// policy is process-wide, so serialize every scope and restore it before returning.
+struct ExternalAIKeychainInteractionGuard: Sendable {
+    private static let lock = Mutex(())
+    private let interaction: any ExternalAIKeychainInteraction
+
+    init(interaction: any ExternalAIKeychainInteraction = SystemExternalAIKeychainInteraction()) {
+        self.interaction = interaction
+    }
+
+    func perform<Value>(_ operation: () throws -> Value) throws -> Value {
+        try Self.lock.withLock { _ in
+            let (status, wasAllowed) = interaction.getAllowed()
+            guard status == errSecSuccess,
+                  interaction.setAllowed(false) == errSecSuccess else { throw ExternalAIError.credentialUnavailable }
+            let result: Result<Value, any Error>
+            do { result = .success(try operation()) }
+            catch { result = .failure(error) }
+            guard interaction.setAllowed(wasAllowed) == errSecSuccess else { throw ExternalAIError.credentialUnavailable }
+            return try result.get()
+        }
+    }
+}
+
+private struct SystemExternalAIKeychainOperations: ExternalAIKeychainOperations {
+    private let interactionGuard = ExternalAIKeychainInteractionGuard()
+
+    private func perform<Value>(_ query: [String: Any], operation: () -> Value) throws -> Value {
+        if query[kSecUseDataProtectionKeychain as String] as? Bool == false {
+            return try interactionGuard.perform(operation)
+        }
+        return operation()
+    }
+
+    func read(_ query: [String: Any]) throws -> (OSStatus, Data?) {
+        try perform(query) {
+            var result: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            return (status, result as? Data)
+        }
+    }
+    func update(_ query: [String: Any], attributes: [String: Any]) throws -> OSStatus {
+        try perform(query) { SecItemUpdate(query as CFDictionary, attributes as CFDictionary) }
+    }
+    func add(_ attributes: [String: Any]) throws -> OSStatus {
+        try perform(attributes) { SecItemAdd(attributes as CFDictionary, nil) }
+    }
+    func delete(_ query: [String: Any]) throws -> OSStatus {
+        try perform(query) { SecItemDelete(query as CFDictionary) }
+    }
+}
+
+struct SystemExternalAIKeychain: ExternalAIKeychain {
+    private let backend: ExternalAIKeychainBackend?
+    private let operations: any ExternalAIKeychainOperations
+
+    init(backend: ExternalAIKeychainBackend? = ExternalAIKeychainBackend.currentProcess(),
+         operations: any ExternalAIKeychainOperations = SystemExternalAIKeychainOperations()) {
+        self.backend = backend
+        self.operations = operations
+    }
+
+    // Select once from signing metadata, never by retrying an access-denied operation in
+    // another store. Ad-hoc builds cannot have provisioned data-protection access groups.
+    // No access group or sharing entitlement is added to either implementation.
     private var identity: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
+        var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: "com.noema.external-ai.openai",
          kSecAttrAccount as String: "primary",
-         kSecAttrSynchronizable as String: false,
-         kSecUseDataProtectionKeychain as String: true]
+         kSecUseDataProtectionKeychain as String: backend == .dataProtection]
+        if backend == .dataProtection { query[kSecAttrSynchronizable as String] = false }
+        return query
     }
 
     func read() throws -> Data? {
+        guard backend != nil else { throw ExternalAIError.credentialUnavailable }
         var query = identity
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -42,30 +152,40 @@ private struct SystemExternalAIKeychain: ExternalAIKeychain {
         let context = LAContext()
         context.interactionNotAllowed = true
         query[kSecUseAuthenticationContext as String] = context
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let (status, data) = try operations.read(query)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else {
+        guard status == errSecSuccess, let data else {
             throw ExternalAIError.credentialUnavailable
         }
         return data
     }
 
     func write(_ data: Data) throws {
-        let status = SecItemUpdate(identity as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        guard let backend else { throw ExternalAIError.credentialUnavailable }
+        let status = try operations.update(identity, attributes: [kSecValueData as String: data])
         if status == errSecItemNotFound {
             var item = identity
             item[kSecValueData as String] = data
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            if backend == .dataProtection {
+                item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            } else {
+                // File-based Keychain items never sync. A nil trusted list grants access
+                // only to the creating application, not to all applications.
+                var access: SecAccess?
+                guard SecAccessCreate("Noema OpenAI API key" as CFString, nil, &access) == errSecSuccess,
+                      let access else { throw ExternalAIError.credentialUnavailable }
+                item[kSecAttrAccess as String] = access
+            }
             // No biometric access-control flag, avoiding an additional prompt on every request.
-            guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else {
+            guard try operations.add(item) == errSecSuccess else {
                 throw ExternalAIError.credentialUnavailable
             }
         } else if status != errSecSuccess { throw ExternalAIError.credentialUnavailable }
     }
 
     func delete() throws {
-        let status = SecItemDelete(identity as CFDictionary)
+        guard backend != nil else { throw ExternalAIError.credentialUnavailable }
+        let status = try operations.delete(identity)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw ExternalAIError.credentialUnavailable
         }
