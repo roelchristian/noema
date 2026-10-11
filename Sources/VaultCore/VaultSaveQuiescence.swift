@@ -694,125 +694,8 @@ public final class VaultSaveQuiescenceCoordinator: Sendable {
         var cleanedStagingPaths: [String] = []
         var notesHandledByInFlight: Set<UUID> = []
 
-        for ctx in drainedContexts {
-            if let recordedFailure = ctx.recordedFailure {
-                throw recordedFailure
-            }
-
-            switch ctx.commitState {
-            case .committed:
-                if let note = ctx.committedNote {
-                    notesHandledByInFlight.insert(note.id)
-                } else if let draft = ctx.noteSnapshot {
-                    notesHandledByInFlight.insert(draft.id)
-                }
-                outcomes.append(.committed(operationID: ctx.id, kind: ctx.kind))
-
-            case .cancelledBeforeCommit:
-                if let draft = ctx.noteSnapshot {
-                    notesHandledByInFlight.insert(draft.id)
-                    if !ctx.isDraftPreserved {
-                        guard let recovery else {
-                            throw VaultQuiescenceError.saveFailedWithoutRecovery(
-                                noteID: draft.id,
-                                saveMessage: "Operation cancelled before commit",
-                                recoveryMessage: nil
-                            )
-                        }
-                        do {
-                            try await recovery.store(draft)
-                            ctx.markDraftPreserved()
-                        } catch {
-                            throw VaultQuiescenceError.draftPreservationFailed(
-                                noteID: draft.id,
-                                underlyingMessage: error.localizedDescription
-                            )
-                        }
-                    }
-                    if !preservedDraftIDs.contains(draft.id) {
-                        preservedDraftIDs.append(draft.id)
-                    }
-                }
-                if let importID = ctx.sourceImportID {
-                    await repository.cancelSourceDownload(id: importID)
-                    do {
-                        let cleaned = try await collectStagingCleanup(repository: repository, importID: importID)
-                        for path in cleaned where !cleanedStagingPaths.contains(path) {
-                            cleanedStagingPaths.append(path)
-                        }
-                    } catch {
-                        throw VaultQuiescenceError.stagingCleanupFailed(
-                            path: "Sources/.import-\(importID.uuidString)",
-                            message: error.localizedDescription
-                        )
-                    }
-                    if !cancelledSourceImportIDs.contains(importID) {
-                        cancelledSourceImportIDs.append(importID)
-                    }
-                }
-                outcomes.append(.cancelledBeforeCommit(
-                    operationID: ctx.id,
-                    kind: ctx.kind,
-                    draftPreserved: ctx.isDraftPreserved
-                ))
-
-            case .failedBeforeCommit:
-                if let draft = ctx.noteSnapshot {
-                    notesHandledByInFlight.insert(draft.id)
-                    if !ctx.isDraftPreserved {
-                        guard let recovery else {
-                            throw VaultQuiescenceError.saveFailedWithoutRecovery(
-                                noteID: draft.id,
-                                saveMessage: "In-flight save failed before commit",
-                                recoveryMessage: nil
-                            )
-                        }
-                        do {
-                            try await recovery.store(draft)
-                            ctx.markDraftPreserved()
-                        } catch {
-                            throw VaultQuiescenceError.draftPreservationFailed(
-                                noteID: draft.id,
-                                underlyingMessage: error.localizedDescription
-                            )
-                        }
-                    }
-                    if !preservedDraftIDs.contains(draft.id) {
-                        preservedDraftIDs.append(draft.id)
-                    }
-                    outcomes.append(.preservedToRecovery(noteID: draft.id, kind: ctx.kind))
-                } else if let importID = ctx.sourceImportID {
-                    await repository.cancelSourceDownload(id: importID)
-                    do {
-                        let cleaned = try await collectStagingCleanup(repository: repository, importID: importID)
-                        for path in cleaned where !cleanedStagingPaths.contains(path) {
-                            cleanedStagingPaths.append(path)
-                        }
-                    } catch {
-                        throw VaultQuiescenceError.stagingCleanupFailed(
-                            path: "Sources/.import-\(importID.uuidString)",
-                            message: error.localizedDescription
-                        )
-                    }
-                    if !cancelledSourceImportIDs.contains(importID) {
-                        cancelledSourceImportIDs.append(importID)
-                    }
-                    outcomes.append(.cancelledBeforeCommit(operationID: ctx.id, kind: ctx.kind, draftPreserved: false))
-                } else {
-                    throw VaultQuiescenceError.inFlightOperationFailed(
-                        operationID: ctx.id,
-                        kind: ctx.kind,
-                        message: "Operation failed before commit without recovery handler."
-                    )
-                }
-
-            case .preCommit, .committing:
-                outcomes.append(.completed(operationID: ctx.id, kind: ctx.kind))
-            }
-        }
-
-        // 4. Handle any pending debounced dirty note edits, pending LCC updates, and active source downloads
-        //    inside a privileged quiescence scope while the session is in `.locking`.
+        // Register the privileged quiescence scope for this locking session so recovery draft journaling
+        // and staging cleanup are authorized while the admission barrier is closed.
         let quiescenceOpID = UUID()
         accessGate.registerQuiescenceScope(id: quiescenceOpID, session: session)
         defer {
@@ -820,6 +703,122 @@ public final class VaultSaveQuiescenceCoordinator: Sendable {
         }
 
         try await VaultLockAdmissionBarrier.$currentOperationID.withValue(quiescenceOpID) {
+            for ctx in drainedContexts {
+                if let recordedFailure = ctx.recordedFailure {
+                    throw recordedFailure
+                }
+
+                switch ctx.commitState {
+                case .committed:
+                    if let note = ctx.committedNote {
+                        notesHandledByInFlight.insert(note.id)
+                    } else if let draft = ctx.noteSnapshot {
+                        notesHandledByInFlight.insert(draft.id)
+                    }
+                    outcomes.append(.committed(operationID: ctx.id, kind: ctx.kind))
+
+                case .cancelledBeforeCommit:
+                    if let draft = ctx.noteSnapshot {
+                        notesHandledByInFlight.insert(draft.id)
+                        if !ctx.isDraftPreserved {
+                            guard let recovery else {
+                                throw VaultQuiescenceError.saveFailedWithoutRecovery(
+                                    noteID: draft.id,
+                                    saveMessage: "Operation cancelled before commit",
+                                    recoveryMessage: nil
+                                )
+                            }
+                            do {
+                                try await recovery.store(draft)
+                                ctx.markDraftPreserved()
+                            } catch {
+                                throw VaultQuiescenceError.draftPreservationFailed(
+                                    noteID: draft.id,
+                                    underlyingMessage: error.localizedDescription
+                                )
+                            }
+                        }
+                        if !preservedDraftIDs.contains(draft.id) {
+                            preservedDraftIDs.append(draft.id)
+                        }
+                    }
+                    if let importID = ctx.sourceImportID {
+                        await repository.cancelSourceDownload(id: importID)
+                        do {
+                            let cleaned = try await collectStagingCleanup(repository: repository, importID: importID)
+                            for path in cleaned where !cleanedStagingPaths.contains(path) {
+                                cleanedStagingPaths.append(path)
+                            }
+                        } catch {
+                            throw VaultQuiescenceError.stagingCleanupFailed(
+                                path: "Sources/.import-\(importID.uuidString)",
+                                message: error.localizedDescription
+                            )
+                        }
+                        if !cancelledSourceImportIDs.contains(importID) {
+                            cancelledSourceImportIDs.append(importID)
+                        }
+                    }
+                    outcomes.append(.cancelledBeforeCommit(
+                        operationID: ctx.id,
+                        kind: ctx.kind,
+                        draftPreserved: ctx.isDraftPreserved
+                    ))
+
+                case .failedBeforeCommit:
+                    if let draft = ctx.noteSnapshot {
+                        notesHandledByInFlight.insert(draft.id)
+                        if !ctx.isDraftPreserved {
+                            guard let recovery else {
+                                throw VaultQuiescenceError.saveFailedWithoutRecovery(
+                                    noteID: draft.id,
+                                    saveMessage: "In-flight save failed before commit",
+                                    recoveryMessage: nil
+                                )
+                            }
+                            do {
+                                try await recovery.store(draft)
+                                ctx.markDraftPreserved()
+                            } catch {
+                                throw VaultQuiescenceError.draftPreservationFailed(
+                                    noteID: draft.id,
+                                    underlyingMessage: error.localizedDescription
+                                )
+                            }
+                        }
+                        if !preservedDraftIDs.contains(draft.id) {
+                            preservedDraftIDs.append(draft.id)
+                        }
+                        outcomes.append(.preservedToRecovery(noteID: draft.id, kind: ctx.kind))
+                    } else if let importID = ctx.sourceImportID {
+                        await repository.cancelSourceDownload(id: importID)
+                        do {
+                            let cleaned = try await collectStagingCleanup(repository: repository, importID: importID)
+                            for path in cleaned where !cleanedStagingPaths.contains(path) {
+                                cleanedStagingPaths.append(path)
+                            }
+                        } catch {
+                            throw VaultQuiescenceError.stagingCleanupFailed(
+                                path: "Sources/.import-\(importID.uuidString)",
+                                message: error.localizedDescription
+                            )
+                        }
+                        if !cancelledSourceImportIDs.contains(importID) {
+                            cancelledSourceImportIDs.append(importID)
+                        }
+                        outcomes.append(.cancelledBeforeCommit(operationID: ctx.id, kind: ctx.kind, draftPreserved: false))
+                    } else {
+                        throw VaultQuiescenceError.inFlightOperationFailed(
+                            operationID: ctx.id,
+                            kind: ctx.kind,
+                            message: "Operation failed before commit without recovery handler."
+                        )
+                    }
+
+                case .preCommit, .committing:
+                    outcomes.append(.completed(operationID: ctx.id, kind: ctx.kind))
+                }
+            }
             // 4a. Clean up any remaining active source downloads and leftover `.import-*` staging directories.
             for downloadID in pendingState.activeDownloadSourceIDs {
                 await repository.cancelSourceDownload(id: downloadID)

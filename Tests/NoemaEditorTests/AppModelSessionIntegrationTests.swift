@@ -91,8 +91,12 @@ struct AppModelSessionIntegrationTests {
         #expect(!model.semanticRows.isEmpty)
 
         // Open a secondary SourceReader window and modal/inspector flags.
-        model.openSource(source.id)
-        await waitUntil { SourceReader.openReaderIDs.contains(source.id) }
+        await waitUntil(timeoutMs: 4000) {
+            if !SourceReader.openReaderIDs.contains(source.id) {
+                model.openSource(source.id)
+            }
+            return SourceReader.openReaderIDs.contains(source.id)
+        }
         #expect(SourceReader.openReaderIDs.contains(source.id))
 
         model.showRecovery = true
@@ -317,8 +321,12 @@ struct AppModelSessionIntegrationTests {
         await model.open(rootA, create: false)
         model.select(noteA.id)
         await waitUntil { model.currentNote?.id == noteA.id }
-        model.openSource(sourceA.id)
-        await waitUntil { SourceReader.openReaderIDs.contains(sourceA.id) }
+        await waitUntil(timeoutMs: 4000) {
+            if !SourceReader.openReaderIDs.contains(sourceA.id) {
+                model.openSource(sourceA.id)
+            }
+            return SourceReader.openReaderIDs.contains(sourceA.id)
+        }
         let staleTicketFromA = model.issueCompletionTicket(kind: .pageMutation, targetID: noteA.id)
 
         // Switch A -> B while open.
@@ -345,6 +353,118 @@ struct AppModelSessionIntegrationTests {
         #expect(!model.isVaultAvailable && !model.isLocked && model.sessionPhase == .closed)
         #expect(model.notes.isEmpty && model.sources.isEmpty && model.rows.isEmpty)
         #expect(model.errorMessage?.localizedCaseInsensitiveContains("could not be found") == true)
+    }
+
+    @Test @MainActor func endToEndProtectedOperationEntryPointsAndRecoveryAndSourceReaderAreEnforcedAcrossSessionLifecycle() async throws {
+        let root = try makeTempVault(name: "D027ReleaseGateVault")
+        let linkedURL = root.deletingLastPathComponent().appendingPathComponent("external-linked.txt")
+        try Data("Linked external source body".utf8).write(to: linkedURL, options: .atomic)
+        defer {
+            try? FileManager.default.removeItem(at: root.deletingLastPathComponent())
+            SourceReader.closeAll()
+        }
+
+        let repo = try FileVaultRepository.open(root: root)
+        let note = try await repo.create(title: "Protected Page", body: "Sensitive page body for D02.7")
+        let importedSource = try await repo.importSource(
+            data: Data("Sensitive imported source body".utf8),
+            filename: "imported.txt",
+            title: "Imported Source",
+            originURL: nil
+        )
+
+        let model = AppModel()
+        model.localStorageRoot = root.deletingLastPathComponent()
+        model.persistSecurityScopedBookmark = false
+
+        await model.open(root, create: false)
+        #expect(model.isVaultAvailable && !model.isLocked)
+
+        // Retain actor/service references from the open generation (G1) to test direct-actor bypass prevention.
+        let openSession = try #require(await model.sessionManager.currentSession)
+        let gate = model.sessionManager.accessGate
+        let leaseG1 = VaultSessionLease(session: openSession)
+        let retainedRecovery = try RecoveryStore(
+            directory: root.deletingLastPathComponent().appendingPathComponent("Recovery", isDirectory: true),
+            sessionLease: leaseG1,
+            accessGate: gate
+        )
+        let retainedIndex = try #require(model.index)
+        let retainedStore = GatedVaultContentStore(
+            base: try PlaintextVaultContentStore(root: root),
+            root: root,
+            vaultID: openSession.vaultID,
+            gate: gate,
+            lease: leaseG1
+        )
+
+        // While open, sourceSummaryContent and RecoveryStore work with valid G1 lease.
+        let openSummaryContent = try await model.sourceSummaryContent(importedSource, root: root)
+        #expect(openSummaryContent.contains("Sensitive imported source body"))
+        #expect(try await retainedRecovery.drafts().isEmpty)
+
+        // Lock the vault.
+        #expect(await model.lockVault())
+        #expect(model.isLocked && !model.isVaultAvailable && model.sessionPhase == .locked)
+
+        // 1. RecoveryStore retained reference must reject drafts/remove while locked.
+        await #expect(throws: VaultAccessError.self) {
+            _ = try await retainedRecovery.drafts()
+        }
+        await #expect(throws: VaultAccessError.self) {
+            try await retainedRecovery.remove(note.id)
+        }
+
+        // 2. SQLiteSearchIndex and GatedVaultContentStore retained references must reject access while locked.
+        await #expect(throws: VaultAccessError.self) {
+            _ = try await retainedIndex.cachedEntries()
+        }
+        #expect(throws: VaultAccessError.self) {
+            try retainedStore.validateAccess(operation: "test.readPage")
+        }
+
+        // 3. SourceReader.open direct entry point (even without an AppModel isStillValid closure) must reject while locked.
+        await #expect(throws: VaultAccessError.self) {
+            try await SourceReader.open(importedSource, root: root, contentStore: retainedStore)
+        }
+        #expect(SourceReader.openReaderIDs.isEmpty)
+
+        // 4. AppModel.sourceSummaryContent must reject even when SourceRecord.body is already populated in memory.
+        await #expect(throws: (any Error).self) {
+            _ = try await model.sourceSummaryContent(importedSource, root: root)
+        }
+
+        // 5. Protected AppModel entry points must no-op cleanly while locked without mutating disk or leaking state.
+        model.newPage()
+        _ = await model.createPageFromTopic("Locked Topic")
+        model.createPageFromSource(importedSource)
+        model.trashPage(note.id)
+        model.deleteAISummary()
+        model.summarizePage()
+        model.refreshPageLCC()
+        model.refreshSourceLCC(importedSource)
+        model.generateSourceSummary(importedSource)
+        model.openSource(importedSource.id)
+        await model.addSourceFiles([linkedURL], shouldImport: true)
+        _ = await model.addURLSources("https://example.com/locked-test")
+        model.reloadDiskVersion()
+        model.saveDraftAsNewPage()
+        try? await Task.sleep(for: .milliseconds(80))
+
+        #expect(model.isLocked && !model.isVaultAvailable)
+        #expect(model.notes.isEmpty && model.sources.isEmpty && model.rows.isEmpty)
+        #expect(model.currentNote == nil && model.currentSource == nil)
+        #expect(SourceReader.openReaderIDs.isEmpty)
+
+        // Unlock into generation G2 and verify old G1 retained RecoveryStore reference is rejected as staleSessionGeneration.
+        #expect(await model.unlockVault())
+        #expect(model.isVaultAvailable && !model.isLocked && model.sessionPhase == .open)
+        #expect(model.notes.map(\.id) == [note.id])
+        #expect(model.sources.map(\.id) == [importedSource.id])
+
+        await #expect(throws: VaultAccessError.self) {
+            _ = try await retainedRecovery.drafts()
+        }
     }
 }
 

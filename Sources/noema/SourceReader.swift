@@ -24,6 +24,19 @@ import VaultCore
         isStillValid: (@MainActor @Sendable () -> Bool)? = nil
     ) async throws {
         if let isStillValid, !isStillValid() { return }
+        if let gated = contentStore as? GatedVaultContentStore {
+            let normalizedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+            if normalizedRoot != gated.root {
+                throw VaultAccessError.wrongVault(
+                    expectedVaultID: gated.vaultID,
+                    expectedRoot: gated.root,
+                    actualVaultID: nil,
+                    actualRoot: normalizedRoot,
+                    operation: "SourceReader.open"
+                )
+            }
+            try gated.validateAccess(operation: "SourceReader.open")
+        }
         if let existing = readers[source.id] { existing.showWindow(nil); existing.window?.makeKeyAndOrderFront(nil); return }
         let url: URL
         var scoped: URL?
@@ -41,12 +54,18 @@ import VaultCore
         var snapshot: SourcePreviewSnapshot?
         do {
             let data = try await Task.detached {
+                if let gated = contentStore as? GatedVaultContentStore {
+                    try gated.validateAccess(operation: "SourceReader.read")
+                }
                 let data = try source.metadata.isLinked ? FileVaultRepository.coordinatedRead(url) : FileVaultRepository.readSourceOriginal(source, root: root, contentStore: contentStore)
                 guard source.metadata.isLinked || digest(data) == source.metadata.sha256 else {
                     throw VaultError.invalid("The in-vault original changed. Refresh from Files to review the checksum notice.")
                 }
                 return data
             }.value
+            if let gated = contentStore as? GatedVaultContentStore {
+                try gated.validateAccess(operation: "SourceReader.present")
+            }
             if let isStillValid, !isStillValid() {
                 scoped?.stopAccessingSecurityScopedResource()
                 return

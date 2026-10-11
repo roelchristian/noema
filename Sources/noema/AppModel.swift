@@ -741,7 +741,11 @@ struct EditorAction: Equatable {
             let factory = searchIndexFactory
             let (searchIndex, journal) = try await Task.detached {
                 let idx = try factory(localBase.appendingPathComponent("search.sqlite"), lease, gate)
-                let recoveryStore = try RecoveryStore(directory: localBase.appendingPathComponent("Drafts"))
+                let recoveryStore = try RecoveryStore(
+                    directory: localBase.appendingPathComponent("Drafts"),
+                    sessionLease: lease,
+                    accessGate: gate
+                )
                 return (idx, recoveryStore)
             }.value
             self.scopeURL = hasScope ? url : nil
@@ -899,7 +903,11 @@ struct EditorAction: Equatable {
             let factory = searchIndexFactory
             let (searchIndex, journal) = try await Task.detached {
                 let idx = try factory(localBase.appendingPathComponent("search.sqlite"), lease, gate)
-                let recoveryStore = try RecoveryStore(directory: localBase.appendingPathComponent("Drafts"))
+                let recoveryStore = try RecoveryStore(
+                    directory: localBase.appendingPathComponent("Drafts"),
+                    sessionLease: lease,
+                    accessGate: gate
+                )
                 return (idx, recoveryStore)
             }.value
             SourceReader.closeAll()
@@ -1216,7 +1224,7 @@ struct EditorAction: Equatable {
         externalChange = false; saveStatus = "Saved locally"; generatePreview()
     }
     func setPageLCC(_ value: String) {
-        guard !editingLocked, let note = currentNote else { return }
+        guard canOperateOnLoadedContent, !editingLocked, let note = currentNote else { return }
         lccInput = value
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedValue = trimmed.isEmpty ? nil : trimmed
@@ -1233,7 +1241,7 @@ struct EditorAction: Equatable {
     }
     private func persistPageLCC(pageID: UUID, lcc: String?, ticket: UUID) async {
         await waitForSave()
-        guard generation == ticket, let repository,
+        guard generation == ticket, canOperateOnLoadedContent, let repository,
               var note = (currentNote?.id == pageID ? currentNote : notes.first(where: { $0.id == pageID })),
               !note.isEditingLocked else { return }
         if currentNote?.id == pageID, dirty {
@@ -1245,7 +1253,7 @@ struct EditorAction: Equatable {
         do {
             note.lcc = lcc
             let saved = try await repository.save(note: note, title: note.title, body: note.body, tags: note.tags)
-            guard generation == ticket else { return }
+            guard generation == ticket, canOperateOnLoadedContent else { return }
             if let i = notes.firstIndex(where: { $0.id == pageID }) { notes[i] = saved }
             if currentNote?.id == pageID {
                 currentNote = saved
@@ -1253,10 +1261,10 @@ struct EditorAction: Equatable {
                 saveStatus = dirty ? "Unsaved changes" : "Saved locally"
             }
             scheduleRefresh()
-        } catch { if generation == ticket { errorMessage = error.localizedDescription } }
+        } catch { if generation == ticket, canOperateOnLoadedContent { errorMessage = error.localizedDescription } }
     }
     func refreshPageLCC() {
-        guard let note = currentNote, !editingLocked, !generatingPageLCC else { return }
+        guard canOperateOnLoadedContent, let note = currentNote, !editingLocked, !generatingPageLCC else { return }
         if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return }
         let content = BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(body).withoutAISummary))
         let fallback = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1290,7 +1298,7 @@ struct EditorAction: Equatable {
         }
     }
     func updateSourceLCC(_ source: SourceRecord, lcc: String) {
-        guard !downloadingSources.contains(source.id) else { return }
+        guard canOperateOnLoadedContent, !downloadingSources.contains(source.id) else { return }
         let trimmed = lcc.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedValue = trimmed.isEmpty ? nil : trimmed
         if let i = sources.firstIndex(where: { $0.id == source.id }) {
@@ -1318,7 +1326,7 @@ struct EditorAction: Equatable {
         }
     }
     func refreshSourceLCC(_ source: SourceRecord) {
-        guard !downloadingSources.contains(source.id), !generatingSourceLCCs.contains(source.id),
+        guard canOperateOnLoadedContent, !downloadingSources.contains(source.id), !generatingSourceLCCs.contains(source.id),
               let repository, let root else { return }
         if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return }
         let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: source.id)
@@ -1373,66 +1381,71 @@ struct EditorAction: Equatable {
     }
     var editingLocked: Bool { currentNote?.isEditingLocked == true || editorReadOnly }
     func beginEditing() {
-        guard currentNote != nil else { return }
+        guard canOperateOnLoadedContent, currentNote != nil else { return }
         guard !editingLocked else {
             editingHint = editorReadOnly ? "This article is read-only." : "Article locked. Unlock it to edit."
             return
         }
         editingHint = nil; reading = false
     }
-    func finishEditing() { wikiQuery = nil; editorAction = nil; savePage(); reading = true }
+    func finishEditing() { guard canOperateOnLoadedContent else { return }; wikiQuery = nil; editorAction = nil; savePage(); reading = true }
     var updatingSourceReferences = false
     func setSourceReference(pageID: UUID, sourceID: UUID, linked: Bool) {
-        guard !updatingSourceReferences else { return }
+        guard canOperateOnLoadedContent, !updatingSourceReferences else { return }
         updatingSourceReferences = true
-        let ticket = generation
+        let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: pageID)
+        let ticket = completionTicket.token
         Task {
-            defer { updatingSourceReferences = false }
+            defer { if generation == ticket { updatingSourceReferences = false } }
             if currentNote?.id == pageID, !(await saveCurrent()) { return }
-            guard generation == ticket, let repository,
+            guard isCompletionValid(completionTicket, operation: "setSourceReference.pre"), let repository,
                   let note = notes.first(where: { $0.id == pageID }), !note.isEditingLocked,
                   !(currentNote?.id == pageID && editorReadOnly) else { return }
             saving = true
-            defer { saving = false }
+            defer { if generation == ticket { saving = false } }
             do {
                 let saved = try await repository.setSourceReference(note: note, sourceID: sourceID, linked: linked)
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "setSourceReference.save") else { return }
                 if let i = notes.firstIndex(where: { $0.id == pageID }) { notes[i] = saved }
                 if currentNote?.id == pageID { currentNote = saved }
                 scheduleRefresh()
-            } catch { if generation == ticket { errorMessage = error.localizedDescription } }
+            } catch { if isCompletionValid(completionTicket, operation: "setSourceReference.error") { errorMessage = error.localizedDescription } }
         }
     }
     func toggleEditingLock(_ id: UUID? = nil) {
-        guard let targetID = id ?? currentNote?.id,
+        guard canOperateOnLoadedContent,
+              let targetID = id ?? currentNote?.id,
               notes.contains(where: { $0.id == targetID }),
               !editingLockOperations.contains(targetID) else { return }
         editingLockOperations.insert(targetID)
-        let ticket = generation
+        let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: targetID)
+        let ticket = completionTicket.token
         Task {
             defer { if generation == ticket { editingLockOperations.remove(targetID) } }
             await waitForSave()
-            guard generation == ticket else { return }
+            guard isCompletionValid(completionTicket, operation: "toggleEditingLock.wait") else { return }
             if currentNote?.id == targetID, !(await saveCurrent()) { return }
-            guard generation == ticket,
+            guard isCompletionValid(completionTicket, operation: "toggleEditingLock.pre"),
                   let note = notes.first(where: { $0.id == targetID }), let repository else { return }
             saving = true
-            defer { saving = false }
+            defer { if generation == ticket { saving = false } }
             do {
                 let saved = try await repository.setEditingLock(note: note, locked: !note.isEditingLocked)
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "toggleEditingLock.save") else { return }
                 if currentNote?.id == saved.id {
                     currentNote = saved; reading = true; editingHint = nil
                 }
                 if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
                 scheduleRefresh()
             } catch {
-                if generation == ticket { errorMessage = "Could not change editing lock: " + error.localizedDescription }
+                if isCompletionValid(completionTicket, operation: "toggleEditingLock.error") {
+                    errorMessage = "Could not change editing lock: " + error.localizedDescription
+                }
             }
         }
     }
     func edited() {
-        guard !editingLocked else { return }
+        guard canOperateOnLoadedContent, !editingLocked else { return }
         if let note = currentNote, let placeholder = untitledPages[note.id],
            !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title != placeholder {
             untitledPages.removeValue(forKey: note.id)
@@ -1447,7 +1460,7 @@ struct EditorAction: Equatable {
     }
     @discardableResult func saveCurrent() async -> Bool {
         await waitForSave()
-        guard dirty, var note = currentNote, let repository, let recovery else { return !saving }
+        guard canOperateOnLoadedContent, dirty, var note = currentNote, let repository, let recovery else { return !saving }
         guard !saving else { return false }
         let ticket = generation
         saving = true; saveStatus = "Saving…"
@@ -1458,7 +1471,7 @@ struct EditorAction: Equatable {
             wordCount = await Task.detached { BlockDocumentCodec.markdownBody(draft.body).split(whereSeparator: \.isWhitespace).count }.value
             try await recovery.store(draft)
             let saved = try await repository.save(note: note, title: draft.title, body: draft.body, tags: draft.tags)
-            guard generation == ticket else { saving = false; return false }
+            guard generation == ticket, canOperateOnLoadedContent else { saving = false; return false }
             recordPageRename(saved.id, from: note.title, to: saved.title)
             if currentNote?.id == saved.id {
                 currentNote = saved
@@ -1475,7 +1488,7 @@ struct EditorAction: Equatable {
             if dirty { edited() }
             return !dirty
         } catch {
-            guard generation == ticket else { saving = false; return false }
+            guard generation == ticket, canOperateOnLoadedContent else { saving = false; return false }
             saving = false; saveStatus = "Draft preserved · save failed"
             errorMessage = error.localizedDescription
             if case VaultError.conflict = error { externalChange = true }
@@ -1512,7 +1525,7 @@ struct EditorAction: Equatable {
         return true
     }
     private func startTitleGeneration() {
-        guard needsTitle, let note = currentNote, let repository,
+        guard canOperateOnLoadedContent, needsTitle, let note = currentNote, let repository,
               titleTasks[note.id] == nil, !editingLocked, !externalChange,
               aiClient.unavailabilityReason() == nil else { return }
         let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: note.id)
@@ -1548,7 +1561,7 @@ struct EditorAction: Equatable {
         }
     }
     func prepareUntitledPageForNaming() {
-        guard let note = currentNote, !editingLocked else { return }
+        guard canOperateOnLoadedContent, let note = currentNote, !editingLocked else { return }
         let candidate = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard candidate.isEmpty || candidate.range(of: #"^Untitled(?: [0-9]+)?$"#, options: .regularExpression) != nil else { return }
         untitledPages[note.id] = candidate.isEmpty ? note.title : title
@@ -1563,7 +1576,9 @@ struct EditorAction: Equatable {
         Task { _ = await finishCurrentPage() }
     }
     func generatePreview() {
-        previewTask?.cancel(); let captured = body
+        previewTask?.cancel()
+        guard canOperateOnLoadedContent else { return }
+        let captured = body
         let targetID = currentNote?.id ?? currentSource?.id
         let completionTicket = issueCompletionTicket(kind: .preview, targetID: targetID, capturedText: captured)
         let renderer = previewRenderer
@@ -1582,7 +1597,7 @@ struct EditorAction: Equatable {
     private func updateTags() { tags = Array(Set(notes.flatMap(\.allTags))).sorted() }
     func createPageFromTopic(_ input: String) async -> Bool {
         let topic = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !topic.isEmpty, topic.count <= 120, !generatingTopicPage, let repository else { return false }
+        guard canOperateOnLoadedContent, !topic.isEmpty, topic.count <= 120, !generatingTopicPage, let repository else { return false }
         if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return false }
         let completionTicket = issueCompletionTicket(kind: .aiProcessing)
         let client = aiClient
@@ -1624,6 +1639,7 @@ struct EditorAction: Equatable {
     }
 
     func newPage(template: Bool = false, named name: String = "Untitled") {
+        guard canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .pageMutation)
         Task {
             if !(await finishCurrentPage()) { return }
@@ -1642,7 +1658,7 @@ struct EditorAction: Equatable {
     }
     func trashCurrent() { trashPage(currentNote?.id) }
     func trashPage(_ id: UUID?) {
-        guard let id else { return }
+        guard canOperateOnLoadedContent, let id else { return }
         let completionTicket = issueCompletionTicket(kind: .trashMutation, targetID: id)
         Task {
             if currentNote?.id == id, !(await saveCurrent()) { return }
@@ -1668,7 +1684,7 @@ struct EditorAction: Equatable {
         performTrashOperation(pages, restoring: false)
     }
     private func performTrashOperation(_ pages: [TrashedItem], restoring: Bool) {
-        guard !trashOperationInProgress, !pages.isEmpty, let repository else { return }
+        guard canOperateOnLoadedContent, !trashOperationInProgress, !pages.isEmpty, let repository else { return }
         trashOperationInProgress = true; errorMessage = nil
         let completionTicket = issueCompletionTicket(kind: .trashMutation)
         let ticket = completionTicket.token
@@ -1697,6 +1713,7 @@ struct EditorAction: Equatable {
         }
     }
     func reloadDiskVersion() {
+        guard canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: selectedID)
         Task {
             if dirty, let note = currentNote, let recovery {
@@ -1715,9 +1732,10 @@ struct EditorAction: Equatable {
         }
     }
     func saveDraftAsNewPage(_ recovered: DraftRecord? = nil) {
+        guard canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .pageMutation)
         Task {
-            guard let repository else { return }
+            guard isCompletionValid(completionTicket, operation: "saveDraftAsNewPage.start"), let repository else { return }
             let originalID = recovered?.id ?? currentNote?.id
             do {
                 var note = try await repository.create(title: (recovered?.title ?? title) + " (recovered)", body: recovered?.body ?? body)
@@ -1732,8 +1750,10 @@ struct EditorAction: Equatable {
         }
     }
     func discardRecovery(_ draft: DraftRecord) {
+        guard canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: draft.id)
         Task {
+            guard isCompletionValid(completionTicket, operation: "discardRecovery.start") else { return }
             do {
                 try await recovery?.remove(draft.id)
                 let drafts = (try? await recovery?.drafts()) ?? []
@@ -1743,24 +1763,26 @@ struct EditorAction: Equatable {
         }
     }
     func updateBacklinks() async {
-        guard let note = currentNote, let index else { backlinks = []; return }
+        guard canOperateOnLoadedContent, let note = currentNote, let index else { backlinks = []; return }
         let completionTicket = issueCompletionTicket(kind: .search, targetID: note.id)
         let ids = Set((try? await index.backlinks(to: note)) ?? [])
         guard isCompletionValid(completionTicket, expectedTargetID: currentNote?.id, checkTargetID: true, operation: "updateBacklinks") else { return }
         backlinks = notes.filter { ids.contains($0.id) }.sorted { $0.title < $1.title }
     }
     func followWikiLink(_ target: String) {
+        guard canOperateOnLoadedContent else { return }
         let key = normalized(target)
         let matches = notes.filter { normalized($0.title) == key || $0.aliases.contains(where: { normalized($0) == key }) }
         if matches.count == 1 { select(matches[0].id) }
         else if matches.isEmpty { unresolvedTarget = target }
         else { ambiguousMatches = matches }
     }
-    func suggestLink(_ title: String) { guard !reading, !editingLocked else { return }; editorAction = EditorAction(operation: .wikiLink(title)); wikiQuery = nil }
-    func format(_ prefix: String, _ suffix: String) { guard !reading, !editingLocked else { return }; editorAction = EditorAction(operation: .wrap(prefix, suffix)) }
+    func suggestLink(_ title: String) { guard canOperateOnLoadedContent, !reading, !editingLocked else { return }; editorAction = EditorAction(operation: .wikiLink(title)); wikiQuery = nil }
+    func format(_ prefix: String, _ suffix: String) { guard canOperateOnLoadedContent, !reading, !editingLocked else { return }; editorAction = EditorAction(operation: .wrap(prefix, suffix)) }
     func importFiles() { addSource() }
     func linkSources() { addSource() }
     func addSource() {
+        guard canOperateOnLoadedContent else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = true; panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true; panel.prompt = "Add Source"
@@ -1784,6 +1806,7 @@ struct EditorAction: Equatable {
         isCloudNotDownloaded: @escaping @Sendable (URL) -> Bool = FileVaultRepository.isCloudFileNotDownloaded,
         downloadCloudFile: @escaping @Sendable (URL) async throws -> Data = FileVaultRepository.downloadCloudFile
     ) async {
+        guard canOperateOnLoadedContent else { return }
         guard urls.count <= 5 else { errorMessage = "Add up to 5 files at a time."; return }
         guard let repository else { return }
         let completionTicket = issueCompletionTicket(kind: .sourceLoading)
@@ -1848,6 +1871,7 @@ struct EditorAction: Equatable {
         shouldImport: Bool,
         download: @escaping @Sendable (URL) async throws -> Data
     ) {
+        guard canOperateOnLoadedContent else { return }
         downloadingSources.insert(source.id)
         sourceDownloadQueue.append(PendingSourceDownload(source: source, url: url, shouldImport: shouldImport, download: download))
         guard sourceDownloadTask == nil, let repository else { return }
@@ -1905,7 +1929,7 @@ struct EditorAction: Equatable {
         }
     }
     func addURLSources(_ text: String) async -> [String] {
-        guard let repository, await finishCurrentPage() else { return ["Open a vault and finish saving before adding sources."] }
+        guard canOperateOnLoadedContent, let repository, await finishCurrentPage() else { return ["Open a vault and finish saving before adding sources."] }
         let lines: [String]
         do { lines = try WebSourceFetcher.lines(text) } catch { return [error.localizedDescription] }
         let completionTicket = issueCompletionTicket(kind: .sourceLoading)
@@ -1931,7 +1955,7 @@ struct EditorAction: Equatable {
         return sourceAvailability[id] ?? sources.first(where: { $0.id == id })?.availabilityIssue ?? "Available"
     }
     func checkSourceAvailability(_ requested: [SourceRecord]) {
-        guard let repository, let root else { return }
+        guard canOperateOnLoadedContent, let repository, let root else { return }
         for source in requested where !checkingSourceAvailability.contains(source.id) && !downloadingSources.contains(source.id) {
             checkingSourceAvailability.insert(source.id); sourceAvailabilityQueue.append(source)
         }
@@ -1960,8 +1984,26 @@ struct EditorAction: Equatable {
         }
     }
     func sourceSummaryContent(_ source: SourceRecord, root: URL) async throws -> String {
-        guard let contentStore = repository?.contentStore else { throw VaultError.unavailable("Open a vault before reading a source.") }
+        guard canOperateOnLoadedContent, let contentStore = repository?.contentStore else {
+            throw VaultError.unavailable("Open a vault before reading a source.")
+        }
+        if let gated = contentStore as? GatedVaultContentStore {
+            let normalizedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+            if normalizedRoot != gated.root {
+                throw VaultAccessError.wrongVault(
+                    expectedVaultID: gated.vaultID,
+                    expectedRoot: gated.root,
+                    actualVaultID: nil,
+                    actualRoot: normalizedRoot,
+                    operation: "sourceSummaryContent"
+                )
+            }
+            try gated.validateAccess(operation: "sourceSummaryContent")
+        }
         return try await Task.detached {
+            if let gated = contentStore as? GatedVaultContentStore {
+                try gated.validateAccess(operation: "sourceSummaryContent")
+            }
             if !source.body.isEmpty {
                 let ext = URL(fileURLWithPath: source.metadata.originalFilename).pathExtension.lowercased()
                 let content = ["html", "htm"].contains(ext) ? source.body.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression) : source.body
@@ -1973,7 +2015,7 @@ struct EditorAction: Equatable {
         }.value
     }
     func createPageFromSource(_ source: SourceRecord) {
-        guard !downloadingSources.contains(source.id), !generatingSourcePages.contains(source.id), let repository, let root else { return }
+        guard canOperateOnLoadedContent, !downloadingSources.contains(source.id), !generatingSourcePages.contains(source.id), let repository, let root else { return }
         if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return }
         let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: source.id)
         let ticket = completionTicket.token
@@ -2006,7 +2048,7 @@ struct EditorAction: Equatable {
     }
 
     func generateSourceSummary(_ source: SourceRecord) {
-        guard !downloadingSources.contains(source.id), !generatingSourceTitles.contains(source.id), !generatingSourceSummaries.contains(source.id),
+        guard canOperateOnLoadedContent, !downloadingSources.contains(source.id), !generatingSourceTitles.contains(source.id), !generatingSourceSummaries.contains(source.id),
               let repository, let root else { return }
         if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return }
         let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: source.id)
@@ -2034,6 +2076,7 @@ struct EditorAction: Equatable {
         }
     }
     func enqueueSourceTitle(_ source: SourceRecord) {
+        guard canOperateOnLoadedContent else { return }
         if sourceNamingTask == nil { sourceRenameCompleted = 0; sourceRenameTotal = 0 }
         sourceNamingQueue.append(source); generatingSourceTitles.insert(source.id); sourceRenameTotal += 1
         guard sourceNamingTask == nil, let repository, let root else { return }
@@ -2079,10 +2122,11 @@ struct EditorAction: Equatable {
         }
     }
     func renameSource(_ source: SourceRecord, title: String) {
+        guard canOperateOnLoadedContent else { return }
         sourceNamingOverrides.insert(source.id); generatingSourceTitles.remove(source.id)
         let completionTicket = issueCompletionTicket(kind: .sourceLoading, targetID: source.id)
         Task {
-            guard let repository else { return }
+            guard isCompletionValid(completionTicket, operation: "renameSource.start"), let repository else { return }
             do {
                 let renamed = try await repository.renameSource(source, title: title)
                 guard isCompletionValid(completionTicket, operation: "renameSource") else { return }
@@ -2092,12 +2136,13 @@ struct EditorAction: Equatable {
         }
     }
     func deleteSource(_ source: SourceRecord) {
+        guard canOperateOnLoadedContent else { return }
         sourceNamingOverrides.insert(source.id); generatingSourceTitles.remove(source.id)
         downloadingSources.remove(source.id)
         sourceDownloadQueue.removeAll { $0.source.id == source.id }
         let completionTicket = issueCompletionTicket(kind: .sourceLoading, targetID: source.id)
         Task {
-            guard let repository else { return }
+            guard isCompletionValid(completionTicket, operation: "deleteSource.start"), let repository else { return }
             do {
                 try await repository.deleteSource(source)
                 guard isCompletionValid(completionTicket, operation: "deleteSource") else { return }
@@ -2107,6 +2152,7 @@ struct EditorAction: Equatable {
         }
     }
     func openSource(_ id: UUID?) {
+        guard canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .sourceLoading, targetID: id)
         Task {
             await waitForSave()
@@ -2127,7 +2173,7 @@ struct EditorAction: Equatable {
         }
     }
     func pasteSource(title: String, text: String, originURL: String) async -> Bool {
-        guard let repository else { return false }
+        guard canOperateOnLoadedContent, let repository else { return false }
         let completionTicket = issueCompletionTicket(kind: .sourceLoading)
         do {
             let source = try await repository.importSource(data: Data(text.utf8), filename: "pasted.txt", title: title, originURL: originURL)
@@ -2135,5 +2181,5 @@ struct EditorAction: Equatable {
             scope = .sources; await refresh(); select(source.id); return true
         } catch { if isCompletionValid(completionTicket, operation: "pasteSource.error") { errorMessage = error.localizedDescription }; return false }
     }
-    func revealVault() { if let root { NSWorkspace.shared.open(root) } }
+    func revealVault() { guard isVaultAvailable, let root else { return }; NSWorkspace.shared.open(root) }
 }
