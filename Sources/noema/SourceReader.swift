@@ -146,7 +146,7 @@ private struct ThemedSourceTextReader: NSViewRepresentable {
         guard let reader = scroll.documentView as? ReadingTextView else { return }
         let typography = EditorTypography(family: fontFamily, size: fontSize)
         if context.coordinator.typography != typography || context.coordinator.theme != theme {
-            reader.replacePresentation(content.presentation(typography: typography, theme: theme))
+            reader.replacePresentation(content.presentation(typography: typography, theme: theme), typography: typography)
             context.coordinator.typography = typography
             context.coordinator.theme = theme
         }

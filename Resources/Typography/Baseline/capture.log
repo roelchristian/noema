@@ -1,0 +1,21 @@
+Storage boundary guard selftest passed (11 regression cases; 18 adversarial fixtures).
+Storage boundary guard passed: 40 reviewed exceptional calls; canonical byte I/O belongs in Sources/VaultCore/PlaintextVaultContentStore.swift.
+Building for debugging...
+[0/5] Write sources
+[1/5] Write swift-version--1AB21518FC5DEDBE.txt
+[3/5] Compiling NoemaEditorTests TypographyBaselineCaptureTests.swift
+[4/5] Emitting module NoemaEditorTests
+[4/6] Write Objects.LinkFileList
+[5/6] Linking noemaPackageTests
+Build complete! (12.17s)
+◇ Test run started.
+↳ Testing Library Version: 1501
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Editorial typography native captures (UI.TYP01)" started.
+◇ Test captureOnlyWhenRequested() started.
+2026-10-12 04:21:58.493 swiftpm-testing-helper[43094:1003824] Connection Invalid error for service com.apple.hiservices-xpcservice.
+2026-10-12 04:21:58.493 swiftpm-testing-helper[43094:1003751] Error received in message reply handler: Connection invalid
+UI.TYP01 captured 8 native fixture PNGs in /private/tmp/noema-typography-baseline-b6cd5c7/captures; no live interaction was exercised.
+✔ Test captureOnlyWhenRequested() passed after 2.560 seconds.
+✔ Suite "Editorial typography native captures (UI.TYP01)" passed after 2.560 seconds.
+✔ Test run with 1 test in 1 suite passed after 2.561 seconds.

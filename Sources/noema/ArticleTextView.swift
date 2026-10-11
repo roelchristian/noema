@@ -8,7 +8,7 @@ import VaultCore
     }
 
     func updateReadingGeometry() {
-        let geometry = ReadingGeometry(availableWidth: bounds.width, reservesEditorGutter: true)
+        let geometry = ReadingGeometry(availableWidth: bounds.width, reservesEditorGutter: true, maximumContentWidth: typography.readingMeasureWidth)
         if textContainerInset.width != geometry.horizontalInset {
             // Preserve vertical space reserved for a semantic heading.
             textContainerInset = NSSize(width: geometry.horizontalInset, height: textContainerInset.height)
@@ -21,13 +21,13 @@ import VaultCore
     var end: (() -> Void)?
     var locked = false
     var theme = NoemaTheme()
-    var typography = EditorTypography()
+    var typography = EditorTypography() { didSet { if typography != oldValue { updateReadingGeometry() } } }
     var showSemanticHeadings = false
     private(set) var semanticHeadingTopInset: CGFloat = 0
     func updateSemanticHeadingTopInset() {
         // AppKit ignores paragraphSpacingBefore on the document's first paragraph.
         let tag = textStorage.flatMap { $0.length > 0 ? $0.attribute(.semanticTag, at: 0, effectiveRange: nil) as? String : nil }
-        let inset = showSemanticHeadings && SemanticPresentation.find(tag) != nil ? typography.semanticHeadingSpace : 0
+        let inset = showSemanticHeadings && SemanticPresentation.find(tag) != nil ? typography.semanticHeadingSpace + 1 : 0
         if inset != semanticHeadingTopInset {
             textContainerInset.height += inset - semanticHeadingTopInset
             semanticHeadingTopInset = inset
@@ -151,9 +151,9 @@ import VaultCore
         let width = min(260, bounds.width - textContainerOrigin.x - start)
         guard width >= typography.pointSize(for: .semanticLabel) * 6 else { return nil }
         let font = typography.font(for: .math)
-        let preview = NSRect(x: start, y: firstBaseline(for: range) - font.ascender,
-                             width: width, height: font.ascender - font.descender)
         let line = fragment.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+        let height = font.ascender - font.descender
+        let preview = NSRect(x: start, y: line.midY - height / 2, width: width, height: height)
         guard preview.minY >= line.minY, preview.maxY <= line.maxY else { return nil }
         return preview
     }

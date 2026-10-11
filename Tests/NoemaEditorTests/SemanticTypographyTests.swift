@@ -43,7 +43,15 @@ import VaultCore
             }
             #expect(BlockTextStorage.capture(storage, previous: document) == document)
             BlockTextStorage.updateParagraphRhythm(storage, typography: typography)
-            #expect(storage == BlockTextStorage.render(document, theme: NoemaTheme(), typography: typography))
+            let withoutLabels = BlockTextStorage.render(document, theme: NoemaTheme(), typography: typography)
+            #expect(storage.string == withoutLabels.string)
+            // Fresh renders may encode metadata JSON keys in a different order.
+            // Compare the resolved typography and captured semantic content.
+            storage.enumerateAttributes(in: NSRange(location: 0, length: storage.length)) { attributes, range, _ in
+                #expect(attributes[.font] as? NSFont == withoutLabels.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont)
+                #expect(attributes[.paragraphStyle] as? NSParagraphStyle == withoutLabels.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle)
+            }
+            #expect(BlockTextStorage.capture(storage, previous: document) == document)
         }
     }
 }

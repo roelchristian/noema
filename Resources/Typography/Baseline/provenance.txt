@@ -1,0 +1,4 @@
+Production base: b6cd5c73bdc97b49c8016ac0bd97fa28a1c743c4
+Compared all 62 tracked Sources files byte-for-byte with git show.
+Mismatches: []
+Fixture changes only: correct BlockDocumentCodec API; fixed scroll viewport; decorations use native transparent text background; source preview theme surface.

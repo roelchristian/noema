@@ -2,6 +2,7 @@ import AppKit
 import VaultCore
 
 extension NSAttributedString.Key {
+    static let markdownSeparator = Self("noema.markdownSeparator")
     static let blockID = Self("noema.blockID")
     static let blockKind = Self("noema.blockKind")
     static let blockMetadata = Self("noema.blockMetadata")
@@ -34,6 +35,10 @@ extension NSAttributedString.Key {
             .foregroundColor: theme.nativeText(), .paragraphStyle: paragraph,
             .blockID: block.id.uuidString, .blockKind: block.kind.rawValue, .blockDepth: depth
         ]
+        if block.kind == .paragraph, block.metadata.semantic == nil,
+           block.originalMarkdown?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+            attrs[.markdownSeparator] = true
+        }
         attrs[.inlineStyle] = try? JSONEncoder().encode(InlineStyle())
         attrs[.blockMetadata] = try? JSONEncoder().encode(block.metadata)
         if let semantic = block.metadata.semantic { attrs[.semanticTag] = semantic }
@@ -85,7 +90,8 @@ extension NSAttributedString.Key {
             let kind = BlockKind(rawValue: storage.attribute(.blockKind, at: blockRange.location, effectiveRange: nil) as? String ?? "paragraph")
             let role = EditorTypography.role(for: kind)
             let first = NSIntersectionRange(text.paragraphRange(for: NSRange(location: blockRange.location, length: 0)), blockRange)
-            let rhythm = typography.paragraphStyle(for: role, previous: previous)
+            let separator = isEmptySeparator(storage, range: blockRange)
+            let rhythm = typography.paragraphStyle(for: role, previous: hasSeparatorBoundary(storage, range: blockRange) ? nil : previous)
             storage.enumerateAttribute(.paragraphStyle, in: blockRange) { value, part, _ in
                 guard let original = value as? NSParagraphStyle else { return }
                 let leading = NSIntersectionRange(part, first)
@@ -101,7 +107,7 @@ extension NSAttributedString.Key {
                     changes.append((segment, style))
                 }
             }
-            previous = role
+            if !separator { previous = role }
         }
         storage.beginEditing()
         for (range, style) in changes { storage.addAttribute(.paragraphStyle, value: style, range: range) }
@@ -115,8 +121,9 @@ extension NSAttributedString.Key {
         for (_, range) in ranges(storage) {
             let kind = BlockKind(rawValue: storage.attribute(.blockKind, at: range.location, effectiveRange: nil) as? String ?? "paragraph")
             let role = EditorTypography.role(for: kind)
-            let boundary = typography.boundarySpacing(before: role, after: previous)
-            previous = role
+            let separator = isEmptySeparator(storage, range: range)
+            let boundary = hasSeparatorBoundary(storage, range: range) ? 0 : typography.boundarySpacing(before: role, after: previous)
+            if !separator { previous = role }
             if let affectedRange, NSIntersectionRange(range, affectedRange).length == 0 { continue }
             let tag = storage.attribute(.semanticTag, at: range.location, effectiveRange: nil) as? String
             guard SemanticPresentation.find(tag) != nil else { continue }
@@ -135,6 +142,20 @@ extension NSAttributedString.Key {
             for (part, style) in styles { storage.addAttribute(.paragraphStyle, value: style, range: part) }
         }
     }
+    /// Parsed Markdown separators retain their caret line without adding another
+    /// boundary gap. The presentation marker survives native typing so filling
+    /// that line does not move its caret; new editing blocks keep normal spacing.
+    private static func hasSeparatorBoundary(_ storage: NSAttributedString, range: NSRange) -> Bool {
+        storage.attribute(.markdownSeparator, at: range.location, effectiveRange: nil) as? Bool == true
+            && storage.attribute(.blockKind, at: range.location, effectiveRange: nil) as? String == BlockKind.paragraph.rawValue
+            && (storage.attribute(.semanticTag, at: range.location, effectiveRange: nil) as? String)?.isEmpty != false
+    }
+
+    private static func isEmptySeparator(_ storage: NSAttributedString, range: NSRange) -> Bool {
+        hasSeparatorBoundary(storage, range: range) && range.length == 1
+            && (storage.string as NSString).substring(with: range) == "\n"
+    }
+
     static func ranges(_ storage: NSAttributedString) -> [(UUID, NSRange)] {
         var result: [(UUID, NSRange)] = []
         storage.enumerateAttribute(.blockID, in: NSRange(location: 0, length: storage.length)) { value, range, _ in

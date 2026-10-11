@@ -44,10 +44,11 @@ import VaultCore
     for width in [CGFloat(1000), 500, 320, 1200] {
         view.setFrameSize(NSSize(width: width, height: view.frame.height))
         manager.ensureLayout(for: container)
-        let geometry = ReadingGeometry(availableWidth: width, reservesEditorGutter: true)
+        let geometry = ReadingGeometry(availableWidth: width, reservesEditorGutter: true, maximumContentWidth: view.typography.readingMeasureWidth)
         #expect(abs(container.size.width - geometry.contentWidth) < 0.01)
-        #expect(abs(view.textContainerOrigin.x - geometry.horizontalInset) < 0.01)
-        #expect(view.textContainerInset.height == 24)
+        // AppKit rounds the text origin to a native point when a centered inset is fractional.
+        #expect(abs(view.textContainerOrigin.x - geometry.horizontalInset) <= 0.5)
+        #expect(abs(view.textContainerInset.height - 24) < 0.001)
         #expect(view.selectedRange() == selected)
         #expect(view.textStorage?.string == rendered.string)
         let glyphs = manager.glyphRange(for: container)
@@ -77,5 +78,5 @@ import VaultCore
     #expect(view.textContainerInset.height == height)
     view.showSemanticHeadings = false
     view.updateSemanticHeadingTopInset()
-    #expect(view.textContainerInset.height == 24)
+    #expect(abs(view.textContainerInset.height - 24) < 0.001)
 }

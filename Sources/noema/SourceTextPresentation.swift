@@ -62,8 +62,15 @@ import VaultCore
     }
 
     static func plainText(_ text: String, typography: EditorTypography, theme: NoemaTheme) -> NSAttributedString {
-        NSAttributedString(string: text, attributes: [.font: typography.font(for: .body), .foregroundColor: theme.nativeText(),
-            .paragraphStyle: paragraphStyle(for: .body, previous: .body, typography: typography)])
+        let result = NSMutableAttributedString(string: text, attributes: [.font: typography.font(for: .body), .foregroundColor: theme.nativeText()])
+        var previous: EditorTypography.Role?
+        (text as NSString).enumerateSubstrings(in: NSRange(location: 0, length: result.length), options: .byParagraphs) { _, range, enclosing, _ in
+            let empty = range.length == 0
+            let paragraph = paragraphStyle(for: .body, previous: empty ? nil : previous, typography: typography)
+            result.addAttribute(.paragraphStyle, value: paragraph, range: enclosing)
+            if !empty { previous = .body }
+        }
+        return result
     }
 
     /// AppKit's HTML importer preserves headings, lists, indentation and inline traits.
@@ -74,6 +81,11 @@ import VaultCore
         var previous: EditorTypography.Role?
         (imported.string as NSString).enumerateSubstrings(in: fullRange, options: .byParagraphs) { _, range, enclosingRange, _ in
             guard range.location < imported.length else { return }
+            if range.length == 0 {
+                result.addAttributes([.font: typography.font(for: .body), .foregroundColor: theme.nativeText(),
+                    .paragraphStyle: typography.paragraphStyle(for: .body)], range: enclosingRange)
+                return
+            }
             let attributes = imported.attributes(at: range.location, effectiveRange: nil)
             let original = attributes[.paragraphStyle] as? NSParagraphStyle ?? .default
             var allMonospaced = true
@@ -123,16 +135,23 @@ import VaultCore
 
 /// Read-only prose geometry has no editor decorations or reserved semantic gutters.
 @MainActor final class ReadingTextView: NSTextView {
+    var typography = EditorTypography() { didSet { if typography != oldValue { updateReadingGeometry() } } }
+
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        let geometry = ReadingGeometry(availableWidth: bounds.width)
+        updateReadingGeometry()
+    }
+
+    private func updateReadingGeometry() {
+        let geometry = ReadingGeometry(availableWidth: bounds.width, maximumContentWidth: typography.readingMeasureWidth)
         textContainerInset = NSSize(width: geometry.horizontalInset, height: textContainerInset.height)
         textContainer?.lineFragmentPadding = 0
     }
 
-    func replacePresentation(_ content: NSAttributedString) {
+    func replacePresentation(_ content: NSAttributedString, typography: EditorTypography? = nil) {
         let selections = selectedRanges
         let origin = enclosingScrollView?.contentView.bounds.origin
+        if let typography { self.typography = typography }
         textStorage?.setAttributedString(content)
         selectedRanges = selections.map { value in
             let range = value.rangeValue

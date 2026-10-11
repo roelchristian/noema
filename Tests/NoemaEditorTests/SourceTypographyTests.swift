@@ -71,7 +71,7 @@ import VaultCore
     let selected = NSRange(location: 60, length: 24)
     view.setSelectedRange(selected)
     let second = SourceTextPresentation.plainText(source, typography: EditorTypography(family: "Helvetica", size: 24), theme: NoemaTheme(dark: true))
-    view.replacePresentation(second)
+    view.replacePresentation(second, typography: EditorTypography(family: "Helvetica", size: 24))
     #expect(view.string == source)
     #expect(view.selectedRange() == selected)
     let font = try #require(view.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
@@ -82,4 +82,20 @@ import VaultCore
     view.setFrameSize(NSSize(width: 300, height: 600))
     #expect(view.textContainerInset.width == 24)
     #expect(view.bounds.width - 2 * view.textContainerInset.width == 252)
+}
+
+@Test @MainActor func plainSourceEmptyParagraphsHaveSingleBoundaryAndRetainBytes() throws {
+    let source = "First paragraph\n\n\nNext paragraph\n"
+    let bytes = Data(source.utf8)
+    let typography = EditorTypography()
+    let rendered = SourceTextPresentation.plainText(source, typography: typography, theme: NoemaTheme())
+    let text = source as NSString
+    text.enumerateSubstrings(in: NSRange(location: 0, length: text.length), options: .byParagraphs) { _, range, _, _ in
+        let paragraph = rendered.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as! NSParagraphStyle
+        let expected: CGFloat = range.length == 0 || range.location == 0 ? 0 : typography.boundarySpacing(before: .body, after: .body)
+        #expect(abs(paragraph.paragraphSpacingBefore - expected) < 0.001)
+        #expect(paragraph.paragraphSpacing == 0)
+    }
+    #expect(rendered.string == source)
+    #expect(Data(rendered.string.utf8) == bytes)
 }

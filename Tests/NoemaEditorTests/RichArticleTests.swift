@@ -650,3 +650,31 @@ import VaultCore
     #expect(coordinator.document.blocks[0].runs[1].style.math == false)
     #expect(coordinator.document.blocks[0].runs[1].text == " plain")
 }
+
+@Test @MainActor func fillingParsedMarkdownSeparatorKeepsNativeCaretAndSelection() throws {
+    let (coordinator, view, window) = editor("# Heading\n\nBody")
+    defer { window.close() }
+    let storage = try #require(view.textStorage)
+    let blank = try #require(BlockTextStorage.ranges(storage).first { (_, range) in
+        range.length == 1 && (storage.string as NSString).substring(with: range) == "\n"
+    })
+    view.setSelectedRange(NSRange(location: blank.1.location, length: 0))
+    view.layoutManager?.ensureLayout(for: try #require(view.textContainer))
+    let before = view.firstRect(forCharacterRange: view.selectedRange(), actualRange: nil)
+    let undo = try #require(view.undoManager)
+    undo.beginUndoGrouping()
+    view.insertText("A", replacementRange: view.selectedRange())
+    undo.endUndoGrouping()
+    view.layoutManager?.ensureLayout(for: try #require(view.textContainer))
+    let after = view.firstRect(forCharacterRange: view.selectedRange(), actualRange: nil)
+    #expect(abs(after.minY - before.minY) < 0.5)
+    #expect(view.selectedRange() == NSRange(location: blank.1.location + 1, length: 0))
+    #expect(coordinator.document.block(blank.0)?.text == "A")
+    let selected = view.selectedRange()
+    coordinator.refreshPresentation(typography: EditorTypography(family: "Times New Roman", size: 20))
+    #expect(view.selectedRange() == selected)
+    undo.undo()
+    #expect(coordinator.document.block(blank.0)?.text.isEmpty == true)
+    undo.redo()
+    #expect(coordinator.document.block(blank.0)?.text == "A")
+}

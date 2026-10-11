@@ -147,7 +147,7 @@ struct MarkdownPreview: NSViewRepresentable {
         context.coordinator.blocks = blocks
         context.coordinator.theme = theme
         context.coordinator.typography = typography
-        view.replacePresentation(SourceTextPresentation.markdown(blocks, typography: typography, theme: theme))
+        view.replacePresentation(SourceTextPresentation.markdown(blocks, typography: typography, theme: theme), typography: typography)
     }
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         var follow: (String) -> Void

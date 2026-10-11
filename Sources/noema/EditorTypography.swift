@@ -64,6 +64,14 @@ import VaultCore
         }
     }
 
+    /// Approximate a 75-character prose line using the actual chosen body face.
+    /// This is a reading target, capped at 680 pt rather than a fixed column.
+    var readingMeasureWidth: CGFloat {
+        let sample = "The quick brown fox jumps over the lazy dog."
+        let width = (sample as NSString).size(withAttributes: [.font: font(for: .body)]).width
+        return min(ReadingGeometry.maximumContentWidth, ceil(width / CGFloat(sample.utf16.count) * 75))
+    }
+
     func pointSize(for role: Role) -> CGFloat { CGFloat(size) * role.scale }
 
     func font(for role: Role, weight: NSFont.Weight? = nil) -> NSFont {
@@ -115,7 +123,14 @@ import VaultCore
         case .code, .mathSource: ratio = 1.4
         default: ratio = 1.5
         }
-        return LineMetrics(nativeHeight: native, baselineSeparation: max(native, font.pointSize * ratio))
+        var separation = max(native, font.pointSize * ratio)
+        if role == .mathSource {
+            // The optional side preview uses the larger mathematical face.
+            // Its glyphs must fit the native raw-source line without clipping.
+            let mathematical = self.font(for: .math)
+            separation = max(separation, mathematical.ascender - mathematical.descender + 2)
+        }
+        return LineMetrics(nativeHeight: native, baselineSeparation: separation)
     }
 
     /// Every boundary is owned by the incoming paragraph. Outgoing spacing is

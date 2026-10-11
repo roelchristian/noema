@@ -55,7 +55,7 @@ import VaultCore
             #expect(coordinator.document == before)
             #expect(BlockDocumentCodec.encode(BlockTextStorage.capture(try #require(view.textStorage), previous: before)) == serialized)
             let font = try #require(view.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
-            #expect(font.pointSize == typography.size)
+            #expect(abs(font.pointSize - CGFloat(typography.size)) < 0.001)
         }
         // A selection ending at the final storage character must not lose its
         // last character through the old render path's caret-only clamping.
@@ -88,14 +88,14 @@ import VaultCore
         #expect(coordinator.document == edited)
         undo.undo()
         #expect(view.string == originalText)
-        #expect(coordinator.document == original)
+        #expect(normalizingModificationDates(coordinator.document, to: original) == original)
         try expectBodyFonts(view, size: 23)
         #expect(undo.canRedo)
         coordinator.refreshPresentation(typography: EditorTypography(size: 20))
         #expect(undo.canRedo)
         undo.redo()
         #expect(view.string == editedText)
-        #expect(coordinator.document == edited)
+        #expect(normalizingModificationDates(coordinator.document, to: edited) == edited)
         try expectBodyFonts(view, size: 20)
         coordinator.refreshPresentation(typography: EditorTypography(size: 20))
         view.setSelectedRange(NSRange(location: 0, length: 0))
@@ -105,7 +105,7 @@ import VaultCore
         #expect(coordinator.document.blocks.first?.text.hasPrefix("Next ") == true)
         #expect((view.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize == 20)
         undo.undo()
-        #expect(coordinator.document == edited)
+        #expect(normalizingModificationDates(coordinator.document, to: edited) == edited)
     }
 
     private func expectBodyFonts(_ view: ArticleTextView, size: CGFloat) throws {
@@ -113,6 +113,21 @@ import VaultCore
         storage.enumerateAttribute(.font, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
             #expect((value as? NSFont)?.pointSize == size)
         }
+    }
+
+    /// Native undo is a real content edit and legitimately advances modifiedAt.
+    /// Every other field, including IDs, runs, styles and metadata, must match.
+    private func normalizingModificationDates(_ value: BlockDocument, to expected: BlockDocument) -> BlockDocument {
+        var value = value
+        func normalize(_ blocks: inout [EditorBlock], expected: [EditorBlock]) {
+            for index in blocks.indices {
+                guard let match = expected.first(where: { $0.id == blocks[index].id }) else { continue }
+                blocks[index].modifiedAt = match.modifiedAt
+                normalize(&blocks[index].children, expected: match.children)
+            }
+        }
+        normalize(&value.blocks, expected: expected.blocks)
+        return value
     }
 
     private func fixture(_ source: String) -> (RichArticleView.Coordinator, ArticleTextView, NSScrollView, NSWindow) {
@@ -126,7 +141,7 @@ import VaultCore
         view.isEditable = true; view.allowsUndo = true; view.isRichText = true
         view.isVerticallyResizable = true; view.isHorizontallyResizable = false
         view.autoresizingMask = [.width]
-        view.maxSize = NSSize(width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         view.textContainer?.widthTracksTextView = true
         scroll.documentView = view
         let window = NSWindow(contentRect: scroll.frame, styleMask: [.titled], backing: .buffered, defer: false)

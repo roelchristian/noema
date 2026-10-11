@@ -37,13 +37,13 @@ struct TypographyBaselineCaptureTests {
             let appearance = try #require(NSAppearance(named: dark ? .darkAqua : .aqua))
             let theme = NoemaTheme(dark: dark)
             for size in [10.0, 15.0, 32.0] {
-                var document = BlockCodec.decode(markdown)
+                var document = BlockDocumentCodec.decode(markdown)
                 var metadata = BlockMetadata(); metadata.semantic = "idea"
                 document.blocks.append(EditorBlock(runs: [RichRun("A semantic idea remains ordinary readable prose.")], metadata: metadata))
                 let article = ArticleTextView(frame: NSRect(x: 0, y: 0, width: 840, height: 940))
                 article.theme = theme
                 article.isEditable = false
-                article.drawsBackground = true
+                article.drawsBackground = false
                 article.backgroundColor = theme.native(.surfaceElevated)
                 article.textContainerInset = NSSize(width: 80, height: 24)
                 article.textContainer?.widthTracksTextView = true
@@ -54,7 +54,8 @@ struct TypographyBaselineCaptureTests {
             }
             // This is the real MarkdownPreview representable, not a re-created style sheet.
             let preview = NSHostingView(rootView: MarkdownPreview(blocks: MarkdownService.preview(markdown), onWikiLink: { _ in })
-                .environment(\.noemaTheme, theme).environment(\.colorScheme, dark ? .dark : .light))
+                .environment(\.noemaTheme, theme).environment(\.colorScheme, dark ? .dark : .light)
+                .background(theme.color(.surfaceElevated)))
             preview.frame = NSRect(x: 0, y: 0, width: 840, height: 940)
             try await capture(preview, name: "source-preview-\(dark ? "dark" : "light")",
                 appearance: appearance, directory: directory)
@@ -68,14 +69,21 @@ struct TypographyBaselineCaptureTests {
         window.isReleasedWhenClosed = false
         window.appearance = appearance
         view.appearance = appearance
-        window.contentView = view
+        let surface: NSView
+        if let text = view as? NSTextView {
+            let scroll = NSScrollView(frame: view.frame)
+            scroll.drawsBackground = true; scroll.backgroundColor = text.backgroundColor
+            scroll.documentView = text
+            surface = scroll
+        } else { surface = view }
+        window.contentView = surface
         defer { window.contentView = nil; window.close() }
-        view.layoutSubtreeIfNeeded()
+        surface.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(40))
-        view.layoutSubtreeIfNeeded()
-        view.displayIfNeeded()
-        let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-        view.cacheDisplay(in: view.bounds, to: bitmap)
+        surface.layoutSubtreeIfNeeded()
+        surface.displayIfNeeded()
+        let bitmap = try #require(surface.bitmapImageRepForCachingDisplay(in: surface.bounds))
+        surface.cacheDisplay(in: surface.bounds, to: bitmap)
         #expect(bitmap.pixelsWide >= 840 && bitmap.pixelsHigh >= 940)
         var colors: Set<String> = []
         for y in stride(from: 0, to: bitmap.pixelsHigh, by: 11) {

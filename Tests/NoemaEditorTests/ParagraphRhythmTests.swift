@@ -47,8 +47,8 @@ import VaultCore
                 #expect(paragraph.paragraphSpacingBefore == typography.boundarySpacing(before: role, after: previous))
             }
         }
-        #expect(typography.boundarySpacing(before: .heading2, after: .heading1) == size * 0.9)
-        #expect(typography.boundarySpacing(before: .body, after: .heading2) == size * 0.45)
+        #expect(abs(typography.boundarySpacing(before: .heading2, after: .heading1) - CGFloat(size) * 0.9) < 0.001)
+        #expect(abs(typography.boundarySpacing(before: .body, after: .heading2) - CGFloat(size) * 0.45) < 0.001)
         #expect(typography.boundarySpacing(before: .list, after: .list) < typography.boundarySpacing(before: .body, after: .body))
         #expect(typography.boundarySpacing(before: .quote, after: .quote) < typography.boundarySpacing(before: .body, after: .body))
     }
@@ -72,14 +72,16 @@ import VaultCore
     for (id, range) in BlockTextStorage.ranges(rendered) {
         let block = try #require(document.block(id))
         let role = EditorTypography.role(for: block.kind)
+        let separator = block.kind == .paragraph && block.text.isEmpty && block.metadata.semantic == nil
+            && block.originalMarkdown?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true
         let first = text.paragraphRange(for: NSRange(location: range.location, length: 0))
         rendered.enumerateAttribute(.paragraphStyle, in: range) { value, part, _ in
             let paragraph = value as! NSParagraphStyle
             #expect(paragraph.paragraphSpacing == 0)
-            let expected = part.location < NSMaxRange(first) ? typography.boundarySpacing(before: role, after: previous) : 0
+            let expected = !separator && part.location < NSMaxRange(first) ? typography.boundarySpacing(before: role, after: previous) : 0
             #expect(paragraph.paragraphSpacingBefore == expected)
         }
-        previous = role
+        if !separator { previous = role }
     }
     let before = rendered.string
     // Simulate native typing inheriting a block boundary on a new paragraph.
@@ -93,4 +95,26 @@ import VaultCore
     #expect(continuation.paragraphSpacing == 0)
     let emptyRange = try #require(BlockTextStorage.ranges(rendered).first { $0.0 == document.blocks[3].id }?.1)
     #expect(emptyRange.length == 1) // An empty block retains a real native caret line.
+}
+
+@Test @MainActor func markdownSeparatorsRetainCaretLinesAndSourceBoundaryContext() throws {
+    let markdown = "# Heading\n\n\nBody\n\n## Section\n\nParagraph"
+    let document = BlockDocumentCodec.decode(markdown)
+    let original = BlockDocumentCodec.encode(document)
+    let typography = EditorTypography()
+    for headings in [false, true] {
+        let storage = NSMutableAttributedString(attributedString: BlockTextStorage.render(document, theme: NoemaTheme(), showSemanticHeadings: headings, typography: typography))
+        for (_, range) in BlockTextStorage.ranges(storage) {
+            let text = (storage.string as NSString).substring(with: range)
+            let paragraph = try #require(storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle)
+            if text == "\n" { #expect(paragraph.paragraphSpacingBefore == 0) }
+            if text == "Body\n" || text == "Paragraph\n" {
+                #expect(abs(paragraph.paragraphSpacingBefore - CGFloat(typography.size) * 0.45) < 0.001)
+            }
+        }
+        BlockTextStorage.updateParagraphRhythm(storage, typography: typography)
+        if headings { BlockTextStorage.updateSemanticHeadingSpacing(storage, typography: typography) }
+        #expect(BlockTextStorage.capture(storage, previous: document) == document)
+        #expect(BlockDocumentCodec.encode(BlockTextStorage.capture(storage, previous: document)) == original)
+    }
 }
