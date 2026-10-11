@@ -80,6 +80,9 @@ struct SummarizedArticleView: View {
     @State private var summaryExpanded = false
     @State private var disclosure = SummaryDisclosureState()
     private var document: BlockDocument { BlockDocumentCodec.decode(model.body) }
+    private var summaryBusy: Bool {
+        model.currentNote.map { model.isSummarizing(target: .page($0.id)) } ?? false
+    }
     var editorText: Binding<String> {
         Binding(get: {
             let document = BlockDocumentCodec.decode(model.body)
@@ -95,14 +98,10 @@ struct SummarizedArticleView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if showsSummary, model.generatingAISummary || document.aiSummary != nil {
+            if showsSummary, summaryBusy || document.aiSummary != nil {
                 VStack(alignment: .leading, spacing: 0) {
-                    if showsSummary, model.generatingAISummary {
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.mini)
-                            Text("Generating AI Summary...")
-                                .font(.callout).foregroundStyle(.secondary).lineLimit(1)
-                        }
+                    if let id = model.currentNote?.id, summaryBusy {
+                        AISummaryStatus(model: model, target: .page(id))
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.vertical, 8)
                             .readingColumn(reservesEditorGutter: true)
@@ -129,13 +128,22 @@ struct SummarizedArticleView: View {
                                             .accessibilityLabel("Hide AI-generated summary")
                                         deleteSummaryButton
                                     }
-                                    Text("AI-generated summary").font(.caption).foregroundStyle(.secondary)
+                                    Text(aiSummaryProvenanceLabel(provider: summary.metadata.extra["aiProvider"], model: summary.metadata.extra["aiModel"]))
+                                        .font(.caption).foregroundStyle(.secondary)
                                     Text(summary.text).textSelection(.enabled)
                                         .lineLimit(summaryExpanded ? nil : 3)
                                     Button(summaryExpanded ? "Show less" : "Show more") { summaryExpanded.toggle() }
                                         .buttonStyle(.link).font(.caption)
                                         .accessibilityLabel(summaryExpanded ? "Show less AI-generated summary" : "Show full AI-generated summary")
                                         .accessibilityValue(summaryExpanded ? "Expanded" : "Three-line preview")
+                                    if let id = model.currentNote?.id {
+                                        HStack(spacing: NoemaSpacing.sm) {
+                                            AISummaryControls(model: model, target: .page(id))
+                                            AIProviderBadge(provider: model.preferredAIProvider(for: .summarizePage))
+                                            Button("Copy") { AISummaryPresentation(model: model, target: .page(id)).copy() }
+                                                .accessibilityLabel("Copy AI-generated summary")
+                                        }.controlSize(.small)
+                                    }
                                 }
                                 .transition(.opacity)
                             }
@@ -160,7 +168,7 @@ struct SummarizedArticleView: View {
         .buttonStyle(.link).font(.caption).fixedSize()
         .accessibilityLabel("Delete AI-generated summary")
         .help("Delete AI-generated summary")
-        .disabled(model.editingLocked || model.generatingAISummary)
+        .disabled(model.editingLocked || summaryBusy)
     }
 
 }

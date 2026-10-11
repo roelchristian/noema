@@ -1,0 +1,207 @@
+import AppKit
+import ExternalAI
+import SwiftUI
+import VaultCore
+
+/// One summary command presentation for pages and sources. Provider choice is resolved by
+/// AppModel; temporary choices are passed only to this invocation and never saved here.
+@MainActor
+struct AISummaryPresentation {
+    let model: AppModel
+    let target: ExternalAISummaryTarget
+
+    var action: AIAction {
+        switch target {
+        case .page: .summarizePage
+        case .source: .summarizeSource
+        }
+    }
+    var provider: AIProvider { model.preferredAIProvider(for: action) }
+    var summaryText: String? {
+        switch target {
+        case .page(let id):
+            let body = model.currentNote?.id == id ? model.body : model.notes.first(where: { $0.id == id })?.body
+            return body.flatMap { BlockDocumentCodec.decode($0).aiSummary?.text }
+        case .source(let id):
+            return model.sources.first(where: { $0.id == id })?.metadata.aiSummary
+        }
+    }
+    var hasSummary: Bool { summaryText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
+    var commandTitle: String { hasSummary ? "Regenerate Summary" : "Summarize" }
+    var isBusy: Bool { model.isSummarizing(target: target) }
+    var canCancel: Bool {
+        if model.activeSummaryProvider(for: target) == .openAI { return true }
+        switch target {
+        case .page: return isBusy
+        case .source(let id): return model.generatingSourceSummaries.contains(id)
+        }
+    }
+    var disabled: Bool {
+        guard model.isVaultAvailable else { return true }
+        if model.hasPendingCloudSummary || isBusy { return true }
+        switch target {
+        case .page(let id):
+            guard let note = model.notes.first(where: { $0.id == id }) else { return true }
+            return note.isEditingLocked || model.editingLockOperations.contains(id)
+        case .source(let id):
+            return !model.sources.contains(where: { $0.id == id })
+                || model.downloadingSources.contains(id) || model.generatingSourceTitles.contains(id)
+        }
+    }
+    func request(provider: AIProvider? = nil) {
+        switch target {
+        case .page(let id): model.requestPageSummary(id: id, provider: provider)
+        case .source(let id):
+            if let source = model.sources.first(where: { $0.id == id }) {
+                model.requestSourceSummary(source, provider: provider)
+            }
+        }
+    }
+    func copy() {
+        guard let summaryText else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(summaryText, forType: .string)
+    }
+}
+
+func aiProviderLabel(_ provider: AIProvider) -> String {
+    provider.displayName
+}
+
+struct AIProviderBadge: View {
+    let provider: AIProvider
+    var body: some View {
+        Label(aiProviderLabel(provider), systemImage: provider == .onDevice ? "desktopcomputer" : "network")
+            .labelStyle(.titleAndIcon)
+            .font(NoemaTypography.metadata)
+            .foregroundStyle(.secondary)
+            .help(provider == .onDevice ? "Runs locally on this Mac" : "Selected text is sent to OpenAI after your approval")
+            .accessibilityLabel("AI provider: \(aiProviderLabel(provider))")
+    }
+}
+
+struct AISummaryProviderDisclosure: View {
+    let provider: AIProvider
+    var body: some View {
+        HStack(spacing: NoemaSpacing.sm) {
+            AIProviderBadge(provider: provider)
+            Text(provider == .onDevice ? "Runs locally" : "Sends selected text after approval")
+                .font(NoemaTypography.metadata).foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Primary command and a secondary native menu with deliberate, one-time alternatives.
+struct AISummaryControls: View {
+    @Bindable var model: AppModel
+    let target: ExternalAISummaryTarget
+    private var presentation: AISummaryPresentation { AISummaryPresentation(model: model, target: target) }
+
+    var body: some View {
+        HStack(spacing: NoemaSpacing.sm) {
+            Button { presentation.request() } label: {
+                Label(presentation.commandTitle, systemImage: "sparkles").labelStyle(.titleAndIcon)
+            }
+            .disabled(presentation.disabled)
+            .help("\(presentation.commandTitle) using \(aiProviderLabel(presentation.provider))")
+            .accessibilityLabel("\(presentation.commandTitle) using \(aiProviderLabel(presentation.provider))")
+            Menu {
+                AISummaryOverrideCommands(model: model, target: target)
+            } label: { Label("Summary options", systemImage: "chevron.down").labelStyle(.iconOnly) }
+            .menuStyle(.borderlessButton).fixedSize()
+            .accessibilityLabel("Summary options and temporary provider choice")
+        }
+    }
+}
+
+struct AISummaryOverrideCommands: View {
+    @Bindable var model: AppModel
+    let target: ExternalAISummaryTarget
+    private var presentation: AISummaryPresentation { AISummaryPresentation(model: model, target: target) }
+
+    var body: some View {
+        Button("\(presentation.commandTitle) on This Mac") { presentation.request(provider: .onDevice) }
+            .disabled(presentation.disabled)
+        Button("\(presentation.commandTitle) with OpenAI…") { presentation.request(provider: .openAI) }
+            .disabled(presentation.disabled)
+        Divider()
+        if presentation.hasSummary {
+            Button("Copy Summary") { presentation.copy() }
+            if case .page(let id) = target {
+                Button("Delete Summary", role: .destructive) { model.deleteAISummary() }
+                    .disabled(model.currentNote?.id != id || model.editingLocked || presentation.isBusy)
+            }
+        }
+        if presentation.canCancel {
+            Button("Cancel Summary") { model.cancelSummary(target: target) }
+        }
+        SettingsLink { Text("Intelligence Settings…") }
+    }
+}
+
+/// Context menus use the same state and dispatch as the document and inspector controls.
+struct AISummaryMenuCommands: View {
+    @Bindable var model: AppModel
+    let target: ExternalAISummaryTarget
+    private var presentation: AISummaryPresentation { AISummaryPresentation(model: model, target: target) }
+
+    var body: some View {
+        Button("\(presentation.commandTitle) · \(aiProviderLabel(presentation.provider))") { presentation.request() }
+            .disabled(presentation.disabled)
+        Menu("Summary options") { AISummaryOverrideCommands(model: model, target: target) }
+    }
+}
+
+struct AISummaryStatus: View {
+    @Bindable var model: AppModel
+    let target: ExternalAISummaryTarget
+    private var statusText: String {
+        if model.cloudSummaryConfirmation?.request.target == target { return "Waiting for OpenAI approval…" }
+        if model.activeSummaryProvider(for: target) == .openAI { return "Preparing or generating with OpenAI…" }
+        if case .source(let id) = target, model.generatingSourceTitles.contains(id),
+           !model.generatingSourceSummaries.contains(id) { return "Generating source title on this Mac…" }
+        return "Generating summary on this Mac…"
+    }
+    var body: some View {
+        if model.isSummarizing(target: target) {
+            HStack(spacing: NoemaSpacing.sm) {
+                ProgressView().controlSize(.mini).accessibilityLabel("Summary generation in progress")
+                Text(statusText)
+                    .font(NoemaTypography.metadata).foregroundStyle(.secondary)
+                if AISummaryPresentation(model: model, target: target).canCancel {
+                    Button("Cancel") { model.cancelSummary(target: target) }
+                        .accessibilityLabel("Cancel summary generation")
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Summary generation status")
+        }
+    }
+}
+
+struct AISummaryProviderNotice: View {
+    @Bindable var model: AppModel
+    var body: some View {
+        if let notice = model.aiProviderNotice {
+            HStack(spacing: NoemaSpacing.sm) {
+                Label(notice, systemImage: "info.circle").font(NoemaTypography.metadata)
+                SettingsLink { Text("Intelligence Settings…") }
+                Button("Dismiss") { model.aiProviderNotice = nil }
+                    .accessibilityLabel("Dismiss AI provider notice")
+            }
+            .padding(NoemaSpacing.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.regularMaterial)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("AI provider needs attention")
+        }
+    }
+}
+
+func aiSummaryProvenanceLabel(provider: String?, model: String?) -> String {
+    guard let provider, !provider.isEmpty else { return "AI-generated on device" }
+    let name = provider == "openAI" ? "OpenAI" : provider
+    guard let model, !model.isEmpty else { return name }
+    return "\(name) · \(model)"
+}
