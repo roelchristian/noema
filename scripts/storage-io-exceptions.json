@@ -1,0 +1,104 @@
+[
+  {
+    "path": "Sources/VaultCore/FileVaultRepository.swift",
+    "statement": "do { data = try Data(contentsOf: coordinatedURL) } catch { failure = error }",
+    "count": 2,
+    "reason": "Selected external/cloud originals or OS-owned NSFileVersion bytes; never canonical vault bytes."
+  },
+  {
+    "path": "Sources/VaultCore/FileVaultRepository.swift",
+    "statement": "do { retryData = try Data(contentsOf: coordinatedURL) } catch { retryFailure = error }",
+    "count": 1,
+    "reason": "Selected external/cloud originals or OS-owned NSFileVersion bytes; never canonical vault bytes."
+  },
+  {
+    "path": "Sources/VaultCore/FileVaultRepository.swift",
+    "statement": "let data = try Self.coordinatedRead(file)",
+    "count": 1,
+    "reason": "Selected external/cloud originals or OS-owned NSFileVersion bytes; never canonical vault bytes."
+  },
+  {
+    "path": "Sources/VaultCore/FileVaultRepository.swift",
+    "statement": "return try coordinatedRead(url)",
+    "count": 1,
+    "reason": "Selected external/cloud originals or OS-owned NSFileVersion bytes; never canonical vault bytes."
+  },
+  {
+    "path": "Sources/VaultCore/FileVaultRepository.swift",
+    "statement": "try contentStore.write(Self.coordinatedRead(version.url), at: \"Conflicts/cloud-\\(UUID().uuidString).md\", condition: .createOnly)",
+    "count": 1,
+    "reason": "Selected external/cloud originals or OS-owned NSFileVersion bytes; never canonical vault bytes."
+  },
+  {
+    "path": "Sources/VaultCore/RecoveryStore.swift",
+    "statement": ".map { try JSONDecoder().decode(DraftRecord.self, from: Data(contentsOf: $0)) }",
+    "count": 1,
+    "reason": "App-local unsaved draft journal; preservation data separate from canonical vault storage."
+  },
+  {
+    "path": "Sources/VaultCore/RecoveryStore.swift",
+    "statement": "if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }",
+    "count": 1,
+    "reason": "App-local unsaved draft journal; preservation data separate from canonical vault storage."
+  },
+  {
+    "path": "Sources/VaultCore/RecoveryStore.swift",
+    "statement": "try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)",
+    "count": 1,
+    "reason": "App-local unsaved draft journal; preservation data separate from canonical vault storage."
+  },
+  {
+    "path": "Sources/VaultCore/RecoveryStore.swift",
+    "statement": "try JSONEncoder().encode(draft).write(to: directory.appendingPathComponent(draft.id.uuidString + \".json\"), options: .atomic)",
+    "count": 1,
+    "reason": "App-local unsaved draft journal; preservation data separate from canonical vault storage."
+  },
+  {
+    "path": "Sources/VaultCore/SQLiteSearchIndex.swift",
+    "statement": "guard sqlite3_open_v2(url.path, &pointer, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let pointer else {",
+    "count": 1,
+    "reason": "Actor-owned rebuildable app-local SQLite database and parent directory."
+  },
+  {
+    "path": "Sources/VaultCore/SQLiteSearchIndex.swift",
+    "statement": "try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)",
+    "count": 1,
+    "reason": "Actor-owned rebuildable app-local SQLite database and parent directory."
+  },
+  {
+    "path": "Sources/VaultCore/VaultCreation.swift",
+    "statement": "defer { try? fm.removeItem(at: staging) }",
+    "count": 1,
+    "reason": "Parent-owned staging creation, whole-vault publication and failed-staging cleanup outside the eventual vault-relative root."
+  },
+  {
+    "path": "Sources/VaultCore/VaultCreation.swift",
+    "statement": "try fm.createDirectory(at: staging, withIntermediateDirectories: false)",
+    "count": 1,
+    "reason": "Parent-owned staging creation, whole-vault publication and failed-staging cleanup outside the eventual vault-relative root."
+  },
+  {
+    "path": "Sources/VaultCore/VaultCreation.swift",
+    "statement": "try fm.moveItem(at: staging, to: destination)",
+    "count": 1,
+    "reason": "Parent-owned staging creation, whole-vault publication and failed-staging cleanup outside the eventual vault-relative root."
+  },
+  {
+    "path": "Sources/noema/AppModel.swift",
+    "statement": "return try FileVaultRepository.coordinatedRead(url)",
+    "count": 1,
+    "reason": "Selected external original read before importing; security scope held by caller."
+  },
+  {
+    "path": "Sources/noema/SourceReader.swift",
+    "statement": "let data = try source.metadata.isLinked ? FileVaultRepository.coordinatedRead(url) : FileVaultRepository.readSourceOriginal(source, root: root)",
+    "count": 1,
+    "reason": "External linked-file read, or native Quick Look URL preview after adapter checksum validation."
+  },
+  {
+    "path": "Sources/noema/SourceReader.swift",
+    "statement": "preview.previewItem = url as NSURL",
+    "count": 1,
+    "reason": "External linked-file read, or native Quick Look URL preview after adapter checksum validation."
+  }
+]

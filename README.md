@@ -111,6 +111,8 @@ Noema no longer creates or writes to `.Trash`: that name was observed losing fil
 
 ## Testing
 
+Build and test wrappers first run the canonical storage boundary guard. Run `python3 scripts/check-storage-boundary.py --selftest` independently; see `STORAGE_ACCESS_AUDIT.md` for permitted I/O exceptions and review requirements. Vault storage remains plaintext v1.
+
 ```sh
 ./scripts/test.sh
 VAULT_BENCHMARK=1 ./scripts/test.sh --filter benchmarkFiveThousandEntries

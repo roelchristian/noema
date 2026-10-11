@@ -1222,15 +1222,14 @@ struct EditorAction: Equatable {
             }
         }
     }
-    private func sourceSummaryContent(_ source: SourceRecord, root: URL) async throws -> String {
+    func sourceSummaryContent(_ source: SourceRecord, root: URL) async throws -> String {
         return try await Task.detached {
             if !source.body.isEmpty {
                 let ext = URL(fileURLWithPath: source.metadata.originalFilename).pathExtension.lowercased()
                 let content = ["html", "htm"].contains(ext) ? source.body.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression) : source.body
                 return BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(content).withoutAISummary))
             }
-            let url = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased()).appendingPathComponent(source.metadata.storedFilename)
-            let data = try source.metadata.linkedBookmark.map(FileVaultRepository.readLinkedSource) ?? FileVaultRepository.coordinatedRead(url)
+            let data = try FileVaultRepository.readSourceOriginal(source, root: root)
             if source.metadata.originalFilename.lowercased().hasSuffix(".pdf"), let pdf = PDFDocument(data: data) { return pdf.string ?? "" }
             return ""
         }.value
