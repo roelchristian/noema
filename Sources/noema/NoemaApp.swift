@@ -14,7 +14,8 @@ import NoemaBrand
                 .task { delegate.model = model; await model.restore() }
                 .onOpenURL { model.openBlockURL($0) }
         }
-        .windowStyle(.hiddenTitleBar)
+        // Let macOS own the titlebar, traffic lights, and full-screen transitions.
+        .windowStyle(.titleBar)
         .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(replacing: .appInfo) {
