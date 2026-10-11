@@ -1,0 +1,9 @@
+let descriptor = Darwin.open(canonicalPath, O_RDONLY)
+let reader = Darwin.read
+let count = reader(descriptor, buffer, size)
+let stream = fopen(canonicalPath, "r")
+let bytes = fread(buffer, 1, size, stream)
+let mapped = mmap(nil, size, PROT_READ, MAP_PRIVATE, descriptor, 0)
+let another = open(canonicalPath, O_WRONLY | O_CREAT, 0o600)
+let renamed = rename(canonicalPath, destinationPath)
+let removed = unlink(canonicalPath)

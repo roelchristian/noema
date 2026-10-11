@@ -54,7 +54,7 @@ extension AppModel {
             presentationPending: isChoosingVault || isChoosingSource || showVaultCreation || showTopicPage || showURLSource || showPasteSource || showRecovery || showIssues,
             documentSelected: currentNote != nil || currentSource != nil,
             pageSelected: currentNote != nil,
-            hasRecovery: !recoveredDrafts.isEmpty,
+            hasRecovery: hasRecoveryEntries,
             hasNotices: !issues.isEmpty
         )
     }

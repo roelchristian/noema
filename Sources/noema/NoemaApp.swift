@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import NoemaBrand
+import VaultCore
 
 @main struct NoemaApp: App {
     @State private var model = AppModel()
@@ -107,6 +108,12 @@ import NoemaBrand
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var model: AppModel?
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Task.detached(priority: .utility) {
+            // Best effort and bounded; an unavailable temporary directory must not block launch.
+            try? SourcePreviewDirectory.application.cleanupOrphans()
+        }
+    }
     func applicationDidResignActive(_ notification: Notification) {
         model?.appIsActive = false
         guard let model, model.isVaultAvailable else { return }

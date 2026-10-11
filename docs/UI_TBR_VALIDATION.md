@@ -1,6 +1,6 @@
 # UI.TBR08 — Native window integration validation
 
-Branch: `dev/ui-native-toolbar`. Baseline: `0046a9e`. Validation date: 12 October 2026 (Asia/Manila). This report separates source review, automated regressions and interactive macOS evidence. A source assertion or passing model test does not certify an accessibility or window interaction check.
+Branch: `dev/ui-native-toolbar`. Native-window baseline: `0046a9e`; upstream integration target: `origin/main` at `a45ffc6`. Validation date: 12 October 2026 (Asia/Manila). This report separates source review, automated regressions and interactive macOS evidence. A source assertion or passing model test does not certify an accessibility or window interaction check.
 
 ## Before and after
 
@@ -19,35 +19,40 @@ Branch: `dev/ui-native-toolbar`. Baseline: `0046a9e`. Validation date: 12 Octobe
 
 - Reviewed the integrated changes against `0046a9e`, including scene ownership, standard controls, command admission, pane preferences/native split persistence, geometry restoration and contextual identity.
 - Main-window probes operate on their attached window and do not mutate whichever auxiliary window happens to be key. Source-reader, About and Settings window definitions remain outside the geometry controller.
-- Storage/session APIs and storage-boundary allowlist are preserved. New title/pane/toolbar evaluation uses existing metadata and presentation state, without decoding source bodies or adding canonical byte access.
+- The native-window feature preserves storage/session interfaces and adds no storage-boundary exceptions. New title/pane/toolbar evaluation uses existing metadata and presentation state, without decoding source bodies or adding canonical byte access. The merge retains upstream D02 recovery-listing/preview-cleanup changes and their reviewed storage-boundary exceptions.
 - `SourcesLibraryView`, `SourcesTablePresentation` and their metadata/status observation bridges are unchanged. The center retains the existing 520 pt Sources and 420 pt document minimums, with inherited pane layout animation disabled.
 - Existing meaningful regression tests cover the new policies. UI.TBR08 adds this integration report and corrects an existing Sources test's timing assumption while retaining its assertions.
 - Final independent source review has no unresolved actionable implementation findings. Required unperformed native/accessibility checks are recorded below.
+
+Storage-boundary review: **N/A for new construction, canonical-access or I/O-exception changes relative to `origin/main` at `a45ffc6`**. Independent code inspection traced shared commands to the existing guarded `AppModel` operations; pane preferences use dedicated `UserDefaults` keys and frames use native window persistence, without introducing vault byte access or adapter construction. The incoming launch call to `SourcePreviewDirectory.application.cleanupOrphans()` remains in `AppDelegate`, using the existing bounded temporary-preview owner and retaining reader/lock/switch cleanup policy. Upstream storage construction, canonical APIs, reviewed exceptions and preview-cleanup targets are unchanged by this feature. This conclusion comes from source inspection, not just the lexical guard.
 
 ## Integration findings
 
 - Independent review identified a narrow locked-window layout risk when four actions are visible. The integration uses a horizontal/vertical `ViewThatFits` fallback. It also applies shared command availability to the sidebar footer's Trash, recovery and notices buttons.
 - Initial native launch reached the welcome screen, but opening the demo vault raised an AppKit exception from the split persistence probe's holding-priority configuration. AppKit prohibits direct holding-priority mutation when an `NSSplitViewController` owns the split. The integration preserves the controller's policy and delegate; post-fix native workspace reopening succeeded. A regression test configures a real controller-backed split and verifies delegate/priority preservation and stored width restoration.
 - The first full suite exposed six assertion failures in the existing Sources unavailable-content test, which passed when run alone. A concurrent watcher refresh can make `await model.refresh()` coalesce a later pass instead of waiting for publication. The test now awaits the expected unavailable/removed content predicates before mutating its fixture again, preserving every original assertion and the production refresh contract. The final full suite passes.
+- `origin/main` advanced to `a45ffc6` during implementation, adding isolated damaged-recovery listing and protected source-preview cleanup. The merge preserves native toolbar/header ownership alongside upstream damaged-entry presentation and preview lifecycle behaviour. Sources navigation conflicts contained equivalent refresh waits; the stronger publication predicates are retained. Recovery availability must include damaged entries even when there are no valid drafts. The merged full suite and storage-boundary guard pass, including a new damaged-only recovery command/lock/unlock regression.
 
 ## Automated regression results
 
-The final full run passes **258 tests across 26 suites in 23.844 seconds**, with the Sources benchmark enabled. Output was recorded at `/private/tmp/noema-tbr-complete-tests.log` during this session.
+Before merging `a45ffc6`, the full run passed **258 tests across 26 suites in 23.844 seconds**, with the Sources benchmark enabled. Output was recorded at `/private/tmp/noema-tbr-complete-tests.log` during this session. The final merged branch passes **273 tests across 29 suites in 68.324 seconds**. Its benchmark-enabled output is recorded at `/private/tmp/noema-tbr-rebased-tests.log`.
 
 | Check | Coverage | Result |
 | --- | --- | --- |
-| `SOURCES_BENCHMARK=1 zsh scripts/test.sh` | Complete VaultCore, NoemaBrand and NoemaEditor suites, including D01 storage and D02 lifecycle admission/draining/cancellation/stale-result coverage. | Pass: 258 tests / 26 suites |
-| `python3 scripts/check-storage-boundary.py --selftest` | Canonical I/O ownership and reviewed exceptional access, plus guard fixtures. | Pass: 11 guard cases; 22 reviewed exceptions |
-| Sources benchmark in full run | Sixteen 133,200-byte source fixtures, metadata-only rows and 1,000 unchanged presentation synchronizations; benchmark is disabled without `SOURCES_BENCHMARK=1`. | Pass: 16 constructed rows; no rebuilds for unchanged synchronizations |
-| `git diff --check` | Patch whitespace validation. | Pass |
+| `SOURCES_BENCHMARK=1 zsh scripts/test.sh` | Complete VaultCore, NoemaBrand and NoemaEditor suites, including D01 storage and D02 lifecycle admission/draining/cancellation/stale-result coverage. | Merged pass: 273 tests / 29 suites |
+| `python3 scripts/check-storage-boundary.py --selftest` | Canonical I/O ownership and reviewed exceptional access, plus guard fixtures. | Merged pass: 11 regression + 18 adversarial cases; 40 reviewed exceptions |
+| Sources benchmark in full run | Sixteen 133,200-byte source fixtures, metadata-only rows and 1,000 unchanged presentation synchronizations; benchmark is disabled without `SOURCES_BENCHMARK=1`. | Merged pass: 16 constructed rows; no rebuilds for unchanged synchronizations |
+| `git diff --check` | Patch whitespace validation. | Merged pass |
 
 New regression coverage is in `WindowGeometryTests`, `WorkspaceCommandTests`, `WorkspacePaneStateTests` and `WorkspaceWindowTitleTests`. It checks separate profiles, full-screen deferred presentation policy, offscreen/disconnected screen clamping, every lifecycle phase, stale manager/lease admission, duplicate lifecycle reservation, independent persisted pane intent, width thresholds, invalid preferences, controller-owned native split configuration, selection-derived titles and withholding private document identity during revocation. It does not simulate native full-screen, divider dragging, VoiceOver announcements or actual keyboard focus.
 
-The benchmark measured 8.832 s for the legacy excerpt decode comparison, 8.883 ms for metadata row creation, 6.258 ms for initial table preparation, and 12.995 ms for 1,000 unchanged synchronizations. These are measurements from this run, not a comparison of application frame rates or a release performance threshold.
+The pre-merge benchmark measured 8.832 s for the legacy excerpt decode comparison, 8.883 ms for metadata row creation, 6.258 ms for initial table preparation, and 12.995 ms for 1,000 unchanged synchronizations. The merged rerun measured 41.825 s, 24.376 ms, 15.996 ms and 24.041 ms respectively. These are measurements from these runs, not a comparison of application frame rates or a release performance threshold.
 
 ## Native macOS verification matrix
 
 Interactive validation uses a separate QA application identity and isolated test vault IDs/local state. Initial launch checks used a copied `Examples/Demo Vault`; published screenshots use a synthetic **Toolbar QA Vault** with two fixture pages. Baseline statements above come from source review; no baseline runtime screenshots are claimed.
+
+The interactive results/screenshots below were captured at native-window integration `73e37d0`, before the upstream D02 merge. Resolved-source review confirms the native layout/action ownership remains intact; it does not substitute for a fresh merged-build interaction check.
 
 Light capture uses `NSRequiresAquaSystemAppearance=true` in the temporary QA bundle, followed by re-signing/relaunching that bundle. Global appearance preferences were not changed. Native checks combine interactive actions and macOS accessibility-tree observations; accessibility-tree evidence is not a VoiceOver test.
 
@@ -77,4 +82,4 @@ Light capture uses `NSRequiresAquaSystemAppearance=true` in the temporary QA bun
 
 [Light workspace screenshot](screenshots/UI_TBR_light_workspace.png) and [dark workspace screenshot](screenshots/UI_TBR_dark_workspace.png) show the same synthetic page, native toolbar/title/subtitle and three panes. The purple pill at the left of the titlebar is the macOS screen-capture indicator. Standard window-control behaviour is assessed separately from these screenshots.
 
-The implementation and automated regressions are ready for a draft integration PR. UI.TBR08 accessibility/platform acceptance remains incomplete: the pending and partial rows above require the remaining native window, Sources UI and accessibility checks before the PR is promoted as fully verified.
+The native implementation has no unresolved source-review finding; merged-branch automated validation is pending. UI.TBR08 accessibility/platform acceptance remains incomplete: the pending and partial rows above require the remaining native window, Sources UI and accessibility checks before the PR is promoted as fully verified.

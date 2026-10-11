@@ -515,9 +515,9 @@ struct ContentView: View {
                     Button { model.performWorkspaceCommand(.showTrash) } label: {
                         Label(model.trashedPages.isEmpty ? "Trash" : "Trash (\(model.trashedPages.count.formatted()))", systemImage: "trash")
                     }.disabled(!model.canPerformWorkspaceCommand(.showTrash))
-                    if !model.recoveredDrafts.isEmpty {
+                    if model.hasRecoveryEntries {
                         Button { model.performWorkspaceCommand(.recovery) } label: {
-                            Label("\(model.recoveredDrafts.count) recoverable draft(s)", systemImage: "clock.arrow.circlepath")
+                            Label("\(model.recoveredDrafts.count) recoverable draft(s)" + (model.damagedRecoveryEntries.isEmpty ? "" : " · \(model.damagedRecoveryEntries.count) damaged"), systemImage: "clock.arrow.circlepath")
                         }.disabled(!model.canPerformWorkspaceCommand(.recovery))
                     }
                     if !model.issues.isEmpty {
@@ -1189,7 +1189,7 @@ struct ContentView: View {
                     workspaceCommandButton("Refresh from Files", .refresh)
                     workspaceCommandButton("Trash", .showTrash)
                     workspaceCommandButton("Vault Notices (\(model.issues.count))", .notices)
-                    workspaceCommandButton("Recover Drafts (\(model.recoveredDrafts.count))", .recovery)
+                    workspaceCommandButton("Recover Drafts (\(model.recoveredDrafts.count))" + (model.damagedRecoveryEntries.isEmpty ? "" : " · \(model.damagedRecoveryEntries.count) damaged"), .recovery)
                     Divider()
                     workspaceCommandButton("Lock Vault", .lock)
                     workspaceCommandButton("Close Vault", .close)
@@ -1333,15 +1333,26 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Recoverable drafts").font(.title2.bold())
             Text("Create a new page from a draft to keep the disk version intact.").foregroundStyle(theme.text())
-            List(model.recoveredDrafts) { draft in
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(draft.title).font(.headline)
-                    Text(draft.body.prefix(240)).font(.caption).foregroundStyle(theme.text()).textSelection(.enabled)
-                    HStack {
-                        Button("Recover as new page") { model.saveDraftAsNewPage(draft) }
-                        Button("Discard draft", role: .destructive) { model.discardRecovery(draft) }
-                    }
-                }.padding(.vertical, 8)
+            List {
+                ForEach(model.recoveredDrafts) { draft in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(draft.title).font(.headline)
+                        Text(draft.body.prefix(240)).font(.caption).foregroundStyle(theme.text()).textSelection(.enabled)
+                        HStack {
+                            Button("Recover as new page") { model.saveDraftAsNewPage(draft) }
+                            Button("Discard draft", role: .destructive) { model.discardRecovery(draft) }
+                        }
+                    }.padding(.vertical, 8)
+                }
+                ForEach(model.damagedRecoveryEntries) { entry in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Damaged recovery entry", systemImage: "exclamationmark.triangle").font(.headline)
+                        Text(entry.fileName).font(.caption).textSelection(.enabled)
+                        Text(entry.message).font(.caption).foregroundStyle(theme.text())
+                        Text("The original file is preserved. Other drafts can still be recovered.").font(.caption)
+                        Button("Show preserved file") { NSWorkspace.shared.activateFileViewerSelecting([entry.fileURL]) }
+                    }.padding(.vertical, 8)
+                }
             }
             Button("Done") { model.showRecovery = false }.keyboardShortcut(.cancelAction)
         }.padding(24).frame(width: 580, height: 480)

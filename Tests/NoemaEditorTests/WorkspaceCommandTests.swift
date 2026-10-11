@@ -111,6 +111,46 @@ extension VaultUIIntegrationTests {
         }
 
         @Test @MainActor
+        func damagedOnlyRecoveryRemainsAvailableThroughSharedCommandAndUnlock() async throws {
+            let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaDamagedCommand-\(UUID())")
+            let root = base.appendingPathComponent("Vault")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: base) }
+            let repository = try FileVaultRepository.open(root: root, create: true)
+            let local = base.appendingPathComponent("Local")
+            let drafts = local.appendingPathComponent("KnowledgeVault/\(repository.manifest.id.uuidString)/Drafts")
+            _ = try RecoveryStore(unguardedTestingDirectory: drafts)
+            let damagedFile = drafts.appendingPathComponent(UUID().uuidString + ".json")
+            let damagedBytes = Data("{\"body\":\"Incomplete unsaved draft".utf8)
+            try damagedBytes.write(to: damagedFile)
+            let model = AppModel()
+            model.localStorageRoot = local
+            model.persistSecurityScopedBookmark = false
+            await model.open(root, create: false)
+            #expect(model.isVaultAvailable && model.recoveredDrafts.isEmpty)
+            #expect(model.damagedRecoveryEntries.count == 1)
+            #expect(model.canPerformWorkspaceCommand(.recovery))
+            model.performWorkspaceCommand(.recovery)
+            #expect(model.showRecovery)
+            model.showRecovery = false
+            let lock = try #require(model.performWorkspaceCommand(.lock))
+            await lock.value
+            #expect(!model.canPerformWorkspaceCommand(.recovery))
+            #expect(model.damagedRecoveryEntries.isEmpty)
+            let unlock = try #require(model.performWorkspaceCommand(.unlock))
+            await unlock.value
+            #expect(model.recoveredDrafts.isEmpty && model.damagedRecoveryEntries.count == 1)
+            #expect(model.canPerformWorkspaceCommand(.recovery))
+            model.performWorkspaceCommand(.recovery)
+            #expect(model.showRecovery)
+            #expect(try Data(contentsOf: damagedFile) == damagedBytes)
+            model.showRecovery = false
+            let close = try #require(model.performWorkspaceCommand(.close))
+            await close.value
+            #expect(!model.canPerformWorkspaceCommand(.recovery))
+        }
+
+        @Test @MainActor
         func sharedCommandsPreserveNavigationAndReserveLifecycleOnce() async throws {
             let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaSharedCommands-\(UUID())")
             let root = base.appendingPathComponent("Vault")
