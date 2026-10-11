@@ -130,6 +130,8 @@ struct SourcesNavigationIntegrationTests {
         model.sourceAvailability[source.id] = "Available"
         store.unavailable.withLock { $0 = true }
         await model.refresh()
+        // A watcher refresh may already be running; refresh() queues another pass and returns.
+        await waitUntil { model.currentSource?.contentState == .unavailable }
         #expect(model.currentSource?.contentState == .unavailable)
         #expect(model.body.isEmpty && model.preview.isEmpty && model.wordCount == 0)
         #expect(model.sourceAvailability[source.id] == nil)
@@ -141,6 +143,7 @@ struct SourcesNavigationIntegrationTests {
         let original = "Sources/" + source.id.uuidString.lowercased() + "/" + source.metadata.storedFilename
         try store.base.write(Data("Corruption".utf8), at: original, condition: .replace(expected: bytes))
         await model.refresh()
+        await waitUntil { model.sources.isEmpty && model.currentSource == nil }
         #expect(model.sources.isEmpty && model.currentSource == nil && model.selectedID == nil)
         #expect(model.body.isEmpty && model.preview.isEmpty && model.sourceAvailability.isEmpty)
         #expect(await model.closeVault())

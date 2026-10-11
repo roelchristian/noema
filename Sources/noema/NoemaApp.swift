@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import NoemaBrand
+import VaultCore
 
 @main struct NoemaApp: App {
     @State private var model = AppModel()
@@ -42,7 +43,7 @@ import NoemaBrand
                 Button("Paste a Source…") { model.showPasteSource = true }.disabled(!model.isVaultAvailable)
                 Button("Reveal Vault in Finder") { model.revealVault() }.disabled(!model.isVaultAvailable)
                 Button("Refresh from Files") { Task { await model.refresh() } }.disabled(!model.isVaultAvailable)
-                Button("Recover Drafts…") { model.showRecovery = true }.disabled(!model.isVaultAvailable || model.recoveredDrafts.isEmpty)
+                Button("Recover Drafts…") { model.showRecovery = true }.disabled(!model.isVaultAvailable || !model.hasRecoveryEntries)
                 Divider()
                 if model.isLocked {
                     Button("Unlock Vault") { Task { await model.unlockVault() } }
@@ -87,6 +88,12 @@ import NoemaBrand
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var model: AppModel?
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Task.detached(priority: .utility) {
+            // Best effort and bounded; an unavailable temporary directory must not block launch.
+            try? SourcePreviewDirectory.application.cleanupOrphans()
+        }
+    }
     func applicationDidResignActive(_ notification: Notification) {
         model?.appIsActive = false
         guard let model, model.isVaultAvailable else { return }

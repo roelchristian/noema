@@ -1,0 +1,6 @@
+let bytes = try contentStore.read(at: "Wiki/note.md")
+try contentStore.write(bytes, at: "Wiki/copy.md", condition: .createOnly)
+try contentStore.createDirectory(at: "Wiki")
+try store.createDirectory(at: name)
+try base.createDirectory(at: path)
+rename(source)

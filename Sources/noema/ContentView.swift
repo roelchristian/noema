@@ -446,9 +446,9 @@ struct ContentView: View {
                     Button { switchSidebarScope(.trash) } label: {
                         Label(model.trashedPages.isEmpty ? "Trash" : "Trash (\(model.trashedPages.count.formatted()))", systemImage: "trash")
                     }
-                    if !model.recoveredDrafts.isEmpty {
+                    if model.hasRecoveryEntries {
                         Button { model.showRecovery = true } label: {
-                            Label("\(model.recoveredDrafts.count) recoverable draft(s)", systemImage: "clock.arrow.circlepath")
+                            Label("\(model.recoveredDrafts.count) recoverable draft(s)" + (model.damagedRecoveryEntries.isEmpty ? "" : " · \(model.damagedRecoveryEntries.count) damaged"), systemImage: "clock.arrow.circlepath")
                         }
                     }
                     if !model.issues.isEmpty {
@@ -1141,7 +1141,7 @@ struct ContentView: View {
                         Button { model.revealVault() } label: { Label("Reveal vault in Finder", systemImage: "folder") }
                         Button { Task { await model.refresh() } } label: { Label("Refresh from files", systemImage: "arrow.clockwise") }
                         Button("Vault notices (\(model.issues.count))") { model.showIssues = true }
-                        Button("Recover drafts (\(model.recoveredDrafts.count))") { model.showRecovery = true }.disabled(model.recoveredDrafts.isEmpty)
+                        Button("Recover drafts (\(model.recoveredDrafts.count))" + (model.damagedRecoveryEntries.isEmpty ? "" : " · \(model.damagedRecoveryEntries.count) damaged")) { model.showRecovery = true }.disabled(!model.hasRecoveryEntries)
                         Divider()
                         Button { Task { _ = await model.lockVault() } } label: { Label("Lock vault", systemImage: "lock") }
                         Button { Task { _ = await model.closeVault() } } label: { Label("Close vault", systemImage: "xmark.circle") }
@@ -1257,15 +1257,26 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Recoverable drafts").font(.title2.bold())
             Text("Create a new page from a draft to keep the disk version intact.").foregroundStyle(theme.text())
-            List(model.recoveredDrafts) { draft in
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(draft.title).font(.headline)
-                    Text(draft.body.prefix(240)).font(.caption).foregroundStyle(theme.text()).textSelection(.enabled)
-                    HStack {
-                        Button("Recover as new page") { model.saveDraftAsNewPage(draft) }
-                        Button("Discard draft", role: .destructive) { model.discardRecovery(draft) }
-                    }
-                }.padding(.vertical, 8)
+            List {
+                ForEach(model.recoveredDrafts) { draft in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(draft.title).font(.headline)
+                        Text(draft.body.prefix(240)).font(.caption).foregroundStyle(theme.text()).textSelection(.enabled)
+                        HStack {
+                            Button("Recover as new page") { model.saveDraftAsNewPage(draft) }
+                            Button("Discard draft", role: .destructive) { model.discardRecovery(draft) }
+                        }
+                    }.padding(.vertical, 8)
+                }
+                ForEach(model.damagedRecoveryEntries) { entry in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Damaged recovery entry", systemImage: "exclamationmark.triangle").font(.headline)
+                        Text(entry.fileName).font(.caption).textSelection(.enabled)
+                        Text(entry.message).font(.caption).foregroundStyle(theme.text())
+                        Text("The original file is preserved. Other drafts can still be recovered.").font(.caption)
+                        Button("Show preserved file") { NSWorkspace.shared.activateFileViewerSelecting([entry.fileURL]) }
+                    }.padding(.vertical, 8)
+                }
             }
             Button("Done") { model.showRecovery = false }.keyboardShortcut(.cancelAction)
         }.padding(24).frame(width: 580, height: 480)
