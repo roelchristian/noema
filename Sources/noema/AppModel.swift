@@ -202,6 +202,10 @@ struct EditorAction: Equatable {
     /// Typed manager failures retained at the UI boundary, including rollback failures.
     private(set) var sessionTransitionErrors: [VaultSessionError] = []
     private var lifecycleAction: String?
+    private var lifecycleActionID: UUID?
+    private(set) var vaultAccessAuthenticationRequired = false
+    private(set) var isVaultAuthenticationPending = false
+    @ObservationIgnored private nonisolated(unsafe) var authenticationObservationTask: Task<Void, Never>?
     var workspaceCommandPending = false
     private(set) var isChoosingVault = false
     private(set) var isChoosingSource = false
@@ -272,6 +276,8 @@ struct EditorAction: Equatable {
         self.activeLease = repository?.sessionLease
         let initialState = sessionManager.accessGate.currentState
         self.sessionState = initialState
+        self.vaultAccessAuthenticationRequired = initialState.vaultID.map { sessionManager.accessAuthenticationRequired(for: $0) } ?? false
+        self.isVaultAuthenticationPending = sessionManager.isAuthenticationPending
         if case .locked(_, let lockedRoot, let name, _) = initialState {
             self.lockedVaultURL = lockedRoot
             self.vaultName = name
@@ -280,10 +286,20 @@ struct EditorAction: Equatable {
             self.vaultName = session.vaultName
         }
         startObservingSessionState()
+        authenticationObservationTask = Task { @MainActor [weak self, sessionManager] in
+            let stream = await sessionManager.authenticationObservations()
+            for await pending in stream {
+                guard let self, !Task.isCancelled else { break }
+                // Ignore superseded pending emissions, just as session observations do.
+                guard pending == sessionManager.isAuthenticationPending else { continue }
+                self.isVaultAuthenticationPending = pending
+            }
+        }
     }
 
     deinit {
         sessionObservationTask?.cancel()
+        authenticationObservationTask?.cancel()
     }
 
     private func startObservingSessionState() {
@@ -314,6 +330,7 @@ struct EditorAction: Equatable {
             return
         }
         sessionState = nextState
+        vaultAccessAuthenticationRequired = nextState.vaultID.map { sessionManager.accessAuthenticationRequired(for: $0) } ?? false
         switch nextState {
         case .closed:
             let hadActiveResources = root != nil || lockedVaultURL != nil || activeSession != nil || activeLease != nil || repository != nil || index != nil || recovery != nil || watcher != nil || !notes.isEmpty || !sources.isEmpty || currentNote != nil || currentSource != nil
@@ -1007,16 +1024,18 @@ struct EditorAction: Equatable {
             completion(url)
         }
     }
-    func createVault(parent: URL, name: String, encryptionRequested: Bool) async throws {
+    func createVault(parent: URL, name: String, encryptionRequested: Bool, accessAuthenticationRequested: Bool = false) async throws {
         // A UI bypass must never silently create plaintext for an encrypted request.
         guard !encryptionRequested else { throw VaultError.invalid(VaultCreation.encryptionUnavailable) }
         guard await flushPendingEdits() else { throw VaultError.invalid("Save the current page before creating a vault.") }
         let hasScope = securityScopeAcquirer(parent)
         defer { if hasScope { securityScopeReleaser(parent) } }
         let storageProvider = self.storageProvider
-        let url = try await Task.detached {
-            try FileVaultRepository.createNewVault(parent: parent, name: name, encryptionRequested: encryptionRequested, storageProvider: storageProvider)
-        }.value
+        let url = try await sessionManager.createVault(
+            parent: parent, name: name, encryptionRequested: encryptionRequested,
+            accessAuthenticationRequested: accessAuthenticationRequested,
+            storageProvider: storageProvider
+        )
         await open(url, create: false)
         if root == url { showVaultCreation = false }
         else { throw VaultError.storage(errorMessage ?? "The vault was created but could not be opened. Use Open Vault to retry.") }
@@ -1058,8 +1077,39 @@ struct EditorAction: Equatable {
             return false
         }
         lifecycleAction = action
+        lifecycleActionID = UUID()
         sessionTransitionErrors = []
         return true
+    }
+
+    /// Cancels using central truth even if the pending observation has not reached the UI yet.
+    func cancelVaultAuthentication() async {
+        let actionID = lifecycleActionID
+        let cancelled = await sessionManager.cancelAuthentication()
+        if cancelled, let actionID {
+            while lifecycleActionID == actionID { await Task.yield() }
+        }
+        isVaultAuthenticationPending = sessionManager.isAuthenticationPending
+        if lifecycleActionID == nil { busy = false }
+    }
+
+    @discardableResult
+    func setVaultAccessAuthenticationRequired(_ required: Bool) async -> Bool {
+        guard let session = sessionManager.accessGate.currentState.activeSession,
+              beginLifecycleAction("changeVaultAccessPolicy") else { return false }
+        defer { lifecycleAction = nil; lifecycleActionID = nil }
+        errorMessage = nil
+        do {
+            try await sessionManager.setAccessAuthenticationRequired(
+                required, expectedSession: session, storageProvider: storageProvider
+            )
+            try requireLifecycleState(.open, action: "changeVaultAccessPolicy", session: session)
+            vaultAccessAuthenticationRequired = sessionManager.accessAuthenticationRequired(for: session.vaultID)
+            return true
+        } catch {
+            presentLifecycleFailure(error)
+            return false
+        }
     }
 
     private func requireLifecycleState(_ phase: VaultSessionPhase, action: String, session: VaultSession? = nil) throws {
@@ -1097,7 +1147,7 @@ struct EditorAction: Equatable {
            let currentRoot = root?.standardizedFileURL.resolvingSymlinksInPath(),
            currentRoot == normalizedTarget {
             guard beginLifecycleAction("open") else { return }
-            defer { lifecycleAction = nil }
+            defer { lifecycleAction = nil; lifecycleActionID = nil }
             guard await flushPendingEdits() else { return }
             await refresh()
             if let url = pendingBlockURL { pendingBlockURL = nil; openBlockURL(url) }
@@ -1116,7 +1166,7 @@ struct EditorAction: Equatable {
         }
 
         guard beginLifecycleAction("open") else { return }
-        defer { lifecycleAction = nil }
+        defer { lifecycleAction = nil; lifecycleActionID = nil }
         if !(await flushPendingEdits()) { return }
         busy = true; errorMessage = nil
         if !isLocked { needsPermissionReauthorization = false }
@@ -1229,7 +1279,7 @@ struct EditorAction: Equatable {
     @discardableResult
     func lockVault(cancelPreCommitSaves: Bool = false) async -> Bool {
         guard beginLifecycleAction("lock") else { return false }
-        defer { lifecycleAction = nil }
+        defer { lifecycleAction = nil; lifecycleActionID = nil }
         if sessionManager.accessGate.currentState.phase == .locked {
             applyObservedSessionState(sessionManager.accessGate.currentState)
             return true
@@ -1302,7 +1352,7 @@ struct EditorAction: Equatable {
     @discardableResult
     func unlockVault(using overrideURL: URL? = nil) async -> Bool {
         guard beginLifecycleAction("unlock") else { return false }
-        defer { lifecycleAction = nil }
+        defer { lifecycleAction = nil; lifecycleActionID = nil }
         let initialLockedRoot: URL? = {
             if let overrideURL { return overrideURL }
             if let lockedVaultURL { return lockedVaultURL }
@@ -1416,8 +1466,9 @@ struct EditorAction: Equatable {
 
     @discardableResult
     func closeVault(force: Bool = false) async -> Bool {
+        if sessionManager.isAuthenticationPending { await cancelVaultAuthentication() }
         guard beginLifecycleAction("close") else { return false }
-        defer { lifecycleAction = nil }
+        defer { lifecycleAction = nil; lifecycleActionID = nil }
         if !force, isVaultAvailable {
             guard await flushPendingEdits() else { return false }
         }
