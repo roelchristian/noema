@@ -31,6 +31,7 @@ private final class ControlledSearchIndex: SearchIndex, Sendable {
     func backlinks(to note: NoteRecord) async throws -> [UUID] { try await base.backlinks(to: note) }
 }
 
+extension VaultUIIntegrationTests {
 struct StaleCompletionRaceTests {
     private func makeTempVault(name: String = "Vault") throws -> URL {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("noema-stale-race-\(UUID().uuidString)", isDirectory: true)
@@ -235,4 +236,5 @@ struct StaleCompletionRaceTests {
         await model.closeVault()
         #expect(await model.sessionManager.state == .closed && model.notes.isEmpty)
     }
+}
 }

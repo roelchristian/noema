@@ -5,6 +5,7 @@ import Testing
 @testable import VaultCore
 @testable import noema
 
+extension VaultUIIntegrationTests {
 @Suite(.serialized)
 struct AppModelSessionIntegrationTests {
     private func makeTempVault(name: String = "Vault") throws -> URL {
@@ -466,6 +467,7 @@ struct AppModelSessionIntegrationTests {
             _ = try await retainedRecovery.drafts()
         }
     }
+}
 }
 
 private final class LockFlag: @unchecked Sendable {

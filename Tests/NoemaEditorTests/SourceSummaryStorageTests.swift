@@ -5,6 +5,7 @@ import Testing
 import VaultCore
 @testable import noema
 
+extension VaultUIIntegrationTests {
 struct SourceSummaryStorageTests {
     @Test @MainActor func importedSummaryRejectsChangedOriginalAndUnsafeFilename() async throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -28,6 +29,7 @@ struct SourceSummaryStorageTests {
         unsafe.metadata.storedFilename = "../../vault.json"
         await #expect(throws: VaultError.self) { _ = try await model.sourceSummaryContent(unsafe, root: root) }
     }
+}
 }
 
 private final class SummaryStoreProbe: VaultContentStore {
