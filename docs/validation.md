@@ -304,7 +304,7 @@ Git history retains provenance, and new captures remain local/PR attachments.
 | --- | --- |
 | Light/dark workspace | Synthetic page toolbar/title/three-pane clearance reviewed in final merged build. |
 | Welcome and relaunch | 680×480 welcome observed; restored workspace frame and 265 pt sidebar verified. Inspector widths/manual divider edits remain unverified. |
-| Search/sidebar/inspector shortcuts | ⇧⌘F/⌘P reveal/focus search; ⌃⌘S toggles sidebar; ⌥⌘I toggles inspector and disables in library context. Full keyboard traversal/focus traps still pending. |
+| Search/sidebar/inspector shortcuts | Earlier ⇧⌘F/⌘P sidebar focus acceptance is superseded by UI.SR toolbar search/Quick Open. Live toolbar focus, result traversal, dismissal/restoration and narrow-window presentation remain pending; UI validation/screenshots were explicitly excluded from UI.SR implementation. Standing ⌃⌘S sidebar/⌥⌘I inspector checks retain their prior scope. |
 | Lifecycle identity | ⌥⌘L locks to Vault Locked, Unlock returns to Pages, ⇧⌘W closes to compact welcome without previous document identity. Source/other-library contexts pending. |
 | Standard controls/long title | Native controls exposed once; full long title retained in accessibility tree. Complete close/minimize/zoom/activation cycle and small-width truncation remain pending. |
 | Full screen | Enter/exit and lock/unlock exercised without crash/overlap; exit restoration observed. Full resize/pane-toggle/frame-corruption matrix pending. |
