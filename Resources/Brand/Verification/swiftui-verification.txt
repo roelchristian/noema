@@ -1,0 +1,11 @@
+Isolated SwiftUI ImageRenderer verification using the production NoemaMark.
+These images are branding fragments, not running-application screenshots.
+50 pixel assertions passed at 20/64/96-point glyphs and 76/116-point identity tiles:
+- Identical mark pixels across every ThemePreference in light and dark appearances.
+Contact sheets show the welcome identity and 20-point sidebar glyph on every
+interface palette background, including the native system window background.
+No application was launched and no appearance defaults were modified.
+SwiftUI's colourSchemeContrast and accessibilityReduceTransparency are read-only
+environment values, so this isolated harness does not simulate their system toggles.
+Increase Contrast colour guarantees are verified separately by BrandPaletteTests;
+NoemaMark uses opaque fills in every mode, without a Reduce Transparency branch.

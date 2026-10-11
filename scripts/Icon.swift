@@ -2,11 +2,17 @@ import AppKit
 
 @main enum IconGenerator {
     static func main() throws {
+        guard CommandLine.arguments.count == 3 else {
+            throw NSError(domain: "NoemaIconGenerator", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Usage: icon-generator <output.iconset> <brand-output-directory>"])
+        }
         let output = URL(fileURLWithPath: CommandLine.arguments[1])
         let brand = URL(fileURLWithPath: CommandLine.arguments[2])
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: brand, withIntermediateDirectories: true)
-        let palette = MidnightIrisPalette(dark: true)
-        let components: [(OrbitComponent, ThemeRole)] = [(.orbit, .accentPrimary), (.satellites, .accentSecondary), (.nucleus, .graphHighlight)]
+        // SwiftPM's .icns fallback deliberately retains the existing dark identity.
+        let palette = NoemaBrandPalette(dark: true)
+        let components: [(OrbitComponent, NoemaBrandRole)] = [(.orbit, .orbit), (.satellites, .satellites), (.nucleus, .nucleus)]
         let sizes = [(16, "icon_16x16"), (32, "icon_16x16@2x"), (32, "icon_32x32"), (64, "icon_32x32@2x"), (128, "icon_128x128"), (256, "icon_128x128@2x"), (256, "icon_256x256"), (512, "icon_256x256@2x"), (512, "icon_512x512"), (1024, "icon_512x512@2x")]
         for (size, name) in sizes {
             let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
@@ -19,7 +25,7 @@ import AppKit
             context.translateBy(x: 0, y: s)
             context.scaleBy(x: 1, y: -1)
             let tile = CGRect(x: s * 0.06, y: s * 0.06, width: s * 0.88, height: s * 0.88)
-            context.setFillColor(color(palette.token(.background)))
+            context.setFillColor(color(palette.token(.identityBackground)))
             context.addPath(CGPath(roundedRect: tile, cornerWidth: s * 0.2, cornerHeight: s * 0.2, transform: nil))
             context.fillPath()
             for (component, role) in components {
@@ -33,18 +39,43 @@ import AppKit
             if size == 1024 { try png.write(to: brand.appendingPathComponent("icon-preview.png")) }
         }
 
-        // Filled layers have no baked-in lighting or mask. Icon Composer supplies glass.
+        // Filled layers have no baked-in lighting or mask. The composed exports
+        // demonstrate the complete identity; the separate layers remain reusable.
         for dark in [false, true] {
-            let variant = MidnightIrisPalette(dark: dark)
+            let variant = NoemaBrandPalette(dark: dark)
             let suffix = dark ? "" : "-light"
+            let appearance = dark ? "dark" : "light"
             let frame = CGRect(x: 123, y: 123, width: 778, height: 778)
             let paths = components.map { component, role in
                 svgPath(path: OrbitGeometry.path(in: frame, component: component), fill: variant.token(role).hexString)
             }.joined()
-            let foreground = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 1024\"><title>noema Midnight Iris orbital mark</title>\(paths)</svg>\n"
+            let title = "Noema \(dark ? "Midnight Iris" : "Porcelain Iris") identity"
+            let foreground = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 1024\"><title>\(title) foreground</title>\(paths)</svg>\n"
             try foreground.write(to: brand.appendingPathComponent("orbit" + suffix + ".svg"), atomically: true, encoding: .utf8)
-            let background = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 1024\"><rect width=\"1024\" height=\"1024\" fill=\"\(variant.token(.background).hexString)\"/></svg>\n"
+            let backgroundRect = "<rect width=\"1024\" height=\"1024\" fill=\"\(variant.token(.identityBackground).hexString)\"/>"
+            let background = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 1024\">\(backgroundRect)</svg>\n"
             try background.write(to: brand.appendingPathComponent("background" + suffix + ".svg"), atomically: true, encoding: .utf8)
+            let identity = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 1024\"><title>\(title)</title>\(backgroundRect)\(paths)</svg>\n"
+            try identity.write(to: brand.appendingPathComponent("identity-" + appearance + ".svg"), atomically: true, encoding: .utf8)
+
+            let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1024, pixelsHigh: 1024,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+            let context = NSGraphicsContext.current!.cgContext
+            context.translateBy(x: 0, y: 1024)
+            context.scaleBy(x: 1, y: -1)
+            context.setFillColor(color(variant.token(.identityBackground)))
+            context.fill(CGRect(x: 0, y: 0, width: 1024, height: 1024))
+            for (component, role) in components {
+                context.setFillColor(color(variant.token(role)))
+                context.addPath(OrbitGeometry.path(in: frame, component: component))
+                context.fillPath()
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            try bitmap.representation(using: .png, properties: [:])!
+                .write(to: brand.appendingPathComponent("identity-" + appearance + ".png"))
         }
     }
 
@@ -54,7 +85,9 @@ import AppKit
 
     static func svgPath(path: CGPath, fill: String) -> String {
         var commands: [String] = []
-        func point(_ p: CGPoint) -> String { String(format: "%.3f %.3f", Double(p.x), Double(p.y)) }
+        func point(_ p: CGPoint) -> String {
+            String(format: "%.3f %.3f", locale: Locale(identifier: "en_US_POSIX"), Double(p.x), Double(p.y))
+        }
         path.applyWithBlock { element in
             let e = element.pointee
             switch e.type {
