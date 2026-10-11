@@ -11,7 +11,7 @@ struct VaultSaveQuiescenceTests {
         let recoveryDir = base.appendingPathComponent("Drafts", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         _ = try FileVaultRepository.open(root: root, create: true)
-        let recovery = try RecoveryStore(directory: recoveryDir)
+        let recovery = try RecoveryStore(unguardedTestingDirectory: recoveryDir)
         return (root, recoveryDir, recovery)
     }
 
@@ -351,7 +351,7 @@ struct VaultSaveQuiescenceTests {
         // Create a read-only file where the RecoveryStore directory should be, or point RecoveryStore to a removed/unwritable path
         // so `recovery.store(draft)` fails deterministically during quiescence.
         let brokenRecoveryDir = root.deletingLastPathComponent().appendingPathComponent("BrokenDrafts", isDirectory: true)
-        let brokenRecovery = try RecoveryStore(directory: brokenRecoveryDir)
+        let brokenRecovery = try RecoveryStore(unguardedTestingDirectory: brokenRecoveryDir)
         // Replace the directory with a regular file so atomic draft writes into `BrokenDrafts/<id>.json` fail!
         try FileManager.default.removeItem(at: brokenRecoveryDir)
         try Data("not a directory".utf8).write(to: brokenRecoveryDir)

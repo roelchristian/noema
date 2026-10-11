@@ -7,6 +7,7 @@ private final class TrashStoreProbe: VaultContentStore {
     struct State {
         var operations: [String] = []
         var failMove = false
+        var partiallyDeleteSource = false
         var occupyDestination = false
         var race: Data?
         var ledgerRace: Data?
@@ -48,6 +49,10 @@ private final class TrashStoreProbe: VaultContentStore {
         try base.move(from: source, to: destination, expected: expected)
     }
     func delete(at path: String, expected: VaultContentSnapshot) throws {
+        if state.withLock({ $0.partiallyDeleteSource }), case .directory(let files) = expected, let metadata = files["metadata.json"] {
+            try base.delete(at: path + "/metadata.json", expected: .file(metadata))
+            throw VaultContentStoreError.io(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError, message: "Injected partial directory deletion")
+        }
         let race = state.withLock { state -> Data? in
             state.operations.append("delete " + path)
             let race = state.race; state.race = nil
@@ -184,6 +189,27 @@ struct TrashAdapterTests {
         #expect(try store.base.read(at: "Trash Retention.json") == competing)
         #expect(try await repo.trashedPages().count == (existing ? 2 : 1))
         #expect(store.state.withLock { !$0.operations.contains("delete " + entry.id) })
+    }
+
+    @Test func partialFilesystemDeletionReportsFailureAndPreservesRemainingRecoverableOriginal() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try TrashStoreProbe(root: root)
+        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let bytes = Data("Only recoverable source original".utf8)
+        let source = try await repo.importSource(data: bytes, filename: "source.txt", title: "Source", originURL: nil)
+        try await repo.deleteSource(source)
+        let item = try #require(try await repo.trashItems().first)
+        store.state.withLock { $0.partiallyDeleteSource = true }
+        let failures = await repo.emptyTrashItems([item])
+        #expect(failures.count == 1 && failures[0].contains("Injected partial directory deletion"))
+        #expect(try store.base.snapshot(at: item.id) == .directory(["original.txt": bytes]))
+        let reopened = try FileVaultRepository.open(root: root, contentStore: store)
+        let damaged = try #require(try await reopened.trashItems().first)
+        #expect(damaged.id == item.id && damaged.readIssue != nil)
+        await #expect(throws: (any Error).self) { try await reopened.restore(damaged) }
+        // Automatic retention must not discard the remaining content of a damaged record.
+        _ = try await reopened.expireTrash(now: Date().addingTimeInterval(60 * 86400))
+        #expect(try store.base.read(at: item.id + "/original.txt") == bytes)
     }
 
     @Test func corruptAndUnsafeManifestNeverRewritten() throws {

@@ -7,6 +7,7 @@ final class SourceStoreProbe: VaultContentStore {
     struct State {
         var operations: [String] = []
         var failPublication = false
+        var failStagingFile: String?
         var race: Data?
         var deleteBeforeWrite = false
     }
@@ -26,6 +27,9 @@ final class SourceStoreProbe: VaultContentStore {
         return try base.snapshot(at: path)
     }
     func write(_ data: Data, at path: String, condition: VaultWriteCondition) throws {
+        if let filename = state.withLock({ $0.failStagingFile }), path.contains("/.import-"), path.hasSuffix("/" + filename) {
+            throw VaultContentStoreError.io(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError, message: "Injected staging write failure")
+        }
         let race = state.withLock { state -> (Data?, Bool) in
             state.operations.append("write " + path)
             guard case .replace = condition else { return (nil, false) }
@@ -146,6 +150,33 @@ struct SourceAdapterTests {
         else { #expect(try store.base.read(at: path) == external) }
     }
 
+    @Test(arguments: ["original.txt", "metadata.json"])
+    func failedSourceStagingNeverPublishesIncompleteContentAndRetainsWrittenBytes(filename: String) async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try SourceStoreProbe(root: root)
+        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let existing = try await repo.importSource(data: Data("Existing original".utf8), filename: "existing.txt", title: "Existing", originURL: nil)
+        let existingPath = "Sources/" + existing.id.uuidString.lowercased()
+        let before = try store.base.snapshot(at: existingPath)
+        let bytes = Data("Recoverable staged original".utf8)
+        store.state.withLock { $0.failStagingFile = filename }
+        await #expect(throws: VaultContentStoreError.io(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError, message: "Injected staging write failure")) {
+            _ = try await repo.importSource(data: bytes, filename: "new.txt", title: "New", originURL: nil)
+        }
+        #expect(try await repo.scan().sources.map(\.id) == [existing.id])
+        #expect(try store.base.snapshot(at: existingPath) == before)
+        let staging = try #require(FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("Sources"), includingPropertiesForKeys: nil).first { $0.lastPathComponent.hasPrefix(".import-") })
+        let staged = try store.base.snapshot(at: "Sources/" + staging.lastPathComponent)
+        #expect(staged == .directory(filename == "metadata.json" ? ["original.txt": bytes] : [:]))
+        store.state.withLock { $0.failStagingFile = nil }
+        let retried = try await repo.importSource(data: bytes, filename: "new.txt", title: "New", originURL: nil)
+        let reopened = try FileVaultRepository.open(root: root, contentStore: store)
+        #expect(try await reopened.scan().sources.count == 2)
+        #expect(try FileVaultRepository.readSourceOriginal(retried, root: root, contentStore: store) == bytes)
+        #expect(try store.base.snapshot(at: existingPath) == before)
+        #expect(try store.base.snapshot(at: "Sources/" + staging.lastPathComponent) == staged)
+    }
+
     @Test func failedPublicationRetainsStagingAndURLStatusPreservesOriginal() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try SourceStoreProbe(root: root)
@@ -157,7 +188,9 @@ struct SourceAdapterTests {
         let staging = try #require(FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("Sources"), includingPropertiesForKeys: nil).first)
         #expect(staging.lastPathComponent.hasPrefix(".import-"))
         #expect(try store.base.read(at: "Sources/" + staging.lastPathComponent + "/original.txt") == bytes)
-        #expect(try store.base.read(at: "Sources/" + staging.lastPathComponent + "/metadata.json").isEmpty == false)
+        let stagedMetadata = try JSONDecoder().decode(SourceMetadata.self, from: store.base.read(at: "Sources/" + staging.lastPathComponent + "/metadata.json"))
+        #expect(stagedMetadata.sha256 == digest(bytes) && stagedMetadata.fileSize == bytes.count)
+        #expect(stagedMetadata.storedFilename == "original.txt")
         store.state.withLock { $0.failPublication = false }
         let urlSource = try await repo.importURLSource("https://example.com") { _ in
             WebSourceFetch(data: Data("Web capture".utf8), filename: "web.txt")
