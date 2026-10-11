@@ -30,6 +30,8 @@ enum AISummaryPlacement: String, CaseIterable {
 }
 
 struct NoemaSettings: View {
+    let externalAIService: ExternalAIService
+
     @AppStorage(EditorPreferences.fontFamilyKey) private var fontFamily = ""
     @AppStorage(EditorPreferences.fontSizeKey) private var fontSize = EditorTypography.defaultSize
     @AppStorage(EditorPreferences.showSemanticHeadingsKey) private var showSemanticHeadings = false
@@ -130,6 +132,7 @@ struct NoemaSettings: View {
                 Text(OnDeviceSummary.unavailabilityReason ?? "On-device model is available.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            ExternalAISettings(service: externalAIService)
             Section("Appearance") {
                 LabeledContent("Theme") {
                     ThemePalettePicker(selection: $themePreference)
@@ -148,7 +151,7 @@ struct NoemaSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .formStyle(.grouped).padding(16).frame(width: 540)
+        .formStyle(.grouped).padding(16).frame(width: 540, height: 760)
         .sheet(isPresented: $showCustomCommandsModal) {
             CustomTeXCommandsModal()
         }

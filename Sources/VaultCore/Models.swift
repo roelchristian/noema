@@ -26,6 +26,15 @@ public struct NoteRecord: Codable, Identifiable, Sendable, Equatable {
     public var originalHeader: String?
     public var allTags: [String] { Array(Set(tags + inlineTags)).sorted() }
 }
+/// Portable facts about an explicitly generated cloud summary; no request authority or secret.
+public struct SummaryProvenance: Codable, Sendable, Equatable {
+    public var provider: String
+    public var model: String
+    public var generatedAt: Date
+    public init(provider: String, model: String, generatedAt: Date) {
+        self.provider = provider; self.model = model; self.generatedAt = generatedAt
+    }
+}
 public struct SourceMetadata: Codable, Identifiable, Sendable, Equatable {
     public var id: UUID
     public var title: String
@@ -35,6 +44,7 @@ public struct SourceMetadata: Codable, Identifiable, Sendable, Equatable {
     public var sha256: String
     public var lcc: String? = nil
     public var aiSummary: String? = nil
+    public var aiSummaryProvenance: SummaryProvenance? = nil
     public var isURLSource: Bool? = nil
     public var webAvailabilityIssue: String? = nil
     public var fileSize: Int? = nil

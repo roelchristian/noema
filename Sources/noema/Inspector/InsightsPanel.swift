@@ -14,6 +14,7 @@ struct PageInsightsSnapshot: Equatable, Sendable {
     let noteID: UUID
     let body: String
     let summaryText: String?
+    let summaryProvenanceLabel: String
     let semanticGroups: [SemanticBlockGroup]
     let semanticBlockCount: Int
 
@@ -49,6 +50,9 @@ final class InsightsPresentationCache {
             noteID: noteID,
             body: body,
             summaryText: document.aiSummary?.text,
+            summaryProvenanceLabel: document.aiSummary?.metadata.extra["aiProvider"].map {
+                $0 + " · " + (document.aiSummary?.metadata.extra["aiModel"] ?? "")
+            } ?? "AI-generated on device",
             semanticGroups: groups,
             semanticBlockCount: blockCount
         )
@@ -111,6 +115,7 @@ struct InsightsPanel: View {
                                 .font(NoemaTypography.metadata)
                                 .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         }
+                        CloudSummaryStatus(model: model, target: .page(note.id))
                         if isCurrent && model.generatingAISummary {
                             HStack(spacing: NoemaSpacing.sm) {
                                 ProgressView().controlSize(.mini)
@@ -120,7 +125,7 @@ struct InsightsPanel: View {
                         }
                         if let summaryText = snapshot.summaryText {
                             SidebarAISummary(text: summaryText).id(note.id)
-                            Text("AI-generated")
+                            Text(snapshot.summaryProvenanceLabel)
                                 .font(NoemaTypography.metadata)
                                 .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         } else {
@@ -129,6 +134,8 @@ struct InsightsPanel: View {
                         }
                     } actions: {
                         Menu {
+                            Button("Summarize with OpenAI…") { model.prepareCloudPageSummary(id: note.id) }
+                                .disabled(note.isEditingLocked || model.cloudSummaryTarget != nil)
                             Button(snapshot.hasSummary ? "Regenerate Summary" : "Generate Summary") {
                                 model.summarizePage()
                             }
@@ -187,6 +194,7 @@ struct InsightsPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                     InspectorSection(title: "AI summary", showTopDivider: false) {
+                        CloudSummaryStatus(model: model, target: .source(source.id))
                         if model.generatingSourceSummaries.contains(source.id) || model.generatingSourceTitles.contains(source.id) {
                             HStack(spacing: NoemaSpacing.sm) {
                                 ProgressView().controlSize(.mini)
@@ -196,7 +204,7 @@ struct InsightsPanel: View {
                         }
                         if let summary = source.metadata.aiSummary, hasSummary {
                             SidebarAISummary(text: summary).id(source.id)
-                            Text("AI-generated")
+                            Text(source.metadata.aiSummaryProvenance.map { "\($0.provider) · \($0.model)" } ?? "AI-generated on device")
                                 .font(NoemaTypography.metadata)
                                 .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         } else {
@@ -204,6 +212,10 @@ struct InsightsPanel: View {
                                 .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         }
                     } actions: {
+                        Menu {
+                            Button("Summarize with OpenAI…") { model.prepareCloudSourceSummary(source) }
+                                .disabled(model.cloudSummaryTarget != nil || model.downloadingSources.contains(source.id)
+                                    || model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id))
                         Button(hasSummary ? "Regenerate" : "Generate") {
                             model.generateSourceSummary(source)
                         }
@@ -213,6 +225,8 @@ struct InsightsPanel: View {
                                 || model.generatingSourceSummaries.contains(source.id)
                         )
                         .labelStyle(.titleOnly)
+                        } label: { Label("Summary actions", systemImage: "ellipsis").labelStyle(.iconOnly) }
+                        .menuStyle(.borderlessButton)
                     }
                 }
                 .textSelection(.enabled)

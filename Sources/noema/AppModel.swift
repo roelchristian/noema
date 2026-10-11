@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import VaultCore
 import PDFKit
+import ExternalAI
 
 enum LibraryScope: Hashable { case wiki, sources, semantic, trash, tag(String) }
 
@@ -127,18 +128,27 @@ struct EditorAction: Equatable {
     private(set) var editingLockOperations: Set<UUID> = []
     var tags: [String] = []
     var wordCount = 0
-    var scope: LibraryScope = .wiki
+    var scope: LibraryScope = .wiki {
+        didSet { if scope != oldValue { cancelCloudSummary() } }
+    }
+    /// The Sources table and inspector share this synchronous selection route with cloud work.
+    private(set) var librarySourceSelection: UUID?
+    func setLibrarySourceSelection(_ id: UUID?) {
+        guard id != librarySourceSelection else { return }
+        cancelCloudSummary()
+        librarySourceSelection = id
+    }
     var searchText = ""
     var sidebarSearchResults = SidebarSearchResults()
     var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var unseenRenamedPages: Set<UUID> = []
     var appIsActive = true
-    var selectedID: UUID?
+    var selectedID: UUID? { didSet { if selectedID != oldValue { cloudPublicationGuard.invalidate() } } }
     var currentNote: NoteRecord?
     var currentSource: SourceRecord?
-    var title = ""
-    var body = ""
-    var tagInput = ""
+    var title = "" { didSet { if title != oldValue { cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate() } } }
+    var body = "" { didSet { if body != oldValue { cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate() } } }
+    var tagInput = "" { didSet { if tagInput != oldValue { cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate() } } }
     var preview: [PreviewBlock] = []
     var backlinks: [NoteRecord] = []
     var outgoingLinkTargets: [String] = []
@@ -176,6 +186,7 @@ struct EditorAction: Equatable {
     var editorAction: EditorAction?
     var searchFocusToken = 0
     private let storageProvider: VaultStorageProvider
+    let externalAIService: ExternalAIService
     let sessionManager: VaultSessionManager
     var quiescenceCoordinator: VaultSaveQuiescenceCoordinator { sessionManager.quiescenceCoordinator }
     private(set) var sessionState: VaultSessionState = .closed
@@ -243,6 +254,7 @@ struct EditorAction: Equatable {
     ) {
         self.storageProvider = storageProvider
         self.sessionManager = sessionManager
+        self.externalAIService = ExternalAIService(accessGate: sessionManager.accessGate)
         self.repository = repository
         self.recovery = recovery
         self.activeLease = repository?.sessionLease
@@ -472,6 +484,7 @@ struct EditorAction: Equatable {
     }
 
     private func cancelAllAsyncWork() {
+        cancelCloudSummary()
         autosaveTask?.cancel(); autosaveTask = nil
         queryTask?.cancel(); queryTask = nil
         refreshTask?.cancel(); refreshTask = nil
@@ -526,6 +539,7 @@ struct EditorAction: Equatable {
         dismissedVaultNotices = []
         tags = []; backlinks = []; outgoingLinkTargets = []; preview = []; recentPageIDs = []; unseenRenamedPages = []
         searchText = ""; sidebarSearchResults = SidebarSearchResults(); scope = .wiki
+        setLibrarySourceSelection(nil)
         selectedID = nil; selectedSemanticID = nil; currentNote = nil; currentSource = nil
         title = ""; body = ""; tagInput = ""; lccInput = ""; wordCount = 0; reading = true
         editorNotice = nil; editingHint = nil; editorReadOnly = false; externalChange = false
@@ -555,6 +569,156 @@ struct EditorAction: Equatable {
             return true
         }
         return false
+    }
+
+    var cloudSummaryConfirmation: CloudSummaryConfirmation?
+    var cloudSummaryTarget: ExternalAISummaryTarget?
+    var cloudSummaryError: String?
+    private let cloudPublicationGuard = CloudSummaryPublicationGuard()
+    private var cloudEditorRevision = UUID()
+    private var cloudSummaryTask: Task<Void, Never>?
+    /// Tests capture a pending worker before cancellation so assertions wait for its completion.
+    var cloudSummaryTaskForTesting: Task<Void, Never>? { cloudSummaryTask }
+    private var cloudRequestID: UUID?
+    /// Test seam: restricted, consent-bound summaries only; production always uses the gateway.
+    var cloudSummaryOverride: (@Sendable (ExternalAISummaryRequest, ExternalAIContentConsent) async throws -> ExternalAISummaryResult)?
+    var cloudPublicationOverride: (@Sendable (ExternalAISummaryResult) async throws -> (@Sendable () throws -> Void))?
+
+    func cancelCloudSummary() {
+        cloudPublicationGuard.invalidate()
+        cloudRequestID = nil
+        cloudSummaryTask?.cancel(); cloudSummaryTask = nil
+        cloudSummaryTarget = nil; cloudSummaryConfirmation = nil; cloudSummaryError = nil
+    }
+
+    func prepareCloudPageSummary(id: UUID) { prepareCloudSummary(target: .page(id)) }
+    func prepareCloudSourceSummary(_ source: SourceRecord) { prepareCloudSummary(target: .source(source.id)) }
+
+    private func prepareCloudSummary(target: ExternalAISummaryTarget) {
+        guard canOperateOnLoadedContent, let repository, let lease = sessionManager.accessGate.currentLease,
+              cloudSummaryTarget == nil else { return }
+        cancelCloudSummary()
+        let identity = UUID()
+        cloudRequestID = identity; cloudSummaryTarget = target
+        let selection = selectedID
+        cloudSummaryTask = Task {
+            do {
+                let snapshot: CloudSummarySnapshot
+                let text: String
+                let itemTitle: String
+                switch target {
+                case .page(let id):
+                    if currentNote?.id == id {
+                        guard !editingLocked, !generatingAISummary, await saveCurrent() else { throw ExternalAIError.staleContent }
+                    }
+                    guard let note = notes.first(where: { $0.id == id }) ?? (currentNote?.id == id ? currentNote : nil) else { throw ExternalAIError.staleContent }
+                    let page = try await repository.pageSummarySnapshot(note)
+                    snapshot = .page(page)
+                    itemTitle = note.title
+                    text = BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(page.note.body).withoutAISummary))
+                case .source(let id):
+                    guard !downloadingSources.contains(id), !generatingSourceTitles.contains(id), !generatingSourceSummaries.contains(id) else { throw ExternalAIError.staleContent }
+                    let source = try await repository.sourceSummarySnapshot(id: id)
+                    snapshot = .source(source); itemTitle = source.source.title
+                    text = try CloudSummaryConfirmation.extractedText(source)
+                }
+                try Task.checkCancellation()
+                guard cloudRequestID == identity, selectedID == selection,
+                      ExternalAIVaultAuthority(lease: lease).matches(sessionManager.accessGate.currentLease) else { throw ExternalAIError.staleSession }
+                let request = try ExternalAISummaryRequest(authority: ExternalAIVaultAuthority(lease: lease),
+                    target: target, contentRevision: UUID(), content: text)
+                cloudSummaryConfirmation = CloudSummaryConfirmation(request: request, snapshot: snapshot,
+                    title: itemTitle, model: externalAIService.configuration.model,
+                    selection: selection, editorRevision: cloudEditorRevision)
+                cloudSummaryTarget = nil; cloudSummaryTask = nil
+            } catch {
+                guard cloudRequestID == identity else { return }
+                cloudSummaryTarget = nil; cloudSummaryTask = nil
+                cloudSummaryError = Self.cloudError(error)
+            }
+        }
+    }
+
+    func confirmCloudSummary() {
+        guard let confirmation = cloudSummaryConfirmation, canOperateOnLoadedContent else { return }
+        cloudSummaryConfirmation = nil
+        let request = confirmation.request
+        let identity = cloudRequestID
+        let gateway = externalAIService.gateway
+        let override = cloudSummaryOverride
+        let publicationOverride = cloudPublicationOverride
+        guard confirmation.model == externalAIService.configuration.model else {
+            cloudSummaryError = ExternalAIError.staleContent.localizedDescription; return
+        }
+        cloudSummaryTarget = request.target
+        cloudPublicationGuard.arm(requestID: request.id)
+        let publicationGuard = cloudPublicationGuard
+        cloudSummaryTask = Task {
+            defer {
+                if cloudRequestID == identity { cloudSummaryTarget = nil; cloudSummaryTask = nil }
+            }
+            do {
+                guard let repository, cloudRequestID == identity,
+                      request.authority.matches(sessionManager.accessGate.currentLease),
+                      selectedID == confirmation.selection else { throw ExternalAIError.staleSession }
+                if case .page(let page) = confirmation.snapshot, currentNote?.id == page.note.id {
+                    guard body == page.note.body, cloudEditorRevision == confirmation.editorRevision,
+                          !editingLocked, !externalChange else { throw ExternalAIError.staleContent }
+                }
+                let consent = ExternalAIContentConsent(approving: request)
+                let result: ExternalAISummaryResult
+                if let override { result = try await override(request, consent) }
+                else if request.action == .summarizePage { result = try await gateway.summarizePage(request, consent: consent) }
+                else { result = try await gateway.summarizeSource(request, consent: consent) }
+                guard result.requestID == request.id, result.target == request.target,
+                      result.contentRevision == request.contentRevision, result.authority == request.authority else { throw ExternalAIError.invalidResponse }
+                let validate: @Sendable () throws -> Void
+                if let publicationOverride { validate = try await publicationOverride(result) }
+                else {
+                    let permit = try await gateway.publicationPermit(for: result)
+                    validate = { try permit.validateSynchronously() }
+                }
+                try Task.checkCancellation()
+                guard cloudRequestID == identity, request.authority.matches(sessionManager.accessGate.currentLease),
+                      selectedID == confirmation.selection else { throw ExternalAIError.staleSession }
+                let provenance = SummaryProvenance(provider: "OpenAI", model: result.provenance.model, generatedAt: result.provenance.generatedAt)
+                switch confirmation.snapshot {
+                case .page(let page):
+                    if currentNote?.id == page.note.id {
+                        guard body == page.note.body, cloudEditorRevision == confirmation.editorRevision,
+                              !editingLocked, !externalChange, !generatingAISummary else { throw ExternalAIError.staleContent }
+                    }
+                    let saved = try await repository.publishPageSummary(page, summary: result.summary, provenance: provenance, validate: {
+                        try publicationGuard.validate(requestID: request.id)
+                        try validate()
+                    })
+                    try Task.checkCancellation()
+                    guard cloudRequestID == identity, request.authority.matches(sessionManager.accessGate.currentLease) else { return }
+                    if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
+                    if currentNote?.id == saved.id, body == page.note.body, cloudEditorRevision == confirmation.editorRevision { apply(saved) }
+                case .source(let source):
+                    let saved = try await repository.publishSourceSummary(source, summary: result.summary, provenance: provenance, validate: {
+                        try publicationGuard.validate(requestID: request.id)
+                        try validate()
+                    })
+                    try Task.checkCancellation()
+                    guard cloudRequestID == identity, request.authority.matches(sessionManager.accessGate.currentLease) else { return }
+                    if let i = sources.firstIndex(where: { $0.id == saved.id }) { sources[i] = saved }
+                    if currentSource?.id == saved.id { currentSource = saved }
+                }
+                await refresh()
+            } catch {
+                guard cloudRequestID == identity else { return }
+                cloudSummaryError = Self.cloudError(error)
+            }
+        }
+    }
+
+    private static func cloudError(_ error: Error) -> String {
+        if let typed = error as? ExternalAIError { return typed.localizedDescription }
+        if error is CancellationError { return ExternalAIError.cancelled.localizedDescription }
+        if error is VaultContentStoreError || error is VaultError { return ExternalAIError.staleContent.localizedDescription }
+        return ExternalAIError.providerUnavailable.localizedDescription
     }
 
     func deleteAISummary() {
@@ -1170,6 +1334,7 @@ struct EditorAction: Equatable {
             }
             progressTicket = nil
             guard isCompletionValid(completionTicket, operation: "refresh.scan") else { return }
+            try Task.checkCancellation()
             let previousTitles = Dictionary(notes.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
             for note in result.notes {
                 if let previous = previousTitles[note.id] { recordPageRename(note.id, from: previous, to: note.title) }
@@ -1195,6 +1360,7 @@ struct EditorAction: Equatable {
                 trashedPages = pages
             } catch {
                 guard isCompletionValid(completionTicket, operation: "refresh.trashError") else { return }
+                guard !(error is CancellationError), !Task.isCancelled else { return }
                 errorMessage = "Could not load Trash: " + error.localizedDescription
             }
             updateTags()
@@ -1206,9 +1372,13 @@ struct EditorAction: Equatable {
             }
             try await index.reconcile(result)
             guard isCompletionValid(completionTicket, operation: "refresh.reconcile") else { return }
+            try Task.checkCancellation()
             await updateRows(); await updateBacklinks()
         } catch {
             guard isCompletionValid(completionTicket, operation: "refresh.error") else { return }
+            // File notifications supersede scheduled refreshes, including scans already
+            // in progress. Cancellation does not mean the preceding page save failed.
+            guard !(error is CancellationError), !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -1224,6 +1394,8 @@ struct EditorAction: Equatable {
     }
     func changeScope(_ scope: LibraryScope) {
         guard canOperateOnLoadedContent else { return }
+        // Revoke immediately, including while an asynchronous save delays applying the scope.
+        cancelCloudSummary()
         let completionTicket = issueCompletionTicket(kind: .lifecycle)
         let applyScope = { @MainActor in
             self.autosaveTask?.cancel(); self.wikiQuery = nil; self.editorAction = nil
@@ -1285,6 +1457,7 @@ struct EditorAction: Equatable {
                 semanticRows = results.blocks
             } catch {
                 guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.sidebarSearchError") else { return }
+                guard !(error is CancellationError), !Task.isCancelled else { return }
                 errorMessage = error.localizedDescription
             }
             return
@@ -1317,6 +1490,7 @@ struct EditorAction: Equatable {
         } catch {
             guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.indexSearchError"),
                   capturedScope == scope else { return }
+            guard !(error is CancellationError), !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -1359,7 +1533,7 @@ struct EditorAction: Equatable {
     func markPageViewed(_ id: UUID) {
         if appIsActive { unseenRenamedPages.remove(id) }
     }
-    var lccInput = ""
+    var lccInput = "" { didSet { if lccInput != oldValue { cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate() } } }
     var generatingPageLCC = false
     var generatingSourceLCCs: Set<UUID> = []
     private var lccSaveTask: Task<Void, Never>?

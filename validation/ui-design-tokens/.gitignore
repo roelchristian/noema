@@ -1,5 +1,6 @@
-# Full opt-in matrices and legacy inspector baseline are local validation output.
+# Legacy output paths stay untracked; new evidence uses .local/agent-runs.
 /generated/
 /baseline/
-
+/evidence/
+/capture-manifest.json
 /__pycache__/

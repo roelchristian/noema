@@ -110,3 +110,30 @@ import VaultCore
     let wrapped = try #require(BlockTextStorage.ranges(view.textStorage!).first?.1)
     #expect(view.mathPreviewRect(for: wrapped) == nil)
 }
+
+
+@Test @MainActor func mathPreviewRequiresCompleteRenderedExpressionToFit() throws {
+    let view = ArticleTextView(frame: NSRect(x: 0, y: 0, width: 1400, height: 1000))
+    view.typography = EditorTypography(family: "", size: 32)
+    let expanded = try #require(TeXMacro(name: "wide", body: String(repeating: "x+y+", count: 20) + "z"))
+    for source in ["x+y+z+a+b+c+d+e+f+g", #"\alpha\\\beta"#, #"\wide"#] {
+        let document = BlockDocument(blocks: [EditorBlock(kind: .math, runs: [RichRun(source)])])
+        view.textStorage!.setAttributedString(BlockTextStorage.render(document, theme: NoemaTheme(), typography: view.typography))
+        view.layoutManager!.ensureLayout(for: view.textContainer!)
+        let range = try #require(BlockTextStorage.ranges(view.textStorage!).first?.1)
+        var sourceLines = 0
+        let glyphs = view.layoutManager!.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        view.layoutManager!.enumerateLineFragments(forGlyphRange: glyphs) { _, _, _, _, _ in sourceLines += 1 }
+        #expect(sourceLines == 1)
+        let rendered = TeXMath.render(source, display: true, macros: [expanded])
+        #expect(view.mathPreviewRect(for: range, rendered: rendered) == nil)
+        #expect(BlockTextStorage.capture(view.textStorage!, previous: document) == document)
+    }
+    for size in [10.0, 16, 32] {
+        view.typography = EditorTypography(family: "", size: size)
+        view.textStorage!.setAttributedString(BlockTextStorage.render(BlockDocument(blocks: [EditorBlock(kind: .math, runs: [RichRun("x^2")])]), theme: NoemaTheme(), typography: view.typography))
+        view.layoutManager!.ensureLayout(for: view.textContainer!)
+        let range = try #require(BlockTextStorage.ranges(view.textStorage!).first?.1)
+        #expect(view.mathPreviewRect(for: range) != nil)
+    }
+}

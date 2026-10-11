@@ -137,8 +137,11 @@ import VaultCore
 
     /// A preview occupies only unused horizontal space on a single raw-source line.
     /// At narrow widths, or for wrapped source, the source remains the sole display.
-    func mathPreviewRect(for range: NSRange) -> NSRect? {
-        guard let layoutManager, range.length > 0 else { return nil }
+    func mathPreviewRect(for range: NSRange, rendered expression: String? = nil) -> NSRect? {
+        guard let layoutManager, let storage = textStorage, range.length > 0 else { return nil }
+        let raw = (storage.string as NSString).substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
+        let rendered = expression ?? TeXMath.render(raw, display: true)
+        guard !rendered.isEmpty else { return nil }
         let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
         var lines = 0
         var fragment = NSRect.zero
@@ -152,10 +155,22 @@ import VaultCore
         guard width >= typography.pointSize(for: .semanticLabel) * 6 else { return nil }
         let font = typography.font(for: .math)
         let line = fragment.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
-        let height = font.ascender - font.descender
-        let preview = NSRect(x: start, y: line.midY - height / 2, width: width, height: height)
-        guard preview.minY >= line.minY, preview.maxY <= line.maxY else { return nil }
-        return preview
+        // Source wrapping does not predict rendered wrapping: macros and TeX line
+        // breaks can expand a short source into a wider or multiline expression.
+        let measured = (rendered as NSString).boundingRect(
+            with: NSSize(width: width, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin], attributes: mathPreviewAttributes)
+        // Fallback glyphs may need slightly more height than the primary face.
+        // Use their measured height only within this source line's existing box.
+        let height = max(font.ascender - font.descender, measured.height)
+        guard measured.width <= width, height <= line.height else { return nil }
+        return NSRect(x: start, y: line.midY - height / 2, width: width, height: height)
+    }
+
+    private var mathPreviewAttributes: [NSAttributedString.Key: Any] {
+        let style = NSMutableParagraphStyle(); style.alignment = .right
+        return [.font: typography.font(for: .math),
+                .foregroundColor: theme.nativeText(.accentSecondary), .paragraphStyle: style]
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -217,13 +232,8 @@ import VaultCore
                 }
                 let rawBlock = (storage.string as NSString).substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
                 let rendered = TeXMath.render(rawBlock, display: true)
-                if !rendered.isEmpty, let previewRect = mathPreviewRect(for: range) {
-                    let previewStyle = NSMutableParagraphStyle(); previewStyle.alignment = .right
-                    (rendered as NSString).draw(in: previewRect, withAttributes: [
-                        .font: typography.font(for: .math),
-                        .foregroundColor: theme.nativeText(.accentSecondary),
-                        .paragraphStyle: previewStyle
-                    ])
+                if let previewRect = mathPreviewRect(for: range, rendered: rendered) {
+                    (rendered as NSString).draw(in: previewRect, withAttributes: mathPreviewAttributes)
                 }
             }
             if id == hoverID && !locked && isEditable {

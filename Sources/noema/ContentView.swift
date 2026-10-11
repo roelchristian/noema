@@ -34,7 +34,10 @@ struct ContentView: View {
     @State private var recentSectionExpanded = true
     @State private var allPagesSectionExpanded = true
     @State private var pageSortOrder: PageSortOrder = .updated
-    @State private var sourceSelection: UUID?
+    private var sourceSelection: UUID? { model.librarySourceSelection }
+    private var sourceSelectionBinding: Binding<UUID?> {
+        Binding(get: { model.librarySourceSelection }, set: { model.setLibrarySourceSelection($0) })
+    }
     @State private var sourceTablePresentation = SourcesTablePresentation()
     @State private var renamingSource: SourceRecord?
     @State private var sourceName = ""
@@ -98,7 +101,7 @@ struct ContentView: View {
         model.changeScope(scope)
     }
     private func resetLocalWorkspaceState() {
-        sourceSelection = nil
+        model.setLibrarySourceSelection(nil)
         sourceTablePresentation.clear()
         inspectorState.resetForSessionChange()
         renamingSource = nil
@@ -138,7 +141,7 @@ struct ContentView: View {
                                 model: model,
                                 state: inspectorState,
                                 context: inspectorContext,
-                                onCloseSourceSelection: { sourceSelection = nil }
+                                onCloseSourceSelection: { model.setLibrarySourceSelection(nil) }
                             )
                             .transaction { $0.animation = nil }
                         }
@@ -161,6 +164,14 @@ struct ContentView: View {
     }
     private var workspaceSheets: some View {
         titledWorkspace
+        .sheet(item: $model.cloudSummaryConfirmation, onDismiss: {
+            if model.cloudSummaryTarget == nil { model.cloudSummaryConfirmation = nil }
+        }) { confirmation in
+            CloudSummaryConsentSheet(model: model, confirmation: confirmation)
+        }
+        .alert("OpenAI Summary", isPresented: Binding(get: { model.cloudSummaryError != nil }, set: { if !$0 { model.cloudSummaryError = nil } })) {
+            Button("OK") { model.cloudSummaryError = nil }
+        } message: { Text(model.cloudSummaryError ?? "") }
         .sheet(isPresented: $model.showVaultCreation) {
             VaultCreationSheet(model: model).systemNoemaTheme()
         }
@@ -458,14 +469,14 @@ struct ContentView: View {
                                     symbol: source.metadata.isLinked ? "link" : "doc.text",
                                     active: sourceSelection == source.id || model.currentSource?.id == source.id
                                 ) {
-                                    sourceSelection = source.id
+                                    model.setLibrarySourceSelection(source.id)
                                     if model.currentNote != nil || model.currentSource != nil || model.scope != .sources {
                                         switchSidebarScope(.sources)
                                     }
                                 }
                             }
                             sidebarFooterLink("View all sources") {
-                                sourceSelection = nil
+                                model.setLibrarySourceSelection(nil)
                                 switchSidebarScope(.sources)
                             }
                         } else if activeSidebarTab == .semantic {
@@ -725,6 +736,8 @@ struct ContentView: View {
         .listRowInsets(EdgeInsets(top: 0.5, leading: 0, bottom: 0.5, trailing: 4))
         .listRowSeparator(.hidden)
         .contextMenu {
+            Button("Summarize with OpenAI…") { model.prepareCloudPageSummary(id: note.id) }
+                .disabled(note.isEditingLocked || model.cloudSummaryTarget != nil)
             Button(note.isEditingLocked ? "Unlock Editing" : "Lock Editing") {
                 model.toggleEditingLock(note.id)
             }
@@ -793,7 +806,7 @@ struct ContentView: View {
             SourcesLibraryView(
                 model: model,
                 presentation: sourceTablePresentation,
-                selection: $sourceSelection,
+                selection: sourceSelectionBinding,
                 rename: { source in sourceName = source.title; renamingSource = source },
                 delete: { deletingSource = $0 }
             )
@@ -884,6 +897,8 @@ struct ContentView: View {
                         }
                         .contextMenu {
                             if row.kind == .wiki, let note = model.notes.first(where: { $0.id == row.id }) {
+                                Button("Summarize with OpenAI…") { model.prepareCloudPageSummary(id: note.id) }
+                                    .disabled(note.isEditingLocked || model.cloudSummaryTarget != nil)
                                 Button(note.isEditingLocked ? "Unlock Editing" : "Lock Editing") { model.toggleEditingLock(row.id) }
                                     .disabled(model.editingLockOperations.contains(note.id))
                                 Button("Delete…", role: .destructive) { trashPageID = row.id; showTrashConfirmation = true }
@@ -1213,6 +1228,10 @@ struct ContentView: View {
     private var headerActions: some View {
         HStack(spacing: NoemaSpacing.sm) {
             if model.isVaultAvailable, model.currentNote != nil {
+                Button("Summarize with OpenAI…") {
+                    if let id = model.currentNote?.id { model.prepareCloudPageSummary(id: id) }
+                }.disabled(model.editingLocked || model.cloudSummaryTarget != nil)
+                if let id = model.currentNote?.id { CloudSummaryStatus(model: model, target: .page(id)) }
                 if aiSummaries {
                     Button { model.summarizePage() } label: { Label("Summarize", systemImage: "sparkles") }
                         .disabled(model.editingLocked || model.generatingAISummary)

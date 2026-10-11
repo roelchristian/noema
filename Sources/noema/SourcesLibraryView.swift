@@ -176,6 +176,9 @@ private struct SourceTableContextMenu: View {
     let delete: (SourceRecord) -> Void
     var body: some View {
         if let source = model.sources.first(where: { $0.id == sourceID }) {
+            Button("Summarize with OpenAI…") { model.prepareCloudSourceSummary(source) }
+                .disabled(model.downloadingSources.contains(sourceID) || model.cloudSummaryTarget != nil
+                          || model.generatingSourceTitles.contains(sourceID) || model.generatingSourceSummaries.contains(sourceID))
             Button("Open Preview") { model.openSource(sourceID) }
                 .disabled(model.downloadingSources.contains(sourceID))
             Button { model.createPageFromSource(source) } label: {
