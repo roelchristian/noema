@@ -4,6 +4,15 @@ import Testing
 import VaultCore
 @testable import noema
 
+@MainActor private func openRichArticleFixtureVault(at root: URL) async throws -> AppModel {
+    let model = AppModel()
+    model.localStorageRoot = root.deletingLastPathComponent().appendingPathComponent("TestLocalStorage", isDirectory: true)
+    model.persistSecurityScopedBookmark = false
+    await model.open(root, create: false)
+    _ = try #require(model.isVaultAvailable)
+    return model
+}
+
 @Test func globalSemanticSearchIncludesNestedBlocksAndPageTitles() throws {
     var note = try NoteCodec.decode(Data("# Fixture".utf8), path: "Wiki/Fixture.md", vaultID: UUID())
     note.title = "Astronomy"
@@ -52,11 +61,16 @@ import VaultCore
 }
 
 @Test @MainActor func sidebarSearchNavigationPreservesQueryAndScope() async throws {
-    var note = try NoteCodec.decode(Data("# Stars".utf8), path: "Wiki/Stars.md", vaultID: UUID())
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaSearchNavigation-" + UUID().uuidString)
+    let folder = base.appendingPathComponent("Vault", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
     var metadata = BlockMetadata(); metadata.semantic = "question"
     let block = EditorBlock(runs: [RichRun("Stars question")], metadata: metadata)
-    note.body = BlockDocumentCodec.encode(BlockDocument(blocks: [block]))
-    let model = AppModel(); model.notes = [note]; model.scope = .sources; model.searchText = "stars"
+    let note = try await repo.create(title: "Stars", body: BlockDocumentCodec.encode(BlockDocument(blocks: [block])))
+    let model = try await openRichArticleFixtureVault(at: folder)
+    model.scope = .sources; model.searchText = "stars"
     #expect(model.isSearching)
     model.select(note.id, block: block.id)
     for _ in 0..<50 {
@@ -71,17 +85,25 @@ import VaultCore
     #expect(!model.isSearching)
     model.searchText = ""
     #expect(!model.isSearching)
+    _ = await model.closeVault()
 }
 
-@Test @MainActor func trashNavigationClearsGlobalSearchAndSelectedDocument() throws {
-    let note = try NoteCodec.decode(Data("# Stars".utf8), path: "Wiki/Stars.md", vaultID: UUID())
-    let model = AppModel(); model.notes = [note]; model.currentNote = note; model.selectedID = note.id
+@Test @MainActor func trashNavigationClearsGlobalSearchAndSelectedDocument() async throws {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaTrashNavigation-" + UUID().uuidString)
+    let folder = base.appendingPathComponent("Vault", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let note = try await repo.create(title: "Stars", body: "# Stars")
+    let model = try await openRichArticleFixtureVault(at: folder)
+    model.currentNote = note; model.selectedID = note.id
     model.title = note.title; model.body = note.body; model.tagInput = note.tags.joined(separator: ", ")
     model.searchText = "stars"
     model.changeScope(.trash)
     #expect(model.scope == .trash)
     #expect(!model.isSearching)
     #expect(model.currentNote == nil && model.currentSource == nil && model.selectedID == nil)
+    _ = await model.closeVault()
 }
 
 @Test func lccCodeNormalizationAndParallelSourceRename() async throws {
@@ -647,9 +669,14 @@ import VaultCore
 }
 
 @Test @MainActor func openingReferencedPageLeavesSourcesAndClearsSearch() async throws {
-    let note = try NoteCodec.decode(Data("---\ntitle: Referenced\n---\nPage body".utf8), path: "Wiki/Referenced.md", vaultID: UUID())
-    let model = AppModel()
-    model.notes = [note]; model.scope = .sources; model.searchText = "unrelated filter"
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaReferencedNavigation-" + UUID().uuidString)
+    let folder = base.appendingPathComponent("Vault", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let note = try await repo.create(title: "Referenced", body: "Page body")
+    let model = try await openRichArticleFixtureVault(at: folder)
+    model.scope = .sources; model.searchText = "unrelated filter"
     model.select(note.id, scope: .wiki)
     for _ in 0..<50 {
         if model.currentNote?.id == note.id { break }
@@ -659,6 +686,7 @@ import VaultCore
     #expect(model.searchText.isEmpty)
     #expect(model.currentNote?.id == note.id)
     #expect(model.body == note.body)
+    _ = await model.closeVault()
 }
 
 @Test func topicPagePromptRetainsTopicAndBoundsVaultContext() {
@@ -701,14 +729,15 @@ import VaultCore
 
 
 @Test(arguments: [false, true]) @MainActor func editingLockPersistsOnceDuringRapidActions(initiallyLocked: Bool) async throws {
-    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaLock-" + UUID().uuidString)
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaLock-" + UUID().uuidString)
+    let folder = base.appendingPathComponent("Vault", isDirectory: true)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: folder) }
+    defer { try? FileManager.default.removeItem(at: base) }
     let repo = try FileVaultRepository.open(root: folder, create: true)
     var note = try await repo.create(title: "Older", body: "Original")
     note = try await repo.setEditingLock(note: note, locked: initiallyLocked)
     let newer = try await repo.create(title: "Newer", body: "Other")
-    let model = AppModel(repository: repo)
+    let model = try await openRichArticleFixtureVault(at: folder)
     model.notes = [note, newer]
     model.currentNote = note; model.title = note.title; model.body = note.body
     let order = model.allPagesByUpdated.map(\.id)
@@ -726,17 +755,21 @@ import VaultCore
     #expect(model.allPagesByUpdated.map(\.id) == order)
     #expect(model.recentPages.map(\.id) == recentOrder)
     #expect(try await repo.scan().notes.first(where: { $0.id == note.id })?.isEditingLocked == !initiallyLocked)
+    _ = await model.closeVault()
 }
 
 @Test @MainActor func editingLockFailurePreservesStateAndAllowsRetry() async throws {
-    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaLockFailure-" + UUID().uuidString)
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaLockFailure-" + UUID().uuidString)
+    let folder = base.appendingPathComponent("Vault", isDirectory: true)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: folder) }
+    defer { try? FileManager.default.removeItem(at: base) }
     let repo = try FileVaultRepository.open(root: folder, create: true)
     let note = try await repo.create(title: "Page", body: "Original")
-    let model = AppModel(repository: repo); model.notes = [note]
-    model.currentNote = note; model.title = note.title; model.body = note.body
     let changed = try await repo.save(note: note, title: note.title, body: "External edit", tags: [])
+    let model = try await openRichArticleFixtureVault(at: folder)
+    // Keep the editor's original snapshot stale without racing a watcher-triggered refresh.
+    model.notes = [note]
+    model.currentNote = note; model.title = note.title; model.body = note.body
     model.toggleEditingLock(note.id)
     for _ in 0..<200 {
         if model.editingLockOperations.isEmpty { break }
@@ -754,19 +787,20 @@ import VaultCore
         try await Task.sleep(for: .milliseconds(10))
     }
     #expect(model.currentNote?.isEditingLocked == true)
+    _ = await model.closeVault()
 }
 
 @Test @MainActor func lockingSavesPendingContentBeforePreservingItsTimestamp() async throws {
-    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaPendingLock-" + UUID().uuidString)
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaPendingLock-" + UUID().uuidString)
+    let folder = base.appendingPathComponent("Vault", isDirectory: true)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: folder) }
+    defer { try? FileManager.default.removeItem(at: base) }
     let repo = try FileVaultRepository.open(root: folder, create: true)
     let note = try await repo.create(title: "Page", body: "Original")
     var old = note; old.updatedAt = "2020-01-01T00:00:00Z"
     try NoteCodec.encode(old).write(to: folder.appendingPathComponent(note.relativePath), options: .atomic)
     let scanned = try #require(try await repo.scan().notes.first)
-    let recovery = try RecoveryStore(directory: folder.appendingPathComponent("TestRecovery"))
-    let model = AppModel(repository: repo, recovery: recovery)
+    let model = try await openRichArticleFixtureVault(at: folder)
     model.notes = [scanned]; model.currentNote = scanned; model.title = scanned.title; model.body = "Pending edit"
     model.toggleEditingLock(note.id)
     for _ in 0..<200 {
@@ -779,4 +813,5 @@ import VaultCore
     #expect(saved.updatedAt > scanned.updatedAt)
     #expect(model.currentNote?.updatedAt == saved.updatedAt)
     #expect(!model.dirty)
+    _ = await model.closeVault()
 }
