@@ -9,25 +9,26 @@ struct InspectorTabBar: View {
     let onSelect: (InspectorTab) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.noemaTheme) private var theme
+    @Environment(\.controlActiveState) private var controlActiveState
     @Namespace private var tabNamespace
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: NoemaSpacing.xs) {
             ForEach(tabs) { tab in
                 let isSelected = tab == selectedTab
                 Button {
                     onSelect(tab)
                 } label: {
                     Image(systemName: tab.symbol)
-                        .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                        .foregroundStyle(isSelected ? Color.accentColor : .secondary)
-                        .frame(maxWidth: .infinity, minHeight: 26, maxHeight: 26)
+                        .font(isSelected ? NoemaTypography.navigationEmphasis : NoemaTypography.navigation)
+                        .foregroundStyle(theme.text(for: isSelected ? .textOnSelection : .textSecondary, on: isSelected ? .selection : .elevated, active: controlActiveState != .inactive))
+                        .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight)
                         .contentShape(Rectangle())
                         .background {
                             if isSelected {
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(Color.primary.opacity(colorSchemeContrast == .increased ? 0.16 : 0.09))
+                                RoundedRectangle(cornerRadius: NoemaMetrics.radiusSmall, style: .continuous)
+                                    .fill(theme.color(for: .selection, active: controlActiveState != .inactive))
                                     .matchedGeometryEffect(id: "inspectorActiveTab", in: tabNamespace)
                             }
                         }
@@ -39,14 +40,14 @@ struct InspectorTabBar: View {
                 .accessibilityValue(isSelected ? "Selected" : "")
             }
         }
-        .padding(3)
+        .padding(NoemaMetrics.controlGroupInset)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(0.05))
+            RoundedRectangle(cornerRadius: NoemaMetrics.radiusStandard, style: .continuous)
+                .fill(theme.color(for: .elevated))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.primary.opacity(colorSchemeContrast == .increased ? 0.25 : 0.07), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: NoemaMetrics.radiusStandard, style: .continuous)
+                .strokeBorder(theme.color(for: .separator), lineWidth: NoemaMetrics.borderWidth)
         )
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: selectedTab)
         .accessibilityElement(children: .contain)
@@ -72,6 +73,7 @@ struct InspectorTabBar: View {
 
 /// Active panel header displaying the current destination title, optional count badge, and contextual actions.
 struct InspectorPanelHeader<Actions: View>: View {
+    @Environment(\.noemaTheme) private var theme
     let title: String
     let count: Int?
     let actions: Actions
@@ -87,28 +89,28 @@ struct InspectorPanelHeader<Actions: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .center, spacing: NoemaSpacing.sm) {
             Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.primary)
+                .font(NoemaTypography.sectionHeader)
+                .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
             if let count {
                 Text(count.formatted())
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .font(NoemaTypography.metadataEmphasis)
+                    .foregroundStyle(theme.text(for: .textSecondary, on: .elevated))
                     .monospacedDigit()
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1.5)
                     .background(
                         Capsule()
-                            .fill(Color.primary.opacity(0.07))
+                            .fill(theme.color(for: .elevated))
                     )
             }
-            Spacer(minLength: 8)
+            Spacer(minLength: NoemaSpacing.sm)
             actions
                 .controlSize(.small)
-                .font(.caption)
+                .font(NoemaTypography.metadata)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, NoemaMetrics.inspectorInset)
+        .padding(.vertical, NoemaSpacing.md)
     }
 }

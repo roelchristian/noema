@@ -22,15 +22,15 @@ struct InspectorContainer: View {
                         selectedTab: activeTab,
                         onSelect: { state.selectTab($0, for: context) }
                     )
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                    .padding(.bottom, 10)
-                    Divider()
+                    .padding(.horizontal, NoemaMetrics.inspectorInset)
+                    .padding(.top, NoemaSpacing.md)
+                    .padding(.bottom, NoemaSpacing.md)
+                    Divider().overlay(theme.color(for: .separator))
                     activePanelView(for: activeTab)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
                 .frame(maxHeight: .infinity)
-                .background(theme.color(.background))
+                .background(theme.color(for: .inspector))
                 .ignoresSafeArea(.container, edges: .top)
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel(accessibilityLabel)
@@ -123,20 +123,22 @@ enum InspectorFormatting {
 }
 
 struct InspectorProperty: View {
+    @Environment(\.noemaTheme) private var theme
     let title: String
     let value: String
     init(_ title: String, _ value: String) { self.title = title; self.value = value }
     var body: some View {
         LabeledContent {
-            Text(value.isEmpty ? "None" : value).foregroundStyle(.primary)
+            Text(value.isEmpty ? "None" : value).foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
         } label: {
-            Text(title).foregroundStyle(.secondary)
+            Text(title).foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
         }
-        .font(.caption)
+        .font(NoemaTypography.metadata)
     }
 }
 
 struct InspectorSection<Content: View, Actions: View>: View {
+    @Environment(\.noemaTheme) private var theme
     let title: String
     let count: Int?
     let showTopDivider: Bool
@@ -159,51 +161,53 @@ struct InspectorSection<Content: View, Actions: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: NoemaSpacing.md) {
             if showTopDivider {
-                Divider()
+                Divider().overlay(theme.color(for: .separator))
             }
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: NoemaSpacing.sm) {
                 DisclosureGroup(isExpanded: $expanded) { EmptyView() } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: NoemaSpacing.sm) {
                         Text(title)
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(.primary)
+                            .font(NoemaTypography.sectionHeader)
+                            .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
                         if let count {
                             Text(count.formatted())
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(NoemaTypography.metadata)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         }
                     }
                 }
                 actions
                     .controlSize(.small)
-                    .font(.caption)
+                    .font(NoemaTypography.metadata)
             }
             if expanded {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: NoemaSpacing.sm) {
                     content
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .font(.callout)
+                .font(NoemaTypography.interface)
             }
         }
     }
 }
 
 struct SidebarAISummary: View {
+    @Environment(\.noemaTheme) private var theme
     let text: String
     @State private var expanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: NoemaSpacing.sm) {
             Text(text)
-                .font(.callout)
+                .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
+                .font(NoemaTypography.interface)
                 .lineLimit(expanded ? nil : 4)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button(expanded ? "Show less" : "Show more") { expanded.toggle() }
                 .buttonStyle(.link)
-                .font(.caption)
+                .font(NoemaTypography.metadata)
                 .accessibilityLabel(expanded ? "Collapse AI-generated summary" : "Expand AI-generated summary")
                 .accessibilityValue(expanded ? "Expanded" : "Collapsed")
         }
@@ -212,6 +216,7 @@ struct SidebarAISummary: View {
 }
 
 struct SourceAssociationRow: View {
+    @Environment(\.noemaTheme) private var theme
     let title: String
     let openLabel: String
     let canOpen: Bool
@@ -221,9 +226,10 @@ struct SourceAssociationRow: View {
     @State private var confirmingRemoval = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: NoemaSpacing.sm) {
             HStack {
-                Text(title)
+                Text(title).font(NoemaTypography.interfaceEmphasis)
+                    .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
                 Spacer()
                 Button(action: open) {
                     Label(openLabel, systemImage: "arrow.up.forward.square").labelStyle(.iconOnly)
@@ -238,8 +244,8 @@ struct SourceAssociationRow: View {
             }
             if confirmingRemoval {
                 Text("Remove this link? The page and source will be kept.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(NoemaTypography.metadata)
+                    .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                 HStack {
                     Button("Remove", role: .destructive) {
                         confirmingRemoval = false
@@ -255,6 +261,7 @@ struct SourceAssociationRow: View {
 }
 
 struct SemanticBlockSidebarRow: View {
+    @Environment(\.noemaTheme) private var theme
     let block: EditorBlock
     let navigate: () -> Void
     @FocusState private var focused: Bool
@@ -263,23 +270,23 @@ struct SemanticBlockSidebarRow: View {
         let presentation = SemanticPresentation.find(block.metadata.semantic)
         let preview = block.text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         Button(action: navigate) {
-            HStack(spacing: 8) {
+            HStack(spacing: NoemaSpacing.sm) {
                 Image(systemName: presentation?.symbol ?? "tag")
                     .foregroundStyle(Color(nsColor: presentation?.accent ?? .secondaryLabelColor))
                     .frame(width: 20)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(presentation?.title ?? block.metadata.semantic ?? "Block")
-                        .font(.callout.weight(.medium))
-                        .foregroundStyle(.primary)
+                        .font(NoemaTypography.interfaceEmphasis)
+                        .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
                     Text(preview.isEmpty ? "Empty block" : preview)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(NoemaTypography.metadata)
+                        .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         .lineLimit(2)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: "arrow.right")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                     .accessibilityHidden(true)
             }
             .font(.body)
