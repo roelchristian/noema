@@ -94,7 +94,7 @@ My Vault/
 
 - **Wiki frontmatter:** `id`, `title`, `aliases`, `tags`, optional `lcc` (Library of Congress Classification code), `created_at`, `updated_at`, and optional `sources` UUID references and lock state. Unknown YAML fields are preserved semantically; external Markdown files receive frontmatter only on their first app save.
 - **Source metadata:** `id`, `title`, `capturedAt`, `originalFilename`, optional `originURL`, optional `lcc`, `sha256`, `storedFilename`, and optional `aiSummary`, `fileSize`, `linkedBookmark`, `isURLSource`, and `webAvailabilityIssue`. Imported originals are stored byte-for-byte via staged `.import-<uuid>` directories and published only once both original and metadata exist.
-- **App-local storage:** Rebuildable SQLite search indexes and unsaved recovery drafts live outside the synced vault under `~/Library/Application Support/KnowledgeVault/<vault-uuid>`. Keep `Drafts` if you have unsaved recovery work; deleting the SQLite index simply triggers a rebuild on next open.
+- **App-local storage:** `AppModel` places `search.sqlite` (and SQLite-managed `search.sqlite-wal` / `search.sqlite-shm` while present) and `Drafts/<note UUID>.json` under `<Application Support URL>/KnowledgeVault/<vault UUID>/`, outside the synced vault. The base is the runtime URL returned by Foundation for the user's Application Support directory; a sandboxed app can resolve it inside its app container. An unsandboxed example is `~/Library/Application Support/KnowledgeVault/<vault UUID>/`. Tests can substitute the base with `localStorageRoot`. Keep `Drafts` if you have unsaved recovery work; the search index is rebuildable. These files remain plaintext when the vault is locked.
 
 ## iCloud, conflicts, and Trash
 
@@ -104,7 +104,7 @@ My Vault/
 
 ## Testing and architecture
 
-Build and test wrappers automatically run the storage boundary guard (`python3 scripts/check-storage-boundary.py --selftest`; see [STORAGE_ACCESS_AUDIT.md](STORAGE_ACCESS_AUDIT.md)).
+Build and test wrappers automatically run the storage boundary guard. Run its fixture self-tests separately with `python3 scripts/check-storage-boundary.py --selftest`; see [STORAGE_ACCESS_AUDIT.md](STORAGE_ACCESS_AUDIT.md).
 
 ```sh
 ./scripts/test.sh
@@ -116,4 +116,6 @@ VAULT_BENCHMARK=1 ./scripts/test.sh --filter benchmarkFiveThousandEntries
 - See [ARCHITECTURE.md](ARCHITECTURE.md) for component boundaries, concurrency ownership, and the storage adapter contract.
 - See [BLOCK_EDITOR.md](BLOCK_EDITOR.md) for block document persistence and Markdown compatibility.
 - See [VALIDATION.md](VALIDATION.md) for recorded test evidence, benchmark baselines, and standing environment/two-Mac iCloud limitations.
+
+Vault lifecycle locking, lease checks, save quiescence, and stale-completion rejection are implemented with automated coverage for the named scenarios in the [milestone evidence matrix](VALIDATION.md#d02-evidence-matrix). Locking revokes access inside this app process; it does not encrypt canonical files, local drafts, the index, previews, or linked originals. The tests cover specific scheduled interleavings and injected failures; they do not establish exhaustive timing coverage or process-crash/power-loss durability. Two-Mac transport and real provider conflicts remain pending device acceptance. **Saved locally** reports this Mac's local save, without confirming transport to another device.
 
