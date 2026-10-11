@@ -23,11 +23,12 @@ private actor AuditTransport: OpenAITransporting {
     init(status: Int = 200, body: Data = auditResponse) { self.status = status; self.body = body }
     func setBefore(_ hook: @escaping @Sendable () async throws -> Void) { beforeResume = hook }
     func setAfter(_ hook: @escaping @Sendable () async throws -> Void) { afterResume = hook }
-    func perform(_ request: URLRequest, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void) async throws -> OpenAIHTTPResponse {
+    func perform(_ request: URLRequest, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void, didDispatch: @escaping @Sendable () -> Void) async throws -> OpenAIHTTPResponse {
         try await beforeResume?()
         let dispatched = Mutex(false)
         try beforeDispatch { dispatched.withLock { $0 = true } }
         guard dispatched.withLock({ $0 }) else { throw ExternalAIError.cancelled }
+        didDispatch()
         count += 1
         try await afterResume?()
         return OpenAIHTTPResponse(statusCode: status, body: body)
@@ -45,7 +46,7 @@ private struct AuditFixture {
         broker = ExternalAICredentialBroker(keychain: AuditKeychain(), now: now)
         try await broker.store("synthetic-audit-credential-only")
         manager = ExternalAISessionManager(accessGate: gate, credentialBroker: broker, authenticator: AuditAuthenticator(), observeSystemEvents: false)
-        gateway = ExternalAIGateway(credentialBroker: broker, sessionManager: manager, accessGate: gate, transport: transport)
+        gateway = ExternalAIGateway(credentialBroker: broker, sessionManager: manager, accessGate: gate, transport: transport, activityRecorder: nil)
         request = try ExternalAISummaryRequest(authority: ExternalAIVaultAuthority(session: session), target: .page(UUID()), contentRevision: UUID(), content: "Private selected text")
     }
 }
