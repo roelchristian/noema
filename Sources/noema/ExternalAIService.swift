@@ -18,9 +18,11 @@ final class ExternalAIService {
     private(set) var authorizationState: ExternalAISessionState = .unauthorized
 
     @ObservationIgnored private let accessGate: VaultAccessGate
+    @ObservationIgnored private let activityRecorder: AIActivityRecorder
     @ObservationIgnored private let defaults: UserDefaults
 
-    init(accessGate: VaultAccessGate, defaults: UserDefaults = .standard) {
+    init(accessGate: VaultAccessGate, defaults: UserDefaults = .standard, activityRecorder: AIActivityRecorder = .shared) {
+        self.activityRecorder = activityRecorder
         self.accessGate = accessGate
         self.defaults = defaults
         let configuration = Self.loadConfiguration(from: defaults)
@@ -30,7 +32,7 @@ final class ExternalAIService {
         let sessions = ExternalAISessionManager(accessGate: accessGate, credentialBroker: broker)
         sessionManager = sessions
         gateway = ExternalAIGateway(credentialBroker: broker, sessionManager: sessions,
-                                   accessGate: accessGate, configuration: configuration)
+                                   accessGate: accessGate, configuration: configuration, activityRecorder: activityRecorder)
     }
 
     static func loadConfiguration(from defaults: UserDefaults) -> ExternalAIModelConfiguration {
@@ -72,7 +74,7 @@ final class ExternalAIService {
         sessionManager.revoke()
         configuration = selected
         gateway = ExternalAIGateway(credentialBroker: credentialBroker, sessionManager: sessionManager,
-                                   accessGate: accessGate, configuration: selected)
+                                   accessGate: accessGate, configuration: selected, activityRecorder: activityRecorder)
         authorizationState = .revoked
     }
 
