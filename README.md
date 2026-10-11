@@ -2,7 +2,7 @@
 
 **A personal atlas of thought.**
 
-Noema is a native macOS personal wiki with a read-only source library, structured block and TeX math editing, optional on-device Apple Intelligence, provider-selected AI summaries and portable plaintext storage.
+Noema is a native macOS personal wiki with a read-only source library, structured block and TeX math editing, optional on-device Apple Intelligence, portable plaintext storage, and provider-selected AI summaries, titles and LCC suggestions.
 
 ## Build and quick start
 
@@ -21,7 +21,7 @@ Open `Examples/Demo Vault` for a tour, or choose **Create a vault** and select a
 
 Vault locking revokes access inside Noema. Canonical files, indexes, drafts, previews and linked originals remain plaintext. Encrypted creation is disabled pending cryptographic storage. **Saved locally** confirms this Mac's save; two-Mac iCloud transport acceptance remains pending.
 
-Selected page/source summaries use the provider chosen in Intelligence settings, with per-action preferences and deliberate temporary alternatives. OpenAI requires explicit approval of each exact text snapshot; an authenticated session can use compact disclosure with an expandable full-text preview. Credentials stay in Keychain; cloud authorization expires and revokes with vault/device lifecycle events. API use can incur charges, and cancellation cannot recall transmitted text. See the [external AI contract](docs/contracts/external-ai.md) and [pending device/provider acceptance](docs/validation.md#d02a-device-acceptance-checklist).
+Selected page/source AI actions use the provider chosen in Intelligence settings, with optional preferences for summaries, titles and LCC classification. OpenAI requires explicit approval of each exact text snapshot; an authenticated session can use compact disclosure with an expandable full-text preview. Title and LCC suggestions require review before application. Provider changes affect future requests and preserve saved results. Credentials stay in Keychain; cloud authorization expires and revokes with vault/device lifecycle events. API use can incur charges, and cancellation cannot recall transmitted text. See the [external AI contract](docs/contracts/external-ai.md) and [pending device/provider acceptance](docs/validation.md#d02a-device-acceptance-checklist).
 
 ## Documentation
 
