@@ -15,14 +15,17 @@ struct AIActivityIntegrationTests {
         throw ActivityFixtureError.timedOut
     }
 
-    @MainActor private func fixture(recording: Bool = true, finishGate: ActivityInferenceGate? = nil) async throws -> ActivityFixture {
+    @MainActor private func fixture(recording: Bool = true, finishGate: ActivityInferenceGate? = nil,
+                                    beginGate: ActivityInferenceGate? = nil) async throws -> ActivityFixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-activity-integration-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let repository = try FileVaultRepository.open(root: root, create: true)
         let note = try await repository.create(title: "Fixture", body: "Private model input never stored in history")
         let store = try SQLiteAIActivityStore(url: root.appendingPathComponent("activity.sqlite"))
         let recordingStore: any AIActivityStore
-        if let finishGate { recordingStore = ActivityDelayedFinishStore(store: store, gate: finishGate) }
+        if finishGate != nil || beginGate != nil {
+            recordingStore = ActivityDelayedFinishStore(store: store, gate: finishGate, beginGate: beginGate)
+        }
         else { recordingStore = store }
         let recorder = AIActivityRecorder(store: recording ? recordingStore : nil)
         let domain = "noema-activity-integration-\(UUID())"
@@ -88,6 +91,31 @@ struct AIActivityIntegrationTests {
         #expect(records.count == 1 && records.first?.id == confirmation.request.id)
         #expect(records.first?.provider == .openAI && records.first?.requestCount == 0)
         #expect(records.first?.outcome == .notApplicable)
+    }
+
+    @Test @MainActor func modelChangeDuringCloudActivityBeginCancelsBeforeConsent() async throws {
+        let gate = ActivityInferenceGate()
+        let f = try await fixture(beginGate: gate); defer { f.cleanup() }
+        let originalPreference = UserDefaults.standard.object(forKey: ExternalAIService.modelPreferenceKey)
+        defer {
+            if let originalPreference {
+                UserDefaults.standard.set(originalPreference, forKey: ExternalAIService.modelPreferenceKey)
+            } else { UserDefaults.standard.removeObject(forKey: ExternalAIService.modelPreferenceKey) }
+        }
+        let originalModel = f.model.externalAIService.configuration.model
+        let changedModel = originalModel == "gpt-4.1-mini" ? "gpt-4.1" : "gpt-4.1-mini"
+        f.model.prepareCloudPageSummary(id: f.note.id)
+        let worker = try #require(f.model.cloudSummaryTaskForTesting)
+        try await waitUntil { await gate.entered }
+        try f.model.externalAIService.setModel(changedModel)
+        await gate.release()
+        await worker.value
+        let records = try await f.store.query()
+        let record = try #require(records.first)
+        #expect(records.count == 1 && record.modelID == originalModel)
+        #expect(record.status == .cancelled && record.failureCode == .publication)
+        #expect(record.requestCount == 0 && record.outcome == .notApplicable)
+        #expect(f.model.cloudSummaryConfirmation == nil && f.model.cloudSummaryTarget == nil)
     }
 
     @Test @MainActor func suggestionsRecordReviewOutcomesWithoutAnotherInference() async throws {
@@ -236,20 +264,27 @@ private actor ActivityInferenceGate {
     func release() { continuation?.resume(); continuation = nil }
 }
 
-/// Delays only the first successful proposal finish to exercise caller reentrancy.
+/// Delays selected first writes to exercise caller reentrancy.
 private actor ActivityDelayedFinishStore: AIActivityStore {
     let store: SQLiteAIActivityStore
-    let gate: ActivityInferenceGate
+    let gate: ActivityInferenceGate?
+    let beginGate: ActivityInferenceGate?
     private var delayed = false
-    init(store: SQLiteAIActivityStore, gate: ActivityInferenceGate) { self.store = store; self.gate = gate }
-    func insert(_ record: AIActivityRecord) async throws { try await store.insert(record) }
+    private var beginDelayed = false
+    init(store: SQLiteAIActivityStore, gate: ActivityInferenceGate?, beginGate: ActivityInferenceGate? = nil) {
+        self.store = store; self.gate = gate; self.beginGate = beginGate
+    }
+    func insert(_ record: AIActivityRecord) async throws {
+        if !beginDelayed, let beginGate { beginDelayed = true; await beginGate.wait() }
+        try await store.insert(record)
+    }
     func recordDispatch(_ id: UUID) async throws { try await store.recordDispatch(id) }
     func recordUsage(_ id: UUID, usage: AIActivityUsage, estimatedCostUSD: Double?) async throws {
         try await store.recordUsage(id, usage: usage, estimatedCostUSD: estimatedCostUSD)
     }
     func finish(_ id: UUID, at: Date, status: AIActivityStatus, outcome: AIActivityOutcome,
                 failureCode: AIActivityFailureCode?) async throws {
-        if !delayed, status == .completed, outcome == .suggested { delayed = true; await gate.wait() }
+        if !delayed, status == .completed, outcome == .suggested, let gate { delayed = true; await gate.wait() }
         try await store.finish(id, at: at, status: status, outcome: outcome, failureCode: failureCode)
     }
     func updateOutcome(_ id: UUID, outcome: AIActivityOutcome) async throws { try await store.updateOutcome(id, outcome: outcome) }

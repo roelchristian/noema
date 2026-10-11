@@ -1016,19 +1016,21 @@ struct AISuggestion: Identifiable, Sendable {
                 try Task.checkCancellation()
                 guard cloudRequestID == identity, selectedID == selection, revision == cloudEditorRevision,
                       request.authority.matches(sessionManager.accessGate.currentLease) else { throw ExternalAIError.staleSession }
+                let configuration = externalAIService.configuration
                 createdActivityID = request.id
                 cloudActivityID = request.id
                 await activityRecorder.begin(id: request.id, vaultID: lease.vaultID,
                     target: AIActivityTarget(type: target.isPageActivityTarget ? .page : .source, id: target.id),
                     action: request.action.activityAction, executionMode: .userInvoked, provider: .openAI,
-                    modelID: externalAIService.configuration.model, contentSizeBytes: request.content.utf8.count)
+                    modelID: configuration.model, contentSizeBytes: request.content.utf8.count)
                 try Task.checkCancellation()
                 guard cloudRequestID == identity, selectedID == selection, revision == cloudEditorRevision,
                       request.authority.matches(sessionManager.accessGate.currentLease) else {
                     throw ExternalAIError.staleSession
                 }
+                guard configuration == externalAIService.configuration else { throw ExternalAIError.staleContent }
                 cloudSummaryConfirmation = CloudSummaryConfirmation(request: request, snapshot: snapshot,
-                    title: itemTitle, model: externalAIService.configuration.model,
+                    title: itemTitle, model: configuration.model,
                     selection: selection, editorRevision: revision, presentation: presentation)
                 cloudSummaryTarget = nil; cloudSummaryTask = nil
             } catch {
