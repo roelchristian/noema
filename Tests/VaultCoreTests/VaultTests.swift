@@ -972,3 +972,52 @@ func wikipediaCaptureUsesFullHTML(html: String) async throws {
     #expect(edited.updatedAt > note.updatedAt)
     #expect(relocked.updatedAt == edited.updatedAt && relocked.body == "New content")
 }
+
+@Test func searchIndexOutgoingLinksPreservesOrderDeduplicatesAndEnforcesSessionLease() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let alpha = try await repo.create(
+        title: "Alpha",
+        body: "See [[Beta]], then [[Gamma|custom label]], repeated [[beta]], and `[[IgnoredInCode]]` plus [[Unresolved Page]]."
+    )
+    var beta = try await repo.create(title: "Beta", body: "Back to [[Alpha]].")
+    beta.aliases = ["Old Beta"]
+    beta = try await repo.save(note: beta, title: "Beta", body: beta.body, tags: [])
+    let gamma = try await repo.create(title: "Gamma", body: "Links to [[Old Beta]].")
+
+    let sessionManager = VaultSessionManager()
+    let (_, lease, _) = try await sessionManager.openRepository(root: folder)
+    let indexURL = folder.appendingPathComponent("index.sqlite")
+    let index = try SQLiteSearchIndex(
+        url: indexURL,
+        sessionLease: lease,
+        accessGate: sessionManager.accessGate
+    )
+    let batch = try await repo.scan()
+    try await index.reconcile(batch)
+
+    let alphaOutlinks = try await index.outgoingLinks(from: alpha.id)
+    #expect(alphaOutlinks == ["beta", "gamma", "unresolved page"])
+
+    let gammaOutlinks = try await index.outgoingLinks(from: gamma.id)
+    #expect(gammaOutlinks == ["old beta"])
+
+    let betaBacklinks = try await index.backlinks(to: beta)
+    #expect(Set(betaBacklinks) == Set([alpha.id, gamma.id]))
+
+    // Updating Alpha's links updates the outgoingLinks query after reconcile.
+    let updatedAlpha = try await repo.save(
+        note: alpha,
+        title: alpha.title,
+        body: "Now only links to [[Gamma]].",
+        tags: []
+    )
+    try await index.reconcile(try await repo.scan())
+    #expect(try await index.outgoingLinks(from: updatedAlpha.id) == ["gamma"])
+
+    // Locking the session invalidates the lease and rejects outgoingLinks queries.
+    try await sessionManager.lock()
+    await #expect(throws: VaultAccessError.self) {
+        _ = try await index.outgoingLinks(from: updatedAlpha.id)
+    }
+}

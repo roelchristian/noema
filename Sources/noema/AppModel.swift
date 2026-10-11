@@ -141,6 +141,7 @@ struct EditorAction: Equatable {
     var tagInput = ""
     var preview: [PreviewBlock] = []
     var backlinks: [NoteRecord] = []
+    var outgoingLinkTargets: [String] = []
     var reading = true
     var editorNotice: String?
     var editingHint: String?
@@ -494,7 +495,7 @@ struct EditorAction: Equatable {
     private func clearSessionUIState() {
         notes = []; sources = []; rows = []; semanticRows = []; trashedPages = []; recoveredDrafts = []; issues = []
         dismissedVaultNotices = []
-        tags = []; backlinks = []; preview = []; recentPageIDs = []; unseenRenamedPages = []
+        tags = []; backlinks = []; outgoingLinkTargets = []; preview = []; recentPageIDs = []; unseenRenamedPages = []
         searchText = ""; sidebarSearchResults = SidebarSearchResults(); scope = .wiki
         selectedID = nil; selectedSemanticID = nil; currentNote = nil; currentSource = nil
         title = ""; body = ""; tagInput = ""; lccInput = ""; wordCount = 0; reading = true
@@ -762,7 +763,7 @@ struct EditorAction: Equatable {
             root = url; vaultName = url.lastPathComponent; scope = .wiki; searchText = ""
             sidebarSearchResults = SidebarSearchResults()
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
-            title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; wordCount = 0; reading = true
+            title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0; reading = true
             let cached = try await searchIndex.cachedEntries()
             notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
             updateTags()
@@ -928,7 +929,7 @@ struct EditorAction: Equatable {
             root = candidateURL; vaultName = candidateURL.lastPathComponent; scope = .wiki; searchText = ""
             sidebarSearchResults = SidebarSearchResults()
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
-            title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; wordCount = 0; reading = true
+            title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0; reading = true
             let cached = try await searchIndex.cachedEntries()
             notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
             updateTags()
@@ -1183,9 +1184,9 @@ struct EditorAction: Equatable {
             if let note = notes.first(where: { $0.id == id }) { apply(note) }
             else if let source = sources.first(where: { $0.id == id }) {
                 currentSource = source; title = source.title; body = source.body; reading = true
-                generatePreview(); backlinks = []
+                generatePreview(); backlinks = []; outgoingLinkTargets = []
             } else {
-                title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; wordCount = 0
+                title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0
                 editorNotice = nil; editingHint = nil; editorReadOnly = false
             }
             selectedSemanticID = nil
@@ -1210,6 +1211,7 @@ struct EditorAction: Equatable {
     private var sourceLCCSaveTasks: [UUID: Task<Void, Never>] = [:]
 
     private func apply(_ note: NoteRecord) {
+        let isDifferentPage = currentNote?.id != note.id
         lccSaveTask?.cancel()
         markPageViewed(note.id)
         recentPageIDs.removeAll { $0 == note.id }
@@ -1217,6 +1219,10 @@ struct EditorAction: Equatable {
         editingHint = nil
         aiSummaryNotice = nil
         editorAction = nil
+        if isDifferentPage {
+            backlinks = []
+            outgoingLinkTargets = []
+        }
         currentNote = note; title = note.title; body = note.body; tagInput = note.tags.joined(separator: ", ")
         lccInput = note.lcc ?? ""
         let document = BlockDocumentCodec.decode(note.body)
@@ -1669,7 +1675,7 @@ struct EditorAction: Equatable {
                 try await repository.trash(note: note)
                 guard isCompletionValid(completionTicket, operation: "trashPage.trash") else { return }
                 if currentNote?.id == id {
-                    selectedID = nil; currentNote = nil; body = ""; externalChange = false
+                    selectedID = nil; currentNote = nil; body = ""; backlinks = []; outgoingLinkTargets = []; externalChange = false
                 }
                 await refresh()
             } catch { if isCompletionValid(completionTicket, operation: "trashPage.error") { errorMessage = error.localizedDescription } }
@@ -1764,11 +1770,15 @@ struct EditorAction: Equatable {
         }
     }
     func updateBacklinks() async {
-        guard canOperateOnLoadedContent, let note = currentNote, let index else { backlinks = []; return }
+        guard canOperateOnLoadedContent, let note = currentNote, let index else { backlinks = []; outgoingLinkTargets = []; return }
         let completionTicket = issueCompletionTicket(kind: .search, targetID: note.id)
-        let ids = Set((try? await index.backlinks(to: note)) ?? [])
+        async let incomingTask = try? index.backlinks(to: note)
+        async let outgoingTask = try? index.outgoingLinks(from: note.id)
+        let (incomingIDs, outgoingTargets) = await (incomingTask, outgoingTask)
         guard isCompletionValid(completionTicket, expectedTargetID: currentNote?.id, checkTargetID: true, operation: "updateBacklinks") else { return }
-        backlinks = notes.filter { ids.contains($0.id) }.sorted { $0.title < $1.title }
+        let ids = Set(incomingIDs ?? [])
+        backlinks = notes.filter { ids.contains($0.id) }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        outgoingLinkTargets = outgoingTargets ?? []
     }
     func followWikiLink(_ target: String) {
         guard canOperateOnLoadedContent else { return }

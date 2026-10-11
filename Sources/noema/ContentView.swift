@@ -23,8 +23,7 @@ struct ContentView: View {
     @State private var emptyTrashPages: [TrashedItem] = []
     @State private var dismissedExternalChange = false
     @State private var sourceOriginal = false
-    @State private var showPageDetails = true
-    @State private var condensedInspector = false
+    @State private var inspectorState = InspectorState()
     @State private var recentSectionExpanded = true
     @State private var allPagesSectionExpanded = true
     @State private var pageSortOrder: PageSortOrder = .updated
@@ -35,6 +34,9 @@ struct ContentView: View {
     @State private var deletingSource: SourceRecord?
     @AppStorage(EditorPreferences.aiSummariesKey) private var aiSummaries = false
     @AppStorage(EditorPreferences.aiSummaryPlacementKey) private var aiSummaryPlacement = AISummaryPlacement.defaultValue.rawValue
+    private var inspectorContext: InspectorContext {
+        InspectorContext.resolve(model: model, librarySourceSelection: sourceSelection)
+    }
     private var tabAnimation: Animation? {
         reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.84, blendDuration: 0.1)
     }
@@ -47,6 +49,7 @@ struct ContentView: View {
     private func resetLocalWorkspaceState() {
         sourceSelection = nil
         sourceTablePresentation.clear()
+        inspectorState.resetForSessionChange()
         renamingSource = nil
         sourceName = ""
         deletingSource = nil
@@ -71,11 +74,14 @@ struct ContentView: View {
                 HSplitView {
                     sidebar.frame(minWidth: 250, idealWidth: 265, maxWidth: 280, maxHeight: .infinity)
                     mainWorkspace.frame(minWidth: model.scope == .sources && model.currentNote == nil && model.currentSource == nil ? 520 : 420, maxHeight: .infinity).transaction { $0.animation = nil }
-                    if !model.isSearching, model.scope == .sources && model.currentNote == nil && model.currentSource == nil,
-                       let source = model.sources.first(where: { $0.id == sourceSelection }) {
-                        sourceInspector(source).frame(minWidth: 280, idealWidth: 340, maxWidth: 400, maxHeight: .infinity).transaction { $0.animation = nil }
-                    } else if showPageDetails, let note = model.currentNote {
-                        pageInspector(note).frame(minWidth: 280, idealWidth: 340, maxWidth: 400, maxHeight: .infinity)
+                    if inspectorState.shouldPresent(for: inspectorContext) {
+                        InspectorContainer(
+                            model: model,
+                            state: inspectorState,
+                            context: inspectorContext,
+                            onCloseSourceSelection: { sourceSelection = nil }
+                        )
+                        .transaction { $0.animation = nil }
                     }
                 }
                 .ignoresSafeArea(.container, edges: .top)
@@ -700,6 +706,27 @@ struct ContentView: View {
                 rename: { source in sourceName = source.title; renamingSource = source },
                 delete: { deletingSource = $0 }
             )
+            .safeAreaBar(edge: .top) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) {
+                        Text("Sources").font(.title2.bold())
+                        Spacer()
+                        Menu {
+                            Button("Check Availability of All Sources") { model.checkSourceAvailability(model.sources) }
+                                .disabled(model.sources.isEmpty || !model.checkingSourceAvailability.isEmpty)
+                        } label: { Label("Source Actions", systemImage: "ellipsis.circle") }
+                        headerActions
+                        if model.busy { ProgressView().controlSize(.small) }
+                    }
+                    if let error = model.errorMessage {
+                        DismissibleNotice(message: error) { model.errorMessage = nil }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 10)
+            }
+            .ignoresSafeArea(.container, edges: .top)
         } else {
             pageLibraryContent
         }
@@ -850,329 +877,8 @@ struct ContentView: View {
         }
         .ignoresSafeArea(.container, edges: .top)
     }
-    @ViewBuilder private func sourceAvailabilityStatus(_ id: UUID, issue: String?) -> some View {
-        if model.downloadingSources.contains(id) {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
-                Text("Downloading from iCloud").foregroundStyle(.secondary)
-            }
-        } else if model.checkingSourceAvailability.contains(id) {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
-                Text("Checking availability…").foregroundStyle(.secondary)
-            }
-        } else {
-            let label = model.sourceAvailability[id] ?? issue ?? "Available"
-            Text(label).lineLimit(1).help(label)
-        }
-    }
-    private func createSourcePageButton(_ source: SourceRecord) -> some View {
-        Button { model.createPageFromSource(source) } label: {
-            Label(model.generatingSourcePages.contains(source.id) ? "Creating Page…" : "Create Page with AI", systemImage: "sparkles")
-        }
-        .disabled(model.downloadingSources.contains(source.id) || model.generatingSourcePages.contains(source.id) || model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id))
-    }
-
-    private func sourceSummaryButton(_ source: SourceRecord, compact: Bool = false) -> some View {
-        let hasSummary = source.metadata.aiSummary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        return Button(compact ? (hasSummary ? "Regenerate" : "Generate") : (hasSummary ? "Regenerate AI Summary" : "Generate AI Summary")) {
-            model.generateSourceSummary(source)
-        }
-        .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id))
-    }
     private func metadataDate(_ value: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        var date = formatter.date(from: value)
-        if date == nil {
-            formatter.formatOptions.insert(.withFractionalSeconds)
-            date = formatter.date(from: value)
-        }
-        return date?.formatted(date: .abbreviated, time: .shortened) ?? value
-    }
-    private func inspectorToolbar(close: @escaping () -> Void) -> some View {
-        HStack(spacing: 6) {
-            Text("Inspector").font(.headline)
-            Spacer()
-            Button {
-                condensedInspector.toggle()
-            } label: {
-                Image(systemName: "rectangle.compress.vertical")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(condensedInspector ? Color.accentColor : .secondary)
-                    .frame(width: 24, height: 24)
-                    .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(condensedInspector ? Color.primary.opacity(0.1) : Color.clear)
-                    )
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Condensed inspector")
-            .accessibilityLabel("Condensed inspector")
-            Button(action: close) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Close inspector")
-            .accessibilityLabel("Close inspector")
-        }.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 8)
-    }
-    private func inspectorIdentity(title: String, kind: String, date: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("DOCUMENT").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            Text(title).font(.headline).fixedSize(horizontal: false, vertical: true)
-            Text(kind + " · " + metadataDate(date)).font(.caption).foregroundStyle(.secondary).help(date)
-        }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-    private func sourceReferences(_ note: NoteRecord) -> some View {
-        let canEdit = !note.isEditingLocked && !model.editorReadOnly && !model.updatingSourceReferences
-        return InspectorSection(title: "Sources", count: note.linkedSourceIDs.count, condensed: condensedInspector) {
-            if note.linkedSourceIDs.isEmpty {
-                Text("No sources linked").foregroundStyle(.secondary)
-                Text("Attach a reference from your source library.").font(.caption).foregroundStyle(.secondary)
-            }
-            ForEach(note.linkedSourceIDs, id: \.self) { id in
-                SourceAssociationRow(
-                    title: model.sources.first(where: { $0.id == id })?.title ?? "Unavailable source",
-                    openLabel: "Open source", canOpen: model.sources.contains { $0.id == id }, canRemove: canEdit,
-                    open: { model.openSource(id) },
-                    remove: { model.setSourceReference(pageID: note.id, sourceID: id, linked: false) }
-                ).id(note.id.uuidString + id.uuidString)
-            }
-        } actions: {
-            Menu("Add") {
-                ForEach(model.sources.filter { !note.linkedSourceIDs.contains($0.id) }) { source in
-                    Button(source.title) { model.setSourceReference(pageID: note.id, sourceID: source.id, linked: true) }
-                }
-            }.disabled(!canEdit || model.sources.allSatisfy { note.linkedSourceIDs.contains($0.id) })
-        }
-    }
-    private func sourcePages(_ source: SourceRecord) -> some View {
-        let pages = model.notes.filter { $0.linkedSourceIDs.contains(source.id) }
-        return InspectorSection(title: "Pages", count: pages.count, condensed: condensedInspector) {
-            if pages.isEmpty { Text("No pages reference this source.").foregroundStyle(.secondary) }
-            ForEach(pages) { note in
-                SourceAssociationRow(
-                    title: note.title, openLabel: "Open page", canOpen: true,
-                    canRemove: !note.isEditingLocked && !model.updatingSourceReferences,
-                    open: { model.select(note.id, scope: .wiki) },
-                    remove: { model.setSourceReference(pageID: note.id, sourceID: source.id, linked: false) }
-                ).id(source.id.uuidString + note.id.uuidString)
-            }
-        } actions: {
-            Menu("Add") {
-                createSourcePageButton(source)
-                Divider()
-                ForEach(model.notes.filter { !$0.isEditingLocked && !$0.linkedSourceIDs.contains(source.id) }) { note in
-                    Button(note.title) { model.setSourceReference(pageID: note.id, sourceID: source.id, linked: true) }
-                }
-            }.disabled(model.updatingSourceReferences)
-        }
-    }
-    @ViewBuilder private func sourceLCCRow(_ source: SourceRecord) -> some View {
-        LabeledContent {
-            HStack(spacing: 4) {
-                TextField(
-                    "None",
-                    text: Binding(
-                        get: { source.metadata.lcc ?? "" },
-                        set: { model.updateSourceLCC(source, lcc: $0) }
-                    )
-                )
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.small)
-                .font(.caption)
-                .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceLCCs.contains(source.id))
-                if model.generatingSourceLCCs.contains(source.id) || model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id) {
-                    ProgressView().controlSize(.mini)
-                } else {
-                    Button {
-                        model.refreshSourceLCC(source)
-                    } label: {
-                        Label("Refresh LCC", systemImage: "arrow.clockwise").labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .disabled(model.downloadingSources.contains(source.id))
-                    .help("Refresh LCC with AI")
-                }
-            }
-        } label: {
-            Text("LCC").foregroundStyle(.secondary)
-        }.font(.caption)
-    }
-    @ViewBuilder private func pageLCCRow(_ note: NoteRecord) -> some View {
-        LabeledContent {
-            HStack(spacing: 4) {
-                if model.editingLocked {
-                    let effectiveLCC = (model.currentNote?.id == note.id ? model.lccInput : (note.lcc ?? "")).trimmingCharacters(in: .whitespacesAndNewlines)
-                    Text(effectiveLCC.isEmpty ? "None" : effectiveLCC).foregroundStyle(.primary)
-                } else {
-                    TextField(
-                        "None",
-                        text: Binding(
-                            get: { model.lccInput },
-                            set: { model.setPageLCC($0) }
-                        )
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .controlSize(.small)
-                    .font(.caption)
-                    .disabled(model.generatingPageLCC)
-                }
-                if model.generatingPageLCC {
-                    ProgressView().controlSize(.mini)
-                } else if !model.editingLocked {
-                    Button {
-                        model.refreshPageLCC()
-                    } label: {
-                        Label("Refresh LCC", systemImage: "arrow.clockwise").labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .help("Refresh LCC with AI")
-                }
-            }
-        } label: {
-            Text("LCC").foregroundStyle(.secondary)
-        }.font(.caption)
-    }
-    private func sourceInspector(_ source: SourceRecord) -> some View {
-        VStack(spacing: 0) {
-            inspectorToolbar { sourceSelection = nil }
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    inspectorIdentity(title: source.title, kind: source.metadata.originalFilename.split(separator: ".").last.map { $0.uppercased() } ?? "Source", date: source.metadata.capturedAt)
-                    InspectorSection(title: "Properties", condensed: false) {
-                        LabeledContent("Availability") { sourceAvailabilityStatus(source.id, issue: source.availabilityIssue) }.font(.caption)
-                        sourceLCCRow(source)
-                        InspectorProperty("Original file", source.metadata.originalFilename)
-                        InspectorProperty("Location", source.metadata.isLinked ? "Linked" : "In vault")
-                        if let size = source.metadata.fileSize {
-                            InspectorProperty("Size", ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-                        }
-                        InspectorProperty("Captured", metadataDate(source.metadata.capturedAt)).help(source.metadata.capturedAt)
-                        if let origin = source.metadata.originURL, let url = URL(string: origin), !origin.isEmpty {
-                            LabeledContent("Origin") { Link(origin, destination: url) }.font(.caption)
-                        }
-                    } actions: {
-                        Menu {
-                            Button("Open Preview") { model.openSource(source.id) }
-                            Button("Refresh LCC with AI") { model.refreshSourceLCC(source) }
-                                .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceLCCs.contains(source.id))
-                            Button("Check Availability") { model.checkSourceAvailability([source]) }
-                                .disabled(model.checkingSourceAvailability.contains(source.id))
-                        } label: { Label("Source actions", systemImage: "ellipsis").labelStyle(.iconOnly) }
-                        .menuStyle(.borderlessButton).fixedSize().help("Source actions")
-                    }
-                    sourcePages(source)
-                    if model.generatingSourcePages.contains(source.id) {
-                        HStack { ProgressView().controlSize(.mini); Text("Creating page…").foregroundStyle(.secondary) }
-                    }
-                    InspectorSection(title: "AI summary", condensed: condensedInspector) {
-                        if model.generatingSourceSummaries.contains(source.id) || model.generatingSourceTitles.contains(source.id) {
-                            HStack { ProgressView().controlSize(.mini); Text("Generating summary…").foregroundStyle(.secondary) }
-                        }
-                        if let summary = source.metadata.aiSummary, !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            SidebarAISummary(text: summary).id(source.id)
-                            Text("AI-generated").font(.caption).foregroundStyle(.secondary)
-                        } else { Text("No AI summary available.").foregroundStyle(.secondary) }
-                    } actions: { sourceSummaryButton(source, compact: true).labelStyle(.titleOnly) }
-                }.textSelection(.enabled).padding(.horizontal, 20).padding(.vertical, 14)
-            }
-        }.frame(maxHeight: .infinity).background(theme.color(.background)).ignoresSafeArea(.container, edges: .top).accessibilityLabel("Source inspector")
-    }
-    private func pageInspector(_ note: NoteRecord) -> some View {
-        let document = BlockDocumentCodec.decode(model.body)
-        let summary = document.aiSummary
-        return VStack(spacing: 0) {
-            inspectorToolbar { showPageDetails = false }
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    inspectorIdentity(title: model.title, kind: "Markdown", date: note.updatedAt)
-                    InspectorSection(title: "Properties", condensed: false) {
-                        LabeledContent("Location") {
-                            Button(note.relativePath) {
-                                if let root = model.root { NSWorkspace.shared.activateFileViewerSelecting([root.appendingPathComponent(note.relativePath)]) }
-                            }.buttonStyle(.link).foregroundStyle(.primary)
-                        }.font(.caption)
-                        pageLCCRow(note)
-                        InspectorProperty("Created", metadataDate(note.createdAt)).help(note.createdAt)
-                        InspectorProperty("Modified", metadataDate(note.updatedAt)).help(note.updatedAt)
-                        let pageTags = Array(Set(model.editedTags + note.inlineTags)).sorted()
-                        LabeledContent {
-                            if pageTags.isEmpty {
-                                Text("None").foregroundStyle(.secondary)
-                            } else {
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 4) {
-                                        ForEach(pageTags, id: \.self) { tag in
-                                            Button("#" + tag) { model.changeScope(.tag(tag)) }
-                                                .buttonStyle(.bordered)
-                                                .tint(theme.color(.graphHighlight))
-                                                .controlSize(.mini)
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            Text("Tags").foregroundStyle(.secondary)
-                        }.font(.caption)
-                        if !model.editingLocked {
-                            TextField("Add tags (comma-separated)", text: $model.tagInput)
-                                .textFieldStyle(.roundedBorder)
-                                .controlSize(.small)
-                                .font(.caption)
-                        }
-                        if !note.aliases.isEmpty { InspectorProperty("Aliases", note.aliases.joined(separator: ", ")) }
-                        LabeledContent("Editing") {
-                            Button { model.toggleEditingLock() } label: {
-                                Label(note.isEditingLocked ? "Unlock Editing" : "Lock Editing", systemImage: note.isEditingLocked ? "lock" : "lock.open")
-                            }.buttonStyle(.borderless)
-                            .help(note.isEditingLocked ? "Unlock Editing" : "Lock Editing")
-                            .disabled(model.editingLockOperations.contains(note.id))
-                        }.font(.caption)
-                    } actions: { EmptyView() }
-                    sourceReferences(note)
-                    InspectorSection(title: "Semantic blocks", count: document.semanticGroups.flatMap(\.blocks).count, condensed: condensedInspector) {
-                        if document.semanticGroups.isEmpty { Text("No semantic blocks on this page.").foregroundStyle(.secondary) }
-                        ForEach(document.semanticGroups, id: \.tag) { group in
-                            ForEach(group.blocks) { block in
-                                SemanticBlockSidebarRow(block: block) {
-                                    model.editorAction = EditorAction(operation: .block(block.id))
-                                }
-                            }
-                        }
-                    } actions: { EmptyView() }
-                    InspectorSection(title: "AI summary", condensed: condensedInspector) {
-                        if !aiSummaries { Text("Enable summaries in Noema → Settings → Apple Intelligence.").font(.caption).foregroundStyle(.secondary) }
-                        if model.generatingAISummary {
-                            HStack { ProgressView().controlSize(.mini); Text("Generating summary…").foregroundStyle(.secondary) }
-                        }
-                        if let summary {
-                            SidebarAISummary(text: summary.text).id(note.id)
-                            Text("AI-generated").font(.caption).foregroundStyle(.secondary)
-                        } else { Text("No AI summary available.").foregroundStyle(.secondary) }
-                    } actions: {
-                        Menu {
-                            Button(summary == nil ? "Generate Summary" : "Regenerate Summary") { model.summarizePage() }
-                                .disabled(!aiSummaries || model.editingLocked || model.generatingAISummary)
-                            if summary != nil {
-                                Button("Delete Summary", role: .destructive) { model.deleteAISummary() }
-                                    .disabled(model.editingLocked || model.generatingAISummary)
-                            }
-                        } label: { Label("Summary actions", systemImage: "ellipsis").labelStyle(.iconOnly) }
-                        .menuStyle(.borderlessButton).fixedSize().help("Summary actions")
-                    }
-                }.textSelection(.enabled).padding(.horizontal, 20).padding(.vertical, 14)
-            }
-        }.frame(maxHeight: .infinity).background(theme.color(.background)).ignoresSafeArea(.container, edges: .top).accessibilityLabel("Page inspector")
+        InspectorFormatting.metadataDate(value)
     }
     private var trashLibrary: some View {
         VStack(spacing: 0) {
@@ -1275,7 +981,7 @@ struct ContentView: View {
                     if let source = model.currentSource, sourceOriginal || source.metadata.storedFilename.hasSuffix(".txt") {
                         MarkdownEditor(text: .constant(model.body), action: nil, onWikiQuery: { _ in }, editable: false)
                     } else if model.currentNote != nil {
-                        SummarizedArticleView(model: model, showsSummary: (AISummaryPlacement(rawValue: aiSummaryPlacement) ?? .defaultValue).showsInEditor(sidebarVisible: showPageDetails))
+                        SummarizedArticleView(model: model, showsSummary: (AISummaryPlacement(rawValue: aiSummaryPlacement) ?? .defaultValue).showsInEditor(sidebarVisible: inspectorState.isVisible))
                             .id(model.selectedID)
                     } else { MarkdownPreview(blocks: model.preview, onWikiLink: model.followWikiLink) }
                     if !model.reading, model.currentNote != nil, model.wikiQuery != nil, !model.linkSuggestions.isEmpty {
@@ -1344,14 +1050,27 @@ struct ContentView: View {
         let noun = model.scope == .sources ? (count == 1 ? "source" : "sources") : (count == 1 ? "page" : "pages")
         return "\(count) \(noun)"
     }
+    private var inspectorToolbarToggle: some View {
+        Button {
+            inspectorState.toggleVisibility()
+        } label: {
+            Label(
+                inspectorState.isVisible ? "Hide Inspector" : "Show Inspector",
+                systemImage: "sidebar.right"
+            )
+        }
+        .disabled(!inspectorContext.isInspectable)
+        .keyboardShortcut("i", modifiers: [.command, .option])
+        .help(inspectorState.isVisible ? "Hide Inspector (⌥⌘I)" : "Show Inspector (⌥⌘I)")
+        .accessibilityLabel(inspectorState.isVisible ? "Hide Inspector" : "Show Inspector")
+        .accessibilityValue(inspectorState.isVisible ? "Shown" : "Hidden")
+    }
     private var headerActions: some View {
         HStack(spacing: 16) {
             if model.root != nil {
                 if model.currentNote != nil {
                     HStack(spacing: 8) {
-                        Button { showPageDetails.toggle() } label: {
-                            Label("Page details", systemImage: "sidebar.right")
-                        }.help(showPageDetails ? "Hide page details" : "Show page details")
+                        inspectorToolbarToggle
                         if aiSummaries {
                             Button { model.summarizePage() } label: { Label("Summarize", systemImage: "sparkles") }
                                 .disabled(model.editingLocked || model.generatingAISummary)
@@ -1368,12 +1087,17 @@ struct ContentView: View {
                             Label("Move page to vault trash", systemImage: "trash")
                         }.help("Move page to vault trash")
                     }
-                } else if model.currentSource?.metadata.storedFilename.hasSuffix(".md") == true {
+                } else {
                     HStack(spacing: 8) {
-                        Picker("Source view", selection: $sourceOriginal) {
-                            Text("Read").tag(false)
-                            Text("Original").tag(true)
-                        }.pickerStyle(.segmented).frame(minWidth: 160)
+                        if inspectorContext.isInspectable {
+                            inspectorToolbarToggle
+                        }
+                        if model.currentSource?.metadata.storedFilename.hasSuffix(".md") == true {
+                            Picker("Source view", selection: $sourceOriginal) {
+                                Text("Read").tag(false)
+                                Text("Original").tag(true)
+                            }.pickerStyle(.segmented).frame(minWidth: 160)
+                        }
                     }
                 }
                 HStack(spacing: 8) {
@@ -1429,7 +1153,7 @@ struct ContentView: View {
                 }
             }
             if model.currentNote != nil {
-                if model.reading && !showPageDetails {
+                if model.reading && !inspectorState.isVisible {
                     ViewThatFits(in: .horizontal) {
                         HStack(alignment: .center, spacing: 16) {
                             pageTitle.fixedSize(horizontal: true, vertical: false)
@@ -1444,12 +1168,12 @@ struct ContentView: View {
                 } else {
                     HStack(alignment: .center, spacing: 16) {
                         pageTitle
-                        if !showPageDetails {
+                        if !inspectorState.isVisible {
                             Spacer()
                             headerActions
                         }
                     }
-                    if showPageDetails {
+                    if inspectorState.isVisible {
                         headerActions
                     }
                 }
@@ -1571,95 +1295,7 @@ struct PasteSourceSheet: View {
     }
 }
 
-
-private struct SemanticBlockSidebarRow: View {
-    let block: EditorBlock
-    let navigate: () -> Void
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        let presentation = SemanticPresentation.find(block.metadata.semantic)
-        let preview = block.text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
-        Button(action: navigate) {
-            HStack(spacing: 8) {
-                Image(systemName: presentation?.symbol ?? "tag")
-                    .foregroundStyle(Color(nsColor: presentation?.accent ?? .secondaryLabelColor))
-                    .frame(width: 20)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(presentation?.title ?? block.metadata.semantic ?? "Block").font(.callout.weight(.medium)).foregroundStyle(.primary)
-                    Text(preview.isEmpty ? "Empty block" : preview).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                }.frame(maxWidth: .infinity, alignment: .leading)
-                Image(systemName: "arrow.right")
-                    .foregroundStyle(.secondary).accessibilityHidden(true)
-            }.font(.body).contentShape(Rectangle())
-        }.buttonStyle(.borderless).focused($focused)
-            .help(block.text)
-            .accessibilityLabel("Go to \(presentation?.title ?? block.metadata.semantic ?? "tagged") block: \(preview.isEmpty ? "Empty block" : preview)")
-    }
-}
-
-private struct InspectorProperty: View {
-    let title: String
-    let value: String
-    init(_ title: String, _ value: String) { self.title = title; self.value = value }
-    var body: some View {
-        LabeledContent { Text(value.isEmpty ? "None" : value).foregroundStyle(.primary) } label: {
-            Text(title).foregroundStyle(.secondary)
-        }.font(.caption)
-    }
-}
-
-private struct InspectorSection<Content: View, Actions: View>: View {
-    let title: String
-    let count: Int?
-    let condensed: Bool
-    let content: Content
-    let actions: Actions
-    @State private var expanded: Bool
-    init(title: String, count: Int? = nil, condensed: Bool, @ViewBuilder content: () -> Content, @ViewBuilder actions: () -> Actions) {
-        self.title = title; self.count = count; self.condensed = condensed
-        self.content = content(); self.actions = actions()
-        _expanded = State(initialValue: !condensed)
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Divider()
-            HStack(alignment: .center, spacing: 8) {
-                DisclosureGroup(isExpanded: $expanded) { EmptyView() } label: {
-                    HStack(spacing: 6) {
-                        Text(title).font(.callout.weight(.semibold)).foregroundStyle(.primary)
-                        if let count { Text(count.formatted()).font(.caption).foregroundStyle(.secondary) }
-                    }
-                }
-                actions.controlSize(.small).font(.caption)
-            }
-            if expanded { VStack(alignment: .leading, spacing: 8) { content }.frame(maxWidth: .infinity, alignment: .leading).font(.callout) }
-        }.onChange(of: condensed) { expanded = !condensed }
-    }
-}
-
-private struct SidebarAISummary: View {
-    let text: String
-    @State private var expanded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(text)
-                .font(.callout)
-                .lineLimit(expanded ? nil : 4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button(expanded ? "Show less" : "Show more") { expanded.toggle() }
-                .buttonStyle(.link)
-                .font(.caption)
-                .accessibilityLabel(expanded ? "Collapse AI-generated summary" : "Expand AI-generated summary")
-                .accessibilityValue(expanded ? "Expanded" : "Collapsed")
-        }
-        .onChange(of: text) { expanded = false }
-    }
-}
-
-private struct DismissibleNotice: View {
+struct DismissibleNotice: View {
     var message: String
     var isError = true
     var dismiss: () -> Void
@@ -1671,41 +1307,6 @@ private struct DismissibleNotice: View {
                 Label("Dismiss message", systemImage: "xmark.circle.fill").labelStyle(.iconOnly)
             }.buttonStyle(.borderless).foregroundStyle(.secondary).help("Dismiss message")
         }
-    }
-}
-
-private struct SourceAssociationRow: View {
-    let title: String
-    let openLabel: String
-    let canOpen: Bool
-    let canRemove: Bool
-    let open: () -> Void
-    let remove: () -> Void
-    @State private var confirmingRemoval = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title)
-                Spacer()
-                Button(action: open) {
-                    Label(openLabel, systemImage: "arrow.up.forward.square").labelStyle(.iconOnly)
-                }.disabled(!canOpen).help(openLabel)
-                Button { confirmingRemoval = true } label: {
-                    Label("Remove link", systemImage: "trash").labelStyle(.iconOnly)
-                }.disabled(!canRemove || confirmingRemoval).help("Remove link")
-            }
-            if confirmingRemoval {
-                Text("Remove this link? The page and source will be kept.").font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("Remove", role: .destructive) {
-                        confirmingRemoval = false
-                        remove()
-                    }.disabled(!canRemove)
-                    Button("Cancel") { confirmingRemoval = false }
-                }
-            }
-        }.onChange(of: canRemove) { if !canRemove { confirmingRemoval = false } }
     }
 }
 
