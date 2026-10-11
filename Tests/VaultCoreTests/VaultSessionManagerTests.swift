@@ -272,6 +272,78 @@ struct VaultSessionManagerTests {
         #expect(await manager.state.phase == .locked)
     }
 
+    @Test(arguments: [false, true], [false, true])
+    func coalescedCloseWaitsForCommittedStateAndPropagatesTypedFailure(locked: Bool, failing: Bool) async throws {
+        let manager = VaultSessionManager()
+        _ = try await manager.open(root: rootA) { _ in self.vaultIDA }
+        if locked { try await manager.lock() }
+        let previous = await manager.state
+        let gate = Gate()
+        let calls = CallCounter()
+        let first = Task {
+            try await manager.close { _ in
+                _ = await calls.increment()
+                await gate.arriveAndWait()
+                if failing { throw VaultError.storage("Injected close failure") }
+            }
+            #expect(manager.accessGate.currentState == .closed)
+        }
+        await gate.waitUntilArrived()
+        let duplicate = Task {
+            try await manager.close { _ in _ = await calls.increment() }
+            #expect(manager.accessGate.currentState == .closed)
+        }
+        await waitForWaiters(manager, count: 2)
+        await #expect(throws: VaultSessionError.transitionInProgress(current: previous.phase, requested: "lock")) {
+            try await manager.lock()
+        }
+        await #expect(throws: VaultSessionError.transitionInProgress(current: previous.phase, requested: "unlock")) {
+            _ = try await manager.unlock { _ in self.vaultIDA }
+        }
+        await gate.release()
+        if failing {
+            let expected = VaultSessionError.closeAborted(root: previous.root!, message: "Injected close failure")
+            await #expect(throws: expected) { try await first.value }
+            await #expect(throws: expected) { try await duplicate.value }
+            #expect(await manager.state == previous)
+        } else {
+            try await first.value
+            try await duplicate.value
+            #expect(await manager.state == .closed)
+        }
+        #expect(await calls.count == 1)
+    }
+
+    @Test func rollbackRequestsCannotMutateASupersedingSession() async throws {
+        let manager = VaultSessionManager()
+        let original = try await manager.open(root: rootA) { _ in self.vaultIDA }
+        try await manager.close()
+        let replacement = try await manager.open(root: rootB) { _ in self.vaultIDB }
+        await #expect(throws: VaultSessionError.cancelled(action: "lock")) {
+            try await manager.lock(expectedSession: original)
+        }
+        await #expect(throws: VaultSessionError.cancelled(action: "close")) {
+            try await manager.close(expectedSession: original)
+        }
+        #expect(await manager.state == .open(replacement))
+        #expect(try await manager.issueLease() == replacement.lease)
+    }
+
+    @Test func cancelledCloseRetainsOriginalSessionAndTypedError() async throws {
+        let manager = VaultSessionManager()
+        let session = try await manager.open(root: rootA) { _ in self.vaultIDA }
+        let gate = Gate()
+        let closing = Task {
+            try await manager.close { _ in await gate.arriveAndWait() }
+        }
+        await gate.waitUntilArrived()
+        closing.cancel()
+        await gate.release()
+        await #expect(throws: VaultSessionError.cancelled(action: "close")) { try await closing.value }
+        #expect(await manager.state == .open(session))
+        #expect(try await manager.issueLease() == session.lease)
+    }
+
     @Test func cancellationRollsBackOpeningLockingAndUnlockingCleanly() async throws {
         let manager = VaultSessionManager()
         let openGate = Gate()

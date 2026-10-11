@@ -307,6 +307,7 @@ public final class VaultAccessGate: Sendable {
     }
 
     private struct GateState: Sendable {
+        var contentInvalidators: [UUID: (VaultSessionLease, @Sendable () -> Void)] = [:]
         var sessionState: VaultSessionState
         var highestGeneration: UInt64
         var trackedSessionID: UUID?
@@ -354,6 +355,12 @@ public final class VaultAccessGate: Sendable {
 
     public func updateState(_ next: VaultSessionState) {
         let waitersToResume: [CheckedContinuation<Void, Error>] = state.withLock { gate in
+            // Retirement is synchronous with session revocation. Handlers only discard memory;
+            // they must not call back into the gate or execute I/O.
+            for (id, entry) in gate.contentInvalidators where next.activeSession?.lease != entry.0 || next.phase != .open {
+                entry.1()
+                gate.contentInvalidators.removeValue(forKey: id)
+            }
             gate.sessionState = next
             if next.generation > gate.highestGeneration {
                 gate.highestGeneration = next.generation
@@ -395,6 +402,21 @@ public final class VaultAccessGate: Sendable {
         for continuation in waitersToResume {
             continuation.resume()
         }
+    }
+
+    /// Registers session-bound memory retirement without changing lifecycle/admission semantics.
+    func registerContentInvalidator(lease: VaultSessionLease, invalidate: @escaping @Sendable () -> Void) -> UUID {
+        state.withLock { gate in
+            let id = UUID()
+            if gate.sessionState.activeSession?.lease == lease, gate.sessionState.phase == .open {
+                gate.contentInvalidators[id] = (lease, invalidate)
+            } else { invalidate() }
+            return id
+        }
+    }
+
+    func removeContentInvalidator(_ id: UUID) {
+        _ = state.withLock { $0.contentInvalidators.removeValue(forKey: id) }
     }
 
     public func issueLease(for targetRoot: URL? = nil, vaultID: UUID? = nil) throws -> VaultSessionLease {
@@ -1343,6 +1365,13 @@ public final class GatedVaultContentStore: VaultContentStore, Sendable {
     public func read(at path: String) throws -> Data {
         try validateAccess(operation: "read \(path)")
         return try base.read(at: path)
+    }
+
+    public func changeToken(at path: String) throws -> VaultContentChangeToken? {
+        try validateAccess(operation: "changeToken \(path)")
+        let token = try base.changeToken(at: path)
+        try validateAccess(operation: "changeToken.complete \(path)")
+        return token
     }
 
     public func snapshot(at path: String) throws -> VaultContentSnapshot {

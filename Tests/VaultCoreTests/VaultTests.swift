@@ -197,13 +197,13 @@ private func temporaryFolder() throws -> URL {
     let repo = try FileVaultRepository.open(root: folder, create: true)
     let note = try await repo.create(title: "Draft", body: "Original")
     let journalURL = folder.appendingPathComponent("LocalDrafts")
-    let journal = try RecoveryStore(directory: journalURL)
+    let journal = try RecoveryStore(unguardedTestingDirectory: journalURL)
     try await journal.store(DraftRecord(note: note, title: note.title, body: "Recover me", tags: []))
     // A directory in place of the file reliably simulates a failed disk save.
     try FileManager.default.removeItem(at: folder.appendingPathComponent(note.relativePath))
     try FileManager.default.createDirectory(at: folder.appendingPathComponent(note.relativePath), withIntermediateDirectories: true)
     await #expect(throws: (any Error).self) { try await repo.save(note: note, title: note.title, body: "Recover me", tags: []) }
-    let reopened = try RecoveryStore(directory: journalURL)
+    let reopened = try RecoveryStore(unguardedTestingDirectory: journalURL)
     #expect(try await reopened.drafts().first?.body == "Recover me")
     try await reopened.remove(note.id)
     #expect(try await reopened.drafts().isEmpty)

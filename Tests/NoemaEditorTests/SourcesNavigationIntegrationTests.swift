@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 import VaultCore
 @testable import noema
@@ -91,5 +92,98 @@ struct SourcesNavigationIntegrationTests {
         #expect(await model.closeVault())
         #expect(!model.isVaultAvailable && model.rows.isEmpty)
     }
+    @Test @MainActor func metadataSelectionMaterializesAndRefreshDiscardsUnavailableInspectorContent() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-source-state-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { SourceReader.closeAll(); try? FileManager.default.removeItem(at: root) }
+        let store = try NavigationSourceStore(root: root)
+        let repository = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let bytes = Data("Fresh selected source text".utf8)
+        let source = try await repository.importSource(data: bytes, filename: "source.txt", title: "Source", originURL: nil)
+        let model = AppModel(storageProvider: VaultStorageProvider { _ in store })
+        model.localStorageRoot = root.appendingPathComponent("Local")
+        model.persistSecurityScopedBookmark = false
+        await model.open(root, create: false)
+        let metadata = try await repository.scanSources()
+        model.sources = metadata.sources
+        model.changeScope(.sources)
+        model.select(source.id)
+        await waitUntil { model.currentSource?.contentState == .notLoaded }
+        #expect(model.currentSource?.availabilityIssue == "Not verified")
+        #expect(model.body.isEmpty)
+        model.updateSourceLCC(metadata.sources[0], lcc: "QA")
+        for _ in 0..<100 {
+            if try await repository.scanSources().sources.first?.metadata.lcc == "QA" { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        // Wait for the index actor after the metadata write, while the UI still has a notLoaded record.
+        try await Task.sleep(for: .milliseconds(30))
+        await waitUntil { model.currentSource?.contentState == .loaded && !model.preview.isEmpty }
+        #expect(model.errorMessage == nil)
+        #expect(model.currentSource?.contentState == .loaded && model.body == source.body && !model.preview.isEmpty)
+        #expect(try await repository.scanSources().sources.first?.metadata.lcc == "QA")
+        #expect(try await model.sourceSummaryContent(metadata.sources[0], root: root).contains("Fresh selected"))
+        await model.refresh()
+        await waitUntil { !model.preview.isEmpty }
+        #expect(model.currentSource?.contentState == .loaded)
+        #expect(model.body == source.body && model.wordCount > 0 && !model.preview.isEmpty)
+        model.sourceAvailability[source.id] = "Available"
+        store.unavailable.withLock { $0 = true }
+        await model.refresh()
+        #expect(model.currentSource?.contentState == .unavailable)
+        #expect(model.body.isEmpty && model.preview.isEmpty && model.wordCount == 0)
+        #expect(model.sourceAvailability[source.id] == nil)
+        #expect(model.currentSource?.availabilityIssue?.contains("iCloud") == true)
+        store.unavailable.withLock { $0 = false }
+        await model.refresh()
+        await waitUntil { !model.preview.isEmpty }
+        #expect(model.body == source.body && !model.preview.isEmpty)
+        let original = "Sources/" + source.id.uuidString.lowercased() + "/" + source.metadata.storedFilename
+        try store.base.write(Data("Corruption".utf8), at: original, condition: .replace(expected: bytes))
+        await model.refresh()
+        #expect(model.sources.isEmpty && model.currentSource == nil && model.selectedID == nil)
+        #expect(model.body.isEmpty && model.preview.isEmpty && model.sourceAvailability.isEmpty)
+        #expect(await model.closeVault())
+    }
+
+    @Test @MainActor func linkedContentRefreshUpdatesSelectedPreview() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-linked-preview-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { SourceReader.closeAll(); try? FileManager.default.removeItem(at: root) }
+        let repository = try FileVaultRepository.open(root: root, create: true)
+        let external = root.appendingPathComponent("Linked.txt")
+        try Data("First linked content".utf8).write(to: external)
+        let source = try #require(try await repository.linkSources(at: external, maximumFiles: 1).first)
+        let model = AppModel()
+        model.localStorageRoot = root.appendingPathComponent("Local")
+        model.persistSecurityScopedBookmark = false
+        await model.open(root, create: false)
+        model.changeScope(.sources); model.select(source.id)
+        await waitUntil { model.currentSource?.id == source.id && !model.preview.isEmpty }
+        let oldPreview = model.preview
+        try Data("Second linked content with more words".utf8).write(to: external)
+        await model.refresh()
+        await waitUntil { model.wordCount == 6 }
+        #expect(model.body == "Second linked content with more words")
+        #expect(model.preview != oldPreview && !model.preview.isEmpty)
+        #expect(await model.closeVault())
+    }
+
 }
+}
+
+private final class NavigationSourceStore: VaultContentStore {
+    let base: PlaintextVaultContentStore
+    let unavailable = Mutex(false)
+    init(root: URL) throws { base = try PlaintextVaultContentStore(root: root) }
+    private func validate(_ path: String) throws {
+        if path.contains("/original."), unavailable.withLock({ $0 }) { throw VaultContentStoreError.unavailable(path) }
+    }
+    func createDirectory(at path: String) throws { try base.createDirectory(at: path) }
+    func read(at path: String) throws -> Data { try validate(path); return try base.read(at: path) }
+    func changeToken(at path: String) throws -> VaultContentChangeToken? { try validate(path); return try base.changeToken(at: path) }
+    func snapshot(at path: String) throws -> VaultContentSnapshot { try base.snapshot(at: path) }
+    func write(_ data: Data, at path: String, condition: VaultWriteCondition) throws { try base.write(data, at: path, condition: condition) }
+    func move(from source: String, to destination: String, expected: VaultContentSnapshot) throws { try base.move(from: source, to: destination, expected: expected) }
+    func delete(at path: String, expected: VaultContentSnapshot) throws { try base.delete(at: path, expected: expected) }
 }

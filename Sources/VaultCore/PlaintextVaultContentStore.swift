@@ -43,6 +43,37 @@ public struct PlaintextVaultContentStore: VaultContentStore {
         return data
     }
 
+    public func changeToken(at path: String) throws -> VaultContentChangeToken? {
+        try withScope {
+            let url = try checked(path)
+            return try coordinated { coordinator, error, access in
+                coordinator.coordinate(readingItemAt: url, options: .withoutChanges, error: error) { url in
+                    access {
+                        let url = try self.checked(url)
+                        try self.rejectConflicts(url)
+                        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .ubiquitousItemDownloadingStatusKey])
+                        guard values.ubiquitousItemDownloadingStatus != .notDownloaded else {
+                            try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+                            throw VaultContentStoreError.unavailable(path)
+                        }
+                        guard values.isRegularFile == true else { throw VaultContentStoreError.unsupportedItem(path) }
+                        guard FileManager.default.isReadableFile(atPath: url.path) else {
+                            throw VaultContentStoreError.io(domain: NSPOSIXErrorDomain, code: Int(EACCES), message: "Source original is not readable.")
+                        }
+                        var info = stat()
+                        guard lstat(url.path, &info) == 0 else { return nil }
+                        guard info.st_mode & S_IFMT == S_IFREG else { throw VaultContentStoreError.unsupportedItem(path) }
+                        return VaultContentChangeToken(
+                            device: info.st_dev, inode: info.st_ino, size: info.st_size,
+                            modifiedSeconds: Int64(info.st_mtimespec.tv_sec), modifiedNanoseconds: Int64(info.st_mtimespec.tv_nsec),
+                            changedSeconds: Int64(info.st_ctimespec.tv_sec), changedNanoseconds: Int64(info.st_ctimespec.tv_nsec)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     public func snapshot(at path: String) throws -> VaultContentSnapshot {
         try withScope {
             let url = try checked(path)

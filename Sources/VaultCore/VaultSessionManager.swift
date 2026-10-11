@@ -99,6 +99,7 @@ public enum VaultSessionError: Error, Sendable, Equatable, LocalizedError {
     case invalidTransition(from: VaultSessionPhase, action: String)
     case transitionInProgress(current: VaultSessionPhase, requested: String)
     case cancelled(action: String)
+    case unexpectedFinalState(action: String, expected: VaultSessionPhase, actual: VaultSessionPhase)
     case identityMismatch(expected: UUID, actual: UUID)
     case openFailed(root: URL, message: String)
     case unlockFailed(root: URL, message: String)
@@ -113,6 +114,8 @@ public enum VaultSessionError: Error, Sendable, Equatable, LocalizedError {
             "Cannot start '\(requested)' while vault session is \(current.rawValue)."
         case .cancelled(let action):
             "Vault session '\(action)' was cancelled."
+        case .unexpectedFinalState(let action, let expected, let actual):
+            "Vault session '\(action)' finished in \(actual.rawValue); expected \(expected.rawValue)."
         case .identityMismatch(let expected, let actual):
             "Vault identity changed from \(expected.uuidString) to \(actual.uuidString)."
         case .openFailed(_, let message),
@@ -234,15 +237,23 @@ public actor VaultSessionManager {
             return try FileVaultRepository.inspectManifest(at: targetRoot, storageProvider: storageProvider).id
         }
         let lease = session.lease
-        let repository = try FileVaultRepository.open(
-            root: normalizedRoot,
-            create: false,
-            storageProvider: storageProvider,
-            sessionLease: lease,
-            accessGate: accessGate,
-            willExecuteIO: willExecuteIO
-        )
-        return (session, lease, repository)
+        do {
+            let repository = try FileVaultRepository.open(
+                root: normalizedRoot,
+                create: false,
+                storageProvider: storageProvider,
+                sessionLease: lease,
+                accessGate: accessGate,
+                willExecuteIO: willExecuteIO
+            )
+            return (session, lease, repository)
+        } catch {
+            // Construction happens synchronously on this actor after open commits. Revoke
+            // that session if construction fails, so callers never receive a half-open vault.
+            if state == .open(session) { setState(.closed) }
+            if let sessionError = error as? VaultSessionError { throw sessionError }
+            throw VaultSessionError.openFailed(root: normalizedRoot, message: error.localizedDescription)
+        }
     }
 
     /// Returns a read-only stream of session states, immediately emitting the current state upon subscription
@@ -354,7 +365,7 @@ public actor VaultSessionManager {
                 generation = session.generation
                 setState(.open(session))
             }
-            guard case .open(let committed) = state else {
+            guard state == .open(session), case .open(let committed) = state else {
                 throw VaultSessionError.cancelled(action: "open")
             }
             return committed
@@ -379,8 +390,15 @@ public actor VaultSessionManager {
     /// Transitions an `.open` session through `.locking` to `.locked`.
     /// Duplicate calls while `.locking` or `.locked` are coalesced or idempotent.
     public func lock(
+        expectedSession: VaultSession? = nil,
         teardown: @escaping @Sendable (VaultSession) async throws -> Void = { _ in }
     ) async throws {
+        if let expectedSession, state != .open(expectedSession) {
+            if state.isTransitioning {
+                throw VaultSessionError.transitionInProgress(current: state.phase, requested: "lock")
+            }
+            throw VaultSessionError.cancelled(action: "lock")
+        }
         if activeCloseTask != nil {
             throw VaultSessionError.transitionInProgress(current: state.phase, requested: "lock")
         }
@@ -470,7 +488,7 @@ public actor VaultSessionManager {
                     generation: session.generation
                 ))
             }
-            guard case .locked = state else {
+            guard state == .locked(vaultID: session.vaultID, root: session.root, vaultName: session.vaultName, generation: session.generation) else {
                 throw VaultSessionError.cancelled(action: "lock")
             }
         } catch {
@@ -588,12 +606,14 @@ public actor VaultSessionManager {
             )
             return (session, lease, repository)
         } catch {
-            setState(.locked(
-                vaultID: lockedVaultID,
-                root: lockedRoot,
-                vaultName: lockedName,
-                generation: lockedGeneration
-            ))
+            if state == .open(session) {
+                setState(.locked(
+                    vaultID: lockedVaultID,
+                    root: lockedRoot,
+                    vaultName: lockedName,
+                    generation: lockedGeneration
+                ))
+            }
             if let sessionError = error as? VaultSessionError {
                 throw sessionError
             }
@@ -629,7 +649,7 @@ public actor VaultSessionManager {
                 generation = session.generation
                 setState(.open(session))
             }
-            guard case .open(let committed) = state else {
+            guard state == .open(session), case .open(let committed) = state else {
                 throw VaultSessionError.cancelled(action: "unlock")
             }
             return committed
@@ -659,67 +679,69 @@ public actor VaultSessionManager {
     /// Closes an `.open` or `.locked` session and returns to `.closed`.
     /// Calling `close()` when already `.closed` is a no-op.
     public func close(
+        expectedSession: VaultSession? = nil,
         teardown: @escaping @Sendable (VaultSession?) async throws -> Void = { _ in }
     ) async throws {
+        if let expectedSession, state != .open(expectedSession) {
+            if state.isTransitioning {
+                throw VaultSessionError.transitionInProgress(current: state.phase, requested: "close")
+            }
+            throw VaultSessionError.cancelled(action: "close")
+        }
         if let inFlightClose = activeCloseTask {
-            try await inFlightClose.task.value
+            try await awaitCloseTask(inFlightClose.task)
             return
         }
 
         switch state {
         case .closed:
             return
-
         case .opening, .locking, .unlocking:
             throw VaultSessionError.transitionInProgress(current: state.phase, requested: "close")
-
-        case .locked(_, let root, _, _):
-            if Task.isCancelled {
-                throw VaultSessionError.cancelled(action: "close")
-            }
+        case .locked, .open:
+            if Task.isCancelled { throw VaultSessionError.cancelled(action: "close") }
+            let previous = state
             let transitionID = UUID()
+            // The shared task includes both teardown and the state commit. Every coalesced
+            // caller receives the same typed error and can only succeed after `.closed`.
             let task = Task<Void, Error> {
-                try Task.checkCancellation()
-                try await teardown(nil)
-                try Task.checkCancellation()
+                try await self.finishClose(previous: previous, teardown: teardown)
             }
             activeCloseTask = (transitionID, task)
-            do {
-                try await task.value
-                activeCloseTask = nil
-                setState(.closed)
-            } catch {
-                activeCloseTask = nil
-                if error is CancellationError || Task.isCancelled {
-                    throw VaultSessionError.cancelled(action: "close")
-                }
-                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                throw VaultSessionError.closeAborted(root: root, message: message)
-            }
+            try await awaitCloseTask(task)
+        }
+    }
 
-        case .open(let session):
-            if Task.isCancelled {
+    private func finishClose(
+        previous: VaultSessionState,
+        teardown: @escaping @Sendable (VaultSession?) async throws -> Void
+    ) async throws {
+        defer { activeCloseTask = nil }
+        do {
+            try Task.checkCancellation()
+            try await teardown(previous.activeSession)
+            try Task.checkCancellation()
+            setState(.closed)
+        } catch {
+            if error is CancellationError || Task.isCancelled {
                 throw VaultSessionError.cancelled(action: "close")
             }
-            let transitionID = UUID()
-            let task = Task<Void, Error> {
-                try Task.checkCancellation()
-                try await teardown(session)
-                try Task.checkCancellation()
-            }
-            activeCloseTask = (transitionID, task)
-            do {
-                try await task.value
-                activeCloseTask = nil
-                setState(.closed)
-            } catch {
-                activeCloseTask = nil
-                if error is CancellationError || Task.isCancelled {
-                    throw VaultSessionError.cancelled(action: "close")
-                }
-                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                throw VaultSessionError.closeAborted(root: session.root, message: message)
-            }
+            if let sessionError = error as? VaultSessionError { throw sessionError }
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            throw VaultSessionError.closeAborted(root: previous.root!, message: message)
+        }
+    }
+
+    private func awaitCloseTask(_ task: Task<Void, Error>) async throws {
+        inFlightWaiterCount += 1
+        defer { inFlightWaiterCount -= 1 }
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        guard state == .closed else {
+            throw VaultSessionError.unexpectedFinalState(action: "close", expected: .closed, actual: state.phase)
         }
     }
 

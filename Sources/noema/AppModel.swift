@@ -177,6 +177,9 @@ struct EditorAction: Equatable {
     let sessionManager: VaultSessionManager
     var quiescenceCoordinator: VaultSaveQuiescenceCoordinator { sessionManager.quiescenceCoordinator }
     private(set) var sessionState: VaultSessionState = .closed
+    /// Typed manager failures retained at the UI boundary, including rollback failures.
+    private(set) var sessionTransitionErrors: [VaultSessionError] = []
+    private var lifecycleAction: String?
     @ObservationIgnored private nonisolated(unsafe) var sessionObservationTask: Task<Void, Never>?
     private var activeSession: VaultSession?
     private var activeLease: VaultSessionLease?
@@ -274,15 +277,22 @@ struct EditorAction: Equatable {
     /// Synchronizes `AppModel` availability and purges in-memory content whenever the central
     /// `VaultSessionManager` transitions out of `.open` (including external/direct session transitions).
     func applyObservedSessionState(_ nextState: VaultSessionState) {
+        let latestState = sessionManager.accessGate.currentState
+        if nextState != latestState {
+            return
+        }
         sessionState = nextState
         switch nextState {
         case .closed:
-            let hadActiveResources = root != nil || lockedVaultURL != nil || repository != nil || index != nil || recovery != nil || watcher != nil || !notes.isEmpty || !sources.isEmpty || currentNote != nil || currentSource != nil
+            let hadActiveResources = root != nil || lockedVaultURL != nil || activeSession != nil || activeLease != nil || repository != nil || index != nil || recovery != nil || watcher != nil || !notes.isEmpty || !sources.isEmpty || currentNote != nil || currentSource != nil
             lockedVaultURL = nil
             lockedVaultBookmark = nil
+            vaultName = "Noema"
             if hadActiveResources {
                 releaseActiveVaultResources()
                 clearSessionUIState()
+            } else {
+                busy = false
             }
 
         case .opening(let targetRoot, _):
@@ -291,6 +301,10 @@ struct EditorAction: Equatable {
             busy = true
 
         case .open(let session):
+            if let activeLease, activeLease != session.lease {
+                releaseActiveVaultResources()
+                clearSessionUIState()
+            }
             activeSession = session
             lockedVaultURL = nil
             vaultName = session.vaultName
@@ -318,7 +332,10 @@ struct EditorAction: Equatable {
     }
 
     var sessionPhase: VaultSessionPhase { sessionState.phase }
-    var isVaultAvailable: Bool { sessionState.phase == .open && root != nil && repository != nil }
+    var isVaultAvailable: Bool {
+        guard case .open(let session) = sessionState else { return false }
+        return sessionManager.accessGate.currentState == sessionState && activeLease == session.lease && root != nil && repository != nil
+    }
     private var canOperateOnLoadedContent: Bool {
         isVaultAvailable || (!isLocked && sessionState == .closed && activeSession == nil && (repository != nil || !notes.isEmpty || !sources.isEmpty || currentNote != nil || currentSource != nil))
     }
@@ -327,7 +344,7 @@ struct EditorAction: Equatable {
         case .locked, .unlocking:
             return true
         default:
-            return lockedVaultURL != nil && root == nil
+            return false
         }
     }
 
@@ -687,12 +704,53 @@ struct EditorAction: Equatable {
         return await finishCurrentPage(waitForTitles: waitForTitles)
     }
 
+    private func beginLifecycleAction(_ action: String) -> Bool {
+        let current = sessionManager.accessGate.currentState
+        guard lifecycleAction == nil, !current.isTransitioning else {
+            presentLifecycleFailure(VaultSessionError.transitionInProgress(current: current.phase, requested: action))
+            return false
+        }
+        lifecycleAction = action
+        sessionTransitionErrors = []
+        return true
+    }
+
+    private func requireLifecycleState(_ phase: VaultSessionPhase, action: String, session: VaultSession? = nil) throws {
+        let current = sessionManager.accessGate.currentState
+        guard current.phase == phase else {
+            throw VaultSessionError.unexpectedFinalState(action: action, expected: phase, actual: current.phase)
+        }
+        if let session {
+            let matches = phase == .locked
+                ? current == .locked(vaultID: session.vaultID, root: session.root, vaultName: session.vaultName, generation: session.generation)
+                : current == .open(session)
+            guard matches else { throw VaultSessionError.cancelled(action: action) }
+        }
+    }
+
+    private func presentLifecycleFailure(_ error: Error, cleanupError: Error? = nil) {
+        sessionTransitionErrors = [error, cleanupError].compactMap { $0 as? VaultSessionError }
+        applyObservedSessionState(sessionManager.accessGate.currentState)
+        busy = false
+        errorMessage = error.localizedDescription
+        if let cleanupError {
+            errorMessage = error.localizedDescription + " Cleanup failed: " + cleanupError.localizedDescription
+        }
+    }
+
+    private func closeSessionChecked(expectedSession: VaultSession? = nil) async throws {
+        try await sessionManager.close(expectedSession: expectedSession)
+        try requireLifecycleState(.closed, action: "close")
+    }
+
     func open(_ url: URL, create: Bool) async {
         let normalizedTarget = url.standardizedFileURL.resolvingSymlinksInPath()
         if !create,
            isVaultAvailable,
            let currentRoot = root?.standardizedFileURL.resolvingSymlinksInPath(),
            currentRoot == normalizedTarget {
+            guard beginLifecycleAction("open") else { return }
+            defer { lifecycleAction = nil }
             guard await flushPendingEdits() else { return }
             await refresh()
             if let url = pendingBlockURL { pendingBlockURL = nil; openBlockURL(url) }
@@ -710,47 +768,75 @@ struct EditorAction: Equatable {
             }
         }
 
+        guard beginLifecycleAction("open") else { return }
+        defer { lifecycleAction = nil }
         if !(await flushPendingEdits()) { return }
-        busy = true; errorMessage = nil; needsPermissionReauthorization = false
+        busy = true; errorMessage = nil
+        if !isLocked { needsPermissionReauthorization = false }
 
-        // Tear down any previous vault session and SQLite handle BEFORE opening the target vault.
-        if root != nil || lockedVaultURL != nil || repository != nil || index != nil || recovery != nil || watcher != nil {
-            releaseActiveVaultResources()
-            clearSessionUIState()
-            busy = true
-        }
-        lockedVaultURL = nil
-        lockedVaultBookmark = nil
-        if await sessionManager.state != .closed {
-            try? await sessionManager.close()
-        }
+        let storageProvider = self.storageProvider
+        let hasScope = (scopeURL == url) ? false : securityScopeAcquirer(url)
 
-        let hasScope = securityScopeAcquirer(url)
         do {
-            if requiresSecurityScopedAccess && !hasScope {
+            if requiresSecurityScopedAccess && !hasScope && scopeURL != url {
                 throw VaultError.unavailable("Permission to access ‘\(url.lastPathComponent)’ was lost. Reselect your vault folder to restore access.")
             }
-            let storageProvider = self.storageProvider
+            try await Task.detached {
+                _ = try FileVaultRepository.preflightOpen(root: url, create: create, storageProvider: storageProvider)
+            }.value
+        } catch {
+            if hasScope, scopeURL != url { securityScopeReleaser(url) }
+            sessionState = await sessionManager.state
+            busy = false
+            if !isVaultAvailable {
+                needsPermissionReauthorization = Self.isPermissionDenied(error) || (requiresSecurityScopedAccess && !hasScope)
+            }
+            errorMessage = error.localizedDescription
+            return
+        }
+
+        needsPermissionReauthorization = false
+
+        // Keep the previous resources until the central close has actually committed.
+        do {
+            try await closeSessionChecked()
+        } catch {
+            if hasScope, scopeURL != url { securityScopeReleaser(url) }
+            presentLifecycleFailure(error)
+            return
+        }
+        releaseActiveVaultResources()
+        clearSessionUIState()
+        busy = true
+        lockedVaultURL = nil
+        lockedVaultBookmark = nil
+        var openedSession: VaultSession?
+
+        do {
             let (session, lease, repo) = try await sessionManager.openRepository(
                 root: url,
                 create: create,
                 storageProvider: storageProvider
             )
+            openedSession = session
             let vaultID = repo.manifest.id
             let baseDir = try localStorageRoot ?? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             let localBase = baseDir.appendingPathComponent("KnowledgeVault/\(vaultID.uuidString)")
             let gate = sessionManager.accessGate
             let factory = searchIndexFactory
-            let (searchIndex, journal) = try await Task.detached {
+            let (searchIndex, journal, cached, drafts) = try await Task.detached {
                 let idx = try factory(localBase.appendingPathComponent("search.sqlite"), lease, gate)
                 let recoveryStore = try RecoveryStore(
                     directory: localBase.appendingPathComponent("Drafts"),
                     sessionLease: lease,
                     accessGate: gate
                 )
-                return (idx, recoveryStore)
+                let cachedEntries = try await idx.cachedEntries()
+                let recovered = try await recoveryStore.drafts()
+                return (idx, recoveryStore, cachedEntries, recovered)
             }.value
-            self.scopeURL = hasScope ? url : nil
+            try requireLifecycleState(.open, action: "open", session: session)
+            self.scopeURL = (hasScope || self.scopeURL == url) ? url : nil
             dismissedVaultNotices = []
             generation = UUID()
             activeSession = session
@@ -764,10 +850,9 @@ struct EditorAction: Equatable {
             sidebarSearchResults = SidebarSearchResults()
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
             title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0; reading = true
-            let cached = try await searchIndex.cachedEntries()
             notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
             updateTags()
-            recoveredDrafts = try await journal.drafts()
+            recoveredDrafts = drafts
             if persistSecurityScopedBookmark {
                 try remember(url)
             }
@@ -776,17 +861,18 @@ struct EditorAction: Equatable {
             await updateRows()
             await refresh()
             if let url = pendingBlockURL { pendingBlockURL = nil; openBlockURL(url) }
+            try requireLifecycleState(.open, action: "open", session: session)
         } catch {
             if hasScope, scopeURL != url { securityScopeReleaser(url) }
-            if await sessionManager.state != .closed {
-                try? await sessionManager.close()
+            var cleanupError: Error?
+            if let openedSession, sessionManager.accessGate.currentState.sessionID == openedSession.id {
+                do { try await closeSessionChecked(expectedSession: openedSession) }
+                catch { cleanupError = error }
             }
             releaseActiveVaultResources()
             clearSessionUIState()
-            sessionState = await sessionManager.state
-            busy = false
             needsPermissionReauthorization = Self.isPermissionDenied(error) || (requiresSecurityScopedAccess && !hasScope)
-            errorMessage = error.localizedDescription
+            presentLifecycleFailure(error, cleanupError: cleanupError)
         }
     }
 
@@ -795,8 +881,14 @@ struct EditorAction: Equatable {
     /// On unrecoverable quiescence failure, surfaces `errorMessage` and keeps the vault open without falsely publishing `.locked`.
     @discardableResult
     func lockVault(cancelPreCommitSaves: Bool = false) async -> Bool {
-        if isLocked { return true }
-        guard let repository, let currentRoot = root else { return false }
+        guard beginLifecycleAction("lock") else { return false }
+        defer { lifecycleAction = nil }
+        if sessionManager.accessGate.currentState.phase == .locked {
+            applyObservedSessionState(sessionManager.accessGate.currentState)
+            return true
+        }
+        guard let repository, let currentRoot = root,
+              let lockingSession = sessionManager.accessGate.currentState.activeSession else { return false }
         busy = true; errorMessage = nil; needsPermissionReauthorization = false
         autosaveTask?.cancel(); autosaveTask = nil
         lccSaveTask?.cancel(); lccSaveTask = nil
@@ -836,7 +928,8 @@ struct EditorAction: Equatable {
                 cancelPreCommitSaves: cancelPreCommitSaves
             )
             // Quiescence succeeded and session is now .locked. Tear down UI & vault resources.
-            let observed = await sessionManager.state
+            try requireLifecycleState(.locked, action: "lock", session: lockingSession)
+            let observed = sessionManager.accessGate.currentState
             lockedVaultURL = currentRoot
             if persistSecurityScopedBookmark, lockedVaultBookmark == nil {
                 lockedVaultBookmark = UserDefaults.standard.data(forKey: "vaultBookmark")
@@ -847,12 +940,13 @@ struct EditorAction: Equatable {
             sessionState = observed
             return true
         } catch {
-            sessionState = await sessionManager.state
-            busy = false
-            saveStatus = "Draft preserved · save failed"
-            errorMessage = error.localizedDescription
-            if let recovery {
-                recoveredDrafts = (try? await recovery.drafts()) ?? recoveredDrafts
+            presentLifecycleFailure(error)
+            saveStatus = "Lock failed · edits retained"
+            if let recovery, sessionManager.accessGate.currentState.phase == .open {
+                do { recoveredDrafts = try await recovery.drafts() }
+                catch {
+                    errorMessage = (errorMessage ?? "Lock failed.") + " Recovery reload failed: " + error.localizedDescription
+                }
             }
             return false
         }
@@ -860,6 +954,8 @@ struct EditorAction: Equatable {
 
     @discardableResult
     func unlockVault(using overrideURL: URL? = nil) async -> Bool {
+        guard beginLifecycleAction("unlock") else { return false }
+        defer { lifecycleAction = nil }
         let initialLockedRoot: URL? = {
             if let overrideURL { return overrideURL }
             if let lockedVaultURL { return lockedVaultURL }
@@ -887,6 +983,7 @@ struct EditorAction: Equatable {
         }
 
         let hasScope = securityScopeAcquirer(candidateURL)
+        var unlockedSession: VaultSession?
         do {
             if requiresSecurityScopedAccess && !hasScope {
                 needsPermissionReauthorization = true
@@ -898,20 +995,27 @@ struct EditorAction: Equatable {
                 root: candidateURL,
                 storageProvider: storageProvider
             )
+            unlockedSession = session
             let vaultID = repo.manifest.id
             let baseDir = try localStorageRoot ?? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             let localBase = baseDir.appendingPathComponent("KnowledgeVault/\(vaultID.uuidString)")
             let gate = sessionManager.accessGate
             let factory = searchIndexFactory
-            let (searchIndex, journal) = try await Task.detached {
+            let (searchIndex, journal, cached, drafts) = try await Task.detached {
                 let idx = try factory(localBase.appendingPathComponent("search.sqlite"), lease, gate)
                 let recoveryStore = try RecoveryStore(
                     directory: localBase.appendingPathComponent("Drafts"),
                     sessionLease: lease,
                     accessGate: gate
                 )
-                return (idx, recoveryStore)
+                let cached = try await idx.cachedEntries()
+                let drafts = try await recoveryStore.drafts()
+                return (idx, recoveryStore, cached, drafts)
             }.value
+            try requireLifecycleState(.open, action: "unlock", session: session)
+            if persistSecurityScopedBookmark, (resolvedStaleBookmark || overrideURL != nil) {
+                try remember(candidateURL)
+            }
             SourceReader.closeAll()
             watcher?.stop()
             if let scopeURL { securityScopeReleaser(scopeURL) }
@@ -930,58 +1034,63 @@ struct EditorAction: Equatable {
             sidebarSearchResults = SidebarSearchResults()
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
             title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0; reading = true
-            let cached = try await searchIndex.cachedEntries()
             notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
             updateTags()
-            recoveredDrafts = try await journal.drafts()
-            if persistSecurityScopedBookmark, (resolvedStaleBookmark || overrideURL != nil) {
-                try? remember(candidateURL)
-            }
+            recoveredDrafts = drafts
             watcher = VaultWatcher(url: candidateURL) { [weak self] in Task { @MainActor in self?.scheduleRefresh() } }
             busy = false
             await updateRows()
             await refresh()
             if let url = pendingBlockURL { pendingBlockURL = nil; openBlockURL(url) }
+            try requireLifecycleState(.open, action: "unlock", session: session)
             return true
         } catch {
             if hasScope, scopeURL != candidateURL { securityScopeReleaser(candidateURL) }
-            // Ensure central session state rolls back to .locked if a later step (like SQLite init) threw after sessionManager.unlockRepository
-            if await sessionManager.state.phase == .open {
-                try? await sessionManager.lock()
+            var cleanupError: Error?
+            if let unlockedSession, sessionManager.accessGate.currentState.sessionID == unlockedSession.id {
+                do {
+                    try await sessionManager.lock(expectedSession: unlockedSession)
+                    try requireLifecycleState(.locked, action: "unlock.rollback", session: unlockedSession)
+                } catch { cleanupError = error }
             }
-            releaseActiveVaultResources()
-            clearSessionUIState()
-            lockedVaultURL = fallbackRoot
-            vaultName = fallbackRoot.lastPathComponent
-            sessionState = await sessionManager.state
-            busy = false
+            // Failed initialization publishes no resources. Only central state determines the
+            // fallback UI; a failed rollback must never manufacture a locked state.
+            if sessionManager.accessGate.currentState.phase != .open {
+                releaseActiveVaultResources()
+                clearSessionUIState()
+            }
             if Self.isPermissionDenied(error) || (requiresSecurityScopedAccess && !hasScope) {
                 needsPermissionReauthorization = true
             }
-            errorMessage = error.localizedDescription
+            presentLifecycleFailure(error, cleanupError: cleanupError)
             return false
         }
     }
 
     @discardableResult
     func closeVault(force: Bool = false) async -> Bool {
+        guard beginLifecycleAction("close") else { return false }
+        defer { lifecycleAction = nil }
         if !force, isVaultAvailable {
             guard await flushPendingEdits() else { return false }
         }
-        releaseActiveVaultResources()
-        lockedVaultURL = nil
-        lockedVaultBookmark = nil
-        needsPermissionReauthorization = false
-        if await sessionManager.state != .closed {
-            try? await sessionManager.close()
+        do {
+            try await closeSessionChecked()
+            releaseActiveVaultResources()
+            lockedVaultURL = nil
+            lockedVaultBookmark = nil
+            needsPermissionReauthorization = false
+            sessionState = sessionManager.accessGate.currentState
+            if persistSecurityScopedBookmark {
+                UserDefaults.standard.removeObject(forKey: "vaultBookmark")
+            }
+            clearSessionUIState()
+            errorMessage = nil
+            return true
+        } catch {
+            presentLifecycleFailure(error)
+            return false
         }
-        sessionState = await sessionManager.state
-        if persistSecurityScopedBookmark {
-            UserDefaults.standard.removeObject(forKey: "vaultBookmark")
-        }
-        clearSessionUIState()
-        errorMessage = nil
-        return true
     }
 
     func scheduleRefresh() {
@@ -1014,13 +1123,20 @@ struct EditorAction: Equatable {
             }
         }
         do {
+            // Publish metadata before original verification/extraction on a cold session.
+            // Existing populated sessions retain their complete records until the scan commits.
+            if initiallyEmpty {
+                let metadata = try await repository.scanSources()
+                guard isCompletionValid(completionTicket, operation: "refresh.sourceMetadata") else { return }
+                sources = metadata.sources
+            }
             let result = try await repository.scan { [weak self] chunk in
                 guard initiallyEmpty else { return }
                 Task { @MainActor in
                     guard let self,
                           self.isCompletionValid(completionTicket, operation: "refresh.scanChunk"),
                           self.progressTicket == scanTicket else { return }
-                    self.notes.append(contentsOf: chunk.notes); self.sources.append(contentsOf: chunk.sources)
+                    self.notes.append(contentsOf: chunk.notes)
                     self.rows = self.notes.map { LibraryRow(note: $0) }
                 }
             }
@@ -1030,7 +1146,18 @@ struct EditorAction: Equatable {
             for note in result.notes {
                 if let previous = previousTitles[note.id] { recordPageRename(note.id, from: previous, to: note.title) }
             }
-            notes = result.notes; sources = result.sources; issues = result.issues.filter { !dismissedVaultNotices.contains($0) }
+            notes = result.notes; sources = result.sources
+            // Explicit checks are snapshots too: never let an old Available override a new failure.
+            let availableIDs = Set(sources.filter { $0.contentState == .loaded && $0.availabilityIssue == nil }.map(\.id))
+            sourceAvailability = sourceAvailability.filter { availableIDs.contains($0.key) }
+            if let selected = currentSource, let fresh = sources.first(where: { $0.id == selected.id }) {
+                currentSource = fresh; title = fresh.title; body = fresh.body
+                if fresh.contentState == .unavailable { preview = []; wordCount = 0 }
+                else if selected.contentState != fresh.contentState || selected.body != fresh.body { generatePreview() }
+            } else if currentSource != nil {
+                currentSource = nil; selectedID = nil; title = ""; body = ""; preview = []; wordCount = 0
+            }
+            issues = result.issues.filter { !dismissedVaultNotices.contains($0) }
             do {
                 let expirationFailures = try await repository.expireTrash(now: Date())
                 guard isCompletionValid(completionTicket, operation: "refresh.expireTrash") else { return }
@@ -1324,7 +1451,7 @@ struct EditorAction: Equatable {
                 guard isCompletionValid(completionTicket, operation: "updateSourceLCC.save") else { return }
                 if let i = sources.firstIndex(where: { $0.id == source.id }) { sources[i] = updated }
                 if currentSource?.id == source.id { currentSource = updated }
-                if let index { var entries = ScanBatch(); entries.notes = notes; entries.sources = sources; try await index.reconcile(entries) }
+                if let index { try await index.reconcile(repository.scan()) }
             } catch {
                 if isCompletionValid(completionTicket, operation: "updateSourceLCC.error") {
                     errorMessage = error.localizedDescription
@@ -1499,7 +1626,15 @@ struct EditorAction: Equatable {
             saving = false; saveStatus = "Draft preserved · save failed"
             errorMessage = error.localizedDescription
             if case VaultError.conflict = error { externalChange = true }
-            recoveredDrafts = (try? await recovery.drafts()) ?? []
+            do {
+                let drafts = try await recovery.drafts()
+                guard generation == ticket, canOperateOnLoadedContent else { return false }
+                recoveredDrafts = drafts
+            } catch {
+                if generation == ticket, canOperateOnLoadedContent {
+                    errorMessage = (errorMessage ?? "Save failed.") + " Recovery reload failed: " + error.localizedDescription
+                }
+            }
             return false
         }
     }
@@ -1724,10 +1859,17 @@ struct EditorAction: Equatable {
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: selectedID)
         Task {
             if dirty, let note = currentNote, let recovery {
-                try? await recovery.store(DraftRecord(note: note, title: title, body: body, tags: editedTags))
-                let drafts = (try? await recovery.drafts()) ?? []
-                guard isCompletionValid(completionTicket, operation: "reloadDiskVersion.drafts") else { return }
-                recoveredDrafts = drafts
+                do {
+                    try await recovery.store(DraftRecord(note: note, title: title, body: body, tags: editedTags))
+                    let drafts = try await recovery.drafts()
+                    guard isCompletionValid(completionTicket, operation: "reloadDiskVersion.drafts") else { return }
+                    recoveredDrafts = drafts
+                } catch {
+                    if isCompletionValid(completionTicket, operation: "reloadDiskVersion.recoveryError") {
+                        errorMessage = "Could not preserve your draft: " + error.localizedDescription
+                    }
+                    return
+                }
             }
             if let repository, let entries = try? await repository.scan(),
                isCompletionValid(completionTicket, operation: "reloadDiskVersion.scan"),
@@ -1748,7 +1890,7 @@ struct EditorAction: Equatable {
                 var note = try await repository.create(title: (recovered?.title ?? title) + " (recovered)", body: recovered?.body ?? body)
                 note = try await repository.save(note: note, title: note.title, body: note.body, tags: recovered?.tags ?? editedTags)
                 if let originalID { try await recovery?.remove(originalID) }
-                let drafts = (try? await recovery?.drafts()) ?? []
+                let drafts = try await recovery?.drafts() ?? []
                 guard isCompletionValid(completionTicket, operation: "saveDraftAsNewPage") else { return }
                 recoveredDrafts = drafts
                 notes.insert(note, at: 0); scope = .wiki; currentSource = nil; selectedID = note.id; apply(note)
@@ -1763,7 +1905,7 @@ struct EditorAction: Equatable {
             guard isCompletionValid(completionTicket, operation: "discardRecovery.start") else { return }
             do {
                 try await recovery?.remove(draft.id)
-                let drafts = (try? await recovery?.drafts()) ?? []
+                let drafts = try await recovery?.drafts() ?? []
                 guard isCompletionValid(completionTicket, operation: "discardRecovery") else { return }
                 recoveredDrafts = drafts
             } catch { if isCompletionValid(completionTicket, operation: "discardRecovery.error") { errorMessage = error.localizedDescription } }
@@ -2011,11 +2153,16 @@ struct EditorAction: Equatable {
             }
             try gated.validateAccess(operation: "sourceSummaryContent")
         }
+        let loaded: SourceRecord
+        if source.contentState == .loaded { loaded = source }
+        else if let repository { loaded = try await repository.loadSource(id: source.id) }
+        else { throw VaultError.unavailable("Source content is unavailable.") }
         return try await Task.detached {
+            let source = loaded
             if let gated = contentStore as? GatedVaultContentStore {
                 try gated.validateAccess(operation: "sourceSummaryContent")
             }
-            if !source.body.isEmpty {
+            if !source.metadata.originalFilename.lowercased().hasSuffix(".pdf") {
                 let ext = URL(fileURLWithPath: source.metadata.originalFilename).pathExtension.lowercased()
                 let content = ["html", "htm"].contains(ext) ? source.body.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression) : source.body
                 return BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(content).withoutAISummary))
@@ -2036,7 +2183,8 @@ struct EditorAction: Equatable {
         sourcePageTasks[source.id] = Task {
             defer { if generation == ticket { generatingSourcePages.remove(source.id); sourcePageTasks.removeValue(forKey: source.id) } }
             do {
-                let text = try await sourceSummaryContent(source, root: root)
+                let materialized = try await repository.loadSource(id: source.id)
+                let text = try await sourceSummaryContent(materialized, root: root)
                 guard isCompletionValid(completionTicket, operation: "createPageFromSource.read") else { return }
                 guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw VaultError.unavailable("No readable text for a wiki page.")
@@ -2049,7 +2197,7 @@ struct EditorAction: Equatable {
                 guard isCompletionValid(completionTicket, operation: "createPageFromSource.generate"),
                       await finishCurrentPage(),
                       isCompletionValid(completionTicket, operation: "createPageFromSource.preCreate") else { return }
-                let note = try await repository.create(title: pageTitle, body: article, source: source, lcc: lcc)
+                let note = try await repository.create(title: pageTitle, body: article, source: materialized, lcc: lcc)
                 guard isCompletionValid(completionTicket, operation: "createPageFromSource.create") else { return }
                 errorMessage = nil; searchText = ""; scope = .wiki; reading = false
                 notes.insert(note, at: 0); selectedID = note.id; currentSource = nil; apply(note)
@@ -2106,6 +2254,7 @@ struct EditorAction: Equatable {
                 }
                 do {
                     if let reason = client.unavailabilityReason() { throw VaultError.unavailable(reason) }
+                    let source = try await repository.loadSource(id: source.id)
                     let text = try await sourceSummaryContent(source, root: root)
                     guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.read") else { return }
                     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw VaultError.unavailable("No readable text for automatic naming and summary. Original file name retained.") }
@@ -2122,7 +2271,7 @@ struct EditorAction: Equatable {
                     let renamed = try await repository.renameSource(source, title: title, summary: summary, lcc: lcc)
                     guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.rename") else { return }
                     if let position = sources.firstIndex(where: { $0.id == source.id }) { sources[position] = renamed }
-                    if let index { var entries = ScanBatch(); entries.notes = notes; entries.sources = sources; try await index.reconcile(entries) }
+                    if let index { try await index.reconcile(repository.scan()) }
                     guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.reconcile") else { return }
                     await updateRows()
                 } catch { if isCompletionValid(completionTicket, operation: "enqueueSourceTitle.error") { errorMessage = "Source naming: " + error.localizedDescription } }
