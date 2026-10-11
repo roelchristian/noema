@@ -312,7 +312,13 @@ public actor ExternalAICredentialBroker {
         let record = Record(format: 1, version: UUID(), createdAt: createdAt,
                             localPolicyExpiresAt: policy == .thirtyDays ? createdAt.addingTimeInterval(30 * 24 * 60 * 60) : nil,
                             secret: secret)
-        do { try keychain.write(JSONEncoder().encode(record)) }
+        do {
+            let encoded = try JSONEncoder().encode(record)
+            try keychain.write(encoded)
+            // A login-Keychain ACL can allow an update while denying reads after an
+            // ad-hoc rebuild. Confirm this exact record is usable before granting authority.
+            guard try keychain.read() == encoded else { throw ExternalAIError.credentialUnavailable }
+        }
         catch { throw ExternalAIError.credentialUnavailable }
         observedVersion = record.version
         dispatchAuthority.withLock { $0.version = record.version; $0.expiresAt = record.localPolicyExpiresAt }
