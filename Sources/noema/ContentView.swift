@@ -169,7 +169,7 @@ struct ContentView: View {
         }) { confirmation in
             CloudSummaryConsentSheet(model: model, confirmation: confirmation)
         }
-        .sheet(item: $model.pendingAISuggestion, onDismiss: { model.dismissAISuggestion() }) { suggestion in
+        .sheet(item: $model.pendingAISuggestion, onDismiss: { model.didDismissAISuggestionReview() }) { suggestion in
             AISuggestionReviewSheet(model: model, suggestion: suggestion)
         }
         .alert("OpenAI Request", isPresented: Binding(get: { model.cloudSummaryError != nil }, set: { if !$0 { model.cloudSummaryError = nil } })) {
