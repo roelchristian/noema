@@ -1170,6 +1170,7 @@ struct EditorAction: Equatable {
             }
             progressTicket = nil
             guard isCompletionValid(completionTicket, operation: "refresh.scan") else { return }
+            try Task.checkCancellation()
             let previousTitles = Dictionary(notes.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
             for note in result.notes {
                 if let previous = previousTitles[note.id] { recordPageRename(note.id, from: previous, to: note.title) }
@@ -1195,6 +1196,7 @@ struct EditorAction: Equatable {
                 trashedPages = pages
             } catch {
                 guard isCompletionValid(completionTicket, operation: "refresh.trashError") else { return }
+                guard !(error is CancellationError), !Task.isCancelled else { return }
                 errorMessage = "Could not load Trash: " + error.localizedDescription
             }
             updateTags()
@@ -1206,9 +1208,13 @@ struct EditorAction: Equatable {
             }
             try await index.reconcile(result)
             guard isCompletionValid(completionTicket, operation: "refresh.reconcile") else { return }
+            try Task.checkCancellation()
             await updateRows(); await updateBacklinks()
         } catch {
             guard isCompletionValid(completionTicket, operation: "refresh.error") else { return }
+            // File notifications supersede scheduled refreshes, including scans already
+            // in progress. Cancellation does not mean the preceding page save failed.
+            guard !(error is CancellationError), !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -1285,6 +1291,7 @@ struct EditorAction: Equatable {
                 semanticRows = results.blocks
             } catch {
                 guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.sidebarSearchError") else { return }
+                guard !(error is CancellationError), !Task.isCancelled else { return }
                 errorMessage = error.localizedDescription
             }
             return
@@ -1317,6 +1324,7 @@ struct EditorAction: Equatable {
         } catch {
             guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.indexSearchError"),
                   capturedScope == scope else { return }
+            guard !(error is CancellationError), !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
         }
     }
