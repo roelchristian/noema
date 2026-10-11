@@ -84,30 +84,6 @@
     "reason": "External linked-file read/preview; imported Quick Look reads a disposable adapter-validated byte snapshot."
   },
   {
-    "path": "Sources/VaultCore/SourcePreviewSnapshot.swift",
-    "statement": "try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)",
-    "count": 1,
-    "reason": "Disposable app-local preview copy of adapter-validated bytes; never reads or mutates canonical vault paths."
-  },
-  {
-    "path": "Sources/VaultCore/SourcePreviewSnapshot.swift",
-    "statement": "do { try data.write(to: url, options: .atomic) }",
-    "count": 1,
-    "reason": "Disposable app-local preview copy of adapter-validated bytes; never reads or mutates canonical vault paths."
-  },
-  {
-    "path": "Sources/VaultCore/SourcePreviewSnapshot.swift",
-    "statement": "catch { try? FileManager.default.removeItem(at: directory); throw error }",
-    "count": 1,
-    "reason": "Disposable app-local preview copy of adapter-validated bytes; never reads or mutates canonical vault paths."
-  },
-  {
-    "path": "Sources/VaultCore/SourcePreviewSnapshot.swift",
-    "statement": "public func remove() { try? FileManager.default.removeItem(at: directory) }",
-    "count": 1,
-    "reason": "Disposable app-local preview copy of adapter-validated bytes; never reads or mutates canonical vault paths."
-  },
-  {
     "path": "Sources/VaultCore/RecoveryStore.swift",
     "statement": "do { bytes = try Data(contentsOf: file) }",
     "count": 1,
@@ -136,5 +112,101 @@
     "statement": "try bytes.write(to: url, options: .atomic)",
     "count": 1,
     "reason": "App-local unsaved recovery journal; isolates damaged entries and preserves their original bytes before same-page replacement. Never canonical vault storage."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "_ = Darwin.rmdir(directory.path)",
+    "count": 3,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "_ = Darwin.unlink(markerURL.path)",
+    "count": 2,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "_ = Darwin.unlink(url.path)",
+    "count": 1,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "guard Darwin.unlink(markerURL.path) == 0 else { continue }",
+    "count": 1,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "if Darwin.rmdir(directory.path) == 0 { removed += 1 }",
+    "count": 1,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "if Darwin.unlink(url.path) == 0 || errno == ENOENT {",
+    "count": 1,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "if hasPayload, Darwin.unlink(url.path) != 0 { continue }",
+    "count": 1,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "let fd = Darwin.open(markerURL.path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)",
+    "count": 1,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "let fd = Darwin.open(markerURL.path, O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)",
+    "count": 1,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)",
+    "count": 2,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "let markerBytes = try? handle.read(upToCount: 1024),",
+    "count": 1,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,",
+    "count": 1,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,",
+    "count": 1,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)",
+    "count": 1,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "try data.write(to: url, options: .atomic)",
+    "count": 1,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/SourcePreviewDirectory.swift",
+    "statement": "try handle.write(contentsOf: Data((Self.signature + filename).utf8))",
+    "count": 1,
+    "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
   }
 ]
