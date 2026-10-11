@@ -6,6 +6,8 @@ import VaultCore
 public enum ExternalAIAction: String, Sendable, CaseIterable {
     case summarizePage
     case summarizeSource
+    case suggestTitle
+    case lccClassification
 }
 
 public enum ExternalAISummaryTarget: Sendable, Equatable, Hashable {
@@ -51,6 +53,9 @@ public enum ExternalAILimits {
     public static let maximumContentBytes = 64 * 1_024
     public static let maximumResponseBytes = 128 * 1_024
     public static let maximumSummaryBytes = 8 * 1_024
+    public static let maximumTitleCharacters = 120
+    public static let maximumTitleWords = 8
+    public static let maximumLCCRationaleBytes = 2 * 1_024
     public static let requestTimeout: TimeInterval = 60
     public static let maximumRetryCount = 1
 }
@@ -63,13 +68,13 @@ public struct ExternalAISummaryRequest: Sendable, CustomStringConvertible, Custo
     public let target: ExternalAISummaryTarget
     public let contentRevision: UUID
     public let content: String
-    public var action: ExternalAIAction { target.action }
+    public let action: ExternalAIAction
     public var contentByteCount: Int { content.utf8.count }
     let contentDigest: Data
 
     public init(
         id: UUID = UUID(), authority: ExternalAIVaultAuthority,
-        target: ExternalAISummaryTarget, contentRevision: UUID, content: String
+        target: ExternalAISummaryTarget, contentRevision: UUID, content: String, action: ExternalAIAction? = nil
     ) throws {
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ExternalAIError.emptyContent
@@ -77,6 +82,11 @@ public struct ExternalAISummaryRequest: Sendable, CustomStringConvertible, Custo
         guard content.utf8.count <= ExternalAILimits.maximumContentBytes else {
             throw ExternalAIError.payloadTooLarge
         }
+        let operation = action ?? target.action
+        guard operation == target.action || operation == .suggestTitle || operation == .lccClassification else {
+            throw ExternalAIError.unsupportedAction
+        }
+        self.action = operation
         self.id = id
         self.authority = authority
         self.target = target
@@ -98,6 +108,7 @@ public struct ExternalAIContentConsent: Sendable, Equatable {
     public let authority: ExternalAIVaultAuthority
     public let target: ExternalAISummaryTarget
     public let contentRevision: UUID
+    public let action: ExternalAIAction
     private let contentDigest: Data
 
     public init(approving request: ExternalAISummaryRequest) {
@@ -106,12 +117,13 @@ public struct ExternalAIContentConsent: Sendable, Equatable {
         authority = request.authority
         target = request.target
         contentRevision = request.contentRevision
+        action = request.action
         contentDigest = request.contentDigest
     }
 
     public func approves(_ request: ExternalAISummaryRequest) -> Bool {
         requestID == request.id && authority == request.authority && target == request.target
-            && contentRevision == request.contentRevision && contentDigest == request.contentDigest
+            && action == request.action && contentRevision == request.contentRevision && contentDigest == request.contentDigest
     }
 }
 
@@ -149,7 +161,11 @@ public struct ExternalAISummaryResult: Sendable, CustomStringConvertible, Custom
     public let authority: ExternalAIVaultAuthority
     public let target: ExternalAISummaryTarget
     public let contentRevision: UUID
+    public let action: ExternalAIAction
     public let summary: String
+    /// A title is a proposal only. Applying it requires the caller's existing review workflow.
+    public var title: String? { action == .suggestTitle ? summary : nil }
+    public let lccSuggestion: ExternalAILCCSuggestion?
     public let provenance: ExternalAIProvenance
 
     public init(request: ExternalAISummaryRequest, summary: String, provenance: ExternalAIProvenance) throws {
@@ -157,6 +173,16 @@ public struct ExternalAISummaryResult: Sendable, CustomStringConvertible, Custom
               summary.utf8.count <= ExternalAILimits.maximumSummaryBytes else {
             throw ExternalAIError.invalidResponse
         }
+        switch request.action {
+        case .summarizePage, .summarizeSource:
+            lccSuggestion = nil
+        case .suggestTitle:
+            try ExternalAIOutputValidation.validateTitle(summary)
+            lccSuggestion = nil
+        case .lccClassification:
+            lccSuggestion = try ExternalAIOutputValidation.lccSuggestion(from: summary)
+        }
+        action = request.action
         requestID = request.id
         authority = request.authority
         target = request.target
@@ -174,6 +200,13 @@ public struct ExternalAISummaryResult: Sendable, CustomStringConvertible, Custom
 public protocol ExternalAISummarizing: Sendable {
     func summarizePage(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult
     func summarizeSource(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult
+}
+
+/// The three expressly invoked operations share one security boundary. Summary-only test
+/// doubles and callers can continue to conform to ExternalAISummarizing.
+public protocol ExternalAIActionPerforming: ExternalAISummarizing {
+    func suggestTitle(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult
+    func classifyLCC(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult
 }
 
 /// Opaque in-process capability; only security components in this module can mint it.
@@ -226,27 +259,27 @@ public enum ExternalAIError: String, Error, Sendable, Equatable, CaseIterable, L
         case .authorizationRequired: "Authorize external AI access to continue."
         case .authorizationExpired: "External AI authorization has expired."
         case .authorizationRevoked: "External AI authorization was revoked."
-        case .vaultUnavailable: "Open and unlock a vault to summarize with OpenAI."
+        case .vaultUnavailable: "Open and unlock a vault to use OpenAI."
         case .staleSession: "The original vault session is no longer active."
         case .consentRequired: "Confirm the selected content before sending it to OpenAI."
         case .consentAlreadyUsed: "This content submission was already approved and used."
         case .unsupportedAction: "This external AI operation is unsupported."
-        case .emptyContent: "The selected item has no text to summarize."
+        case .emptyContent: "The selected item has no text for this AI action."
         case .payloadTooLarge: "The selected text exceeds the external AI size limit."
         case .responseTooLarge: "OpenAI returned a response exceeding the size limit."
         case .invalidConfiguration: "The external AI configuration is invalid."
-        case .invalidResponse: "OpenAI returned an invalid summary."
-        case .summaryIncomplete: "OpenAI did not finish generating the summary. Try again."
-        case .summaryOutputLimitReached: "OpenAI reached the generation limit before finishing the summary. Try a shorter article or another model."
-        case .summaryRefused: "OpenAI declined to summarize this content."
+        case .invalidResponse: "OpenAI returned an invalid AI result."
+        case .summaryIncomplete: "OpenAI did not finish generating the result. Try again."
+        case .summaryOutputLimitReached: "OpenAI reached the generation limit before finishing. Try shorter content or another model."
+        case .summaryRefused: "OpenAI declined this AI action."
         case .networkUnavailable: "OpenAI could not be reached."
         case .timedOut: "The OpenAI request timed out."
         case .rateLimited: "OpenAI is temporarily rate limited."
         case .providerUnavailable: "OpenAI is temporarily unavailable."
         case .providerRejected: "OpenAI rejected the request. Check External AI settings."
         case .redirectRejected: "The OpenAI request attempted an unsupported redirect."
-        case .cancelled: "The external AI summary was cancelled."
-        case .staleContent: "The selected content changed before the summary could be saved."
+        case .cancelled: "The external AI action was cancelled."
+        case .staleContent: "The selected content changed before the AI result could be applied."
         }
     }
 }

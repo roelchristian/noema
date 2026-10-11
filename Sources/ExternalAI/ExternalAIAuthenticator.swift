@@ -16,7 +16,7 @@ struct LocalExternalAIAuthenticator: ExternalAIAuthenticating {
     func authenticate() async throws {
         do {
             try Task.checkCancellation()
-            try await native.authenticate(for: .externalAISummary)
+            try await native.authenticate(for: .externalAIAuthorization)
             try Task.checkCancellation()
         } catch NativeAuthenticationError.cancelled {
             throw ExternalAIError.authenticationCancelled

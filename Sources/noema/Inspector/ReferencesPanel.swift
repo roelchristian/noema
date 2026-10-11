@@ -226,8 +226,6 @@ struct ReferencesPanel: View {
                             )
                         }
                         .disabled(!canCreatePageWithAI)
-                        Button("Create Page on This Mac") { model.createPageFromSource(source, provider: .onDevice) }
-                            .disabled(!canCreatePageWithAI)
                         Divider().overlay(theme.color(for: .separator))
                         ForEach(availablePagesToAdd) { note in
                             Button(note.title) {
