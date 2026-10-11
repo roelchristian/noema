@@ -140,6 +140,12 @@ struct VaultSessionManagerTests {
         #expect(await manager.state == .closed)
     }
 
+    private func waitForWaiters(_ manager: VaultSessionManager, count: Int) async {
+        while await manager.inFlightWaiterCount < count {
+            await Task.yield()
+        }
+    }
+
     @Test func duplicateRequestsCoalesceAndRemainIdempotent() async throws {
         let manager = VaultSessionManager()
         let openGate = Gate()
@@ -156,6 +162,7 @@ struct VaultSessionManagerTests {
             _ = await openCalls.increment()
             return self.vaultIDA
         }
+        await waitForWaiters(manager, count: 2)
 
         await openGate.release()
         let (session1, session2) = try await (firstOpen, duplicateOpenInFlight)
@@ -181,6 +188,7 @@ struct VaultSessionManagerTests {
         async let duplicateLock: Void = manager.lock { _ in
             _ = await lockCalls.increment()
         }
+        await waitForWaiters(manager, count: 2)
         await lockGate.release()
         _ = try await (firstLock, duplicateLock)
         #expect(await lockCalls.count == 1)
@@ -202,6 +210,7 @@ struct VaultSessionManagerTests {
             _ = await unlockCalls.increment()
             return self.vaultIDA
         }
+        await waitForWaiters(manager, count: 2)
         await unlockGate.release()
         let (unlocked1, unlocked2) = try await (firstUnlock, duplicateUnlock)
         #expect(unlocked1 == unlocked2)

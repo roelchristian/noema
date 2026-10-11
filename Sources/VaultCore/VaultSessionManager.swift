@@ -122,6 +122,7 @@ public enum VaultSessionError: Error, Sendable, Equatable, LocalizedError {
 public actor VaultSessionManager {
     public private(set) var state: VaultSessionState = .closed
     public private(set) var generation: UInt64 = 0
+    public private(set) var inFlightWaiterCount: Int = 0
     public var epoch: UInt64 { generation }
 
     private var observers: [UUID: AsyncStream<VaultSessionState>.Continuation] = [:]
@@ -228,6 +229,8 @@ public actor VaultSessionManager {
     }
 
     private func awaitOpenTask(_ task: Task<VaultSession, Error>, id: UUID) async throws -> VaultSession {
+        inFlightWaiterCount += 1
+        defer { inFlightWaiterCount -= 1 }
         do {
             let session = try await withTaskCancellationHandler {
                 try await task.value
@@ -309,6 +312,8 @@ public actor VaultSessionManager {
 
     private func awaitLockTask(_ task: Task<Void, Error>, id: UUID) async throws {
         guard case .locking(let session) = state else { return }
+        inFlightWaiterCount += 1
+        defer { inFlightWaiterCount -= 1 }
         do {
             try await withTaskCancellationHandler {
                 try await task.value
@@ -411,6 +416,8 @@ public actor VaultSessionManager {
         id: UUID,
         fallback: (vaultID: UUID, root: URL, vaultName: String, generation: UInt64)? = nil
     ) async throws -> VaultSession {
+        inFlightWaiterCount += 1
+        defer { inFlightWaiterCount -= 1 }
         let lockedFallback: (vaultID: UUID, root: URL, vaultName: String, generation: UInt64)? = fallback ?? {
             if case .unlocking(let vID, let root, let name, _) = state {
                 return (vID, root, name, generation)
