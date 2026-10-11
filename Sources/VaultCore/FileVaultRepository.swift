@@ -5,6 +5,7 @@ public protocol VaultRepository: Sendable {
     func create(title: String, body: String) async throws -> NoteRecord
     func create(title: String, body: String, source: SourceRecord) async throws -> NoteRecord
     func save(note: NoteRecord, title: String, body: String, tags: [String]) async throws -> NoteRecord
+    func setEditingLock(note: NoteRecord, locked: Bool) async throws -> NoteRecord
     func setSourceReference(note: NoteRecord, sourceID: UUID, linked: Bool) async throws -> NoteRecord
     func trashItems() async throws -> [TrashedItem]
     func expireTrash(now: Date) async throws -> [String]
@@ -184,7 +185,17 @@ public actor FileVaultRepository: VaultRepository {
         return try NoteCodec.decode(data, path: note.relativePath, vaultID: manifest.id)
     }
 
+    public func setEditingLock(note: NoteRecord, locked: Bool) throws -> NoteRecord {
+        var updated = note
+        updated.editingLocked = locked
+        return try save(note: updated, title: note.title, body: note.body, tags: note.tags, preserveUpdatedAt: true)
+    }
+
     public func save(note: NoteRecord, title: String, body: String, tags: [String]) throws -> NoteRecord {
+        try save(note: note, title: title, body: body, tags: tags, preserveUpdatedAt: false)
+    }
+
+    private func save(note: NoteRecord, title: String, body: String, tags: [String], preserveUpdatedAt: Bool) throws -> NoteRecord {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw VaultError.invalid("A wiki page needs a title.") }
         let snapshot = try scan()
@@ -198,7 +209,7 @@ public actor FileVaultRepository: VaultRepository {
         }
         var updated = note
         updated.title = title; updated.body = body; updated.tags = normalizeTags(tags)
-        updated.updatedAt = timestamp()
+        updated.updatedAt = preserveUpdatedAt ? note.updatedAt : timestamp()
         if updated.createdAt.isEmpty { updated.createdAt = updated.updatedAt }
         if normalized(title) != normalized(note.title), !updated.aliases.contains(note.title) { updated.aliases.append(note.title) }
         let data = try NoteCodec.encode(updated)

@@ -15,6 +15,7 @@ struct ContentView: View {
     @Namespace private var sidebarTabNamespace
     @FocusState private var searchFocused: Bool
     @State private var showTrashConfirmation = false
+    @State private var hoveredSidebarPageID: UUID?
     @State private var trashPageID: UUID?
     @State private var permanentDeletion: TrashedItem?
     @State private var showPermanentDeletion = false
@@ -494,9 +495,9 @@ struct ContentView: View {
     private func sidebarPageRow(_ note: NoteRecord, showRelativeEditTime: Bool = false) -> some View {
         let active = model.currentNote?.id == note.id
         return HStack(spacing: 7) {
-            SidebarPageIcon(locked: note.isEditingLocked, unread: model.unseenRenamedPages.contains(note.id), active: active, title: note.title, unlock: {
-                model.toggleEditingLock(note.id, preservingSidebarPosition: !reduceMotion)
-            }, select: { model.select(note.id) }, finishFeedback: { model.finishSidebarLockFeedback(note.id) })
+            SidebarPageIcon(unread: model.unseenRenamedPages.contains(note.id), active: active, title: note.title) {
+                model.select(note.id)
+            }
             Button { model.select(note.id) } label: {
                 HStack(spacing: 7) {
                     Text(note.title)
@@ -520,22 +521,31 @@ struct ContentView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            SidebarEditingLockControl(locked: note.isEditingLocked,
+                                      visible: active || hoveredSidebarPageID == note.id,
+                                      pending: model.editingLockOperations.contains(note.id)) {
+                model.toggleEditingLock(note.id)
+            }
+        }
+        .onHover { hovering in
+            if hovering { hoveredSidebarPageID = note.id }
+            else if hoveredSidebarPageID == note.id { hoveredSidebarPageID = nil }
         }
         .padding(.leading, 2)
-        .padding(.trailing, 8)
+        .padding(.trailing, 4)
         .frame(height: 28)
         .contentShape(Rectangle())
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(active ? Color.primary.opacity(0.08) : Color.clear)
         )
-        .modifier(SidebarMoveFeedback(token: model.sidebarMoveFeedback[note.id]))
         .listRowInsets(EdgeInsets(top: 0.5, leading: 0, bottom: 0.5, trailing: 4))
         .listRowSeparator(.hidden)
         .contextMenu {
-            Button(note.isEditingLocked ? "Unlock" : "Lock") {
-                model.toggleEditingLock(note.id, preservingSidebarPosition: !reduceMotion)
+            Button(note.isEditingLocked ? "Unlock Editing" : "Lock Editing") {
+                model.toggleEditingLock(note.id)
             }
+            .disabled(model.editingLockOperations.contains(note.id))
             Button("Delete…", role: .destructive) { trashPageID = note.id; showTrashConfirmation = true }
         }
     }
@@ -662,13 +672,14 @@ struct ContentView: View {
                         .swipeActions(edge: .leading, allowsFullSwipe: false) {
                             if row.kind == .wiki, let note = model.notes.first(where: { $0.id == row.id }) {
                                 Button { model.toggleEditingLock(row.id) } label: {
-                                    Label(note.isEditingLocked ? "Unlock" : "Lock", systemImage: note.isEditingLocked ? "lock.open" : "lock")
-                                }
+                                    Label(note.isEditingLocked ? "Unlock Editing" : "Lock Editing", systemImage: note.isEditingLocked ? "lock.open" : "lock")
+                                }.disabled(model.editingLockOperations.contains(note.id))
                             }
                         }
                         .contextMenu {
                             if row.kind == .wiki, let note = model.notes.first(where: { $0.id == row.id }) {
-                                Button(note.isEditingLocked ? "Unlock" : "Lock") { model.toggleEditingLock(row.id) }
+                                Button(note.isEditingLocked ? "Unlock Editing" : "Lock Editing") { model.toggleEditingLock(row.id) }
+                                    .disabled(model.editingLockOperations.contains(note.id))
                                 Button("Delete…", role: .destructive) { trashPageID = row.id; showTrashConfirmation = true }
                             }
                         }
@@ -1092,10 +1103,12 @@ struct ContentView: View {
                                 .font(.caption)
                         }
                         if !note.aliases.isEmpty { InspectorProperty("Aliases", note.aliases.joined(separator: ", ")) }
-                        LabeledContent("Protection") {
+                        LabeledContent("Editing") {
                             Button { model.toggleEditingLock() } label: {
-                                Label(model.editingLocked ? "Locked" : "Unlocked", systemImage: model.editingLocked ? "lock" : "lock.open")
-                            }.buttonStyle(.borderless).help(model.editingLocked ? "Unlock page" : "Lock page")
+                                Label(note.isEditingLocked ? "Unlock Editing" : "Lock Editing", systemImage: note.isEditingLocked ? "lock" : "lock.open")
+                            }.buttonStyle(.borderless)
+                            .help(note.isEditingLocked ? "Unlock Editing" : "Lock Editing")
+                            .disabled(model.editingLockOperations.contains(note.id))
                         }.font(.caption)
                     } actions: { EmptyView() }
                     sourceReferences(note)
@@ -1320,8 +1333,9 @@ struct ContentView: View {
                             Label(model.reading ? "Edit" : "Done", systemImage: model.reading ? "pencil" : "checkmark")
                         }.disabled(model.editingLocked)
                         Button { model.toggleEditingLock() } label: {
-                            Label(model.editingLocked ? "Unlock article" : "Lock article", systemImage: model.editingLocked ? "lock.fill" : "lock.open")
-                        }.help(model.editingLocked ? "Unlock article" : "Lock article against editing")
+                            Label(model.currentNote?.isEditingLocked == true ? "Unlock Editing" : "Lock Editing", systemImage: model.currentNote?.isEditingLocked == true ? "lock.fill" : "lock.open")
+                        }.help(model.currentNote?.isEditingLocked == true ? "Unlock Editing" : "Lock Editing")
+                        .disabled(model.currentNote.map { model.editingLockOperations.contains($0.id) } ?? true)
                         Button { trashPageID = model.currentNote?.id; showTrashConfirmation = true } label: {
                             Label("Move page to vault trash", systemImage: "trash")
                         }.help("Move page to vault trash")
@@ -1718,114 +1732,58 @@ struct TopicPageSheet: View {
     }
 }
 
-private struct SidebarMoveFeedback: ViewModifier {
-    let token: UUID?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var trigger: UUID?
-    @State private var lightened = false
-
-    func body(content: Content) -> some View {
-        content
-            .opacity(!reduceMotion && lightened ? 0.75 : 1)
-            .onChange(of: token) {
-                if !reduceMotion { trigger = token }
-            }
-            .task(id: trigger) {
-                guard trigger != nil, !reduceMotion else { return }
-                defer { lightened = false }
-                do {
-                    // Let the row reach its updated position before giving the location cue.
-                    try await Task.sleep(for: .milliseconds(120))
-                    withAnimation(.easeInOut(duration: 0.3)) { lightened = true }
-                    try await Task.sleep(for: .milliseconds(1200))
-                    withAnimation(.easeOut(duration: 0.65)) { lightened = false }
-                    // Keep the task alive until the fade completes so cleanup cannot cut it short.
-                    try await Task.sleep(for: .milliseconds(700))
-                } catch { lightened = false }
-            }
-            .onDisappear { trigger = nil; lightened = false }
-    }
-}
-
 private struct SidebarPageIcon: View {
-    let locked: Bool
     let unread: Bool
     let active: Bool
     let title: String
-    let unlock: () -> Void
     let select: () -> Void
-    let finishFeedback: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var showUnlocked = false
-    @State private var showLocked = false
-    @State private var unlockPending = false
-    @State private var returningToFile = false
-
-    private var symbol: String {
-        locked ? "lock.fill" : showUnlocked ? "lock.open" : unread ? "circle.fill" : "doc.text"
-    }
     var body: some View {
-        Button {
-            if locked {
-                guard !unlockPending else { return }
-                unlockPending = true
-                unlock()
-            } else {
-                select()
-            }
-        } label: { icon }
+        Button(action: select) {
+            Image(systemName: "doc.text")
+                .font(.system(size: 12))
+                .foregroundStyle(active ? Color.accentColor : .secondary)
+                .overlay(alignment: .topTrailing) {
+                    if unread {
+                        Circle().fill(Color(nsColor: .systemBlue)).frame(width: 4, height: 4)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .frame(width: 16, height: 28)
+                .contentShape(Rectangle())
+        }
         .buttonStyle(.plain)
-        .disabled(locked && (unlockPending || showLocked))
-        .help(locked ? "Unlock page" : "Open page")
-        .accessibilityLabel(locked ? "Unlock \(title)" : "Open \(title)")
-        .onChange(of: locked) { wasLocked, isLocked in
-            unlockPending = false
-            if wasLocked && !isLocked {
-                showLocked = false
-                showUnlocked = !reduceMotion
-            } else if !wasLocked && isLocked {
-                showUnlocked = false
-                returningToFile = false
-                showLocked = !reduceMotion
-            }
-            if reduceMotion { finishFeedback() }
-        }
-        .task(id: showLocked) {
-            guard showLocked else { return }
-            do { try await Task.sleep(for: .milliseconds(1400)) } catch { return }
-            showLocked = false
-            finishFeedback()
-        }
-        .task(id: showUnlocked) {
-            guard showUnlocked else { return }
-            do { try await Task.sleep(for: .milliseconds(1400)) } catch { return }
-            returningToFile = true
-            showUnlocked = false
-        }
-        .task(id: returningToFile) {
-            guard returningToFile else { return }
-            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
-            returningToFile = false
-            finishFeedback()
-        }
-        .onDisappear {
-            if unlockPending || showLocked || showUnlocked || returningToFile { finishFeedback() }
-        }
-        .task(id: unlockPending) {
-            guard unlockPending else { return }
-            do { try await Task.sleep(for: .seconds(2)) } catch { return }
-            unlockPending = false
-        }
+        .help("Open page")
+        .accessibilityLabel("Open \(title)")
+        .accessibilityValue(unread ? "Unread title change" : "")
     }
-    private var icon: some View {
-        Image(systemName: symbol)
-            .font(.system(size: unread && !locked && !showUnlocked ? 6 : 12))
-            .foregroundStyle(showUnlocked ? Color(nsColor: .systemGreen) : unread && !locked ? Color(nsColor: .systemBlue) : active ? Color.accentColor : .secondary)
-            .frame(width: 16, height: 28)
-            .contentShape(Rectangle())
-            .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: symbol)
-            .accessibilityLabel(unread ? "Unread title change" : title)
+}
+
+private struct SidebarEditingLockControl: View {
+    let locked: Bool
+    let visible: Bool
+    let pending: Bool
+    let toggle: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    @FocusState private var focused: Bool
+    private var actionTitle: String { locked ? "Unlock Editing" : "Lock Editing" }
+    var body: some View {
+        Button(action: toggle) {
+            Image(systemName: locked ? "lock.fill" : "lock.open")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace, options: .speed(3)))
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: locked)
+                .opacity(locked || visible || pending || focused || voiceOver ? 1 : 0)
+                .frame(width: 20, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focused($focused)
+        .disabled(pending)
+        .help(actionTitle)
+        .accessibilityLabel(actionTitle)
+        .accessibilityValue(pending ? "Saving" : locked ? "Editing locked" : "Editing unlocked")
     }
 }
 

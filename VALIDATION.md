@@ -728,3 +728,16 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 - Automatic cleanup runs on refresh/open after 15 days. Existing undated trash gets a full 15-day grace period from first refresh; damaged, unreadable, unsafe, or conflicted items remain protected. Canonical v1 formats remain unchanged; older builds cannot display trashed sources.
 - The service-enabled `./scripts/test.sh` passed all 107 tests, including mixed page/source restore, external-original preservation, stale/duplicate source restoration, and retention across reopen with legacy grace and damaged-file protection. The first restricted run failed because native file-coordination/pasteboard services were blocked. Code compiled, `git diff --check` and supervisor selftest passed.
 - `./scripts/build.sh debug` was interrupted by concurrent modification of `Sources/noema/NoemaApp.swift`; packaging verification remains outstanding. UI validation was skipped at the user's request. Accessibility/theme/accent and two-Mac iCloud checks were not performed.
+
+
+### Sidebar editing-lock refinement (2026-10-11)
+
+- Document icons and titles open pages; a separate persisted lock indicator/control exposes Lock Editing / Unlock Editing on hover, selection, focus, and to VoiceOver. Removed delayed unlock color, sorting holds, and row opacity feedback; the symbol replacement uses a brief transition with Reduce Motion support.
+- Added regression coverage for lock-only timestamp preservation, pending content timestamps, stable sidebar ordering, rapid duplicate actions, stale-write failure, and retry. Storage continues through coordinated stale-checked writes with no format change.
+- Supervisor selftest passed (all 17 policy parameters). After correcting temporary-directory setup in the new model tests, the service-enabled `./scripts/test.sh` passed all 115 tests, including rapid actions in both lock directions, failure/retry, and pending-content timestamp preservation. `./scripts/build.sh debug` compiled, packaged, and signed successfully with native macOS service access. Initial sandboxed runs encountered coordinated-file-write/pasteboard errors and iconutil rejected the iconset; service-enabled reruns resolved those blocks. See `.build/sidebar-lock-commit-tests.log`, `.build/sidebar-lock-build-unsandboxed.log`, and `.build/sidebar-padding-build.log` for passing evidence.
+- Outstanding: manual verification of the rebuilt UI in a temporary vault, keyboard focus and VoiceOver behavior, Reduce Motion, theme/System appearance/accent variations, and two-Mac iCloud behavior. Inspection of the running older app does not validate the rebuilt sidebar.
+
+### Sidebar page-row trailing spacing (2026-10-11)
+
+- Reduced page-row trailing padding from 8 to 4 points, giving titles 4 more points of available width. The existing row inset, lock control, and edit timestamp remain in place.
+- `./scripts/build.sh debug` compiled, packaged, and signed successfully with native macOS service access; whitespace and supervisor compliance checks passed. No regression tests were added for this spacing-only change. Manual UI, theme/accent, VoiceOver, and Reduce Motion checks were not performed.

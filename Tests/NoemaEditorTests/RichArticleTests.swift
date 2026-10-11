@@ -700,33 +700,83 @@ import VaultCore
 
 
 
-@Test(arguments: [false, true]) @MainActor func sidebarLockChangesHoldOrderingUntilFeedbackCompletes(initiallyLocked: Bool) async throws {
-    var older = try NoteCodec.decode(Data("# Older".utf8), path: "Wiki/Older.md", vaultID: UUID())
-    var newer = older; newer.id = UUID(); newer.title = "Newer"
-    older.updatedAt = "2026-10-09T00:00:00Z"; older.editingLocked = initiallyLocked
-    newer.updatedAt = "2026-10-10T00:00:00Z"
-    let model = AppModel(); model.notes = [older, newer]
-    model.holdSidebarPosition(older.id)
-    older.updatedAt = "2026-10-11T00:00:00Z"; older.editingLocked = !initiallyLocked
-    model.notes = [older, newer]
-    #expect(model.allPagesByUpdated.map(\.id) == [newer.id, older.id])
-    #expect(model.recentPages.map(\.id) == [newer.id, older.id])
-    #expect(model.notes.first?.updatedAt == "2026-10-11T00:00:00Z")
-    #expect(model.sidebarMoveFeedback[older.id] == nil)
-    model.finishSidebarLockFeedback(older.id)
-    let feedback = try #require(model.sidebarMoveFeedback[older.id])
-    model.finishSidebarLockFeedback(older.id)
-    #expect(model.sidebarMoveFeedback[older.id] == feedback)
-    #expect(model.allPagesByUpdated.map(\.id) == [older.id, newer.id])
-    #expect(model.recentPages.map(\.id) == [older.id, newer.id])
-    // Failed lock changes (no repository) must release their presentation hold.
-    older.editingLocked = initiallyLocked; model.notes = [older, newer]
-    model.toggleEditingLock(older.id, preservingSidebarPosition: true)
-    older.updatedAt = "2026-10-08T00:00:00Z"; model.notes = [older, newer]
-    for _ in 0..<20 {
-        if model.allPagesByUpdated.map(\.id) == [newer.id, older.id] { break }
+@Test(arguments: [false, true]) @MainActor func editingLockPersistsOnceDuringRapidActions(initiallyLocked: Bool) async throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaLock-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    var note = try await repo.create(title: "Older", body: "Original")
+    note = try await repo.setEditingLock(note: note, locked: initiallyLocked)
+    let newer = try await repo.create(title: "Newer", body: "Other")
+    let model = AppModel(repository: repo)
+    model.notes = [note, newer]
+    model.currentNote = note; model.title = note.title; model.body = note.body
+    let order = model.allPagesByUpdated.map(\.id)
+    let recentOrder = model.recentPages.map(\.id)
+    for _ in 0..<20 { model.toggleEditingLock(note.id) }
+    #expect(model.editingLockOperations.contains(note.id))
+    #expect(model.currentNote?.isEditingLocked == initiallyLocked)
+    for _ in 0..<200 {
+        if model.editingLockOperations.isEmpty { break }
         try await Task.sleep(for: .milliseconds(10))
     }
-    #expect(model.allPagesByUpdated.map(\.id) == [newer.id, older.id])
-    #expect(model.sidebarMoveFeedback[older.id] == feedback)
+    #expect(model.editingLockOperations.isEmpty)
+    #expect(model.currentNote?.isEditingLocked == !initiallyLocked)
+    #expect(model.currentNote?.updatedAt == note.updatedAt)
+    #expect(model.allPagesByUpdated.map(\.id) == order)
+    #expect(model.recentPages.map(\.id) == recentOrder)
+    #expect(try await repo.scan().notes.first(where: { $0.id == note.id })?.isEditingLocked == !initiallyLocked)
+}
+
+@Test @MainActor func editingLockFailurePreservesStateAndAllowsRetry() async throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaLockFailure-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let note = try await repo.create(title: "Page", body: "Original")
+    let model = AppModel(repository: repo); model.notes = [note]
+    model.currentNote = note; model.title = note.title; model.body = note.body
+    let changed = try await repo.save(note: note, title: note.title, body: "External edit", tags: [])
+    model.toggleEditingLock(note.id)
+    for _ in 0..<200 {
+        if model.editingLockOperations.isEmpty { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(!model.editingLockOperations.contains(note.id))
+    #expect(model.currentNote?.isEditingLocked == false)
+    #expect(model.notes.first?.contentHash == note.contentHash)
+    #expect(model.errorMessage?.contains("Could not change editing lock") == true)
+    #expect(try await repo.scan().notes.first?.body == "External edit")
+    model.notes = [changed]; model.currentNote = changed; model.body = changed.body
+    model.toggleEditingLock(note.id)
+    for _ in 0..<200 {
+        if model.editingLockOperations.isEmpty { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.currentNote?.isEditingLocked == true)
+}
+
+@Test @MainActor func lockingSavesPendingContentBeforePreservingItsTimestamp() async throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaPendingLock-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let note = try await repo.create(title: "Page", body: "Original")
+    var old = note; old.updatedAt = "2020-01-01T00:00:00Z"
+    try NoteCodec.encode(old).write(to: folder.appendingPathComponent(note.relativePath), options: .atomic)
+    let scanned = try #require(try await repo.scan().notes.first)
+    let recovery = try RecoveryStore(directory: folder.appendingPathComponent("TestRecovery"))
+    let model = AppModel(repository: repo, recovery: recovery)
+    model.notes = [scanned]; model.currentNote = scanned; model.title = scanned.title; model.body = "Pending edit"
+    model.toggleEditingLock(note.id)
+    for _ in 0..<200 {
+        if model.editingLockOperations.isEmpty { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    let saved = try #require(try await repo.scan().notes.first)
+    #expect(saved.isEditingLocked)
+    #expect(saved.body == "Pending edit")
+    #expect(saved.updatedAt > scanned.updatedAt)
+    #expect(model.currentNote?.updatedAt == saved.updatedAt)
+    #expect(!model.dirty)
 }

@@ -951,3 +951,24 @@ func wikipediaCaptureUsesFullHTML(html: String) async throws {
     #expect(FileManager.default.fileExists(atPath: damaged.path))
     #expect(try Data(contentsOf: external) == bytes)
 }
+
+@Test func editingLockMetadataPreservesContentTimestampAndRejectsStaleWrites() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let original = try await repo.create(title: "Page", body: "Original #tag")
+    var old = original; old.updatedAt = "2020-01-01T00:00:00Z"
+    try NoteCodec.encode(old).write(to: folder.appendingPathComponent(original.relativePath), options: .atomic)
+    let note = try #require(try await repo.scan().notes.first)
+    let locked = try await repo.setEditingLock(note: note, locked: true)
+    #expect(locked.isEditingLocked)
+    #expect(locked.updatedAt == note.updatedAt)
+    #expect(locked.body == note.body && locked.tags == note.tags && locked.relativePath == note.relativePath)
+    await #expect(throws: (any Error).self) { try await repo.setEditingLock(note: note, locked: false) }
+    #expect(try await repo.scan().notes.first?.isEditingLocked == true)
+    let unlocked = try await repo.setEditingLock(note: locked, locked: false)
+    #expect(!unlocked.isEditingLocked && unlocked.updatedAt == note.updatedAt)
+    let edited = try await repo.save(note: unlocked, title: unlocked.title, body: "New content", tags: unlocked.tags)
+    let relocked = try await repo.setEditingLock(note: edited, locked: true)
+    #expect(edited.updatedAt > note.updatedAt)
+    #expect(relocked.updatedAt == edited.updatedAt && relocked.body == "New content")
+}
