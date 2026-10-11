@@ -46,23 +46,31 @@ public enum NoteCodec {
         return note
     }
     public static func encode(_ note: NoteRecord) throws -> Data {
-        var node = try note.originalHeader.flatMap { try Yams.compose(yaml: $0) } ?? Node([:])
-        if let lcc = note.lcc?.trimmingCharacters(in: .whitespacesAndNewlines), !lcc.isEmpty {
-            node["lcc"] = Node(lcc)
-        } else {
-            node["lcc"] = nil
+        let original = try note.originalHeader.flatMap { try Yams.compose(yaml: $0) }
+        if let original, original.mapping == nil {
+            throw VaultError.invalid("\(note.relativePath) frontmatter must be a mapping.")
         }
-        if note.editingLocked != nil { node["editing_locked"] = Node(note.isEditingLocked ? "true" : "false") }
-        node["ai_title_provenance"] = provenanceNode(note.aiTitleProvenance)
-        node["ai_lcc_provenance"] = provenanceNode(note.aiLCCProvenance)
-        node["sources"] = Node(note.linkedSourceIDs.map { Node($0.uuidString.lowercased()) })
-        node["id"] = Node(note.id.uuidString.lowercased())
-        node["title"] = Node(note.title)
-        node["aliases"] = Node(note.aliases.map { Node($0) })
-        node["tags"] = Node(note.tags.map { Node($0) })
-        node["created_at"] = Node(note.createdAt)
-        node["updated_at"] = Node(note.updatedAt)
-        return Data(("---\n" + (try Yams.serialize(node: node)) + "---\n" + note.body).utf8)
+        var mapping = original?.mapping ?? Node.Mapping([])
+        let lcc = note.lcc?.trimmingCharacters(in: .whitespacesAndNewlines)
+        setOptional("lcc", value: lcc.flatMap { $0.isEmpty ? nil : Node($0) }, in: &mapping)
+        if note.editingLocked != nil { mapping["editing_locked"] = Node(note.isEditingLocked ? "true" : "false") }
+        setOptional("ai_title_provenance", value: provenanceNode(note.aiTitleProvenance), in: &mapping)
+        setOptional("ai_lcc_provenance", value: provenanceNode(note.aiLCCProvenance), in: &mapping)
+        mapping["sources"] = Node(note.linkedSourceIDs.map { Node($0.uuidString.lowercased()) })
+        mapping["id"] = Node(note.id.uuidString.lowercased())
+        mapping["title"] = Node(note.title)
+        mapping["aliases"] = Node(note.aliases.map { Node($0) })
+        mapping["tags"] = Node(note.tags.map { Node($0) })
+        mapping["created_at"] = Node(note.createdAt)
+        mapping["updated_at"] = Node(note.updatedAt)
+        return Data(("---\n" + (try Yams.serialize(node: .mapping(mapping))) + "---\n" + note.body).utf8)
+    }
+
+    private static func setOptional(_ key: String, value: Node?, in mapping: inout Node.Mapping) {
+        // Node's setter ignores nil; Mapping removes it. Remove every occurrence so an
+        // earlier duplicate cannot revive cleared metadata after decoding again.
+        while mapping[key] != nil { mapping[key] = nil }
+        if let value { mapping[key] = value }
     }
 
     private static func provenance(_ node: Node?) -> SummaryProvenance? {

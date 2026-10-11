@@ -216,4 +216,41 @@ struct WikiPageAdapterTests {
         #expect(try store.base.read(at: note.relativePath) == bytes)
     }
 
+
+    @Test func clearingOptionalClassificationAndProvenanceRemovesDuplicateYAMLKeys() throws {
+        let data = Data("""
+        ---
+        title: Original
+        lcc: Q
+        lcc: QA
+        ai_title_provenance:
+          provider: OpenAI
+          model: test
+          generated_at: '2026-01-01T00:00:00Z'
+        ai_title_provenance:
+          provider: On-device
+          model: native
+          generated_at: '2026-01-01T00:00:00Z'
+        ai_lcc_provenance:
+          provider: OpenAI
+          model: test
+          generated_at: '2026-01-01T00:00:00Z'
+        custom:
+          nested: retained
+        ---
+        Existing content
+        """.utf8)
+        let vaultID = UUID()
+        var note = try NoteCodec.decode(data, path: "Wiki/Original.md", vaultID: vaultID)
+        #expect(note.lcc == "QA" && note.aiTitleProvenance?.provider == "On-device")
+        note.lcc = nil; note.aiTitleProvenance = nil; note.aiLCCProvenance = nil
+        let encoded = try NoteCodec.encode(note)
+        let cleared = try NoteCodec.decode(encoded, path: note.relativePath, vaultID: vaultID)
+        #expect(cleared.lcc == nil)
+        #expect(cleared.aiTitleProvenance == nil && cleared.aiLCCProvenance == nil)
+        #expect(cleared.originalHeader?.contains("nested: retained") == true)
+        #expect(cleared.body == note.body)
+        #expect(String(decoding: encoded, as: UTF8.self).contains("ai_title_provenance") == false)
+    }
+
 }
