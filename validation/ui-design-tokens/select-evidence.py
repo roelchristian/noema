@@ -21,8 +21,9 @@ for source, destination in (("baseline", "before"), ("after", "after")):
     manifest["source_refs"][source] = (generated / "source-ref.txt").read_text().strip()
     manifest["platforms"][source] = (generated / "platform.txt").read_text().strip()
     files = sorted(generated.glob("*.png"))
-    if len(files) != 136:
-        raise SystemExit(f"Expected 136 {source} captures, found {len(files)}")
+    expected = 136 if source == "baseline" else 152
+    if len(files) != expected:
+        raise SystemExit(f"Expected {expected} {source} captures, found {len(files)}")
     manifest["captures"][source] = {file.name: hashlib.sha256(file.read_bytes()).hexdigest() for file in files}
     evidence = root / "evidence" / destination
     evidence.mkdir(parents=True, exist_ok=True)

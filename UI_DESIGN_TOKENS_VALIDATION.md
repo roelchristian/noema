@@ -81,3 +81,7 @@ The audited exceptions in `UI_DESIGN_TOKENS.md` remain the governing contract. S
 - Custom TeX settings, link-suggestion popover and recovery/import sheet layout are outside the shared chrome migration.
 
 No new preference, density setting, theme engine or global interface font override was introduced. Native Table implementation, editorial font/layout, branding assets and vault/session/storage formats are preserved. Pending live checks remain separate from automated test success.
+
+## Native-toolbar integration follow-up
+
+The native-toolbar branch integrates main `b6cd5c7` with the token ownership contract preserved: custom chrome consumes semantic tokens; native toolbar/glass controls and window/pane geometry remain platform/component-owned. The historical evidence and manifest above retain their original source attribution. Current opt-in fixtures isolate pane preferences, retain the 136-image baseline via `NOEMA_LEGACY_TOKEN_FIXTURE`, and render 152 current images including the native workspace/welcome sizes. The merged suite passes 284 tests across 31 suites with all captures enabled. Refreshed live toolbar screenshots, representative minimum-size fixtures and the remaining manual accessibility checks are recorded in [native integration validation](docs/UI_TBR_VALIDATION.md).
