@@ -95,7 +95,7 @@ import NoemaBrand
 
 @MainActor private func resolvedRGB(_ color: NSColor, dark: Bool) -> ThemeRGB {
     var result = ThemeRGB(hex: 0)
-    NSAppearance(name: dark ? .darkAqua : .aqua)!.performAsCurrentDrawingAppearance {
+    NSAppearance(named: dark ? .darkAqua : .aqua)!.performAsCurrentDrawingAppearance {
         let value = color.usingColorSpace(.sRGB)!
         result.red = Double(value.redComponent)
         result.green = Double(value.greenComponent)
