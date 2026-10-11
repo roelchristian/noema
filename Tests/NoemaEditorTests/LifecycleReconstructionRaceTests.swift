@@ -49,6 +49,9 @@ private final class ReconstructionIndex: SearchIndex, Sendable {
         try await base.search(query, kind: kind, tag: tag)
     }
     func backlinks(to note: NoteRecord) async throws -> [UUID] { try await base.backlinks(to: note) }
+    func outgoingLinks(from pageID: UUID) async throws -> [String] {
+        try await base.outgoingLinks(from: pageID)
+    }
 }
 
 private final class DelayedOriginalStore: VaultContentStore, Sendable {
