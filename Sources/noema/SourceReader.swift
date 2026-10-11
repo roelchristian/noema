@@ -5,6 +5,7 @@ import VaultCore
 
 @MainActor final class SourceReader: NSWindowController, NSWindowDelegate {
     private static var readers: [UUID: SourceReader] = [:]
+    static var openReaderIDs: Set<UUID> { Set(readers.keys) }
     private var sourceID: UUID
     private var scopedURL: URL?
     private let previewSnapshot: SourcePreviewSnapshot?
@@ -16,7 +17,13 @@ import VaultCore
     }
     required init?(coder: NSCoder) { fatalError("Not supported") }
 
-    static func open(_ source: SourceRecord, root: URL, contentStore: any VaultContentStore) async throws {
+    static func open(
+        _ source: SourceRecord,
+        root: URL,
+        contentStore: any VaultContentStore,
+        isStillValid: (@MainActor @Sendable () -> Bool)? = nil
+    ) async throws {
+        if let isStillValid, !isStillValid() { return }
         if let existing = readers[source.id] { existing.showWindow(nil); existing.window?.makeKeyAndOrderFront(nil); return }
         let url: URL
         var scoped: URL?
@@ -40,6 +47,10 @@ import VaultCore
                 }
                 return data
             }.value
+            if let isStillValid, !isStillValid() {
+                scoped?.stopAccessingSecurityScopedResource()
+                return
+            }
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.title = source.title; window.isReleasedWhenClosed = false
             let ext = url.pathExtension.lowercased()
@@ -65,6 +76,11 @@ import VaultCore
                 preview.autoresizingMask = [.width, .height]
                 if !source.metadata.isLinked {
                     snapshot = try await Task.detached { try SourcePreviewSnapshot(data: data, filename: source.metadata.storedFilename) }.value
+                    if let isStillValid, !isStillValid() {
+                        snapshot?.remove()
+                        scoped?.stopAccessingSecurityScopedResource()
+                        return
+                    }
                 }
                 preview.previewItem = (snapshot?.url ?? url) as NSURL
                 window.contentView = preview

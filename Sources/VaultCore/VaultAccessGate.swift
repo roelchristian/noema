@@ -317,6 +317,8 @@ public final class VaultAccessGate: Sendable {
         var totalCompletedCount: Int = 0
         var totalCancelledCount: Int = 0
         var totalAbandonedCount: Int = 0
+        var acceptedCompletionCount: Int = 0
+        var rejectedCompletionRecords: [VaultStaleCompletionRecord] = []
         var drainWaiters: [UUID: DrainWaiter] = [:]
     }
 
@@ -336,6 +338,10 @@ public final class VaultAccessGate: Sendable {
 
     public var admissionBarrier: VaultLockAdmissionBarrier {
         VaultLockAdmissionBarrier(gate: self)
+    }
+
+    public var staleResultGuard: VaultStaleResultGuard {
+        VaultStaleResultGuard(gate: self)
     }
 
     public var currentState: VaultSessionState {
@@ -900,6 +906,364 @@ public final class VaultAccessGate: Sendable {
                 gate.quiescenceOperations.removeValue(forKey: id)
             }
         }
+    }
+
+    public var acceptedCompletionCount: Int {
+        state.withLock { $0.acceptedCompletionCount }
+    }
+
+    public var rejectedCompletionCount: Int {
+        state.withLock { $0.rejectedCompletionRecords.count }
+    }
+
+    public var rejectedCompletionRecords: [VaultStaleCompletionRecord] {
+        state.withLock { $0.rejectedCompletionRecords }
+    }
+
+    public func issueCompletionTicket(
+        kind: VaultCompletionKind,
+        lease: VaultSessionLease? = nil,
+        token: UUID = UUID(),
+        targetID: UUID? = nil,
+        capturedText: String? = nil
+    ) -> VaultCompletionTicket {
+        let resolvedLease: VaultSessionLease? = state.withLock { gate in
+            if let lease { return lease }
+            return gate.sessionState.activeSession?.lease
+        }
+        return VaultCompletionTicket(
+            lease: resolvedLease,
+            kind: kind,
+            token: token,
+            targetID: targetID,
+            capturedText: capturedText
+        )
+    }
+
+    public func validateCompletion(
+        _ ticket: VaultCompletionTicket?,
+        expectedToken: UUID? = nil,
+        expectedTargetID: UUID? = nil,
+        checkTargetID: Bool = false,
+        currentText: String? = nil,
+        operation: String? = nil
+    ) -> Result<VaultSession?, VaultStaleCompletionError> {
+        let opName = operation ?? (ticket?.kind.rawValue ?? "completion")
+        guard let ticket else {
+            return recordRejectedCompletion(
+                kind: .lifecycle,
+                operation: opName,
+                reason: .missingTicket,
+                ticketGeneration: 0
+            )
+        }
+
+        return state.withLock { gate in
+            let activeGen = max(gate.sessionState.generation, gate.highestGeneration)
+            func reject(_ reason: VaultStaleCompletionReason) -> Result<VaultSession?, VaultStaleCompletionError> {
+                let record = VaultStaleCompletionRecord(
+                    kind: ticket.kind,
+                    operation: opName,
+                    reason: reason,
+                    ticketGeneration: ticket.generation,
+                    activeGeneration: activeGen
+                )
+                gate.rejectedCompletionRecords.append(record)
+                return .failure(.rejected(kind: ticket.kind, operation: opName, reason: reason))
+            }
+
+            // If the ticket is bound to a session lease or the gate has tracked any session lifecycle state,
+            // revalidate session phase, identity, root, and monotonic generation/epoch first.
+            var validatedSession: VaultSession? = nil
+            if ticket.lease != nil || gate.sessionState != .closed || gate.highestGeneration > 0 {
+                guard let lease = ticket.lease else {
+                    if gate.highestGeneration > 0 {
+                        return reject(.staleEpoch(ticketGeneration: 0, activeGeneration: activeGen))
+                    }
+                    return reject(.missingTicket)
+                }
+
+                switch gate.sessionState {
+                case .closed:
+                    return reject(.sessionClosed)
+
+                case .locked(let lockedID, let lockedRoot, _, let lockedGen):
+                    if lease.vaultID != lockedID || lease.root != lockedRoot {
+                        return reject(.wrongVault(
+                            ticketVaultID: lease.vaultID,
+                            ticketRoot: lease.root,
+                            activeVaultID: lockedID,
+                            activeRoot: lockedRoot
+                        ))
+                    }
+                    if lease.generation != lockedGen {
+                        return reject(.staleEpoch(ticketGeneration: lease.generation, activeGeneration: activeGen))
+                    }
+                    return reject(.sessionLocked(vaultID: lockedID, root: lockedRoot, generation: lockedGen))
+
+                case .locking(let session):
+                    if lease.vaultID != session.vaultID || lease.root != session.root {
+                        return reject(.wrongVault(
+                            ticketVaultID: lease.vaultID,
+                            ticketRoot: lease.root,
+                            activeVaultID: session.vaultID,
+                            activeRoot: session.root
+                        ))
+                    }
+                    if lease.generation != session.generation {
+                        return reject(.staleEpoch(ticketGeneration: lease.generation, activeGeneration: activeGen))
+                    }
+                    return reject(.sessionLocked(vaultID: session.vaultID, root: session.root, generation: session.generation))
+
+                case .opening(_, let candidateGen):
+                    if lease.generation < candidateGen {
+                        return reject(.staleEpoch(ticketGeneration: lease.generation, activeGeneration: candidateGen))
+                    }
+                    return reject(.sessionTransitioning(phase: .opening, generation: candidateGen))
+
+                case .unlocking(_, _, _, let candidateGen):
+                    if lease.generation < candidateGen {
+                        return reject(.staleEpoch(ticketGeneration: lease.generation, activeGeneration: candidateGen))
+                    }
+                    return reject(.sessionTransitioning(phase: .unlocking, generation: candidateGen))
+
+                case .open(let activeSession):
+                    if lease.vaultID != activeSession.vaultID || lease.root != activeSession.root {
+                        return reject(.wrongVault(
+                            ticketVaultID: lease.vaultID,
+                            ticketRoot: lease.root,
+                            activeVaultID: activeSession.vaultID,
+                            activeRoot: activeSession.root
+                        ))
+                    }
+                    if lease.generation != activeSession.generation {
+                        return reject(.staleEpoch(
+                            ticketGeneration: lease.generation,
+                            activeGeneration: activeSession.generation
+                        ))
+                    }
+                    if lease.sessionID != activeSession.id {
+                        return reject(.sessionMismatch(
+                            ticketSessionID: lease.sessionID,
+                            activeSessionID: activeSession.id
+                        ))
+                    }
+                    validatedSession = activeSession
+                }
+            }
+
+            if let expectedToken, ticket.token != expectedToken {
+                return reject(.tokenMismatch(expectedToken: expectedToken, actualToken: ticket.token))
+            }
+            if checkTargetID, ticket.targetID != expectedTargetID {
+                return reject(.targetMismatch(expectedTargetID: expectedTargetID, actualTargetID: ticket.targetID))
+            }
+            if let capturedText = ticket.capturedText, let currentText, capturedText != currentText {
+                return reject(.contentChanged)
+            }
+
+            gate.acceptedCompletionCount += 1
+            return .success(validatedSession)
+        }
+    }
+
+    private func recordRejectedCompletion(
+        kind: VaultCompletionKind,
+        operation: String,
+        reason: VaultStaleCompletionReason,
+        ticketGeneration: UInt64
+    ) -> Result<VaultSession?, VaultStaleCompletionError> {
+        state.withLock { gate in
+            let activeGen = max(gate.sessionState.generation, gate.highestGeneration)
+            gate.rejectedCompletionRecords.append(VaultStaleCompletionRecord(
+                kind: kind,
+                operation: operation,
+                reason: reason,
+                ticketGeneration: ticketGeneration,
+                activeGeneration: activeGen
+            ))
+            return .failure(.rejected(kind: kind, operation: operation, reason: reason))
+        }
+    }
+}
+
+/// Classification of asynchronous completion boundaries guarded against stale publication.
+public enum VaultCompletionKind: String, Sendable, Equatable, CaseIterable {
+    case search
+    case preview
+    case sourceLoading
+    case indexing
+    case aiProcessing
+    case pageMutation
+    case trashMutation
+    case refresh
+    case lifecycle
+}
+
+/// Generation and session-identity token captured when an asynchronous operation is scheduled,
+/// and revalidated before any resulting state publication occurs.
+public struct VaultCompletionTicket: Sendable, Equatable {
+    public let lease: VaultSessionLease?
+    public let kind: VaultCompletionKind
+    public let token: UUID
+    public let targetID: UUID?
+    public let capturedText: String?
+
+    public var sessionID: UUID? { lease?.sessionID }
+    public var vaultID: UUID? { lease?.vaultID }
+    public var root: URL? { lease?.root }
+    public var generation: UInt64 { lease?.generation ?? 0 }
+    public var epoch: UInt64 { generation }
+
+    public init(
+        lease: VaultSessionLease?,
+        kind: VaultCompletionKind = .lifecycle,
+        token: UUID = UUID(),
+        targetID: UUID? = nil,
+        capturedText: String? = nil
+    ) {
+        self.lease = lease
+        self.kind = kind
+        self.token = token
+        self.targetID = targetID
+        self.capturedText = capturedText
+    }
+
+    public init(
+        session: VaultSession,
+        kind: VaultCompletionKind = .lifecycle,
+        token: UUID = UUID(),
+        targetID: UUID? = nil,
+        capturedText: String? = nil
+    ) {
+        self.init(
+            lease: session.lease,
+            kind: kind,
+            token: token,
+            targetID: targetID,
+            capturedText: capturedText
+        )
+    }
+}
+
+/// Specific reason an asynchronous completion was rejected at a state-publication boundary.
+public enum VaultStaleCompletionReason: Sendable, Equatable {
+    case missingTicket
+    case sessionClosed
+    case sessionLocked(vaultID: UUID, root: URL, generation: UInt64)
+    case sessionTransitioning(phase: VaultSessionPhase, generation: UInt64)
+    case staleEpoch(ticketGeneration: UInt64, activeGeneration: UInt64)
+    case wrongVault(ticketVaultID: UUID?, ticketRoot: URL?, activeVaultID: UUID, activeRoot: URL)
+    case sessionMismatch(ticketSessionID: UUID, activeSessionID: UUID)
+    case tokenMismatch(expectedToken: UUID, actualToken: UUID)
+    case targetMismatch(expectedTargetID: UUID?, actualTargetID: UUID?)
+    case contentChanged
+}
+
+public enum VaultStaleCompletionError: Error, Sendable, Equatable, LocalizedError {
+    case rejected(kind: VaultCompletionKind, operation: String, reason: VaultStaleCompletionReason)
+
+    public var errorDescription: String? {
+        switch self {
+        case .rejected(let kind, let operation, let reason):
+            "Stale \(kind.rawValue) completion rejected for '\(operation)': \(String(describing: reason))."
+        }
+    }
+}
+
+public struct VaultStaleCompletionRecord: Sendable, Equatable {
+    public let kind: VaultCompletionKind
+    public let operation: String
+    public let reason: VaultStaleCompletionReason
+    public let ticketGeneration: UInt64
+    public let activeGeneration: UInt64
+}
+
+/// Synchronously issues and revalidates `VaultCompletionTicket` tokens against `VaultAccessGate`
+/// at asynchronous completion boundaries, even if cooperative task cancellation was ignored.
+public struct VaultStaleResultGuard: Sendable {
+    public let gate: VaultAccessGate
+
+    public init(gate: VaultAccessGate) {
+        self.gate = gate
+    }
+
+    public var acceptedCount: Int { gate.acceptedCompletionCount }
+    public var rejectedCount: Int { gate.rejectedCompletionCount }
+    public var rejectedRecords: [VaultStaleCompletionRecord] { gate.rejectedCompletionRecords }
+
+    public func issueTicket(
+        kind: VaultCompletionKind,
+        lease: VaultSessionLease? = nil,
+        token: UUID = UUID(),
+        targetID: UUID? = nil,
+        capturedText: String? = nil
+    ) -> VaultCompletionTicket {
+        gate.issueCompletionTicket(
+            kind: kind,
+            lease: lease,
+            token: token,
+            targetID: targetID,
+            capturedText: capturedText
+        )
+    }
+
+    public func validate(
+        _ ticket: VaultCompletionTicket?,
+        expectedToken: UUID? = nil,
+        expectedTargetID: UUID? = nil,
+        checkTargetID: Bool = false,
+        currentText: String? = nil,
+        operation: String? = nil
+    ) -> Result<VaultSession?, VaultStaleCompletionError> {
+        gate.validateCompletion(
+            ticket,
+            expectedToken: expectedToken,
+            expectedTargetID: expectedTargetID,
+            checkTargetID: checkTargetID,
+            currentText: currentText,
+            operation: operation
+        )
+    }
+
+    public func isValid(
+        _ ticket: VaultCompletionTicket?,
+        expectedToken: UUID? = nil,
+        expectedTargetID: UUID? = nil,
+        checkTargetID: Bool = false,
+        currentText: String? = nil,
+        operation: String? = nil
+    ) -> Bool {
+        if case .success = validate(
+            ticket,
+            expectedToken: expectedToken,
+            expectedTargetID: expectedTargetID,
+            checkTargetID: checkTargetID,
+            currentText: currentText,
+            operation: operation
+        ) {
+            return true
+        }
+        return false
+    }
+
+    @discardableResult
+    public func requireValid(
+        _ ticket: VaultCompletionTicket?,
+        expectedToken: UUID? = nil,
+        expectedTargetID: UUID? = nil,
+        checkTargetID: Bool = false,
+        currentText: String? = nil,
+        operation: String? = nil
+    ) throws -> VaultSession? {
+        try validate(
+            ticket,
+            expectedToken: expectedToken,
+            expectedTargetID: expectedTargetID,
+            checkTargetID: checkTargetID,
+            currentText: currentText,
+            operation: operation
+        ).get()
     }
 }
 

@@ -153,6 +153,24 @@ public actor VaultSessionManager {
 
     public nonisolated var admissionBarrier: VaultLockAdmissionBarrier { accessGate.admissionBarrier }
 
+    public nonisolated var staleResultGuard: VaultStaleResultGuard { accessGate.staleResultGuard }
+
+    public nonisolated func issueCompletionTicket(
+        kind: VaultCompletionKind,
+        lease: VaultSessionLease? = nil,
+        token: UUID = UUID(),
+        targetID: UUID? = nil,
+        capturedText: String? = nil
+    ) -> VaultCompletionTicket {
+        accessGate.staleResultGuard.issueTicket(
+            kind: kind,
+            lease: lease,
+            token: token,
+            targetID: targetID,
+            capturedText: capturedText
+        )
+    }
+
     public nonisolated func operationRegistrySnapshot() -> VaultOperationRegistrySnapshot {
         accessGate.registrySnapshot()
     }

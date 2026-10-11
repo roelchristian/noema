@@ -23,10 +23,26 @@ private final class SQLiteConnection: @unchecked Sendable {
 }
 
 public actor SQLiteSearchIndex: SearchIndex {
+    public nonisolated let sessionLease: VaultSessionLease?
+    public nonisolated let accessGate: VaultAccessGate?
     private let connection: SQLiteConnection
     private var revisions: [String: String] = [:]
     private let encoder: JSONEncoder = { let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; return encoder }()
-    public init(url: URL) throws {
+    public init(
+        url: URL,
+        sessionLease: VaultSessionLease? = nil,
+        accessGate: VaultAccessGate? = nil
+    ) throws {
+        if let accessGate, let sessionLease {
+            try accessGate.validate(
+                lease: sessionLease,
+                targetRoot: sessionLease.root,
+                targetVaultID: sessionLease.vaultID,
+                operation: "searchIndex.open"
+            )
+        }
+        self.sessionLease = sessionLease
+        self.accessGate = accessGate
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         connection = try SQLiteConnection(url: url)
         let sql = """
@@ -44,6 +60,18 @@ public actor SQLiteSearchIndex: SearchIndex {
             let message = error.map { String(cString: $0) } ?? "Unknown SQLite error"
             sqlite3_free(error); throw VaultError.storage(message)
         }
+    }
+    private func validateAccess(_ operation: String) throws {
+        guard let accessGate else { return }
+        guard let sessionLease else {
+            throw VaultAccessError.missingLease(operation: operation)
+        }
+        try accessGate.validate(
+            lease: sessionLease,
+            targetRoot: sessionLease.root,
+            targetVaultID: sessionLease.vaultID,
+            operation: operation
+        )
     }
     private var db: OpaquePointer { connection.pointer }
     private var transient: sqlite3_destructor_type { unsafeBitCast(-1, to: sqlite3_destructor_type.self) }
@@ -64,6 +92,7 @@ public actor SQLiteSearchIndex: SearchIndex {
         sqlite3_column_text(s, column).map { String(cString: $0) } ?? ""
     }
     public func cachedEntries() throws -> ScanBatch {
+        try validateAccess("searchIndex.cachedEntries")
         let s = try statement("SELECT id,kind,revision,record FROM entries"); defer { sqlite3_finalize(s) }
         var entries = ScanBatch()
         while sqlite3_step(s) == SQLITE_ROW {
@@ -72,15 +101,18 @@ public actor SQLiteSearchIndex: SearchIndex {
             else { entries.sources.append(try JSONDecoder().decode(SourceRecord.self, from: data)) }
             revisions[text(s, 0)] = text(s, 2)
         }
+        try validateAccess("searchIndex.cachedEntries")
         return entries
     }
     public func reconcile(_ entries: ScanBatch) throws {
+        try validateAccess("searchIndex.reconcile")
         if revisions.isEmpty { _ = try cachedEntries() }
         var next = revisions
         try run("BEGIN IMMEDIATE")
         do {
             var present: Set<String> = []
             for note in entries.notes {
+                try validateAccess("searchIndex.reconcile")
                 let id = note.id.uuidString, revision = note.contentHash + note.relativePath + ":block-markdown-v1"
                 present.insert(id)
                 guard revisions[id] != revision else { continue }
@@ -91,6 +123,7 @@ public actor SQLiteSearchIndex: SearchIndex {
                 next[id] = revision
             }
             for source in entries.sources {
+                try validateAccess("searchIndex.reconcile")
                 let id = source.id.uuidString, revision = digest(try encoder.encode(source.metadata))
                 present.insert(id)
                 guard revisions[id] != revision else { continue }
@@ -99,6 +132,7 @@ public actor SQLiteSearchIndex: SearchIndex {
                 next[id] = revision
             }
             for id in Set(revisions.keys).subtracting(present) { try remove(id); next.removeValue(forKey: id) }
+            try validateAccess("searchIndex.reconcile")
             try run("COMMIT"); revisions = next
         } catch { try? run("ROLLBACK"); throw error }
     }
@@ -111,6 +145,7 @@ public actor SQLiteSearchIndex: SearchIndex {
         for table in ["entries", "fulltext", "tags", "links"] { try run("DELETE FROM \(table) WHERE id=?", [id]) }
     }
     public func search(_ query: String, kind: EntryKind, tag: String? = nil) throws -> [SearchHit] {
+        try validateAccess("searchIndex.search")
         let words = query.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
         var values = [kind.rawValue]
         var whereSQL = "fulltext.kind=?"
@@ -130,15 +165,18 @@ public actor SQLiteSearchIndex: SearchIndex {
             status = sqlite3_step(s)
         }
         guard status == SQLITE_DONE else { throw failure() }
+        try validateAccess("searchIndex.search")
         return results
     }
     public func backlinks(to note: NoteRecord) throws -> [UUID] {
+        try validateAccess("searchIndex.backlinks")
         let names = Array(Set(([note.title] + note.aliases).map(normalized)))
         let slots = Array(repeating: "?", count: names.count).joined(separator: ",")
         let s = try statement("SELECT DISTINCT id FROM links WHERE target IN (\(slots)) AND id != ?", names + [note.id.uuidString])
         defer { sqlite3_finalize(s) }
         var ids: [UUID] = []
         while sqlite3_step(s) == SQLITE_ROW { if let id = UUID(uuidString: text(s, 0)) { ids.append(id) } }
+        try validateAccess("searchIndex.backlinks")
         return ids
     }
 }

@@ -178,7 +178,7 @@ struct EditorAction: Equatable {
     private var activeLease: VaultSessionLease?
     private(set) var lockedVaultURL: URL?
     private var repository: FileVaultRepository?
-    private var index: SQLiteSearchIndex?
+    var index: (any SearchIndex)?
     private var recovery: RecoveryStore?
     private var watcher: VaultWatcher?
     private var scopeURL: URL?
@@ -186,6 +186,11 @@ struct EditorAction: Equatable {
     private var queryTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
+    private var aiSummaryTask: Task<Void, Never>?
+    private var pageLCCTask: Task<Void, Never>?
+    private var sourceLCCTasks: [UUID: Task<Void, Never>] = [:]
+    private var sourcePageTasks: [UUID: Task<Void, Never>] = [:]
+    private var sourceSummaryTasks: [UUID: Task<Void, Never>] = [:]
     private var untitledPages: [UUID: String] = [:]
     private var titleTasks: [UUID: Task<Void, Never>] = [:]
     private var saving = false
@@ -193,6 +198,21 @@ struct EditorAction: Equatable {
     private var pendingRefresh = false
     private var generation = UUID()
     private var progressTicket: UUID?
+    var aiClient: AIProcessingClient = .live
+    var previewRenderer: @Sendable (String) async -> ([PreviewBlock], Int) = { captured in
+        await Task.detached {
+            (
+                MarkdownService.preview(captured),
+                BlockDocumentCodec.markdownBody(captured).split(whereSeparator: \.isWhitespace).count
+            )
+        }.value
+    }
+    var searchIndexFactory: @Sendable (URL, VaultSessionLease?, VaultAccessGate?) throws -> any SearchIndex = { url, lease, gate in
+        try SQLiteSearchIndex(url: url, sessionLease: lease, accessGate: gate)
+    }
+    var sourceAvailabilityChecker: (@Sendable (SourceRecord, URL, any VaultContentStore) async -> String)?
+    var localStorageRoot: URL?
+    var persistSecurityScopedBookmark: Bool = true
 
     init(
         repository: FileVaultRepository? = nil,
@@ -247,6 +267,124 @@ struct EditorAction: Equatable {
         return Array(notes.filter { wikiQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(wikiQuery) }.sorted { $0.title < $1.title }.prefix(6))
     }
 
+    struct AIProcessingClient: Sendable {
+        var unavailabilityReason: @Sendable () -> String?
+        var summarize: @Sendable (String) async throws -> String
+        var inferLCC: @Sendable (String) async -> String?
+        var lccCode: @Sendable (String) async throws -> String?
+        var pageTitle: @Sendable (String) async throws -> String?
+        var pageFromTopic: @Sendable (String, String) async throws -> String
+        var pageFromSource: @Sendable (String) async throws -> String
+        var researchTopic: @Sendable (String) async throws -> [WebTopicResult]
+
+        static let live = AIProcessingClient(
+            unavailabilityReason: { OnDeviceSummary.unavailabilityReason },
+            summarize: { try await OnDeviceSummary().summarize($0) },
+            inferLCC: { await OnDeviceSummary().inferLCC($0) },
+            lccCode: { try await OnDeviceSummary().lccCode($0) },
+            pageTitle: { try await OnDeviceSummary().pageTitle($0) },
+            pageFromTopic: { try await OnDeviceSummary().pageFromTopic($0, context: $1) },
+            pageFromSource: { try await OnDeviceSummary().pageFromSource($0) },
+            researchTopic: { try await WebTopicResearch.research($0) }
+        )
+    }
+
+    var staleResultGuard: VaultStaleResultGuard { sessionManager.staleResultGuard }
+
+    func issueCompletionTicket(
+        kind: VaultCompletionKind,
+        targetID: UUID? = nil,
+        capturedText: String? = nil
+    ) -> VaultCompletionTicket {
+        sessionManager.issueCompletionTicket(
+            kind: kind,
+            lease: activeLease,
+            token: generation,
+            targetID: targetID,
+            capturedText: capturedText
+        )
+    }
+
+    @discardableResult
+    func validateCompletion(
+        _ ticket: VaultCompletionTicket?,
+        expectedTargetID: UUID? = nil,
+        checkTargetID: Bool = false,
+        currentText: String? = nil,
+        operation: String? = nil
+    ) -> Result<VaultSession?, VaultStaleCompletionError> {
+        sessionManager.staleResultGuard.validate(
+            ticket,
+            expectedToken: generation,
+            expectedTargetID: expectedTargetID,
+            checkTargetID: checkTargetID,
+            currentText: currentText,
+            operation: operation
+        )
+    }
+
+    func isCompletionValid(
+        _ ticket: VaultCompletionTicket?,
+        expectedTargetID: UUID? = nil,
+        checkTargetID: Bool = false,
+        currentText: String? = nil,
+        operation: String? = nil
+    ) -> Bool {
+        guard case .success = validateCompletion(
+            ticket,
+            expectedTargetID: expectedTargetID,
+            checkTargetID: checkTargetID,
+            currentText: currentText,
+            operation: operation
+        ) else {
+            return false
+        }
+        return !isLocked
+    }
+
+    private func cancelAllAsyncWork() {
+        autosaveTask?.cancel(); autosaveTask = nil
+        queryTask?.cancel(); queryTask = nil
+        refreshTask?.cancel(); refreshTask = nil
+        previewTask?.cancel(); previewTask = nil
+        aiSummaryTask?.cancel(); aiSummaryTask = nil
+        pageLCCTask?.cancel(); pageLCCTask = nil
+        sourceDownloadTask?.cancel(); sourceDownloadTask = nil; sourceDownloadQueue = []; downloadingSources = []
+        sourceNamingTask?.cancel(); sourceNamingTask = nil; sourceNamingQueue = []; sourceNamingOverrides = []
+        sourceAvailabilityTask?.cancel(); sourceAvailabilityTask = nil; sourceAvailabilityQueue = []
+        sourceAvailability = [:]; checkingSourceAvailability = []
+        lccSaveTask?.cancel(); lccSaveTask = nil
+        for (_, task) in sourceLCCSaveTasks { task.cancel() }
+        sourceLCCSaveTasks.removeAll()
+        for (_, task) in sourceLCCTasks { task.cancel() }
+        sourceLCCTasks.removeAll()
+        for (_, task) in sourcePageTasks { task.cancel() }
+        sourcePageTasks.removeAll()
+        for (_, task) in sourceSummaryTasks { task.cancel() }
+        sourceSummaryTasks.removeAll()
+        for (_, task) in titleTasks { task.cancel() }
+        titleTasks.removeAll(); untitledPages.removeAll()
+        showTopicPage = false; generatingTopicPage = false
+        generatingAISummary = false; aiSummaryNotice = nil
+        generatingPageLCC = false; generatingSourceLCCs = []
+        generatingSourcePages = []; generatingSourceSummaries = []
+        generatingSourceTitles = []; sourceRenameCompleted = 0; sourceRenameTotal = 0
+        updatingSourceReferences = false; editingLockOperations.removeAll()
+        trashOperationInProgress = false
+        refreshing = false; pendingRefresh = false; progressTicket = nil; saving = false
+    }
+
+    private func clearSessionUIState() {
+        notes = []; sources = []; rows = []; semanticRows = []; trashedPages = []; recoveredDrafts = []; issues = []
+        tags = []; backlinks = []; preview = []; recentPageIDs = []; unseenRenamedPages = []
+        searchText = ""; sidebarSearchResults = SidebarSearchResults()
+        selectedID = nil; selectedSemanticID = nil; currentNote = nil; currentSource = nil
+        title = ""; body = ""; tagInput = ""; lccInput = ""; wordCount = 0; reading = true
+        editorNotice = nil; editingHint = nil; editorReadOnly = false; externalChange = false
+        ambiguousMatches = []; unresolvedTarget = nil; wikiQuery = nil; editorAction = nil
+        saveStatus = "Saved locally"; busy = false
+    }
+
     func deleteAISummary() {
         guard currentNote != nil, !editingLocked, !generatingAISummary else { return }
         var document = BlockDocumentCodec.decode(body)
@@ -257,21 +395,37 @@ struct EditorAction: Equatable {
     func summarizePage() {
         guard UserDefaults.standard.bool(forKey: EditorPreferences.aiSummariesKey),
               currentNote != nil, !editingLocked, !generatingAISummary else { return }
-        if let reason = OnDeviceSummary.unavailabilityReason { aiSummaryNotice = reason; return }
-        let capturedBody = body, capturedID = currentNote?.id, capturedGeneration = generation
+        if let reason = aiClient.unavailabilityReason() { aiSummaryNotice = reason; return }
+        let capturedBody = body, capturedID = currentNote?.id
         let content = BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(body).withoutAISummary))
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             aiSummaryNotice = "Add page content before generating a summary."; return
         }
+        let completionTicket = issueCompletionTicket(
+            kind: .aiProcessing,
+            targetID: capturedID,
+            capturedText: capturedBody
+        )
+        let client = aiClient
         generatingAISummary = true; aiSummaryNotice = nil
-        Task {
-            defer { generatingAISummary = false }
+        aiSummaryTask?.cancel()
+        aiSummaryTask = Task {
+            defer {
+                if generation == completionTicket.token {
+                    generatingAISummary = false
+                    aiSummaryTask = nil
+                }
+            }
             do {
-                let generator = OnDeviceSummary()
-                async let generatedSummary = generator.summarize(content)
-                async let generatedLCC = generator.inferLCC(content)
+                async let generatedSummary = client.summarize(content)
+                async let generatedLCC = client.inferLCC(content)
                 let (summary, lcc) = try await (generatedSummary, generatedLCC)
-                guard currentNote?.id == capturedID, generation == capturedGeneration else { return }
+                guard isCompletionValid(
+                    completionTicket,
+                    expectedTargetID: currentNote?.id,
+                    checkTargetID: true,
+                    operation: "summarizePage"
+                ) else { return }
                 guard body == capturedBody, !editingLocked, !externalChange,
                       UserDefaults.standard.bool(forKey: EditorPreferences.aiSummariesKey) else {
                     aiSummaryNotice = "The page changed during generation. Generate the summary again."; return
@@ -288,7 +442,12 @@ struct EditorAction: Equatable {
                 document.setAISummary(summary)
                 body = BlockDocumentCodec.encode(document); edited()
             } catch {
-                guard currentNote?.id == capturedID, generation == capturedGeneration else { return }
+                guard isCompletionValid(
+                    completionTicket,
+                    expectedTargetID: currentNote?.id,
+                    checkTargetID: true,
+                    operation: "summarizePage"
+                ) else { return }
                 aiSummaryNotice = "Could not generate an AI summary: " + error.localizedDescription
             }
         }
@@ -355,6 +514,7 @@ struct EditorAction: Equatable {
         busy = true; errorMessage = nil
         let hasScope = url.startAccessingSecurityScopedResource()
         do {
+            cancelAllAsyncWork()
             if await sessionManager.state != .closed {
                 try? await sessionManager.close()
             }
@@ -365,36 +525,36 @@ struct EditorAction: Equatable {
                 storageProvider: storageProvider
             )
             let vaultID = repo.manifest.id
-            let localBase = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                .appendingPathComponent("KnowledgeVault/\(vaultID.uuidString)")
+            let baseDir = try localStorageRoot ?? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            let localBase = baseDir.appendingPathComponent("KnowledgeVault/\(vaultID.uuidString)")
+            let gate = sessionManager.accessGate
+            let factory = searchIndexFactory
             let (searchIndex, journal) = try await Task.detached {
-                (try SQLiteSearchIndex(url: localBase.appendingPathComponent("search.sqlite")), try RecoveryStore(directory: localBase.appendingPathComponent("Drafts")))
+                let idx = try factory(localBase.appendingPathComponent("search.sqlite"), lease, gate)
+                let recoveryStore = try RecoveryStore(directory: localBase.appendingPathComponent("Drafts"))
+                return (idx, recoveryStore)
             }.value
             SourceReader.closeAll()
             watcher?.stop()
             if let scopeURL { scopeURL.stopAccessingSecurityScopedResource() }
             self.scopeURL = hasScope ? url : nil
-            sourceDownloadTask?.cancel(); sourceDownloadTask = nil; sourceDownloadQueue = []; downloadingSources = []
-            sourceNamingTask?.cancel(); sourceNamingTask = nil; sourceNamingQueue = []
-            sourceAvailabilityTask?.cancel(); sourceAvailabilityTask = nil; sourceAvailabilityQueue = []
-            sourceAvailability = [:]; checkingSourceAvailability = []
-            showTopicPage = false; generatingTopicPage = false
-            generatingSourcePages = []
-            generatingSourceSummaries = []
-            generatingSourceTitles = []; sourceRenameCompleted = 0; sourceRenameTotal = 0
+            cancelAllAsyncWork()
             dismissedVaultNotices = []
             generation = UUID(); activeSession = session; activeLease = lease; lockedVaultURL = nil
             repository = repo; index = searchIndex; recovery = journal
             unseenRenamedPages.removeAll()
             recentPageIDs.removeAll()
-            editingLockOperations.removeAll()
             root = url; vaultName = url.lastPathComponent; scope = .wiki; searchText = ""
+            sidebarSearchResults = SidebarSearchResults()
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
+            title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; wordCount = 0; reading = true
             let cached = try await searchIndex.cachedEntries()
             notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
             updateTags()
             recoveredDrafts = try await journal.drafts()
-            try remember(url)
+            if persistSecurityScopedBookmark {
+                try remember(url)
+            }
             watcher = VaultWatcher(url: url) { [weak self] in Task { @MainActor in self?.scheduleRefresh() } }
             busy = false
             await updateRows()
@@ -454,25 +614,12 @@ struct EditorAction: Equatable {
             SourceReader.closeAll()
             watcher?.stop(); watcher = nil
             if let scopeURL { scopeURL.stopAccessingSecurityScopedResource(); self.scopeURL = nil }
-            sourceDownloadTask?.cancel(); sourceDownloadTask = nil; sourceDownloadQueue = []; downloadingSources = []
-            sourceNamingTask?.cancel(); sourceNamingTask = nil; sourceNamingQueue = []; sourceNamingOverrides = []
-            sourceAvailabilityTask?.cancel(); sourceAvailabilityTask = nil; sourceAvailabilityQueue = []
-            sourceAvailability = [:]; checkingSourceAvailability = []
-            queryTask?.cancel(); queryTask = nil
-            refreshTask?.cancel(); refreshTask = nil
-            previewTask?.cancel(); previewTask = nil
-            for (_, task) in titleTasks { task.cancel() }
-            titleTasks.removeAll(); untitledPages.removeAll()
+            cancelAllAsyncWork()
             generation = UUID()
             activeSession = nil; activeLease = nil
             self.repository = nil; self.index = nil; self.recovery = nil
             lockedVaultURL = currentRoot; root = nil
-            notes = []; sources = []; rows = []; semanticRows = []; trashedPages = []; recoveredDrafts = []; issues = []
-            tags = []; backlinks = []; preview = []; recentPageIDs = []; unseenRenamedPages = []
-            selectedID = nil; selectedSemanticID = nil; currentNote = nil; currentSource = nil
-            title = ""; body = ""; tagInput = ""; lccInput = ""; wordCount = 0; reading = true
-            editorNotice = nil; editingHint = nil; editorReadOnly = false; externalChange = false
-            saveStatus = "Saved locally"; busy = false
+            clearSessionUIState()
             return true
         } catch {
             busy = false
@@ -484,10 +631,93 @@ struct EditorAction: Equatable {
             return false
         }
     }
+
+    @discardableResult
+    func unlockVault() async -> Bool {
+        guard let url = lockedVaultURL else { return false }
+        busy = true; errorMessage = nil
+        let hasScope = url.startAccessingSecurityScopedResource()
+        do {
+            cancelAllAsyncWork()
+            let session = try await sessionManager.unlock()
+            let lease = session.lease
+            let storageProvider = self.storageProvider
+            let gatedProvider = storageProvider.gated(
+                by: sessionManager.accessGate,
+                lease: lease,
+                vaultID: session.vaultID
+            )
+            let repo = try await Task.detached {
+                try FileVaultRepository.open(
+                    root: url,
+                    create: false,
+                    storageProvider: gatedProvider,
+                    sessionLease: lease,
+                    accessGate: self.sessionManager.accessGate
+                )
+            }.value
+            let vaultID = repo.manifest.id
+            let baseDir = try localStorageRoot ?? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            let localBase = baseDir.appendingPathComponent("KnowledgeVault/\(vaultID.uuidString)")
+            let gate = sessionManager.accessGate
+            let factory = searchIndexFactory
+            let (searchIndex, journal) = try await Task.detached {
+                let idx = try factory(localBase.appendingPathComponent("search.sqlite"), lease, gate)
+                let recoveryStore = try RecoveryStore(directory: localBase.appendingPathComponent("Drafts"))
+                return (idx, recoveryStore)
+            }.value
+            SourceReader.closeAll()
+            watcher?.stop()
+            if let scopeURL { scopeURL.stopAccessingSecurityScopedResource() }
+            self.scopeURL = hasScope ? url : nil
+            cancelAllAsyncWork()
+            dismissedVaultNotices = []
+            generation = UUID(); activeSession = session; activeLease = lease; lockedVaultURL = nil
+            repository = repo; index = searchIndex; recovery = journal
+            unseenRenamedPages.removeAll()
+            recentPageIDs.removeAll()
+            root = url; vaultName = url.lastPathComponent; scope = .wiki; searchText = ""
+            sidebarSearchResults = SidebarSearchResults()
+            selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
+            title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; wordCount = 0; reading = true
+            let cached = try await searchIndex.cachedEntries()
+            notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
+            updateTags()
+            recoveredDrafts = try await journal.drafts()
+            watcher = VaultWatcher(url: url) { [weak self] in Task { @MainActor in self?.scheduleRefresh() } }
+            busy = false
+            await updateRows()
+            await refresh()
+            if let url = pendingBlockURL { pendingBlockURL = nil; openBlockURL(url) }
+            return true
+        } catch {
+            if hasScope, scopeURL != url { url.stopAccessingSecurityScopedResource() }
+            busy = false; errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func closeVault() async {
+        SourceReader.closeAll()
+        watcher?.stop(); watcher = nil
+        if let scopeURL { scopeURL.stopAccessingSecurityScopedResource(); self.scopeURL = nil }
+        cancelAllAsyncWork()
+        if await sessionManager.state != .closed {
+            try? await sessionManager.close()
+        }
+        generation = UUID()
+        activeSession = nil; activeLease = nil
+        lockedVaultURL = nil; root = nil
+        repository = nil; index = nil; recovery = nil
+        clearSessionUIState()
+    }
+
     func scheduleRefresh() {
         refreshTask?.cancel()
+        let completionTicket = issueCompletionTicket(kind: .refresh)
         refreshTask = Task {
             do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+            guard isCompletionValid(completionTicket, operation: "scheduleRefresh") else { return }
             await refresh()
         }
     }
@@ -495,20 +725,34 @@ struct EditorAction: Equatable {
         guard let repository, let index else { return }
         if refreshing { pendingRefresh = true; return }
         refreshing = true
-        let ticket = generation, initiallyEmpty = notes.isEmpty && sources.isEmpty
+        let completionTicket = issueCompletionTicket(kind: .indexing)
+        let ticket = completionTicket.token, initiallyEmpty = notes.isEmpty && sources.isEmpty
         let scanTicket = UUID(); progressTicket = scanTicket
         if initiallyEmpty { busy = true }
+        defer {
+            if generation == ticket {
+                progressTicket = nil
+                busy = false
+                refreshing = false
+                if pendingRefresh {
+                    pendingRefresh = false
+                    scheduleRefresh()
+                }
+            }
+        }
         do {
             let result = try await repository.scan { [weak self] chunk in
                 guard initiallyEmpty else { return }
                 Task { @MainActor in
-                    guard let self, self.generation == ticket, self.progressTicket == scanTicket else { return }
+                    guard let self,
+                          self.isCompletionValid(completionTicket, operation: "refresh.scanChunk"),
+                          self.progressTicket == scanTicket else { return }
                     self.notes.append(contentsOf: chunk.notes); self.sources.append(contentsOf: chunk.sources)
                     self.rows = self.notes.map { LibraryRow(note: $0) }
                 }
             }
             progressTicket = nil
-            guard ticket == generation else { refreshing = false; return }
+            guard isCompletionValid(completionTicket, operation: "refresh.scan") else { return }
             let previousTitles = Dictionary(notes.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
             for note in result.notes {
                 if let previous = previousTitles[note.id] { recordPageRename(note.id, from: previous, to: note.title) }
@@ -516,12 +760,13 @@ struct EditorAction: Equatable {
             notes = result.notes; sources = result.sources; issues = result.issues.filter { !dismissedVaultNotices.contains($0) }
             do {
                 let expirationFailures = try await repository.expireTrash(now: Date())
+                guard isCompletionValid(completionTicket, operation: "refresh.expireTrash") else { return }
                 if !expirationFailures.isEmpty { errorMessage = expirationFailures.joined(separator: "\n") }
                 let pages = try await repository.trashItems()
-                guard ticket == generation else { refreshing = false; return }
+                guard isCompletionValid(completionTicket, operation: "refresh.trashItems") else { return }
                 trashedPages = pages
             } catch {
-                guard ticket == generation else { refreshing = false; return }
+                guard isCompletionValid(completionTicket, operation: "refresh.trashError") else { return }
                 errorMessage = "Could not load Trash: " + error.localizedDescription
             }
             updateTags()
@@ -532,19 +777,24 @@ struct EditorAction: Equatable {
                 externalChange = true
             }
             try await index.reconcile(result)
+            guard isCompletionValid(completionTicket, operation: "refresh.reconcile") else { return }
             await updateRows(); await updateBacklinks()
-        } catch { errorMessage = error.localizedDescription }
-        progressTicket = nil; busy = false; refreshing = false
-        if pendingRefresh { pendingRefresh = false; scheduleRefresh() }
+        } catch {
+            guard isCompletionValid(completionTicket, operation: "refresh.error") else { return }
+            errorMessage = error.localizedDescription
+        }
     }
     func queryChanged() {
         queryTask?.cancel()
+        let completionTicket = issueCompletionTicket(kind: .search, capturedText: searchText)
         queryTask = Task {
             do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+            guard isCompletionValid(completionTicket, currentText: searchText, operation: "queryChanged") else { return }
             await updateRows()
         }
     }
     func changeScope(_ scope: LibraryScope) {
+        let completionTicket = issueCompletionTicket(kind: .lifecycle)
         let applyScope = { @MainActor in
             self.autosaveTask?.cancel(); self.wikiQuery = nil; self.editorAction = nil
             self.scope = scope
@@ -566,41 +816,53 @@ struct EditorAction: Equatable {
         }
         if !dirty && !saving && !needsTitle {
             applyScope()
-            Task { await updateRows(); if scope == .trash { await refresh() } }
+            Task {
+                guard isCompletionValid(completionTicket, operation: "changeScope") else { return }
+                await updateRows()
+                if scope == .trash, isCompletionValid(completionTicket, operation: "changeScope.trash") {
+                    await refresh()
+                }
+            }
         } else {
             Task {
                 await waitForSave()
-                if await finishCurrentPage() {
+                guard isCompletionValid(completionTicket, operation: "changeScope.wait") else { return }
+                if await finishCurrentPage(), isCompletionValid(completionTicket, operation: "changeScope.finish") {
                     applyScope()
                     await updateRows()
-                    if scope == .trash { await refresh() }
+                    if scope == .trash, isCompletionValid(completionTicket, operation: "changeScope.trash") {
+                        await refresh()
+                    }
                 }
             }
         }
     }
-    private func updateRows() async {
-        let query = searchText, ticket = generation
+    func updateRows() async {
+        let query = searchText
+        let completionTicket = issueCompletionTicket(kind: .search, capturedText: query)
         var snapshot = notes
         if let currentNote, let i = snapshot.firstIndex(where: { $0.id == currentNote.id }) {
             snapshot[i].body = body; snapshot[i].title = title
         }
         let capturedNotes = snapshot
+        let capturedSources = sources
         if isSearching, let index {
             do {
-                let results = try await SidebarSearchResults.search(query, notes: capturedNotes, sources: sources, index: index)
-                guard searchText == query, generation == ticket, !Task.isCancelled else { return }
+                let results = try await SidebarSearchResults.search(query, notes: capturedNotes, sources: capturedSources, index: index)
+                guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.sidebarSearch") else { return }
                 sidebarSearchResults = results
                 semanticRows = results.blocks
             } catch {
-                guard searchText == query, generation == ticket, !Task.isCancelled else { return }
+                guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.sidebarSearchError") else { return }
                 errorMessage = error.localizedDescription
             }
             return
         }
+        guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.clearSidebarSearch") else { return }
         sidebarSearchResults = SidebarSearchResults()
         if scope == .semantic || semanticRows.isEmpty {
             let hits = await Task.detached { SemanticBlockHit.search(capturedNotes, query: query) }.value
-            if searchText == query, generation == ticket, !Task.isCancelled {
+            if isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.semanticBlocks") {
                 semanticRows = hits
             }
             if scope == .semantic { return }
@@ -611,7 +873,8 @@ struct EditorAction: Equatable {
         let tag: String? = { if case .tag(let tag) = scope { return tag }; return nil }()
         do {
             let hits = try await index.search(capturedQuery, kind: kind, tag: tag)
-            guard capturedScope == scope, capturedQuery == searchText, generation == ticket, !Task.isCancelled else { return }
+            guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.indexSearch"),
+                  capturedScope == scope else { return }
             let noteMap = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let sourceMap = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let newRows: [LibraryRow] = hits.compactMap { hit in
@@ -620,16 +883,24 @@ struct EditorAction: Equatable {
                 return nil
             }
             if newRows != rows { rows = newRows }
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.indexSearchError"),
+                  capturedScope == scope else { return }
+            errorMessage = error.localizedDescription
+        }
     }
     func select(_ id: UUID?, scope targetScope: LibraryScope? = nil, block blockID: UUID? = nil) {
+        let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: id)
         Task {
             await waitForSave()
+            guard isCompletionValid(completionTicket, operation: "select.waitForSave") else { return }
             if !(await finishCurrentPage()) { return }
+            guard isCompletionValid(completionTicket, operation: "select.finishCurrentPage") else { return }
             autosaveTask?.cancel(); wikiQuery = nil; editorAction = nil
             if let targetScope {
                 scope = targetScope; searchText = ""
                 await updateRows()
+                guard isCompletionValid(completionTicket, operation: "select.updateRows") else { return }
             }
             selectedID = id; currentSource = nil; currentNote = nil; externalChange = false; errorMessage = nil
             reading = true
@@ -716,7 +987,7 @@ struct EditorAction: Equatable {
     }
     func refreshPageLCC() {
         guard let note = currentNote, !editingLocked, !generatingPageLCC else { return }
-        if let reason = OnDeviceSummary.unavailabilityReason { errorMessage = reason; return }
+        if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return }
         let content = BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(body).withoutAISummary))
         let fallback = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let input = content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : content
@@ -724,20 +995,28 @@ struct EditorAction: Equatable {
             errorMessage = "Add page content or a title before refreshing LCC metadata."
             return
         }
-        let targetID = note.id, ticket = generation
+        let targetID = note.id
+        let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: targetID)
+        let client = aiClient
         generatingPageLCC = true
-        Task {
-            defer { if generation == ticket { generatingPageLCC = false } }
+        pageLCCTask?.cancel()
+        pageLCCTask = Task {
+            defer { if generation == completionTicket.token { generatingPageLCC = false; pageLCCTask = nil } }
             do {
-                guard let lcc = try await OnDeviceSummary().lccCode(input), !lcc.isEmpty else {
+                guard let lcc = try await client.lccCode(input), !lcc.isEmpty else {
                     throw VaultError.unavailable("Could not determine an LCC class code for this page.")
                 }
-                guard generation == ticket, currentNote?.id == targetID, !editingLocked else { return }
+                guard isCompletionValid(completionTicket, expectedTargetID: currentNote?.id, checkTargetID: true, operation: "refreshPageLCC"),
+                      !editingLocked else { return }
                 lccInput = lcc
                 currentNote?.lcc = lcc
                 if let i = notes.firstIndex(where: { $0.id == targetID }) { notes[i].lcc = lcc }
-                await persistPageLCC(pageID: targetID, lcc: lcc, ticket: ticket)
-            } catch { if generation == ticket { errorMessage = "LCC refresh: " + error.localizedDescription } }
+                await persistPageLCC(pageID: targetID, lcc: lcc, ticket: completionTicket.token)
+            } catch {
+                if isCompletionValid(completionTicket, expectedTargetID: currentNote?.id, checkTargetID: true, operation: "refreshPageLCC.error") {
+                    errorMessage = "LCC refresh: " + error.localizedDescription
+                }
+            }
         }
     }
     func updateSourceLCC(_ source: SourceRecord, lcc: String) {
@@ -751,54 +1030,72 @@ struct EditorAction: Equatable {
             currentSource?.metadata.lcc = normalizedValue
         }
         sourceLCCSaveTasks[source.id]?.cancel()
-        let ticket = generation
+        let completionTicket = issueCompletionTicket(kind: .sourceLoading, targetID: source.id)
         sourceLCCSaveTasks[source.id] = Task {
             do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
-            guard generation == ticket, let repository else { return }
+            guard isCompletionValid(completionTicket, operation: "updateSourceLCC.wait"), let repository else { return }
             do {
                 let updated = try await repository.updateSourceLCC(source, lcc: normalizedValue)
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "updateSourceLCC.save") else { return }
                 if let i = sources.firstIndex(where: { $0.id == source.id }) { sources[i] = updated }
                 if currentSource?.id == source.id { currentSource = updated }
                 if let index { var entries = ScanBatch(); entries.notes = notes; entries.sources = sources; try await index.reconcile(entries) }
-            } catch { if generation == ticket { errorMessage = error.localizedDescription } }
+            } catch {
+                if isCompletionValid(completionTicket, operation: "updateSourceLCC.error") {
+                    errorMessage = error.localizedDescription
+                }
+            }
         }
     }
     func refreshSourceLCC(_ source: SourceRecord) {
         guard !downloadingSources.contains(source.id), !generatingSourceLCCs.contains(source.id),
               let repository, let root else { return }
-        if let reason = OnDeviceSummary.unavailabilityReason { errorMessage = reason; return }
-        let ticket = generation
+        if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return }
+        let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: source.id)
+        let client = aiClient
         generatingSourceLCCs.insert(source.id)
-        Task {
-            defer { if generation == ticket { generatingSourceLCCs.remove(source.id) } }
+        sourceLCCTasks[source.id]?.cancel()
+        sourceLCCTasks[source.id] = Task {
+            defer {
+                if generation == completionTicket.token {
+                    generatingSourceLCCs.remove(source.id)
+                    sourceLCCTasks.removeValue(forKey: source.id)
+                }
+            }
             do {
                 let text = try await sourceSummaryContent(source, root: root)
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "refreshSourceLCC.read") else { return }
                 let input = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? source.title : String(text.prefix(6000))
                 guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw VaultError.unavailable("No readable text for LCC classification.")
                 }
-                guard let lcc = try await OnDeviceSummary().lccCode(input), !lcc.isEmpty else {
+                guard let lcc = try await client.lccCode(input), !lcc.isEmpty else {
                     throw VaultError.unavailable("Could not determine an LCC class code for this source.")
                 }
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "refreshSourceLCC.infer") else { return }
                 let current = sources.first(where: { $0.id == source.id }) ?? source
                 let updated = try await repository.updateSourceLCC(current, lcc: lcc)
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "refreshSourceLCC.save") else { return }
                 if let i = sources.firstIndex(where: { $0.id == source.id }) { sources[i] = updated }
                 if currentSource?.id == source.id { currentSource = updated }
                 await refresh()
-            } catch { if generation == ticket { errorMessage = "Source LCC: " + error.localizedDescription } }
+            } catch {
+                if isCompletionValid(completionTicket, operation: "refreshSourceLCC.error") {
+                    errorMessage = "Source LCC: " + error.localizedDescription
+                }
+            }
         }
     }
     func openBlockURL(_ url: URL) {
         guard url.scheme == "noema", url.host == "page", let noteID = UUID(uuidString: url.lastPathComponent),
               let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "block" })?.value, let blockID = UUID(uuidString: value) else { return }
         guard root != nil, !busy else { pendingBlockURL = url; return }
+        let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: noteID)
         Task {
             await waitForSave()
+            guard isCompletionValid(completionTicket, operation: "openBlockURL.wait") else { return }
             if !(await finishCurrentPage()) { return }
+            guard isCompletionValid(completionTicket, operation: "openBlockURL.finish") else { return }
             guard let note = notes.first(where: { $0.id == noteID }), BlockDocumentCodec.decode(note.body).block(blockID) != nil else { errorMessage = "This block link is not available in the open vault."; return }
             autosaveTask?.cancel(); selectedID = noteID; currentSource = nil; apply(note); reading = true
             editorAction = EditorAction(operation: .block(blockID)); await updateBacklinks()
@@ -947,27 +1244,28 @@ struct EditorAction: Equatable {
     private func startTitleGeneration() {
         guard needsTitle, let note = currentNote, let repository,
               titleTasks[note.id] == nil, !editingLocked, !externalChange,
-              OnDeviceSummary.unavailabilityReason == nil else { return }
-        let capturedGeneration = generation
+              aiClient.unavailabilityReason() == nil else { return }
+        let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: note.id)
         let content = BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(note.body).withoutAISummary))
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let client = aiClient
         titleTasks[note.id] = Task { [self] in
-            defer { titleTasks.removeValue(forKey: note.id) }
+            defer { if generation == completionTicket.token { titleTasks.removeValue(forKey: note.id) } }
             do {
-                let generator = OnDeviceSummary()
-                async let generatedTitle = generator.pageTitle(content)
-                async let generatedLCC = generator.inferLCC(content)
+                async let generatedTitle = client.pageTitle(content)
+                async let generatedLCC = client.inferLCC(content)
                 let (generated, lcc) = try await (generatedTitle, generatedLCC)
                 guard let generated else { return }
                 await waitForSave()
-                guard generation == capturedGeneration, untitledPages[note.id] == note.title,
+                guard isCompletionValid(completionTicket, operation: "startTitleGeneration.generate"),
+                      untitledPages[note.id] == note.title,
                       editorAllowsGeneratedTitle(for: note) else { return }
                 saving = true
-                defer { saving = false }
+                defer { if generation == completionTicket.token { saving = false } }
                 var updatedNote = note
                 if let lcc, !lcc.isEmpty { updatedNote.lcc = lcc }
-                // The repository rejects stale edits, deleted pages, and newly locked pages.
                 let saved = try await repository.save(note: updatedNote, title: generated, body: note.body, tags: note.tags)
+                guard isCompletionValid(completionTicket, operation: "startTitleGeneration.save") else { return }
                 recordPageRename(saved.id, from: note.title, to: saved.title)
                 untitledPages.removeValue(forKey: note.id)
                 if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
@@ -992,9 +1290,18 @@ struct EditorAction: Equatable {
     func saveNow() { autosaveTask?.cancel(); Task { _ = await finishCurrentPage() } }
     func generatePreview() {
         previewTask?.cancel(); let captured = body
+        let targetID = currentNote?.id ?? currentSource?.id
+        let completionTicket = issueCompletionTicket(kind: .preview, targetID: targetID, capturedText: captured)
+        let renderer = previewRenderer
         previewTask = Task {
-            let (blocks, count) = await Task.detached { (MarkdownService.preview(captured), BlockDocumentCodec.markdownBody(captured).split(whereSeparator: \.isWhitespace).count) }.value
-            guard !Task.isCancelled, body == captured else { return }
+            let (blocks, count) = await renderer(captured)
+            guard isCompletionValid(
+                completionTicket,
+                expectedTargetID: currentNote?.id ?? currentSource?.id,
+                checkTargetID: true,
+                currentText: body,
+                operation: "generatePreview"
+            ) else { return }
             preview = blocks; wordCount = count
         }
     }
@@ -1002,66 +1309,79 @@ struct EditorAction: Equatable {
     func createPageFromTopic(_ input: String) async -> Bool {
         let topic = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !topic.isEmpty, topic.count <= 120, !generatingTopicPage, let repository else { return false }
-        if let reason = OnDeviceSummary.unavailabilityReason { errorMessage = reason; return false }
-        let ticket = generation
+        if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return false }
+        let completionTicket = issueCompletionTicket(kind: .aiProcessing)
+        let client = aiClient
         generatingTopicPage = true; errorMessage = nil
-        defer { if generation == ticket { generatingTopicPage = false } }
+        defer { if generation == completionTicket.token { generatingTopicPage = false } }
         do {
-            guard await finishCurrentPage(), generation == ticket else { return false }
-            let results = try await WebTopicResearch.research(topic)
-            guard generation == ticket else { return false }
+            guard await finishCurrentPage(),
+                  isCompletionValid(completionTicket, operation: "createPageFromTopic.finishInitial") else { return false }
+            let results = try await client.researchTopic(topic)
+            guard isCompletionValid(completionTicket, operation: "createPageFromTopic.research") else { return false }
             let context = results.enumerated().map { offset, result in
                 "[\(offset + 1)] " + result.title + "\n" + result.url.absoluteString + "\n" + result.text
             }.joined(separator: "\n\n")
-            let generator = OnDeviceSummary()
-            async let generatedArticle = generator.pageFromTopic(topic, context: context)
-            async let generatedLCC = generator.inferLCC(OnDeviceSummary.topicPrompt(topic: topic, context: context))
+            async let generatedArticle = client.pageFromTopic(topic, context)
+            async let generatedLCC = client.inferLCC(OnDeviceSummary.topicPrompt(topic: topic, context: context))
             var article = try await generatedArticle
             let lcc = await generatedLCC
+            guard isCompletionValid(completionTicket, operation: "createPageFromTopic.generate") else { return false }
             article += "\n\n*AI-generated draft based on web results retrieved " + timestamp() + ".*"
             let references: [String] = results.enumerated().map { offset, result in
                 let title = result.title.replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
                 return "- [\(offset + 1)] [\(title)](<\(result.url.absoluteString)>)"
             }
             article += "\n\n## Web references\n\n" + references.joined(separator: "\n")
-            guard generation == ticket, await finishCurrentPage(), generation == ticket else { return false }
+            guard await finishCurrentPage(),
+                  isCompletionValid(completionTicket, operation: "createPageFromTopic.preCreate") else { return false }
             let note = try await repository.create(title: topic, body: article, lcc: lcc)
-            guard generation == ticket else { return false }
+            guard isCompletionValid(completionTicket, operation: "createPageFromTopic.create") else { return false }
             errorMessage = nil; searchText = ""; scope = .wiki; reading = false
             notes.insert(note, at: 0); selectedID = note.id; currentSource = nil; apply(note)
             await refresh()
-            return generation == ticket
-        } catch { if generation == ticket { errorMessage = "Create topic page: " + error.localizedDescription }; return false }
+            return isCompletionValid(completionTicket, operation: "createPageFromTopic.complete")
+        } catch {
+            if isCompletionValid(completionTicket, operation: "createPageFromTopic.error") {
+                errorMessage = "Create topic page: " + error.localizedDescription
+            }
+            return false
+        }
     }
 
     func newPage(template: Bool = false, named name: String = "Untitled") {
+        let completionTicket = issueCompletionTicket(kind: .pageMutation)
         Task {
             if !(await finishCurrentPage()) { return }
-            guard let repository else { return }
+            guard isCompletionValid(completionTicket, operation: "newPage.finish"), let repository else { return }
             do {
                 let body = template ? "## Overview\n\n\n## Personal context\n\nWhy does this matter to me?\n\n## Connections\n\n" : ""
                 let note = try await repository.create(title: name, body: body)
+                guard isCompletionValid(completionTicket, operation: "newPage.create") else { return }
                 if name == "Untitled" { untitledPages[note.id] = note.title }
                 errorMessage = nil
                 notes.insert(note, at: 0); scope = .wiki; reading = false
                 selectedID = note.id; currentSource = nil; apply(note)
                 await refresh()
-            } catch { errorMessage = error.localizedDescription }
+            } catch { if isCompletionValid(completionTicket, operation: "newPage.error") { errorMessage = error.localizedDescription } }
         }
     }
     func trashCurrent() { trashPage(currentNote?.id) }
     func trashPage(_ id: UUID?) {
         guard let id else { return }
+        let completionTicket = issueCompletionTicket(kind: .trashMutation, targetID: id)
         Task {
             if currentNote?.id == id, !(await saveCurrent()) { return }
-            guard let note = notes.first(where: { $0.id == id }), let repository else { return }
+            guard isCompletionValid(completionTicket, operation: "trashPage.pre"),
+                  let note = notes.first(where: { $0.id == id }), let repository else { return }
             do {
                 try await repository.trash(note: note)
+                guard isCompletionValid(completionTicket, operation: "trashPage.trash") else { return }
                 if currentNote?.id == id {
                     selectedID = nil; currentNote = nil; body = ""; externalChange = false
                 }
                 await refresh()
-            } catch { errorMessage = error.localizedDescription }
+            } catch { if isCompletionValid(completionTicket, operation: "trashPage.error") { errorMessage = error.localizedDescription } }
         }
     }
     func restoreTrashedPage(_ page: TrashedItem) {
@@ -1076,43 +1396,52 @@ struct EditorAction: Equatable {
     private func performTrashOperation(_ pages: [TrashedItem], restoring: Bool) {
         guard !trashOperationInProgress, !pages.isEmpty, let repository else { return }
         trashOperationInProgress = true; errorMessage = nil
-        let ticket = generation
+        let completionTicket = issueCompletionTicket(kind: .trashMutation)
+        let ticket = completionTicket.token
         Task {
             defer { if generation == ticket { trashOperationInProgress = false } }
-            guard generation == ticket else { return }
+            guard isCompletionValid(completionTicket, operation: "performTrashOperation.start") else { return }
             var failures: [String] = []
             if restoring {
                 for page in pages {
-                    guard generation == ticket else { return }
+                    guard isCompletionValid(completionTicket, operation: "performTrashOperation.restore") else { return }
                     do { try await repository.restore(page) }
                     catch { failures.append("\(page.title): \(error.localizedDescription)") }
                 }
             } else {
                 failures = await repository.emptyTrashItems(pages)
             }
-            guard generation == ticket else { return }
+            guard isCompletionValid(completionTicket, operation: "performTrashOperation.post") else { return }
             do {
                 let remaining = try await repository.trashItems()
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "performTrashOperation.trashItems") else { return }
                 trashedPages = remaining
             } catch { failures.append("Could not reload Trash: " + error.localizedDescription) }
             await refresh()
-            guard generation == ticket else { return }
+            guard isCompletionValid(completionTicket, operation: "performTrashOperation.complete") else { return }
             if !failures.isEmpty { errorMessage = failures.joined(separator: "\n") }
         }
     }
     func reloadDiskVersion() {
+        let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: selectedID)
         Task {
             if dirty, let note = currentNote, let recovery {
                 try? await recovery.store(DraftRecord(note: note, title: title, body: body, tags: editedTags))
-                recoveredDrafts = (try? await recovery.drafts()) ?? []
+                let drafts = (try? await recovery.drafts()) ?? []
+                guard isCompletionValid(completionTicket, operation: "reloadDiskVersion.drafts") else { return }
+                recoveredDrafts = drafts
             }
-            if let repository, let entries = try? await repository.scan(), let fresh = entries.notes.first(where: { $0.id == selectedID }) {
+            if let repository, let entries = try? await repository.scan(),
+               isCompletionValid(completionTicket, operation: "reloadDiskVersion.scan"),
+               let fresh = entries.notes.first(where: { $0.id == selectedID }) {
                 apply(fresh); errorMessage = nil
-            } else { errorMessage = "The original page is unavailable. You can save your draft as a new page." }
+            } else if isCompletionValid(completionTicket, operation: "reloadDiskVersion.unavailable") {
+                errorMessage = "The original page is unavailable. You can save your draft as a new page."
+            }
         }
     }
     func saveDraftAsNewPage(_ recovered: DraftRecord? = nil) {
+        let completionTicket = issueCompletionTicket(kind: .pageMutation)
         Task {
             guard let repository else { return }
             let originalID = recovered?.id ?? currentNote?.id
@@ -1120,18 +1449,30 @@ struct EditorAction: Equatable {
                 var note = try await repository.create(title: (recovered?.title ?? title) + " (recovered)", body: recovered?.body ?? body)
                 note = try await repository.save(note: note, title: note.title, body: note.body, tags: recovered?.tags ?? editedTags)
                 if let originalID { try await recovery?.remove(originalID) }
-                recoveredDrafts = (try? await recovery?.drafts()) ?? []
+                let drafts = (try? await recovery?.drafts()) ?? []
+                guard isCompletionValid(completionTicket, operation: "saveDraftAsNewPage") else { return }
+                recoveredDrafts = drafts
                 notes.insert(note, at: 0); scope = .wiki; currentSource = nil; selectedID = note.id; apply(note)
                 errorMessage = nil; showRecovery = false; await refresh()
-            } catch { errorMessage = error.localizedDescription }
+            } catch { if isCompletionValid(completionTicket, operation: "saveDraftAsNewPage.error") { errorMessage = error.localizedDescription } }
         }
     }
     func discardRecovery(_ draft: DraftRecord) {
-        Task { do { try await recovery?.remove(draft.id); recoveredDrafts = (try? await recovery?.drafts()) ?? [] } catch { errorMessage = error.localizedDescription } }
+        let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: draft.id)
+        Task {
+            do {
+                try await recovery?.remove(draft.id)
+                let drafts = (try? await recovery?.drafts()) ?? []
+                guard isCompletionValid(completionTicket, operation: "discardRecovery") else { return }
+                recoveredDrafts = drafts
+            } catch { if isCompletionValid(completionTicket, operation: "discardRecovery.error") { errorMessage = error.localizedDescription } }
+        }
     }
-    private func updateBacklinks() async {
+    func updateBacklinks() async {
         guard let note = currentNote, let index else { backlinks = []; return }
+        let completionTicket = issueCompletionTicket(kind: .search, targetID: note.id)
         let ids = Set((try? await index.backlinks(to: note)) ?? [])
+        guard isCompletionValid(completionTicket, expectedTargetID: currentNote?.id, checkTargetID: true, operation: "updateBacklinks") else { return }
         backlinks = notes.filter { ids.contains($0.id) }.sorted { $0.title < $1.title }
     }
     func followWikiLink(_ target: String) {
@@ -1171,16 +1512,17 @@ struct EditorAction: Equatable {
     ) async {
         guard urls.count <= 5 else { errorMessage = "Add up to 5 files at a time."; return }
         guard let repository else { return }
-        guard await finishCurrentPage() else { return }
+        let completionTicket = issueCompletionTicket(kind: .sourceLoading)
+        guard await finishCurrentPage(),
+              isCompletionValid(completionTicket, operation: "addSourceFiles.finish") else { return }
         scope = .sources
-        let ticket = generation
         var failures: [String] = []
         for url in urls {
             do {
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "addSourceFiles.loop") else { return }
                 if isCloudNotDownloaded(url) {
                     let pending = try await repository.beginSourceDownload(at: url, shouldImport: shouldImport)
-                    guard generation == ticket else { return }
+                    guard isCompletionValid(completionTicket, operation: "addSourceFiles.beginDownload") else { return }
                     sources.append(pending)
                     rows = sources.map(LibraryRow.init(source:))
                     enqueueSourceDownload(pending, url: url, shouldImport: shouldImport, download: downloadCloudFile)
@@ -1197,6 +1539,7 @@ struct EditorAction: Equatable {
                             guard (values.fileSize ?? 0) <= FileVaultRepository.maximumImportBytes else { throw VaultError.invalid("Files larger than 2 MB must be linked instead of imported.") }
                             return try FileVaultRepository.coordinatedRead(url)
                         }.value
+                        guard isCompletionValid(completionTicket, operation: "addSourceFiles.readImport") else { return }
                         added = [try await repository.importSource(data: data, filename: url.lastPathComponent, title: url.deletingPathExtension().lastPathComponent, originURL: nil)]
                     } else {
                         added = try await repository.linkSources(at: url, maximumFiles: 5)
@@ -1204,7 +1547,7 @@ struct EditorAction: Equatable {
                 } catch let error as VaultError {
                     if case .unavailable = error {
                         let pending = try await repository.beginSourceDownload(at: url, shouldImport: shouldImport)
-                        guard generation == ticket else { return }
+                        guard isCompletionValid(completionTicket, operation: "addSourceFiles.fallbackDownload") else { return }
                         sources.append(pending)
                         rows = sources.map(LibraryRow.init(source:))
                         enqueueSourceDownload(pending, url: url, shouldImport: shouldImport, download: downloadCloudFile)
@@ -1212,15 +1555,17 @@ struct EditorAction: Equatable {
                     }
                     throw error
                 }
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "addSourceFiles.added") else { return }
                 sources.append(contentsOf: added)
                 rows = sources.map(LibraryRow.init(source:))
                 for source in added { enqueueSourceTitle(source) }
             } catch {
+                guard isCompletionValid(completionTicket, operation: "addSourceFiles.error") else { return }
                 failures.append(url.lastPathComponent + ": " + error.localizedDescription)
                 errorMessage = failures.joined(separator: "\n")
             }
         }
+        guard isCompletionValid(completionTicket, operation: "addSourceFiles.refresh") else { return }
         await refresh()
     }
     private func enqueueSourceDownload(
@@ -1232,7 +1577,8 @@ struct EditorAction: Equatable {
         downloadingSources.insert(source.id)
         sourceDownloadQueue.append(PendingSourceDownload(source: source, url: url, shouldImport: shouldImport, download: download))
         guard sourceDownloadTask == nil, let repository else { return }
-        let ticket = generation
+        let completionTicket = issueCompletionTicket(kind: .sourceLoading, targetID: source.id)
+        let ticket = completionTicket.token
         sourceDownloadTask = Task {
             defer {
                 if generation == ticket {
@@ -1242,21 +1588,22 @@ struct EditorAction: Equatable {
                 }
             }
             while !sourceDownloadQueue.isEmpty {
-                guard generation == ticket, !Task.isCancelled else { return }
+                guard isCompletionValid(completionTicket, operation: "sourceDownload.loop") else { return }
                 let item = sourceDownloadQueue.removeFirst()
                 guard downloadingSources.contains(item.source.id) else { continue }
                 do {
                     let access = item.url.startAccessingSecurityScopedResource()
                     defer { if access { item.url.stopAccessingSecurityScopedResource() } }
                     let data = try await item.download(item.url)
-                    guard generation == ticket, downloadingSources.contains(item.source.id) else { continue }
+                    guard isCompletionValid(completionTicket, operation: "sourceDownload.downloaded"),
+                          downloadingSources.contains(item.source.id) else { return }
                     let completed = try await repository.completeSourceDownload(
                         id: item.source.id,
                         at: item.url,
                         data: data,
                         shouldImport: item.shouldImport
                     )
-                    guard generation == ticket else { return }
+                    guard isCompletionValid(completionTicket, operation: "sourceDownload.completed") else { return }
                     downloadingSources.remove(item.source.id)
                     sourceAvailability.removeValue(forKey: item.source.id)
                     if let indexPos = sources.firstIndex(where: { $0.id == item.source.id }) {
@@ -1274,7 +1621,7 @@ struct EditorAction: Equatable {
                     enqueueSourceTitle(completed)
                 } catch {
                     await repository.cancelSourceDownload(id: item.source.id)
-                    guard generation == ticket else { return }
+                    guard isCompletionValid(completionTicket, operation: "sourceDownload.error") else { return }
                     downloadingSources.remove(item.source.id)
                     sources.removeAll { $0.id == item.source.id }
                     errorMessage = item.url.lastPathComponent + ": " + error.localizedDescription
@@ -1287,19 +1634,22 @@ struct EditorAction: Equatable {
         guard let repository, await finishCurrentPage() else { return ["Open a vault and finish saving before adding sources."] }
         let lines: [String]
         do { lines = try WebSourceFetcher.lines(text) } catch { return [error.localizedDescription] }
-        let ticket = generation
+        let completionTicket = issueCompletionTicket(kind: .sourceLoading)
         scope = .sources
         var failures: [String] = []
         for address in lines {
-            guard generation == ticket else { return failures + ["Vault changed; remaining URLs were not added."] }
+            guard isCompletionValid(completionTicket, operation: "addURLSources.loop") else { return failures + ["Vault changed; remaining URLs were not added."] }
             do {
                 let source = try await repository.importURLSource(address)
-                guard generation == ticket else { return failures }
+                guard isCompletionValid(completionTicket, operation: "addURLSources.imported") else { return failures }
                 sources.append(source); rows = sources.map(LibraryRow.init(source:))
                 enqueueSourceTitle(source)
-            } catch { failures.append(address + ": " + error.localizedDescription) }
+            } catch {
+                guard isCompletionValid(completionTicket, operation: "addURLSources.error") else { return failures }
+                failures.append(address + ": " + error.localizedDescription)
+            }
         }
-        if generation == ticket { await refresh() }
+        if isCompletionValid(completionTicket, operation: "addURLSources.refresh") { await refresh() }
         return failures
     }
     func availabilityLabel(_ id: UUID) -> String {
@@ -1312,20 +1662,24 @@ struct EditorAction: Equatable {
             checkingSourceAvailability.insert(source.id); sourceAvailabilityQueue.append(source)
         }
         guard sourceAvailabilityTask == nil, !sourceAvailabilityQueue.isEmpty else { return }
-        let ticket = generation
+        let completionTicket = issueCompletionTicket(kind: .sourceLoading)
+        let ticket = completionTicket.token
+        let customChecker = sourceAvailabilityChecker
         sourceAvailabilityTask = Task {
             defer { if generation == ticket { sourceAvailabilityTask = nil; checkingSourceAvailability = []; sourceAvailabilityQueue = [] } }
             while !sourceAvailabilityQueue.isEmpty {
-                guard generation == ticket, !Task.isCancelled else { return }
+                guard isCompletionValid(completionTicket, operation: "checkSourceAvailability.loop") else { return }
                 let source = sourceAvailabilityQueue.removeFirst()
                 let status: String
-                if source.metadata.isURLSource == true {
+                if let customChecker {
+                    status = await customChecker(source, root, repository.contentStore)
+                } else if source.metadata.isURLSource == true {
                     do { status = try await repository.checkURLSourceAvailability(source) }
                     catch { status = "Availability check: " + error.localizedDescription }
                 } else {
                     status = await Task.detached { FileVaultRepository.checkSourceAvailability(source, root: root, contentStore: repository.contentStore) }.value
                 }
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "checkSourceAvailability.result") else { return }
                 if sources.contains(where: { $0.id == source.id }) { sourceAvailability[source.id] = status }
                 checkingSourceAvailability.remove(source.id)
             }
@@ -1346,143 +1700,166 @@ struct EditorAction: Equatable {
     }
     func createPageFromSource(_ source: SourceRecord) {
         guard !downloadingSources.contains(source.id), !generatingSourcePages.contains(source.id), let repository, let root else { return }
-        if let reason = OnDeviceSummary.unavailabilityReason { errorMessage = reason; return }
-        let ticket = generation
+        if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return }
+        let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: source.id)
+        let ticket = completionTicket.token
+        let client = aiClient
         generatingSourcePages.insert(source.id)
-        Task {
-            defer { if generation == ticket { generatingSourcePages.remove(source.id) } }
+        sourcePageTasks[source.id]?.cancel()
+        sourcePageTasks[source.id] = Task {
+            defer { if generation == ticket { generatingSourcePages.remove(source.id); sourcePageTasks.removeValue(forKey: source.id) } }
             do {
                 let text = try await sourceSummaryContent(source, root: root)
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "createPageFromSource.read") else { return }
                 guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw VaultError.unavailable("No readable text for a wiki page.")
                 }
-                let generator = OnDeviceSummary()
-                let article = try await generator.pageFromSource(text)
-                async let generatedTitle = generator.pageTitle(article)
-                async let generatedLCC = generator.inferLCC(article)
+                let article = try await client.pageFromSource(text)
+                async let generatedTitle = client.pageTitle(article)
+                async let generatedLCC = client.inferLCC(article)
                 let pageTitle = (try await generatedTitle) ?? source.title
                 let lcc = (await generatedLCC) ?? source.metadata.lcc
-                guard generation == ticket, await finishCurrentPage(), generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "createPageFromSource.generate"),
+                      await finishCurrentPage(),
+                      isCompletionValid(completionTicket, operation: "createPageFromSource.preCreate") else { return }
                 let note = try await repository.create(title: pageTitle, body: article, source: source, lcc: lcc)
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "createPageFromSource.create") else { return }
                 errorMessage = nil; searchText = ""; scope = .wiki; reading = false
                 notes.insert(note, at: 0); selectedID = note.id; currentSource = nil; apply(note)
                 await refresh()
-            } catch { if generation == ticket { errorMessage = "Create page: " + error.localizedDescription } }
+            } catch { if isCompletionValid(completionTicket, operation: "createPageFromSource.error") { errorMessage = "Create page: " + error.localizedDescription } }
         }
     }
 
     func generateSourceSummary(_ source: SourceRecord) {
         guard !downloadingSources.contains(source.id), !generatingSourceTitles.contains(source.id), !generatingSourceSummaries.contains(source.id),
               let repository, let root else { return }
-        if let reason = OnDeviceSummary.unavailabilityReason { errorMessage = reason; return }
-        let ticket = generation
+        if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return }
+        let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: source.id)
+        let ticket = completionTicket.token
+        let client = aiClient
         generatingSourceSummaries.insert(source.id)
-        Task {
-            defer { if generation == ticket { generatingSourceSummaries.remove(source.id) } }
+        sourceSummaryTasks[source.id]?.cancel()
+        sourceSummaryTasks[source.id] = Task {
+            defer { if generation == ticket { generatingSourceSummaries.remove(source.id); sourceSummaryTasks.removeValue(forKey: source.id) } }
             do {
                 let text = try await sourceSummaryContent(source, root: root)
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "generateSourceSummary.read") else { return }
                 guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw VaultError.unavailable("No readable text for an AI summary.")
                 }
                 let excerpt = String(text.prefix(6000))
-                let generator = OnDeviceSummary()
-                async let generatedSummary = generator.summarize(excerpt)
-                async let generatedLCC = generator.inferLCC(excerpt)
+                async let generatedSummary = client.summarize(excerpt)
+                async let generatedLCC = client.inferLCC(excerpt)
                 let (summary, lcc) = try await (generatedSummary, generatedLCC)
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "generateSourceSummary.generate") else { return }
                 _ = try await repository.renameSource(source, title: source.title, summary: summary, lcc: lcc)
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "generateSourceSummary.save") else { return }
                 await refresh()
-            } catch { if generation == ticket { errorMessage = "Source summary: " + error.localizedDescription } }
+            } catch { if isCompletionValid(completionTicket, operation: "generateSourceSummary.error") { errorMessage = "Source summary: " + error.localizedDescription } }
         }
     }
-    private func enqueueSourceTitle(_ source: SourceRecord) {
+    func enqueueSourceTitle(_ source: SourceRecord) {
         if sourceNamingTask == nil { sourceRenameCompleted = 0; sourceRenameTotal = 0 }
         sourceNamingQueue.append(source); generatingSourceTitles.insert(source.id); sourceRenameTotal += 1
         guard sourceNamingTask == nil, let repository, let root else { return }
-        let ticket = generation
+        let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: source.id)
+        let ticket = completionTicket.token
+        let client = aiClient
         sourceNamingTask = Task {
             defer {
                 if generation == ticket { sourceNamingTask = nil; sourceNamingQueue = []; generatingSourceTitles = []; sourceRenameCompleted = 0; sourceRenameTotal = 0 }
             }
             while !sourceNamingQueue.isEmpty {
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.loop") else { return }
                 let source = sourceNamingQueue.removeFirst()
                 if sourceNamingOverrides.contains(source.id) {
                     generatingSourceTitles.remove(source.id); sourceRenameCompleted += 1; continue
                 }
                 do {
-                    if let reason = OnDeviceSummary.unavailabilityReason { throw VaultError.unavailable(reason) }
+                    if let reason = client.unavailabilityReason() { throw VaultError.unavailable(reason) }
                     let text = try await sourceSummaryContent(source, root: root)
-                    guard generation == ticket else { return }
+                    guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.read") else { return }
                     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw VaultError.unavailable("No readable text for automatic naming and summary. Original file name retained.") }
                     let excerpt = String(text.prefix(6000))
-                    let generator = OnDeviceSummary()
-                    async let generatedTitle = generator.pageTitle(text)
-                    async let generatedSummary = generator.summarize(excerpt)
-                    async let generatedLCC = generator.inferLCC(excerpt)
+                    async let generatedTitle = client.pageTitle(text)
+                    async let generatedSummary = client.summarize(excerpt)
+                    async let generatedLCC = client.inferLCC(excerpt)
                     let (titleResult, summary, lcc) = try await (generatedTitle, generatedSummary, generatedLCC)
                     guard let title = titleResult else { throw VaultError.unavailable("No valid topic title was generated. Original file name retained.") }
-                    guard generation == ticket else { return }
+                    guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.generate") else { return }
                     if sourceNamingOverrides.contains(source.id) {
                         generatingSourceTitles.remove(source.id); sourceRenameCompleted += 1; continue
                     }
                     let renamed = try await repository.renameSource(source, title: title, summary: summary, lcc: lcc)
-                    guard generation == ticket else { return }
+                    guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.rename") else { return }
                     if let position = sources.firstIndex(where: { $0.id == source.id }) { sources[position] = renamed }
                     if let index { var entries = ScanBatch(); entries.notes = notes; entries.sources = sources; try await index.reconcile(entries) }
+                    guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.reconcile") else { return }
                     await updateRows()
-                } catch { if generation == ticket { errorMessage = "Source naming: " + error.localizedDescription } }
-                generatingSourceTitles.remove(source.id); sourceRenameCompleted += 1
+                } catch { if isCompletionValid(completionTicket, operation: "enqueueSourceTitle.error") { errorMessage = "Source naming: " + error.localizedDescription } }
+                if generation == ticket {
+                    generatingSourceTitles.remove(source.id); sourceRenameCompleted += 1
+                }
             }
         }
     }
     func renameSource(_ source: SourceRecord, title: String) {
         sourceNamingOverrides.insert(source.id); generatingSourceTitles.remove(source.id)
+        let completionTicket = issueCompletionTicket(kind: .sourceLoading, targetID: source.id)
         Task {
             guard let repository else { return }
-            let ticket = generation
             do {
                 let renamed = try await repository.renameSource(source, title: title)
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "renameSource") else { return }
                 SourceReader.updateTitle(id: source.id, title: renamed.title)
                 await refresh()
-            } catch { if generation == ticket { errorMessage = error.localizedDescription } }
+            } catch { if isCompletionValid(completionTicket, operation: "renameSource.error") { errorMessage = error.localizedDescription } }
         }
     }
     func deleteSource(_ source: SourceRecord) {
         sourceNamingOverrides.insert(source.id); generatingSourceTitles.remove(source.id)
         downloadingSources.remove(source.id)
         sourceDownloadQueue.removeAll { $0.source.id == source.id }
+        let completionTicket = issueCompletionTicket(kind: .sourceLoading, targetID: source.id)
         Task {
             guard let repository else { return }
-            let ticket = generation
             do {
                 try await repository.deleteSource(source)
-                guard generation == ticket else { return }
+                guard isCompletionValid(completionTicket, operation: "deleteSource") else { return }
                 SourceReader.close(id: source.id)
                 await refresh()
-            } catch { if generation == ticket { errorMessage = error.localizedDescription } }
+            } catch { if isCompletionValid(completionTicket, operation: "deleteSource.error") { errorMessage = error.localizedDescription } }
         }
     }
     func openSource(_ id: UUID?) {
+        let completionTicket = issueCompletionTicket(kind: .sourceLoading, targetID: id)
         Task {
             await waitForSave()
-            guard await finishCurrentPage() else { return }
+            guard isCompletionValid(completionTicket, operation: "openSource.wait") else { return }
+            guard await finishCurrentPage(),
+                  isCompletionValid(completionTicket, operation: "openSource.finish") else { return }
             guard let id, !downloadingSources.contains(id), let source = sources.first(where: { $0.id == id }), let repository, let root else { return }
-            do { try await SourceReader.open(source, root: root, contentStore: repository.contentStore) }
-            catch { errorMessage = error.localizedDescription }
+            do {
+                try await SourceReader.open(
+                    source,
+                    root: root,
+                    contentStore: repository.contentStore,
+                    isStillValid: { [weak self] in
+                        self?.isCompletionValid(completionTicket, operation: "openSource.reader") == true
+                    }
+                )
+            } catch { if isCompletionValid(completionTicket, operation: "openSource.error") { errorMessage = error.localizedDescription } }
         }
     }
     func pasteSource(title: String, text: String, originURL: String) async -> Bool {
         guard let repository else { return false }
+        let completionTicket = issueCompletionTicket(kind: .sourceLoading)
         do {
             let source = try await repository.importSource(data: Data(text.utf8), filename: "pasted.txt", title: title, originURL: originURL)
+            guard isCompletionValid(completionTicket, operation: "pasteSource") else { return false }
             scope = .sources; await refresh(); select(source.id); return true
-        } catch { errorMessage = error.localizedDescription; return false }
+        } catch { if isCompletionValid(completionTicket, operation: "pasteSource.error") { errorMessage = error.localizedDescription }; return false }
     }
     func revealVault() { if let root { NSWorkspace.shared.open(root) } }
 }
