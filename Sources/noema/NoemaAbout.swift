@@ -24,6 +24,8 @@ struct NoemaAboutView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(spacing: 16) {
+                // About shows the native packaged application icon, matching Finder
+                // and the Dock. The welcome identity is a separate adaptive artwork.
                 Image(nsImage: NSApplication.shared.applicationIconImage)
                     .resizable().scaledToFit().frame(width: 64, height: 64)
                     .accessibilityHidden(true)

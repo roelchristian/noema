@@ -1,0 +1,25 @@
+UI.B3 export verification
+
+PASS: isolated Icon.swift generator compilation against NoemaBrandPalette.
+PASS: two generator runs produced byte-identical brand assets and all 10 iconset PNGs.
+PASS: both SVG foregrounds retain original path coordinates.
+PASS: dark flattened icon-preview.png is byte-identical to the original repository asset.
+PASS: all 10 iconset PNGs are byte-identical to output from the original pre-B3 generator.
+PASS: Apple iconutil generated .icns and extracted all 10 iconset representations.
+PASS: extracted 1024-pixel packaged icon visually inspected; alpha and dimensions verified with sips.
+PASS: decoded RGBA pixels match for all eight modern PNG-backed .icns representations.
+NOTE: native iconutil color handling changes RGB in the legacy 16/32-point entries; alpha is preserved and generator inputs are unchanged from the original pipeline.
+
+Native iconutil required approved sandbox escalation on this machine.
+Full application packaging/signing passed; see integration-verification.md.
+
+SHA-256 of generated artwork:
+e828118c8277052529dc87857ae44e97e8cf4f72ad14daa220e33b7c631cb545  background.svg
+50dbc53e9387415799cd79bd2ab91be80bd007180e3562b029bb557c501190b5  background-light.svg
+8ec6c5dc205333a7e09c586ba08ad9e3e99206e01b1ee9c41551f8b7e985bdd2  orbit.svg
+802d90c4cdab374634f0134b09ff305cfe3d71eb28aa11bddce42b1ea5825250  orbit-light.svg
+735fdf78aa6c96dfe1f62a9ecfb44b935994128d7a55ef3fc11887417f52829a  identity-dark.svg
+0ee1d2fba35e276594011cb77ec803f66c6f0944420fed219f6f25c2b0678d49  identity-light.svg
+56d6e34776a4710a62da11778e64fd33e335007c873dd15e6b55f9ac10d5198a  identity-dark.png
+87637ab536defab519c515a82488e0ce52f19c6e442369e5a77184c95a2ab506  identity-light.png
+2e3913b91269043aaa903e9e096734b598a0b69baf83a19788af5db493aaa4b6  icon-preview.png

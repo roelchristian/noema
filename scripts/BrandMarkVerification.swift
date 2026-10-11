@@ -50,7 +50,7 @@ struct BrandMarkVerification {
         environment values, so this isolated harness does not simulate their system toggles.
         Increase Contrast colour guarantees are verified separately by BrandPaletteTests;
         NoemaMark uses opaque fills in every mode, without a Reduce Transparency branch.
-        
+
         """
         try result.write(to: output.appendingPathComponent("swiftui-verification.txt"), atomically: true, encoding: .utf8)
         print(result)
