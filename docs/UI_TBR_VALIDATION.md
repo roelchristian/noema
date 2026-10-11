@@ -1,6 +1,6 @@
 # UI.TBR08 — Native window integration validation
 
-Branch: `dev/ui-native-toolbar`. Native-window baseline: `0046a9e`; upstream integration target: `origin/main` at `a45ffc6`. Validation date: 12 October 2026 (Asia/Manila). This report separates source review, automated regressions and interactive macOS evidence. A source assertion or passing model test does not certify an accessibility or window interaction check.
+Branch: `dev/ui-native-toolbar`. Native-window baseline: `0046a9e`; upstream integration target: `origin/main` at `b6cd5c7`. Validation date: 12 October 2026 (Asia/Manila). This report separates source review, automated regressions and interactive macOS evidence. A source assertion or passing model test does not certify an accessibility or window interaction check.
 
 ## Before and after
 
@@ -35,11 +35,11 @@ Storage-boundary review: **N/A for new construction, canonical-access or I/O-exc
 
 ## Automated regression results
 
-Before merging `a45ffc6`, the full run passed **258 tests across 26 suites in 23.844 seconds**, with the Sources benchmark enabled. Output was recorded at `/private/tmp/noema-tbr-complete-tests.log` during this session. The final merged branch passes **273 tests across 29 suites in 68.324 seconds**. Its benchmark-enabled output is recorded at `/private/tmp/noema-tbr-rebased-tests.log`.
+Before merging `a45ffc6`, the full run passed **258 tests across 26 suites in 23.844 seconds**, with the Sources benchmark enabled. Output was recorded at `/private/tmp/noema-tbr-complete-tests.log` during this session. The recovery-preview integration passed **273 tests across 29 suites in 68.324 seconds**. Its benchmark-enabled output is recorded at `/private/tmp/noema-tbr-rebased-tests.log`.
 
 | Check | Coverage | Result |
 | --- | --- | --- |
-| `SOURCES_BENCHMARK=1 zsh scripts/test.sh` | Complete VaultCore, NoemaBrand and NoemaEditor suites, including D01 storage and D02 lifecycle admission/draining/cancellation/stale-result coverage. | Merged pass: 273 tests / 29 suites |
+| `SOURCES_BENCHMARK=1 zsh scripts/test.sh` | Complete VaultCore, NoemaBrand and NoemaEditor suites, including D01 storage and D02 lifecycle admission/draining/cancellation/stale-result coverage. | Latest merged pass: 284 tests / 31 suites (including opt-in captures) |
 | `python3 scripts/check-storage-boundary.py --selftest` | Canonical I/O ownership and reviewed exceptional access, plus guard fixtures. | Merged pass: 11 regression + 18 adversarial cases; 40 reviewed exceptions |
 | Sources benchmark in full run | Sixteen 133,200-byte source fixtures, metadata-only rows and 1,000 unchanged presentation synchronizations; benchmark is disabled without `SOURCES_BENCHMARK=1`. | Merged pass: 16 constructed rows; no rebuilds for unchanged synchronizations |
 | `git diff --check` | Patch whitespace validation. | Merged pass |
@@ -52,7 +52,7 @@ The pre-merge benchmark measured 8.832 s for the legacy excerpt decode compariso
 
 Interactive validation uses a separate QA application identity and isolated test vault IDs/local state. Initial launch checks used a copied `Examples/Demo Vault`; published screenshots use a synthetic **Toolbar QA Vault** with two fixture pages. Baseline statements above come from source review; no baseline runtime screenshots are claimed.
 
-The interactive results/screenshots below were captured at native-window integration `73e37d0`, before the upstream D02 merge. Resolved-source review confirms the native layout/action ownership remains intact; it does not substitute for a fresh merged-build interaction check.
+The keyboard/lifecycle/full-screen results below were recorded at `73e37d0`. After design-token integration, the synthetic QA workspace was reopened and the live light/dark screenshots refreshed from the final build; toolbar/pane clearance and contextual identity were rechecked. Earlier keyboard/lifecycle checks are not claimed as fresh executions on the token merge.
 
 Light capture uses `NSRequiresAquaSystemAppearance=true` in the temporary QA bundle, followed by re-signing/relaunching that bundle. Global appearance preferences were not changed. Native checks combine interactive actions and macOS accessibility-tree observations; accessibility-tree evidence is not a VoiceOver test.
 
@@ -83,3 +83,13 @@ Light capture uses `NSRequiresAquaSystemAppearance=true` in the temporary QA bun
 [Light workspace screenshot](screenshots/UI_TBR_light_workspace.png) and [dark workspace screenshot](screenshots/UI_TBR_dark_workspace.png) show the same synthetic page, native toolbar/title/subtitle and three panes. The purple pill at the left of the titlebar is the macOS screen-capture indicator. Standard window-control behaviour is assessed separately from these screenshots.
 
 The native implementation has no unresolved source-review finding; merged-branch automated validation is pending. UI.TBR08 accessibility/platform acceptance remains incomplete: the pending and partial rows above require the remaining native window, Sources UI and accessibility checks before the PR is promoted as fully verified.
+
+## Design-token integration from main
+
+Integrated `dev/ui-design-tokens` via main `b6cd5c7`. Conflicts retain native toolbar/header ownership and safe-area clearance while adopting semantic `.canvas`/`.inspector` surfaces, token typography/spacing and custom focus/selection styles. Sidebar top spacing uses `NoemaSpacing.md`, removing the old hidden-titlebar offset. Welcome and locked text resolve against `.window`; native toolbar and glass controls retain system fonts, geometry, foreground and state drawing with the scene’s theme tint. Window/pane dimensions remain component-owned. Independent source review found no unresolved actionable integration findings.
+
+The visual fixture now injects isolated pane preferences instead of reading user workspace state. It retains the historical 960 × 620 comparison and adds 720 × 540 workspace and 680 × 480 welcome captures. `NOEMA_LEGACY_TOKEN_FIXTURE` preserves the 136-image baseline workflow; current capture tooling expects 152 images.
+
+Final validation: **284 tests across 31 suites pass in 303.607 seconds**, with `NOEMA_TOKEN_SCREENSHOT_DIR=/private/tmp/noema-tbr-token-captures SOURCES_BENCHMARK=1 zsh scripts/test.sh`. The opt-in matrix produced **152 PNGs**, covering System/Midnight Iris, light/dark, standard/increased contrast, panes, inactive/active custom tabs, Sources native Table, locked/empty/welcome states and minimum-size fixtures. The full log is `/private/tmp/noema-tbr-token-final-tests.log`. Storage guard passes 11 regression and 18 adversarial cases with 40 reviewed exceptions; whitespace and capture-tool syntax checks pass.
+
+[Minimum workspace fixture](screenshots/UI_TBR_tokens_minimum.png) and [compact welcome fixture](screenshots/UI_TBR_tokens_welcome.png) were visually inspected alongside the refreshed live workspace screenshots. Hosted fixtures verify content bounds and nonblank rendering; their scrollable content may extend below the viewport, and they do not exercise native toolbar, traffic-light or live window-resize behavior. Programmatic increased-contrast appearances are distinct from enabling system accessibility preferences. Existing pending VoiceOver, Reduce Motion, divider dragging and keyboard traversal acceptance remains pending.

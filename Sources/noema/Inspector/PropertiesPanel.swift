@@ -24,9 +24,9 @@ struct PropertiesPanel: View {
     private func pageProperties(_ note: NoteRecord) -> some View {
         VStack(spacing: 0) {
             InspectorPanelHeader(title: "Properties")
-            Divider()
+            Divider().overlay(theme.color(for: .separator))
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                     InspectorSection(title: "Classification & Identity", showTopDivider: false) {
                         pageLCCRow(note)
                         LabeledContent("Location") {
@@ -36,12 +36,12 @@ struct PropertiesPanel: View {
                                 }
                             }
                             .buttonStyle(.link)
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .help(note.relativePath)
                         }
-                        .font(.caption)
+                        .font(NoemaTypography.metadata)
                         InspectorProperty("Kind", "Markdown")
                         if !note.aliases.isEmpty {
                             InspectorProperty("Aliases", note.aliases.joined(separator: ", "))
@@ -69,7 +69,7 @@ struct PropertiesPanel: View {
                             .help(note.isEditingLocked ? "Unlock Editing" : "Lock Editing")
                             .disabled(model.editingLockOperations.contains(note.id))
                         }
-                        .font(.caption)
+                        .font(NoemaTypography.metadata)
                         if model.editorReadOnly, model.currentNote?.id == note.id {
                             InspectorProperty("Access", "Read-only format")
                         }
@@ -77,8 +77,8 @@ struct PropertiesPanel: View {
                     }
                 }
                 .textSelection(.enabled)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.horizontal, NoemaMetrics.inspectorInset)
+                .padding(.vertical, NoemaSpacing.md)
             }
             .modifier(OptionalScrollPositionModifier(position: scrollPosition))
         }
@@ -103,14 +103,14 @@ struct PropertiesPanel: View {
                 .help("Source actions")
                 .accessibilityLabel("Source actions")
             }
-            Divider()
+            Divider().overlay(theme.color(for: .separator))
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                     InspectorSection(title: "Classification & File", showTopDivider: false) {
                         LabeledContent("Availability") {
                             sourceAvailabilityStatus(source.id, issue: source.availabilityIssue)
                         }
-                        .font(.caption)
+                        .font(NoemaTypography.metadata)
                         sourceLCCRow(source)
                         InspectorProperty("Original file", source.metadata.originalFilename)
                         InspectorProperty("Kind", kindLabel)
@@ -130,13 +130,13 @@ struct PropertiesPanel: View {
                                     .truncationMode(.middle)
                                     .help(origin)
                             }
-                            .font(.caption)
+                            .font(NoemaTypography.metadata)
                         }
                     }
                 }
                 .textSelection(.enabled)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.horizontal, NoemaMetrics.inspectorInset)
+                .padding(.vertical, NoemaSpacing.md)
             }
             .modifier(OptionalScrollPositionModifier(position: scrollPosition))
         }
@@ -144,14 +144,14 @@ struct PropertiesPanel: View {
 
     @ViewBuilder private func sourceAvailabilityStatus(_ id: UUID, issue: String?) -> some View {
         if model.downloadingSources.contains(id) {
-            HStack(spacing: 6) {
+            HStack(spacing: NoemaSpacing.sm) {
                 ProgressView().controlSize(.mini)
-                Text("Downloading from iCloud").foregroundStyle(.secondary)
+                Text("Downloading from iCloud").foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
             }
         } else if model.checkingSourceAvailability.contains(id) {
-            HStack(spacing: 6) {
+            HStack(spacing: NoemaSpacing.sm) {
                 ProgressView().controlSize(.mini)
-                Text("Checking availability…").foregroundStyle(.secondary)
+                Text("Checking availability…").foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
             }
         } else {
             let label = model.sourceAvailability[id] ?? issue ?? "Available"
@@ -161,7 +161,7 @@ struct PropertiesPanel: View {
 
     @ViewBuilder private func sourceLCCRow(_ source: SourceRecord) -> some View {
         LabeledContent {
-            HStack(spacing: 4) {
+            HStack(spacing: NoemaSpacing.xs) {
                 TextField(
                     "None",
                     text: Binding(
@@ -171,7 +171,7 @@ struct PropertiesPanel: View {
                 )
                 .textFieldStyle(.roundedBorder)
                 .controlSize(.small)
-                .font(.caption)
+                .font(NoemaTypography.metadata)
                 .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceLCCs.contains(source.id))
                 if model.generatingSourceLCCs.contains(source.id) || model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id) {
                     ProgressView().controlSize(.mini)
@@ -188,17 +188,17 @@ struct PropertiesPanel: View {
                 }
             }
         } label: {
-            Text("LCC").foregroundStyle(.secondary)
+            Text("LCC").foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
         }
-        .font(.caption)
+        .font(NoemaTypography.metadata)
     }
 
     @ViewBuilder private func pageLCCRow(_ note: NoteRecord) -> some View {
         LabeledContent {
-            HStack(spacing: 4) {
+            HStack(spacing: NoemaSpacing.xs) {
                 if model.editingLocked {
                     let effectiveLCC = (model.currentNote?.id == note.id ? model.lccInput : (note.lcc ?? "")).trimmingCharacters(in: .whitespacesAndNewlines)
-                    Text(effectiveLCC.isEmpty ? "None" : effectiveLCC).foregroundStyle(.primary)
+                    Text(effectiveLCC.isEmpty ? "None" : effectiveLCC).foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
                 } else {
                     TextField(
                         "None",
@@ -209,7 +209,7 @@ struct PropertiesPanel: View {
                     )
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.small)
-                    .font(.caption)
+                    .font(NoemaTypography.metadata)
                     .disabled(model.generatingPageLCC)
                 }
                 if model.generatingPageLCC {
@@ -226,8 +226,8 @@ struct PropertiesPanel: View {
                 }
             }
         } label: {
-            Text("LCC").foregroundStyle(.secondary)
+            Text("LCC").foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
         }
-        .font(.caption)
+        .font(NoemaTypography.metadata)
     }
 }

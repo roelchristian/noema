@@ -69,6 +69,7 @@ struct LinksPanelModel: Equatable, Sendable {
 
 /// Inspector panel presenting incoming Backlinks and Outgoing Links for a wiki page (UI.R4).
 struct LinksPanel: View {
+    @Environment(\.noemaTheme) private var theme
     @Bindable var model: AppModel
     let note: NoteRecord
     let cache: LinksPresentationCache
@@ -91,9 +92,9 @@ struct LinksPanel: View {
                 title: "Links",
                 count: state.totalCount
             )
-            Divider()
+            Divider().overlay(theme.color(for: .separator))
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                     InspectorSection(
                         title: "Backlinks",
                         count: state.backlinks.count,
@@ -101,10 +102,10 @@ struct LinksPanel: View {
                     ) {
                         if state.backlinks.isEmpty {
                             Text("No incoming links")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                             Text("Pages that link to \(note.title) with [[Wiki Links]] will appear here.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(NoemaTypography.metadata)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         } else {
                             ForEach(state.backlinks) { sourceNote in
                                 backlinkRow(sourceNote)
@@ -119,10 +120,10 @@ struct LinksPanel: View {
                     ) {
                         if state.outgoingLinks.isEmpty {
                             Text("No outgoing links")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                             Text("Add [[Wiki Links]] in this page to connect related topics.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(NoemaTypography.metadata)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         } else {
                             ForEach(state.outgoingLinks) { item in
                                 outgoingLinkRow(item)
@@ -131,8 +132,8 @@ struct LinksPanel: View {
                     }
                 }
                 .textSelection(.enabled)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.horizontal, NoemaMetrics.inspectorInset)
+                .padding(.vertical, NoemaSpacing.md)
             }
             .modifier(OptionalScrollPositionModifier(position: scrollPosition))
         }
@@ -144,28 +145,28 @@ struct LinksPanel: View {
         Button {
             model.select(sourceNote.id)
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: NoemaSpacing.sm) {
                 Image(systemName: "arrow.backward.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
+                    .font(NoemaTypography.metadata)
+                    .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
+                    .frame(width: NoemaMetrics.iconWidth)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(sourceNote.title)
-                        .font(.callout.weight(.medium))
-                        .foregroundStyle(.primary)
+                        .font(NoemaTypography.interfaceEmphasis)
+                        .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
                         .lineLimit(1)
                     if let lcc = sourceNote.lcc, !lcc.isEmpty {
                         Text(lcc)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(NoemaTypography.caption)
+                            .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                             .lineLimit(1)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: "arrow.right")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(NoemaTypography.metadata)
+                    .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                     .accessibilityHidden(true)
             }
             .padding(.vertical, 3)
@@ -183,28 +184,28 @@ struct LinksPanel: View {
             Button {
                 model.select(targetNote.id)
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: NoemaSpacing.sm) {
                     Image(systemName: "arrow.up.forward.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16)
+                        .font(NoemaTypography.metadata)
+                        .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
+                        .frame(width: NoemaMetrics.iconWidth)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(targetNote.title)
-                            .font(.callout.weight(.medium))
-                            .foregroundStyle(.primary)
+                            .font(NoemaTypography.interfaceEmphasis)
+                            .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
                             .lineLimit(1)
                         if let matchedAlias {
                             Text("via \(matchedAlias)")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .font(NoemaTypography.caption)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                                 .lineLimit(1)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: "arrow.right")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(NoemaTypography.metadata)
+                        .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         .accessibilityHidden(true)
                 }
                 .padding(.vertical, 3)
@@ -221,26 +222,26 @@ struct LinksPanel: View {
             Button {
                 model.followWikiLink(target)
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: NoemaSpacing.sm) {
                     Image(systemName: "questionmark.circle")
-                        .font(.caption)
+                        .font(NoemaTypography.metadata)
                         .foregroundStyle(.orange)
-                        .frame(width: 16)
+                        .frame(width: NoemaMetrics.iconWidth)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(target)
-                            .font(.callout.weight(.medium))
-                            .foregroundStyle(.primary)
+                            .font(NoemaTypography.interfaceEmphasis)
+                            .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
                             .lineLimit(1)
                         Text("Ambiguous · \(matches.count) matching pages")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(NoemaTypography.caption)
+                            .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     Text("Resolve")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(NoemaTypography.metadata)
+                        .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                 }
                 .padding(.vertical, 3)
                 .contentShape(Rectangle())
@@ -250,20 +251,20 @@ struct LinksPanel: View {
             .accessibilityLabel("Ambiguous outgoing link \(target), \(matches.count) matching pages")
 
         case .unresolved(let target):
-            HStack(spacing: 8) {
+            HStack(spacing: NoemaSpacing.sm) {
                 Image(systemName: "plus.circle.dashed")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
+                    .font(NoemaTypography.metadata)
+                    .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
+                    .frame(width: NoemaMetrics.iconWidth)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(target)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .font(NoemaTypography.interface)
+                        .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         .lineLimit(1)
                     Text("Unresolved link")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(NoemaTypography.caption)
+                        .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
