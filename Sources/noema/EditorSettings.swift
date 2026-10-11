@@ -32,10 +32,12 @@ enum AISummaryPlacement: String, CaseIterable {
 struct NoemaSettings: View {
     let externalAIService: ExternalAIService
     let aiProviderPreferences: AIProviderPreferences
+    let model: AppModel?
 
-    init(externalAIService: ExternalAIService, aiProviderPreferences: AIProviderPreferences? = nil) {
+    init(externalAIService: ExternalAIService, aiProviderPreferences: AIProviderPreferences? = nil, model: AppModel? = nil) {
         self.externalAIService = externalAIService
         self.aiProviderPreferences = aiProviderPreferences ?? AIProviderPreferences()
+        self.model = model
     }
 
     @AppStorage(EditorPreferences.fontFamilyKey) private var fontFamily = ""
@@ -67,6 +69,7 @@ struct NoemaSettings: View {
 
     var body: some View {
         Form {
+            if let model { VaultAccessSettings(model: model) }
             Section("Document reading and editing") {
                 Picker("Document font", selection: $fontFamily) {
                     Text("System (macOS)").tag("")

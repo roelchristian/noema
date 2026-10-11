@@ -279,7 +279,11 @@ struct ContentView: View {
                 }
                 .controlSize(.large)
             }
-            if model.busy { NoemaLoadingStatus("Unlocking vault…") }
+            if model.isVaultAuthenticationPending {
+                VaultAuthenticationProgress(model: model)
+            } else if model.busy {
+                NoemaLoadingStatus("Unlocking vault…")
+            }
             if let error = model.errorMessage {
                 DismissibleNotice(message: error) {
                     model.errorMessage = nil
@@ -304,7 +308,7 @@ struct ContentView: View {
     }
     private func workspaceCommandButton(_ title: String, _ command: WorkspaceCommand) -> some View {
         Button(title) { model.performWorkspaceCommand(command) }
-            .disabled(!model.canPerformWorkspaceCommand(command))
+            .disabled(model.isVaultAuthenticationPending || !model.canPerformWorkspaceCommand(command))
     }
     private var welcome: some View {
         VStack(spacing: 24) {
@@ -323,7 +327,11 @@ struct ContentView: View {
             }
             Text("Choose a folder on your Mac or in iCloud Drive. Your files stay yours.")
                 .font(.callout).foregroundStyle(theme.text(for: .textSecondary, on: .window))
-            if model.busy { NoemaLoadingStatus("Opening vault…") }
+            if model.isVaultAuthenticationPending {
+                VaultAuthenticationProgress(model: model)
+            } else if model.busy {
+                NoemaLoadingStatus("Opening vault…")
+            }
             if let error = model.errorMessage {
                 DismissibleNotice(message: error) {
                     model.errorMessage = nil
