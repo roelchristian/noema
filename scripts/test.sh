@@ -13,3 +13,6 @@ if [[ -d "$frameworks/Testing.framework" ]]; then
     -Xlinker -rpath -Xlinker "$frameworks")
 fi
 swift test --disable-sandbox --cache-path "$PWD/.build/cache" --config-path "$PWD/.build/config" --security-path "$PWD/.build/security" "${extra_flags[@]}" "$@"
+
+# Retain failures; expire only completed, unpinned local runs after success.
+./scripts/cleanup-local-evidence.sh --older-than 7d --protect-active
