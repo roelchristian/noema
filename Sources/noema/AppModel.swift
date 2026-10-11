@@ -14,6 +14,12 @@ struct SemanticBlockHit: Identifiable, Sendable {
     var semantic: String
     var preview: String
     var id: String { "\(pageID):\(blockID)" }
+    func matches(_ query: String) -> Bool {
+        let searchable = "\(semantic) \(preview) \(pageTitle)"
+        return query.split(whereSeparator: { $0.isWhitespace }).allSatisfy {
+            searchable.localizedCaseInsensitiveContains(String($0))
+        }
+    }
     static func search(_ notes: [NoteRecord], query: String) -> [Self] {
         let terms = query.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         return notes.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }.flatMap { note in
@@ -32,16 +38,23 @@ struct SidebarSearchResults: Sendable {
     var pages: [NoteRecord] = []
     var sources: [SourceRecord] = []
     var blocks: [SemanticBlockHit] = []
+    var pageExcerpts: [UUID: String] = [:]
+    var sourceExcerpts: [UUID: String] = [:]
     var isEmpty: Bool { pages.isEmpty && sources.isEmpty && blocks.isEmpty }
 
-    static func search(_ query: String, notes: [NoteRecord], sources: [SourceRecord], index: any SearchIndex) async throws -> Self {
+    static func search(_ query: String, notes: [NoteRecord], sources: [SourceRecord], index: any SearchIndex, semanticBlocks: [SemanticBlockHit]? = nil) async throws -> Self {
         let pageHits = try await index.search(query, kind: .wiki, tag: nil)
         let sourceHits = try await index.search(query, kind: .source, tag: nil)
-        let blocks = await Task.detached { SemanticBlockHit.search(notes, query: query) }.value
+        let blocks = await Task.detached {
+            if let semanticBlocks { return semanticBlocks.filter { $0.matches(query) } }
+            return SemanticBlockHit.search(notes, query: query)
+        }.value
         let noteMap = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let sourceMap = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return Self(query: query, pages: pageHits.compactMap { noteMap[$0.id] },
-                    sources: sourceHits.compactMap { sourceMap[$0.id] }, blocks: blocks)
+                    sources: sourceHits.compactMap { sourceMap[$0.id] }, blocks: blocks,
+                    pageExcerpts: Dictionary(pageHits.map { ($0.id, $0.excerpt) }, uniquingKeysWith: { first, _ in first }),
+                    sourceExcerpts: Dictionary(sourceHits.map { ($0.id, $0.excerpt) }, uniquingKeysWith: { first, _ in first }))
     }
 }
 struct LibraryRow: Identifiable, Equatable {
@@ -129,7 +142,7 @@ struct EditorAction: Equatable {
     var tags: [String] = []
     var wordCount = 0
     var scope: LibraryScope = .wiki {
-        didSet { if scope != oldValue { cancelCloudSummary() } }
+        didSet { if scope != oldValue { cancelCloudSummary(); invalidateSearch() } }
     }
     /// The Sources table and inspector share this synchronous selection route with cloud work.
     private(set) var librarySourceSelection: UUID?
@@ -138,14 +151,26 @@ struct EditorAction: Equatable {
         cancelCloudSummary()
         librarySourceSelection = id
     }
-    var searchText = ""
+    var searchText = "" {
+        didSet { if searchText != oldValue { invalidateSearch() } }
+    }
+    var searchMode: VaultSearchMode = .vault {
+        didSet { if searchMode != oldValue { invalidateSearch() } }
+    }
+    var searchScope: VaultSearchScope = .all {
+        didSet { if searchScope != oldValue { invalidateSearch() } }
+    }
+    var searchStatus: VaultSearchStatus = .idle
     var sidebarSearchResults = SidebarSearchResults()
+    var visibleSearchResults: SidebarSearchResults { sidebarSearchResults.filtered(to: searchScope) }
     var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var unseenRenamedPages: Set<UUID> = []
     var appIsActive = true
     var selectedID: UUID? {
         didSet {
             if selectedID != oldValue {
+                invalidateSearch()
+                if isSearching || searchMode == .quickOpen { queryChanged() }
                 cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate()
                 if let id = nativePageSummaryID { cancelSummary(target: .page(id)) }
             }
@@ -219,6 +244,7 @@ struct EditorAction: Equatable {
     private var scopeURL: URL?
     private var autosaveTask: Task<Void, Never>?
     private var queryTask: Task<Void, Never>?
+    private var searchRevision = UUID()
     private var refreshTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
     private var aiSummaryTask: Task<Void, Never>?
@@ -553,7 +579,7 @@ struct EditorAction: Equatable {
         notes = []; sources = []; rows = []; semanticRows = []; trashedPages = []; recoveredDrafts = []; damagedRecoveryEntries = []; issues = []
         dismissedVaultNotices = []
         tags = []; backlinks = []; outgoingLinkTargets = []; preview = []; recentPageIDs = []; unseenRenamedPages = []
-        searchText = ""; sidebarSearchResults = SidebarSearchResults(); scope = .wiki
+        resetSearch(); scope = .wiki
         setLibrarySourceSelection(nil)
         selectedID = nil; selectedSemanticID = nil; currentNote = nil; currentSource = nil
         title = ""; body = ""; tagInput = ""; lccInput = ""; wordCount = 0; reading = true
@@ -1193,8 +1219,7 @@ struct EditorAction: Equatable {
             repository = repo; index = searchIndex; recovery = journal
             unseenRenamedPages.removeAll()
             recentPageIDs.removeAll()
-            root = url; vaultName = url.lastPathComponent; scope = .wiki; searchText = ""
-            sidebarSearchResults = SidebarSearchResults()
+            root = url; vaultName = url.lastPathComponent; scope = .wiki; resetSearch()
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
             title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0; reading = true
             notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
@@ -1377,8 +1402,7 @@ struct EditorAction: Equatable {
             repository = repo; index = searchIndex; recovery = journal
             unseenRenamedPages.removeAll()
             recentPageIDs.removeAll()
-            root = candidateURL; vaultName = candidateURL.lastPathComponent; scope = .wiki; searchText = ""
-            sidebarSearchResults = SidebarSearchResults()
+            root = candidateURL; vaultName = candidateURL.lastPathComponent; scope = .wiki; resetSearch()
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
             title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0; reading = true
             notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
@@ -1537,13 +1561,43 @@ struct EditorAction: Equatable {
             errorMessage = error.localizedDescription
         }
     }
+    private func invalidateSearch() {
+        searchRevision = UUID()
+        queryTask?.cancel(); queryTask = nil
+        sidebarSearchResults = SidebarSearchResults()
+        searchStatus = isSearching || searchMode == .quickOpen ? .searching : .idle
+    }
+
+    private func resetSearch() {
+        invalidateSearch()
+        searchText = ""; searchMode = .vault; searchScope = .all
+        sidebarSearchResults = SidebarSearchResults(); searchStatus = .idle
+    }
+
+    func setSearchMode(_ mode: VaultSearchMode) {
+        if searchMode != mode {
+            searchMode = mode
+            searchScope = .all
+        }
+        queryChanged()
+    }
+
+    func setSearchScope(_ scope: VaultSearchScope) {
+        searchScope = scope
+        queryChanged()
+    }
+
     func queryChanged() {
         queryTask?.cancel()
+        // Revision changes even for repeated query text, including A → B → A.
+        invalidateSearch()
         guard canOperateOnLoadedContent else { return }
+        let revision = searchRevision
         let completionTicket = issueCompletionTicket(kind: .search, capturedText: searchText)
         queryTask = Task {
             do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
-            guard isCompletionValid(completionTicket, currentText: searchText, operation: "queryChanged") else { return }
+            guard isCompletionValid(completionTicket, currentText: searchText, operation: "queryChanged"),
+                  revision == searchRevision else { return }
             await updateRows()
         }
     }
@@ -1597,6 +1651,9 @@ struct EditorAction: Equatable {
     func updateRows() async {
         guard canOperateOnLoadedContent else { return }
         let query = searchText
+        // Each execution supersedes earlier executions, even with identical inputs.
+        searchRevision = UUID()
+        let revision = searchRevision
         let completionTicket = issueCompletionTicket(kind: .search, capturedText: query)
         var snapshot = notes
         if let currentNote, let i = snapshot.firstIndex(where: { $0.id == currentNote.id }) {
@@ -1604,28 +1661,79 @@ struct EditorAction: Equatable {
         }
         let capturedNotes = snapshot
         let capturedSources = sources
-        if isSearching, let index {
+        // Query entry never narrows the underlying library. Its full collection
+        // stays available until the view explicitly presents search results.
+        if isSearching || searchMode == .quickOpen {
+            let existingRows = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            let pageRow = { (note: NoteRecord) -> LibraryRow in
+                if let row = existingRows[note.id], row.title == note.title,
+                   row.tags == note.allTags, row.updatedAt == LibraryRow.date(note.updatedAt) { return row }
+                return LibraryRow(note: note)
+            }
+            let baseRows: [LibraryRow]
+            switch scope {
+            case .wiki: baseRows = capturedNotes.map(pageRow)
+            case .sources: baseRows = capturedSources.map { LibraryRow(source: $0) }
+            case .tag(let tag): baseRows = capturedNotes.filter { $0.allTags.contains(tag) }.map(pageRow)
+            case .semantic, .trash: baseRows = []
+            }
+            let sortedRows = baseRows.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            if scope != .trash && scope != .semantic && rows != sortedRows { rows = sortedRows }
+        }
+        if searchMode == .quickOpen {
+            searchStatus = .searching
+            if scope == .semantic {
+                let blocks = await Task.detached { SemanticBlockHit.search(capturedNotes, query: "") }.value
+                guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.quickOpenLibrary"),
+                      revision == searchRevision else { return }
+                semanticRows = blocks
+            }
+            let results = await Task.detached {
+                SidebarSearchResults.quickOpen(query, notes: capturedNotes, sources: capturedSources)
+            }.value
+            guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.quickOpen"),
+                  revision == searchRevision else { return }
+            sidebarSearchResults = results; searchStatus = .results
+            return
+        }
+        if isSearching {
+            searchStatus = .searching
+            guard let index else {
+                sidebarSearchResults = SidebarSearchResults()
+                searchStatus = .failed("The vault search index is unavailable.")
+                return
+            }
             do {
-                let results = try await SidebarSearchResults.search(query, notes: capturedNotes, sources: capturedSources, index: index)
-                guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.sidebarSearch") else { return }
+                let allBlocks = await Task.detached { SemanticBlockHit.search(capturedNotes, query: "") }.value
+                guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.searchLibrary"),
+                      revision == searchRevision else { return }
+                semanticRows = allBlocks
+                let results = try await SidebarSearchResults.search(query, notes: capturedNotes, sources: capturedSources, index: index, semanticBlocks: allBlocks)
+                guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.sidebarSearch"),
+                      revision == searchRevision else { return }
                 sidebarSearchResults = results
-                semanticRows = results.blocks
+                searchStatus = .results
             } catch {
-                guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.sidebarSearchError") else { return }
+                guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.sidebarSearchError"),
+                      revision == searchRevision else { return }
                 guard !(error is CancellationError), !Task.isCancelled else { return }
-                errorMessage = error.localizedDescription
+                sidebarSearchResults = SidebarSearchResults()
+                searchStatus = .failed(error.localizedDescription)
             }
             return
         }
-        guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.clearSidebarSearch") else { return }
+        guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.clearSidebarSearch"),
+              revision == searchRevision else { return }
         sidebarSearchResults = SidebarSearchResults()
+        searchStatus = .idle
         if scope == .semantic || semanticRows.isEmpty {
             let hits = await Task.detached { SemanticBlockHit.search(capturedNotes, query: query) }.value
-            if isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.semanticBlocks") {
+            if isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.semanticBlocks"), revision == searchRevision {
                 semanticRows = hits
             }
             if scope == .semantic { return }
         }
+        guard revision == searchRevision else { return }
         guard let index else { return }
         let capturedScope = scope, capturedQuery = searchText
         let kind: EntryKind = scope == .sources ? .source : .wiki
@@ -1633,7 +1741,7 @@ struct EditorAction: Equatable {
         do {
             let hits = try await index.search(capturedQuery, kind: kind, tag: tag)
             guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.indexSearch"),
-                  capturedScope == scope else { return }
+                  capturedScope == scope, revision == searchRevision else { return }
             let noteMap = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let sourceMap = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             let newRows: [LibraryRow] = hits.compactMap { hit in
@@ -1644,7 +1752,7 @@ struct EditorAction: Equatable {
             if newRows != rows { rows = newRows }
         } catch {
             guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.indexSearchError"),
-                  capturedScope == scope else { return }
+                  capturedScope == scope, revision == searchRevision else { return }
             guard !(error is CancellationError), !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
         }
