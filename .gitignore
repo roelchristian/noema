@@ -22,5 +22,6 @@ xcuserdata/
 *.sqlite-wal
 *.sqlite-shm
 Examples/**/.Trash/
+Examples/**/Removed Pages/
 Examples/**/Conflicts/
 Examples/**/.import-*/

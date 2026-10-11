@@ -117,6 +117,7 @@ struct EditorAction: Equatable {
     private var sourceNamingTask: Task<Void, Never>?
 
     var trashedPages: [TrashedPage] = []
+    private(set) var trashOperationInProgress = false
     var rows: [LibraryRow] = []
     var semanticRows: [SemanticBlockHit] = []
     var selectedSemanticID: String?
@@ -343,7 +344,7 @@ struct EditorAction: Equatable {
             root = url; vaultName = url.lastPathComponent; scope = .wiki; searchText = ""
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
             let cached = try await searchIndex.cachedEntries()
-            notes = cached.notes; sources = cached.sources; trashedPages = []
+            notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
             updateTags()
             recoveredDrafts = try await journal.drafts()
             try remember(url)
@@ -387,7 +388,14 @@ struct EditorAction: Equatable {
                 if let previous = previousTitles[note.id] { recordPageRename(note.id, from: previous, to: note.title) }
             }
             notes = result.notes; sources = result.sources; issues = result.issues.filter { !dismissedVaultNotices.contains($0) }
-            trashedPages = try await repository.trashedPages()
+            do {
+                let pages = try await repository.trashedPages()
+                guard ticket == generation else { refreshing = false; return }
+                trashedPages = pages
+            } catch {
+                guard ticket == generation else { refreshing = false; return }
+                errorMessage = "Could not load Trash: " + error.localizedDescription
+            }
             updateTags()
             if let note = currentNote, let fresh = notes.first(where: { $0.id == note.id }), fresh.contentHash != note.contentHash {
                 if dirty || saving { externalChange = true }
@@ -412,6 +420,7 @@ struct EditorAction: Equatable {
         let applyScope = { @MainActor in
             self.autosaveTask?.cancel(); self.wikiQuery = nil; self.editorAction = nil
             self.scope = scope
+            if scope == .trash { self.searchText = "" }
             self.selectedID = nil; self.currentNote = nil; self.currentSource = nil; self.selectedSemanticID = nil
             self.externalChange = false; self.errorMessage = nil; self.reading = true
             if self.searchText.isEmpty {
@@ -429,13 +438,14 @@ struct EditorAction: Equatable {
         }
         if !dirty && !saving && !needsTitle {
             applyScope()
-            Task { await updateRows() }
+            Task { await updateRows(); if scope == .trash { await refresh() } }
         } else {
             Task {
                 await waitForSave()
                 if await finishCurrentPage() {
                     applyScope()
                     await updateRows()
+                    if scope == .trash { await refresh() }
                 }
             }
         }
@@ -918,17 +928,40 @@ struct EditorAction: Equatable {
         }
     }
     func restoreTrashedPage(_ page: TrashedPage) {
-        Task {
-            guard let repository else { return }
-            do { try await repository.restore(page); await refresh() }
-            catch { errorMessage = error.localizedDescription }
-        }
+        performTrashOperation([page], restoring: true)
     }
     func permanentlyDeleteTrashedPage(_ page: TrashedPage) {
+        performTrashOperation([page], restoring: false)
+    }
+    func emptyTrash(_ pages: [TrashedPage]) {
+        performTrashOperation(pages, restoring: false)
+    }
+    private func performTrashOperation(_ pages: [TrashedPage], restoring: Bool) {
+        guard !trashOperationInProgress, !pages.isEmpty, let repository else { return }
+        trashOperationInProgress = true; errorMessage = nil
+        let ticket = generation
         Task {
-            guard let repository else { return }
-            do { try await repository.permanentlyDelete(page); await refresh() }
-            catch { errorMessage = error.localizedDescription }
+            defer { if generation == ticket { trashOperationInProgress = false } }
+            guard generation == ticket else { return }
+            var failures: [String] = []
+            if restoring {
+                for page in pages {
+                    guard generation == ticket else { return }
+                    do { try await repository.restore(page) }
+                    catch { failures.append("\(page.note.title): \(error.localizedDescription)") }
+                }
+            } else {
+                failures = await repository.emptyTrash(pages)
+            }
+            guard generation == ticket else { return }
+            do {
+                let remaining = try await repository.trashedPages()
+                guard generation == ticket else { return }
+                trashedPages = remaining
+            } catch { failures.append("Could not reload Trash: " + error.localizedDescription) }
+            await refresh()
+            guard generation == ticket else { return }
+            if !failures.isEmpty { errorMessage = failures.joined(separator: "\n") }
         }
     }
     func reloadDiskVersion() {

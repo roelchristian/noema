@@ -17,6 +17,9 @@ struct ContentView: View {
     @State private var showTrashConfirmation = false
     @State private var trashPageID: UUID?
     @State private var permanentDeletion: TrashedPage?
+    @State private var showPermanentDeletion = false
+    @State private var showEmptyTrash = false
+    @State private var emptyTrashPages: [TrashedPage] = []
     @State private var dismissedExternalChange = false
     @State private var sourceOriginal = false
     @State private var showPageDetails = true
@@ -86,7 +89,7 @@ struct ContentView: View {
         } message: { Text("‘\(model.unresolvedTarget ?? "")’ does not exist yet.") }
         .confirmationDialog("Move this page to vault trash?", isPresented: $showTrashConfirmation) {
             Button("Move to Trash", role: .destructive) { model.trashPage(trashPageID) }
-        } message: { Text("The Markdown file stays recoverable in the vault’s .Trash folder.") }
+        } message: { Text("The Markdown file stays recoverable in the vault’s Removed Pages folder until you restore or permanently delete it.") }
         .alert("Rename Source", isPresented: Binding(get: { renamingSource != nil }, set: { if !$0 { renamingSource = nil } })) {
             TextField("File Name", text: $sourceName)
             Button("Rename") {
@@ -122,7 +125,10 @@ struct ContentView: View {
         .onChange(of: model.scope) { syncSourceRows() }
         .onChange(of: model.sources.count) { if model.scope != .sources { sourceRowsCache = model.sources.map(LibraryRow.init(source:)) } }
         .onAppear { sourceRowsCache = model.sources.map(LibraryRow.init(source:)) }
-        .onChange(of: model.root) { sourceSelection = nil; renamingSource = nil; deletingSource = nil }
+        .onChange(of: model.root) {
+            sourceSelection = nil; renamingSource = nil; deletingSource = nil
+            showPermanentDeletion = false; permanentDeletion = nil; showEmptyTrash = false; emptyTrashPages = []
+        }
     }
     @ViewBuilder private var mainWorkspace: some View {
         if model.currentNote != nil || model.currentSource != nil {
@@ -1133,30 +1139,62 @@ struct ContentView: View {
                     ForEach(model.trashedPages) { page in
                         VStack(alignment: .leading, spacing: 8) {
                             Text(page.note.title).font(.headline)
+                            if let issue = page.readIssue {
+                                Text(issue).font(.caption).foregroundStyle(.secondary)
+                                Text("Restore is unavailable until the file is repaired.").font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                let row = LibraryRow(note: page.note)
+                                if !row.excerpt.isEmpty {
+                                    Text(row.excerpt).lineLimit(2).font(.callout).foregroundStyle(.secondary)
+                                }
+                            }
                             HStack {
                                 Button("Restore") { model.restoreTrashedPage(page) }
-                                Button("Delete permanently…", role: .destructive) { permanentDeletion = page }
-                            }.buttonStyle(.borderless)
+                                    .disabled(!page.canRestore)
+                                Button("Delete Permanently…", role: .destructive) { permanentDeletion = page; showPermanentDeletion = true }
+                                    .disabled(!page.canPermanentlyDelete)
+                            }.buttonStyle(.bordered)
                         }.padding(.vertical, 7)
                         .contextMenu {
                             Button("Restore") { model.restoreTrashedPage(page) }
-                            Button("Delete permanently…", role: .destructive) { permanentDeletion = page }
+                                .disabled(!page.canRestore)
+                            Button("Delete Permanently…", role: .destructive) { permanentDeletion = page; showPermanentDeletion = true }
+                                .disabled(!page.canPermanentlyDelete)
                         }
+                        .disabled(model.trashOperationInProgress)
                     }
-                }.listStyle(.plain)
+                }.listStyle(.inset)
             }
-            Text("\(model.trashedPages.count) deleted pages").font(.caption).foregroundStyle(.secondary).padding(12)
+            HStack {
+                Text(model.trashedPages.count == 1 ? "1 deleted page" : "\(model.trashedPages.count) deleted pages")
+                if model.trashOperationInProgress { ProgressView().controlSize(.small); Text("Updating Trash…") }
+            }.font(.caption).foregroundStyle(.secondary).padding(12)
             if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil }.padding(12) }
         }
-        .safeAreaBar(edge: .top) { Text("Trash").font(.title2.bold()).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10) }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .safeAreaBar(edge: .top) {
+            HStack {
+                Text("Trash").font(.title2.bold())
+                Spacer()
+                Button { Task { await model.refresh() } } label: { Label("Refresh Trash", systemImage: "arrow.clockwise").labelStyle(.iconOnly) }
+                    .help("Refresh Trash").disabled(model.trashOperationInProgress)
+                Button("Empty Trash…", role: .destructive) { emptyTrashPages = model.trashedPages; showEmptyTrash = true }
+                    .disabled(model.trashedPages.isEmpty || model.trashOperationInProgress)
+            }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
+        }
         .ignoresSafeArea(.container, edges: .top)
-        .alert("Permanently delete this page?", isPresented: Binding(get: { permanentDeletion != nil }, set: { if !$0 { permanentDeletion = nil } })) {
+        .alert("Permanently delete this page?", isPresented: $showPermanentDeletion, presenting: permanentDeletion) { page in
             Button("Delete permanently", role: .destructive) {
-                if let page = permanentDeletion { model.permanentlyDeleteTrashedPage(page) }
-                permanentDeletion = nil
+                model.permanentlyDeleteTrashedPage(page)
             }
-            Button("Cancel", role: .cancel) { permanentDeletion = nil }
-        } message: { Text("‘\(permanentDeletion?.note.title ?? "")’ will be removed from the vault. This cannot be undone.") }
+            Button("Cancel", role: .cancel) { }
+        } message: { page in Text("‘\(page.note.title)’ will be removed from the vault. This cannot be undone.") }
+        .alert("Empty Trash?", isPresented: $showEmptyTrash, presenting: emptyTrashPages) { pages in
+            Button("Empty Trash", role: .destructive) { model.emptyTrash(pages) }
+            Button("Cancel", role: .cancel) { }
+        } message: { pages in
+            Text("Permanently delete \(pages.count) deleted page(s)? This cannot be undone. Changed, unreadable, or conflicted files will be kept and reported.")
+        }
     }
     @ViewBuilder private var detail: some View {
         if model.currentNote != nil || model.currentSource != nil {

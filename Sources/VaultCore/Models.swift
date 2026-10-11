@@ -103,6 +103,9 @@ public func externalID(vault: UUID, path: String) -> UUID {
 
 public struct TrashedPage: Identifiable, Sendable {
     public var note: NoteRecord
+    public var readIssue: String?
     public var id: String { note.relativePath }
-    public init(note: NoteRecord) { self.note = note }
+    public var canRestore: Bool { readIssue == nil }
+    public var canPermanentlyDelete: Bool { !note.contentHash.isEmpty }
+    public init(note: NoteRecord, readIssue: String? = nil) { self.note = note; self.readIssue = readIssue }
 }

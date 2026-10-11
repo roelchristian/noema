@@ -73,6 +73,17 @@ import VaultCore
     #expect(!model.isSearching)
 }
 
+@Test @MainActor func trashNavigationClearsGlobalSearchAndSelectedDocument() throws {
+    let note = try NoteCodec.decode(Data("# Stars".utf8), path: "Wiki/Stars.md", vaultID: UUID())
+    let model = AppModel(); model.notes = [note]; model.currentNote = note; model.selectedID = note.id
+    model.title = note.title; model.body = note.body; model.tagInput = note.tags.joined(separator: ", ")
+    model.searchText = "stars"
+    model.changeScope(.trash)
+    #expect(model.scope == .trash)
+    #expect(!model.isSearching)
+    #expect(model.currentNote == nil && model.currentSource == nil && model.selectedID == nil)
+}
+
 @Test func lccCodeNormalizationAndParallelSourceRename() async throws {
     #expect(OnDeviceSummary.cleanLCC("DG299") == "DG299")
     #expect(OnDeviceSummary.cleanLCC("LCC: bs 1315.") == "BS1315")

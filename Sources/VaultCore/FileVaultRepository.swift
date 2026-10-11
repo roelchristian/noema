@@ -9,6 +9,7 @@ public protocol VaultRepository: Sendable {
     func trashedPages() async throws -> [TrashedPage]
     func restore(_ page: TrashedPage) async throws
     func permanentlyDelete(_ page: TrashedPage) async throws
+    func emptyTrash(_ pages: [TrashedPage]) async -> [String]
     func trash(note: NoteRecord) async throws
     func deleteSource(_ source: SourceRecord) async throws
     func renameSource(_ source: SourceRecord, title: String, summary: String?) async throws -> SourceRecord
@@ -18,6 +19,8 @@ public protocol VaultRepository: Sendable {
 }
 
 public actor FileVaultRepository: VaultRepository {
+    public static let trashDirectoryName = "Removed Pages"
+    private static let legacyTrashDirectoryName = ".Trash"
     public nonisolated let root: URL
     public nonisolated let manifest: VaultManifest
     private var cache: [String: (Date?, Int?, NoteRecord)] = [:]
@@ -40,7 +43,7 @@ public actor FileVaultRepository: VaultRepository {
             manifest = VaultManifest()
             try coordinatedWrite(JSONEncoder().encode(manifest), to: manifestURL)
         }
-        for name in ["Wiki", "Sources", ".Trash", "Conflicts"] {
+        for name in ["Wiki", "Sources", trashDirectoryName, "Conflicts"] {
             try fm.createDirectory(at: root.appendingPathComponent(name), withIntermediateDirectories: true)
         }
         return FileVaultRepository(root: root, manifest: manifest)
@@ -242,32 +245,56 @@ public actor FileVaultRepository: VaultRepository {
     public func trash(note: NoteRecord) throws {
         let url = try checkedWikiURL(note.relativePath)
         try ensureTrashDirectory()
-        var operationError: Error?, coordinatorError: NSError?
-        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: .forDeleting, error: &coordinatorError) { coordinatedURL in
-            do {
-                guard digest(try Data(contentsOf: coordinatedURL)) == note.contentHash else { throw VaultError.invalid("This page changed externally. Reload it before moving it to trash.") }
-                let destination = root.appendingPathComponent(".Trash/\(note.id.uuidString)-\(UUID().uuidString).md")
-                try fm.moveItem(at: coordinatedURL, to: destination)
-            } catch { operationError = error }
-        }
-        if let operationError { throw operationError }
-        if let coordinatorError { throw coordinatorError }
+        let destination = root.appendingPathComponent("\(Self.trashDirectoryName)/\(note.id.uuidString)-\(UUID().uuidString).md")
+        try Self.coordinatedMove(url, to: destination, expectedHash: note.contentHash,
+                                 staleMessage: "This page changed externally. Reload it before moving it to trash.")
         cache.removeValue(forKey: note.relativePath)
     }
 
     public func trashedPages() throws -> [TrashedPage] {
-        let directory = root.appendingPathComponent(".Trash")
-        // Empty folders can disappear externally, including during vault sync.
+        let directory = root.appendingPathComponent(Self.trashDirectoryName)
         try ensureTrashDirectory()
-        return try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        var files = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension.lowercased() == "md" }
-            .map { url in
-                let path = ".Trash/" + url.lastPathComponent
-                let checked = try checkedTrashURL(path)
-                return TrashedPage(note: try NoteCodec.decode(Self.coordinatedRead(checked), path: path, vaultID: manifest.id))
+        var migrationIssues: [String: String] = [:]
+        let legacy = root.appendingPathComponent(Self.legacyTrashDirectoryName)
+        if fm.fileExists(atPath: legacy.path) {
+            guard legacy.resolvingSymlinksInPath().path == legacy.path else { throw VaultError.invalid("The legacy Trash directory must not be a symbolic link.") }
+            for url in try fm.contentsOfDirectory(at: legacy, includingPropertiesForKeys: nil) where url.pathExtension.lowercased() == "md" {
+                do { files.append(try migrateTrashedFile(url)) }
+                catch {
+                    files.append(url)
+                    migrationIssues[url.lastPathComponent] = "Could not preserve this legacy Trash file in Removed Pages: " + error.localizedDescription
+                }
+            }
+        }
+        return try files.map { url in
+                let path = url.deletingLastPathComponent().lastPathComponent + "/" + url.lastPathComponent
+                var data: Data?
+                do {
+                    let checked = try checkedTrashURL(path)
+                    let bytes = try Self.coordinatedRead(checked); data = bytes
+                    let issue = url.deletingLastPathComponent() == legacy ? migrationIssues[url.lastPathComponent] : nil
+                    return TrashedPage(note: try NoteCodec.decode(bytes, path: path, vaultID: manifest.id), readIssue: issue)
+                } catch {
+                    // Keep damaged/unavailable entries visible without blocking healthy pages or refresh.
+                    var note = try NoteCodec.decode(Data(), path: path, vaultID: manifest.id)
+                    note.contentHash = data.map(digest) ?? ""
+                    return TrashedPage(note: note, readIssue: error.localizedDescription)
+                }
             }.sorted { $0.note.title.localizedStandardCompare($1.note.title) == .orderedAscending }
     }
+    private func migrateTrashedFile(_ url: URL) throws -> URL {
+        let source = try checkedTrashURL(Self.legacyTrashDirectoryName + "/" + url.lastPathComponent)
+        var destination = root.appendingPathComponent(Self.trashDirectoryName).appendingPathComponent(url.lastPathComponent)
+        if fm.fileExists(atPath: destination.path) {
+            destination = root.appendingPathComponent(Self.trashDirectoryName).appendingPathComponent(UUID().uuidString + ".md")
+        }
+        try Self.coordinatedMove(source, to: destination)
+        return destination
+    }
     public func restore(_ page: TrashedPage) throws {
+        guard page.canRestore else { throw VaultError.invalid("Repair this page's file before restoring it.") }
         let snapshot = try scan()
         guard !snapshot.notes.contains(where: { $0.id == page.note.id }),
               !snapshot.issues.contains(where: { $0.contains("Duplicate note ID") }) else {
@@ -276,17 +303,11 @@ public actor FileVaultRepository: VaultRepository {
         guard !titleExists(page.note.title, in: snapshot.notes) else { throw VaultError.duplicateTitle(page.note.title) }
         let source = try checkedTrashURL(page.id)
         let destination = try checkedWikiURL(availablePath(title: page.note.title))
-        var failure: Error?, coordinationError: NSError?
-        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: source, options: .forMoving, writingItemAt: destination, options: [], error: &coordinationError) { from, to in
-            do {
-                guard digest(try Data(contentsOf: from)) == page.note.contentHash else { throw VaultError.invalid("This trashed page changed. Refresh Trash before restoring.") }
-                guard !fm.fileExists(atPath: to.path) else { throw VaultError.invalid("The restore destination is occupied. Try again.") }
-                try fm.moveItem(at: from, to: to)
-            } catch { failure = error }
-        }
-        if let failure { throw failure }; if let coordinationError { throw coordinationError }
+        try Self.coordinatedMove(source, to: destination, expectedHash: page.note.contentHash,
+                                 staleMessage: "This trashed page changed. Refresh Trash before restoring.")
     }
     public func permanentlyDelete(_ page: TrashedPage) throws {
+        guard page.canPermanentlyDelete else { throw VaultError.invalid("This trashed page could not be read. Refresh Trash before deleting it.") }
         let url = try checkedTrashURL(page.id)
         var failure: Error?, coordinationError: NSError?
         NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: .forDeleting, error: &coordinationError) { url in
@@ -298,16 +319,26 @@ public actor FileVaultRepository: VaultRepository {
         }
         if let failure { throw failure }; if let coordinationError { throw coordinationError }
     }
+    public func emptyTrash(_ pages: [TrashedPage]) -> [String] {
+        // Delete only the confirmed snapshot; keep changed/conflicted files and report partial failures.
+        var failures: [String] = []
+        for page in pages {
+            do { try permanentlyDelete(page) }
+            catch { failures.append("\(page.note.title): \(error.localizedDescription)") }
+        }
+        return failures
+    }
     private func ensureTrashDirectory() throws {
-        let directory = root.appendingPathComponent(".Trash")
+        let directory = root.appendingPathComponent(Self.trashDirectoryName)
+        guard directory.resolvingSymlinksInPath().path == directory.path else { throw VaultError.invalid("The Trash directory must not be a symbolic link.") }
         if !fm.fileExists(atPath: directory.path) {
             try fm.createDirectory(at: directory, withIntermediateDirectories: false)
         }
     }
     private func checkedTrashURL(_ path: String) throws -> URL {
         let url = root.appendingPathComponent(path).standardizedFileURL
-        let directory = root.appendingPathComponent(".Trash").standardizedFileURL
-        guard url.deletingLastPathComponent() == directory, url.pathExtension.lowercased() == "md",
+        let directories = [Self.trashDirectoryName, Self.legacyTrashDirectoryName].map { root.appendingPathComponent($0).standardizedFileURL }
+        guard directories.contains(url.deletingLastPathComponent()), url.pathExtension.lowercased() == "md",
               url.resolvingSymlinksInPath() == url else { throw VaultError.invalid("Invalid trash file path.") }
         return url
     }
@@ -774,6 +805,21 @@ public actor FileVaultRepository: VaultRepository {
             if let coordinatorError { throw coordinatorError }
             throw VaultError.unavailable("Downloading \(targetURL.lastPathComponent) from iCloud. Try again when the download finishes.")
         }.value
+    }
+    private static func coordinatedMove(_ source: URL, to destination: URL, expectedHash: String? = nil,
+                                        staleMessage: String = "This file changed before it could be moved.") throws {
+        // Own the non-Sendable coordinator entirely within this synchronous, nonisolated operation.
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var failure: Error?, coordinationError: NSError?
+        coordinator.coordinate(writingItemAt: source, options: .forMoving, writingItemAt: destination, options: [], error: &coordinationError) { from, to in
+            do {
+                if let expectedHash, digest(try Data(contentsOf: from)) != expectedHash { throw VaultError.invalid(staleMessage) }
+                guard !FileManager.default.fileExists(atPath: to.path) else { throw VaultError.invalid("The move destination is occupied. Refresh and try again.") }
+                try FileManager.default.moveItem(at: from, to: to)
+                coordinator.item(at: from, didMoveTo: to)
+            } catch { failure = error }
+        }
+        if let failure { throw failure }; if let coordinationError { throw coordinationError }
     }
     public static func coordinatedRead(_ url: URL) throws -> Data {
         let values = try url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
