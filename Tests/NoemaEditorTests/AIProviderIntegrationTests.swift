@@ -40,7 +40,7 @@ struct AIProviderIntegrationTests {
             summarize: { text in try await probe.summarize(text) },
             inferLCC: { text in await probe.record("inferLCC", text); return "QA76" },
             lccCode: { text in await probe.record("lccCode", text); return "QA76" },
-            pageTitle: { text in await probe.record("pageTitle", text); return "Native Fixture Title" },
+            pageTitle: { text in try await probe.generateTitle(text) },
             pageFromTopic: { topic, _ in await probe.record("pageFromTopic", topic); return "Native topic" },
             pageFromSource: { text in await probe.record("pageFromSource", text); return "Native source article" },
             researchTopic: { text in await probe.record("researchTopic", text); return [] }
@@ -380,6 +380,40 @@ struct AIProviderIntegrationTests {
         #expect(f.model.aiProviderPreferences.settings.defaultProvider == .openAI)
     }
 
+    @Test @MainActor func automaticNamingPreservesExistingAndPendingManualClassifications() async throws {
+        let f = try await fixture(); defer { f.cleanup() }
+        let selected = try await source(f)
+        let corrected = try await f.repository.updateSourceLCC(selected, lcc: "DG299")
+        await f.model.refresh()
+        let probe = ProviderProbe(); mock(f.model, probe: probe)
+        f.model.enqueueSourceTitle(corrected)
+        try await waitUntil { !f.model.generatingSourceTitles.contains(selected.id) }
+        #expect(try await f.repository.loadSource(id: selected.id).metadata.lcc == "DG299")
+        f.model.newPage()
+        try await waitUntil { f.model.currentNote?.id != f.note.id }
+        let id = try #require(f.model.currentNote?.id)
+        f.model.body = "New content"; f.model.edited()
+        f.model.setPageLCC("DG299")
+        try await waitUntil { (try? await f.repository.scan().notes.first { $0.id == id }?.lcc) == "DG299" }
+        #expect(await f.model.finishCurrentPage(waitForTitles: true))
+        #expect(f.model.title == "Native Fixture Title")
+        #expect(f.model.currentNote?.lcc == "DG299")
+
+        let delayedSource = try await f.repository.importSource(data: Data("Fresh source content".utf8),
+            filename: "second.txt", title: "Second source", originURL: nil)
+        await f.model.refresh()
+        let delayed = ProviderProbe(holdTitle: true); mock(f.model, probe: delayed)
+        f.model.enqueueSourceTitle(delayedSource)
+        try await waitUntil { await delayed.count("pageTitle") == 1 }
+        f.model.updateSourceLCC(delayedSource, lcc: "DG299")
+        try await delayed.releaseTitle()
+        try await waitUntil { !f.model.generatingSourceTitles.contains(delayedSource.id) }
+        try await waitUntil { (try? await f.repository.loadSource(id: delayedSource.id).metadata.lcc) == "DG299" }
+        let stored = try await f.repository.loadSource(id: delayedSource.id)
+        #expect(stored.title == "Second source")
+        #expect(stored.metadata.aiSummary == nil)
+    }
+
     @Test @MainActor func cancelledNativePageWorkerCannotPublishAfterIgnoringCancellation() async throws {
         let f = try await fixture(); defer { f.cleanup() }
         let probe = ProviderProbe(holdSummary: true); mock(f.model, probe: probe)
@@ -528,11 +562,25 @@ private enum ProviderFixtureFailure: Error { case timedOut, providerFailure }
 private actor ProviderProbe {
     private var calls: [String: [String]] = [:]
     private let holdSummary: Bool
+    private let holdTitle: Bool
+    private var pendingTitle: CheckedContinuation<String?, any Error>?
     private var pendingSummary: CheckedContinuation<String, any Error>?
-    init(holdSummary: Bool = false) { self.holdSummary = holdSummary }
+    init(holdSummary: Bool = false, holdTitle: Bool = false) {
+        self.holdSummary = holdSummary; self.holdTitle = holdTitle
+    }
     var total: Int { calls.values.reduce(0) { $0 + $1.count } }
     func count(_ action: String) -> Int { calls[action]?.count ?? 0 }
     func record(_ action: String, _ text: String) { calls[action, default: []].append(text) }
+    func generateTitle(_ text: String) async throws -> String? {
+        record("pageTitle", text)
+        if holdTitle { return try await withCheckedThrowingContinuation { pendingTitle = $0 } }
+        return "Native Fixture Title"
+    }
+    func releaseTitle() throws {
+        guard let pendingTitle else { throw ProviderFixtureFailure.timedOut }
+        self.pendingTitle = nil
+        pendingTitle.resume(returning: "Native Fixture Title")
+    }
     func summarize(_ text: String) async throws -> String {
         record("summarize", text)
         if holdSummary {

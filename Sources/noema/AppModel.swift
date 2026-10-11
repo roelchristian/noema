@@ -2174,6 +2174,7 @@ struct AISuggestion: Identifiable, Sendable {
     }
     var hasPendingTitles: Bool { !titleTasks.isEmpty }
     func editorAllowsGeneratedTitle(for note: NoteRecord) -> Bool {
+        guard notes.first(where: { $0.id == note.id })?.lcc == note.lcc else { return false }
         guard currentNote?.id == note.id else { return true }
         return !dirty && !editingLocked && !externalChange && currentNote?.contentHash == note.contentHash
     }
@@ -2212,7 +2213,7 @@ struct AISuggestion: Identifiable, Sendable {
                 saving = true
                 defer { if generation == completionTicket.token { saving = false } }
                 var updatedNote = note
-                if let lcc, !lcc.isEmpty { updatedNote.lcc = lcc }
+                if note.lcc == nil, let lcc, !lcc.isEmpty { updatedNote.lcc = lcc }
                 let saved = try await repository.save(note: updatedNote, title: generated, body: note.body, tags: note.tags)
                 guard isCompletionValid(completionTicket, operation: "startTitleGeneration.save") else { return }
                 recordPageRename(saved.id, from: note.title, to: saved.title)
@@ -2827,7 +2828,11 @@ struct AISuggestion: Identifiable, Sendable {
                     if sourceNamingOverrides.contains(source.id) {
                         generatingSourceTitles.remove(source.id); sourceRenameCompleted += 1; continue
                     }
-                    let renamed = try await repository.renameSource(source, title: title, summary: summary, lcc: lcc)
+                    guard sources.first(where: { $0.id == source.id })?.metadata.lcc == source.metadata.lcc else {
+                        throw ExternalAIError.staleContent
+                    }
+                    let renamed = try await repository.renameSource(source, title: title, summary: summary,
+                        lcc: source.metadata.lcc == nil ? lcc : nil)
                     guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.rename") else { return }
                     if let position = sources.firstIndex(where: { $0.id == source.id }) { sources[position] = renamed }
                     if let index { try await index.reconcile(repository.scan()) }
