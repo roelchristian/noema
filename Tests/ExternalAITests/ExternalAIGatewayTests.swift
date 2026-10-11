@@ -211,3 +211,109 @@ func gatewayDispatchesConfiguredReasoningEffort(effort: ExternalAIReasoningEffor
     }
     #expect(try ExternalAIModelConfiguration(model: "gpt-4.1-mini").model == "gpt-4.1-mini")
 }
+
+@Test(arguments: [ExternalAIAction.suggestTitle, .lccClassification])
+func gatewayMetadataActionsShareExactConsentAndRevocablePublication(action: ExternalAIAction) async throws {
+    let output = action == .suggestTitle ? "Sourdough Starter Maintenance"
+        : #"{"code":"TX","rationale":"The document concerns food preparation."}"#
+    let body = try JSONSerialization.data(withJSONObject: ["object": "response", "status": "completed", "output": [
+        ["type": "message", "role": "assistant", "status": "completed", "content": [
+            ["type": "output_text", "text": output]]]]])
+    let mock = GatewayMockTransport(body: body)
+    let fixture = try await GatewayFixture(transport: mock)
+    let summary = try fixture.request()
+    let request = try ExternalAISummaryRequest(id: summary.id, authority: summary.authority, target: summary.target,
+        contentRevision: summary.contentRevision, content: summary.content, action: action)
+    let wrongConsent = ExternalAIContentConsent(approving: summary)
+    if action == .suggestTitle {
+        await #expect(throws: ExternalAIError.consentRequired) {
+            try await fixture.gateway.suggestTitle(request, consent: wrongConsent)
+        }
+    } else {
+        await #expect(throws: ExternalAIError.consentRequired) {
+            try await fixture.gateway.classifyLCC(request, consent: wrongConsent)
+        }
+    }
+    #expect(await mock.requests.isEmpty)
+    let consent = ExternalAIContentConsent(approving: request)
+    let result: ExternalAISummaryResult
+    if action == .suggestTitle { result = try await fixture.gateway.suggestTitle(request, consent: consent) }
+    else { result = try await fixture.gateway.classifyLCC(request, consent: consent) }
+    #expect(result.action == action)
+    #expect(result.title == (action == .suggestTitle ? output : nil))
+    #expect(result.lccSuggestion?.code == (action == .lccClassification ? "TX" : nil))
+    let sent = try #require(await mock.requests.first)
+    let sentBody = try #require(sent.httpBody)
+    let object = try #require(JSONSerialization.jsonObject(with: sentBody) as? [String: Any])
+    #expect(object["store"] as? Bool == false)
+    #expect(object["input"] as? String == request.content)
+    #expect(object["tools"] == nil)
+    #expect(!String(decoding: sentBody, as: UTF8.self).contains(request.authority.vaultID.uuidString))
+    if action == .lccClassification {
+        let text = try #require(object["text"] as? [String: Any])
+        let format = try #require(text["format"] as? [String: Any])
+        #expect(format["type"] as? String == "json_schema")
+        #expect(format["strict"] as? Bool == true)
+    }
+    try await fixture.gateway.validatePublication(of: result)
+    let forgedSummaryRequest = try ExternalAISummaryRequest(id: request.id, authority: request.authority,
+        target: request.target, contentRevision: request.contentRevision, content: request.content)
+    let forged = try ExternalAISummaryResult(request: forgedSummaryRequest, summary: result.summary, provenance: result.provenance)
+    await #expect(throws: ExternalAIError.authorizationRevoked) { try await fixture.gateway.validatePublication(of: forged) }
+    fixture.manager.revoke()
+    await #expect(throws: ExternalAIError.authorizationRevoked) { try await fixture.gateway.publicationPermit(for: result) }
+}
+
+@Test(arguments: [ExternalAIAction.suggestTitle, .lccClassification])
+func gatewayMetadataActionsRejectMalformedOutputWithoutRetry(action: ExternalAIAction) async throws {
+    let mock = GatewayMockTransport() // ordinary summary is not a title or structured classification
+    let fixture = try await GatewayFixture(transport: mock)
+    let base = try fixture.request()
+    let request = try ExternalAISummaryRequest(authority: base.authority, target: base.target,
+        contentRevision: base.contentRevision, content: base.content, action: action)
+    let consent = ExternalAIContentConsent(approving: request)
+    if action == .suggestTitle {
+        await #expect(throws: ExternalAIError.invalidResponse) { try await fixture.gateway.suggestTitle(request, consent: consent) }
+    } else {
+        await #expect(throws: ExternalAIError.invalidResponse) { try await fixture.gateway.classifyLCC(request, consent: consent) }
+    }
+    #expect(await mock.requests.count == 1)
+}
+
+@Test(arguments: [ExternalAIAction.suggestTitle, .lccClassification])
+func gatewayMetadataActionsFailClosedWhenLockingBeginsBeforeDispatch(action: ExternalAIAction) async throws {
+    let session = VaultSession(vaultID: UUID(), root: URL(fileURLWithPath: "/tmp/action-lock"), generation: 2)
+    let gate = VaultAccessGate(initialState: .open(session))
+    let mock = GatewayMockTransport(onDispatch: { gate.updateState(.locking(session)) })
+    let fixture = try await GatewayFixture(transport: mock, gate: gate, session: session)
+    let request = try ExternalAISummaryRequest(authority: ExternalAIVaultAuthority(session: session), target: .source(UUID()),
+        contentRevision: UUID(), content: "Selected source", action: action)
+    do {
+        if action == .suggestTitle {
+            _ = try await fixture.gateway.suggestTitle(request, consent: ExternalAIContentConsent(approving: request))
+        } else {
+            _ = try await fixture.gateway.classifyLCC(request, consent: ExternalAIContentConsent(approving: request))
+        }
+        Issue.record("Metadata operation must fail after lock admission closes")
+    } catch { #expect(error as? ExternalAIError != nil) }
+    #expect(await mock.requests.isEmpty)
+    #expect(gate.registrySnapshot().activeCount == 0)
+}
+
+@Test(arguments: [ExternalAIAction.suggestTitle, .lccClassification])
+func gatewayCancelledMetadataActionsNeverDispatch(action: ExternalAIAction) async throws {
+    let mock = GatewayMockTransport()
+    let fixture = try await GatewayFixture(transport: mock)
+    let base = try fixture.request()
+    let request = try ExternalAISummaryRequest(authority: base.authority, target: base.target,
+        contentRevision: base.contentRevision, content: base.content, action: action)
+    let task = Task {
+        withUnsafeCurrentTask { $0?.cancel() }
+        if action == .suggestTitle {
+            return try await fixture.gateway.suggestTitle(request, consent: ExternalAIContentConsent(approving: request))
+        }
+        return try await fixture.gateway.classifyLCC(request, consent: ExternalAIContentConsent(approving: request))
+    }
+    await #expect(throws: ExternalAIError.cancelled) { try await task.value }
+    #expect(await mock.requests.isEmpty)
+}

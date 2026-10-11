@@ -77,7 +77,7 @@ struct ExternalAISettings: View {
                 .disabled(isBusy || service.credentialStatus?.isAvailable != true)
                 Button("Revoke session access") {
                     service.revokeAuthorization()
-                    feedback = "Session access revoked. The next summary requires macOS authentication."
+                    feedback = "Session access revoked. The next AI request requires macOS authentication."
                     failed = false
                 }
             }
@@ -85,7 +85,7 @@ struct ExternalAISettings: View {
             if let feedback {
                 Text(feedback).font(.caption).foregroundStyle(failed ? Color.red : Color.secondary)
             }
-            Text("When OpenAI is chosen for Summarize, only the selected page or source text is sent after your confirmation. Submitted text leaves this Mac and API usage may incur charges. Preferences and connection settings do not authorize a submission. Automatic intelligence remains on-device.")
+            Text("When OpenAI is chosen for a summary, title suggestion or LCC classification, only the selected page or source text is sent after your confirmation. Submitted text leaves this Mac and API usage may incur charges. Preferences and connection settings do not authorize a submission. Automatic intelligence remains on-device.")
                 .font(.callout).foregroundStyle(.secondary)
             Text("Connection validation sends a model metadata request with no vault content. Session access lasts at most four hours and expires after 30 minutes without external AI activity. Removing a key here does not revoke the key at OpenAI.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -133,7 +133,7 @@ struct ExternalAISettings: View {
         let key = enteredKey
         enteredKey = ""
         let policy = thirtyDayPolicy
-        perform(success: "API key saved in Keychain. Session access requires authentication on the next summary.") {
+        perform(success: "API key saved in Keychain. Session access requires authentication on the next AI request.") {
             try await service.saveCredential(key, thirtyDayPolicy: policy)
         }
     }

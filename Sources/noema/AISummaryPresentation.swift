@@ -4,7 +4,7 @@ import SwiftUI
 import VaultCore
 
 /// One summary command presentation for pages and sources. Provider choice is resolved by
-/// AppModel; temporary choices are passed only to this invocation and never saved here.
+/// AppModel from Intelligence settings when the action starts.
 @MainActor
 struct AISummaryPresentation {
     let model: AppModel
@@ -48,12 +48,12 @@ struct AISummaryPresentation {
                 || model.downloadingSources.contains(id) || model.generatingSourceTitles.contains(id)
         }
     }
-    func request(provider: AIProvider? = nil) {
+    func request() {
         switch target {
-        case .page(let id): model.requestPageSummary(id: id, provider: provider)
+        case .page(let id): model.requestPageSummary(id: id)
         case .source(let id):
             if let source = model.sources.first(where: { $0.id == id }) {
-                model.requestSourceSummary(source, provider: provider)
+                model.requestSourceSummary(source)
             }
         }
     }
@@ -92,7 +92,7 @@ struct AISummaryProviderDisclosure: View {
     }
 }
 
-/// Primary command and a secondary native menu with deliberate, one-time alternatives.
+/// Primary command and a secondary native menu for stored summary actions.
 struct AISummaryControls: View {
     @Bindable var model: AppModel
     let target: ExternalAISummaryTarget
@@ -107,25 +107,20 @@ struct AISummaryControls: View {
             .help("\(presentation.commandTitle) using \(aiProviderLabel(presentation.provider))")
             .accessibilityLabel("\(presentation.commandTitle) using \(aiProviderLabel(presentation.provider))")
             Menu {
-                AISummaryOverrideCommands(model: model, target: target)
+                AISummaryOptionsCommands(model: model, target: target)
             } label: { Label("Summary options", systemImage: "chevron.down").labelStyle(.iconOnly) }
             .menuStyle(.borderlessButton).fixedSize()
-            .accessibilityLabel("Summary options and temporary provider choice")
+            .accessibilityLabel("Summary options")
         }
     }
 }
 
-struct AISummaryOverrideCommands: View {
+struct AISummaryOptionsCommands: View {
     @Bindable var model: AppModel
     let target: ExternalAISummaryTarget
     private var presentation: AISummaryPresentation { AISummaryPresentation(model: model, target: target) }
 
     var body: some View {
-        Button("\(presentation.commandTitle) on This Mac") { presentation.request(provider: .onDevice) }
-            .disabled(presentation.disabled)
-        Button("\(presentation.commandTitle) with OpenAI…") { presentation.request(provider: .openAI) }
-            .disabled(presentation.disabled)
-        Divider()
         if presentation.hasSummary {
             Button("Copy Summary") { presentation.copy() }
             if case .page(let id) = target {
@@ -149,7 +144,7 @@ struct AISummaryMenuCommands: View {
     var body: some View {
         Button("\(presentation.commandTitle) · \(aiProviderLabel(presentation.provider))") { presentation.request() }
             .disabled(presentation.disabled)
-        Menu("Summary options") { AISummaryOverrideCommands(model: model, target: target) }
+        Menu("Summary options") { AISummaryOptionsCommands(model: model, target: target) }
     }
 }
 
@@ -200,8 +195,48 @@ struct AISummaryProviderNotice: View {
 }
 
 func aiSummaryProvenanceLabel(provider: String?, model: String?) -> String {
-    guard let provider, !provider.isEmpty else { return "AI-generated on device" }
+    guard let provider, !provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return "AI-generated · Provider unspecified"
+    }
     let name = provider == "openAI" ? "OpenAI" : provider
     guard let model, !model.isEmpty else { return name }
     return "\(name) · \(model)"
+}
+
+/// A generated metadata suggestion stays transient until the user accepts it.
+struct AISuggestionReviewSheet: View {
+    @Bindable var model: AppModel
+    let suggestion: AISuggestion
+
+    private var title: String {
+        suggestion.action == .suggestTitle ? "Suggested Title" : "Suggested LCC Classification"
+    }
+
+    private var targetTitle: String {
+        switch suggestion.target {
+        case .page(let id): model.notes.first(where: { $0.id == id })?.title ?? "Page"
+        case .source(let id): model.sources.first(where: { $0.id == id })?.title ?? "Source"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
+            Text(title).font(.title2.bold())
+            Text(targetTitle).foregroundStyle(.secondary)
+            AIProviderBadge(provider: suggestion.provider)
+            Text(suggestion.value).font(.headline).textSelection(.enabled)
+            if let rationale = suggestion.rationale, !rationale.isEmpty {
+                Text(rationale).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            Text("Applying this suggestion changes only the selected item's \(suggestion.action == .suggestTitle ? "title" : "classification"). Existing summaries remain unchanged.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Dismiss") { model.dismissAISuggestion() }.keyboardShortcut(.cancelAction)
+                Button("Apply") { model.acceptAISuggestion() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 480)
+    }
 }
