@@ -419,6 +419,45 @@ public final class VaultAccessGate: Sendable {
         _ = state.withLock { $0.contentInvalidators.removeValue(forKey: id) }
     }
 
+    /// Registers synchronous revocation for a session-bound external capability. The callback
+    /// must only invalidate memory/cancel tasks; it must never reenter this access gate.
+    public func registerSessionInvalidator(
+        lease: VaultSessionLease, invalidate: @escaping @Sendable () -> Void
+    ) -> UUID {
+        registerContentInvalidator(lease: lease, invalidate: invalidate)
+    }
+
+    public func removeSessionInvalidator(_ id: UUID) {
+        removeContentInvalidator(id)
+    }
+
+    /// Performs a tiny synchronous dispatch while admission remains open. Use only to resume
+    /// an already configured task; the body must not suspend, perform blocking I/O, or reenter
+    /// this gate. A subsequent lock treats that task as already issued and cancels it.
+    public func withOpenSession<Result>(
+        lease: VaultSessionLease, operation: String, _ body: () throws -> Result
+    ) throws -> Result {
+        try state.withLock { gate in
+            guard case .open(let session) = gate.sessionState else {
+                throw VaultAccessError.sessionTransitioning(phase: gate.sessionState.phase, operation: operation)
+            }
+            guard lease.generation == session.generation else {
+                throw VaultAccessError.staleLease(leaseGeneration: lease.generation,
+                                                 activeGeneration: session.generation, operation: operation)
+            }
+            guard lease.vaultID == session.vaultID, lease.root == session.root else {
+                throw VaultAccessError.wrongVault(expectedVaultID: lease.vaultID, expectedRoot: lease.root,
+                                                 actualVaultID: session.vaultID, actualRoot: session.root,
+                                                 operation: operation)
+            }
+            guard lease.sessionID == session.id else {
+                throw VaultAccessError.invalidLeaseSession(expectedSessionID: session.id,
+                                                          actualSessionID: lease.sessionID, operation: operation)
+            }
+            return try body()
+        }
+    }
+
     public func issueLease(for targetRoot: URL? = nil, vaultID: UUID? = nil) throws -> VaultSessionLease {
         let normalizedTarget = targetRoot?.standardizedFileURL.resolvingSymlinksInPath()
         return try state.withLock { gate in
