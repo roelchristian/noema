@@ -472,7 +472,7 @@ public actor FileVaultRepository: VaultRepository {
         }
         guard !titleExists(page.note.title, in: snapshot.notes) else { throw VaultError.duplicateTitle(page.note.title) }
         _ = try checkedTrashURL(page.id)
-        let path = try availablePath(title: page.note.title)
+        let path = availablePath(title: page.note.title)
         _ = try checkedWikiURL(path)
         try movePage(from: page.id, to: path, hash: page.note.contentHash,
                      staleMessage: "This trashed page changed. Refresh Trash before restoring.")
