@@ -29,6 +29,8 @@ public actor FileVaultRepository: VaultRepository {
     public nonisolated let root: URL
     public nonisolated let manifest: VaultManifest
     public nonisolated let contentStore: any VaultContentStore
+    public nonisolated let sessionLease: VaultSessionLease?
+    public nonisolated let accessGate: VaultAccessGate?
     private var cache: [String: (Date?, Int?, NoteRecord)] = [:]
     private var downloadingSources: [UUID: SourceRecord] = [:]
     private let fm = FileManager.default
@@ -36,7 +38,43 @@ public actor FileVaultRepository: VaultRepository {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; return encoder
     }()
 
-    public static func open(root: URL, create: Bool = false, contentStore: (any VaultContentStore)? = nil, storageProvider: VaultStorageProvider = .plaintext) throws -> FileVaultRepository {
+    /// Inspects `vault.json` outside the protected content API so a vault's manifest and identity can be
+    /// verified before or while opening/unlocking a session.
+    public static func inspectManifest(
+        at root: URL,
+        contentStore: (any VaultContentStore)? = nil,
+        storageProvider: VaultStorageProvider = .plaintext
+    ) throws -> VaultManifest {
+        let accessRoot = root
+        let normalizedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        let fm = FileManager.default
+        let manifestURL = normalizedRoot.appendingPathComponent("vault.json")
+        guard fm.fileExists(atPath: manifestURL.path) else {
+            throw VaultError.invalid("Choose a vault folder containing vault.json, or create a new vault.")
+        }
+        let store = try contentStore ?? storageProvider.makeStore(root: accessRoot)
+        let data: Data
+        if let gated = store as? GatedVaultContentStore {
+            data = try gated.inspectManifestData()
+        } else {
+            data = try store.read(at: "vault.json")
+        }
+        let manifest = try JSONDecoder().decode(VaultManifest.self, from: data)
+        guard manifest.formatVersion == 1 else {
+            throw VaultError.invalid("This vault uses an unsupported format version.")
+        }
+        return manifest
+    }
+
+    public static func open(
+        root: URL,
+        create: Bool = false,
+        contentStore: (any VaultContentStore)? = nil,
+        storageProvider: VaultStorageProvider = .plaintext,
+        sessionLease: VaultSessionLease? = nil,
+        accessGate: VaultAccessGate? = nil,
+        willExecuteIO: (@Sendable (String) -> Void)? = nil
+    ) throws -> FileVaultRepository {
         let accessRoot = root
         let root = root.standardizedFileURL.resolvingSymlinksInPath()
         let fm = FileManager.default
@@ -44,15 +82,48 @@ public actor FileVaultRepository: VaultRepository {
         guard create || fm.fileExists(atPath: manifestURL.path) else {
             throw VaultError.invalid("Choose a vault folder containing vault.json, or create a new vault.")
         }
-        let store = try contentStore ?? storageProvider.makeStore(root: accessRoot)
+        if let accessGate {
+            try accessGate.validate(lease: sessionLease, targetRoot: root, targetVaultID: nil, operation: "open")
+        }
+        let rawStore = try contentStore ?? storageProvider.makeStore(root: accessRoot)
+        let store: any VaultContentStore
+        if let accessGate {
+            if let existingGated = rawStore as? GatedVaultContentStore {
+                store = existingGated
+            } else {
+                store = GatedVaultContentStore(
+                    base: rawStore,
+                    root: root,
+                    vaultID: sessionLease?.vaultID,
+                    gate: accessGate,
+                    lease: sessionLease,
+                    willExecuteIO: willExecuteIO
+                )
+            }
+        } else {
+            store = rawStore
+        }
         let manifest: VaultManifest
         if fm.fileExists(atPath: manifestURL.path) {
-            manifest = try JSONDecoder().decode(VaultManifest.self, from: store.read(at: "vault.json"))
-            guard manifest.formatVersion == 1 else { throw VaultError.invalid("This vault uses an unsupported format version.") }
+            manifest = try inspectManifest(at: accessRoot, contentStore: store, storageProvider: storageProvider)
         } else {
             guard create else { throw VaultError.invalid("Choose a vault folder containing vault.json, or create a new vault.") }
             manifest = VaultManifest()
             try store.write(JSONEncoder().encode(manifest), at: "vault.json", condition: .createOnly)
+        }
+        if let gated = store as? GatedVaultContentStore {
+            gated.bindVaultID(manifest.id)
+        }
+        if let accessGate {
+            try accessGate.validate(lease: sessionLease, targetRoot: root, targetVaultID: manifest.id, operation: "open")
+        } else if let sessionLease, (sessionLease.root != root || sessionLease.vaultID != manifest.id) {
+            throw VaultAccessError.wrongVault(
+                expectedVaultID: manifest.id,
+                expectedRoot: root,
+                actualVaultID: sessionLease.vaultID,
+                actualRoot: sessionLease.root,
+                operation: "open"
+            )
         }
         for name in ["Wiki", "Sources", trashDirectoryName, "Conflicts"] {
             let directory = root.appendingPathComponent(name)
@@ -62,13 +133,44 @@ public actor FileVaultRepository: VaultRepository {
                 throw VaultContentStoreError.unsupportedItem(name)
             }
         }
-        return FileVaultRepository(root: root, manifest: manifest, contentStore: store)
+        return FileVaultRepository(
+            root: root,
+            manifest: manifest,
+            contentStore: store,
+            sessionLease: sessionLease,
+            accessGate: accessGate
+        )
     }
-    private init(root: URL, manifest: VaultManifest, contentStore: any VaultContentStore) {
-        self.root = root; self.manifest = manifest; self.contentStore = contentStore
+
+    private init(
+        root: URL,
+        manifest: VaultManifest,
+        contentStore: any VaultContentStore,
+        sessionLease: VaultSessionLease? = nil,
+        accessGate: VaultAccessGate? = nil
+    ) {
+        self.root = root
+        self.manifest = manifest
+        self.contentStore = contentStore
+        self.sessionLease = sessionLease
+        self.accessGate = accessGate
+    }
+
+    nonisolated private func validateAccess(operation: String) throws {
+        if let gated = contentStore as? GatedVaultContentStore {
+            try gated.validateAccess(operation: operation)
+        } else if let accessGate {
+            try accessGate.validate(
+                lease: sessionLease,
+                targetRoot: root,
+                targetVaultID: manifest.id,
+                operation: operation
+            )
+        }
     }
 
     public func scan(progress: (@Sendable (ScanBatch) -> Void)? = nil) throws -> ScanBatch {
+        try validateAccess(operation: "scan")
         var result = ScanBatch(), chunk = ScanBatch()
         var seenIDs: Set<UUID> = [], seenPaths: Set<String> = []
         var duplicateIDs: Set<UUID> = []
@@ -80,6 +182,7 @@ public actor FileVaultRepository: VaultRepository {
             throw VaultError.storage("The Wiki directory cannot be read.")
         }
         for case let url as URL in enumerator {
+            try validateAccess(operation: "scan")
             if url.lastPathComponent.hasPrefix(".") { enumerator.skipDescendants(); continue }
             guard url.pathExtension.lowercased() == "md" else { continue }
             let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
@@ -111,12 +214,15 @@ public actor FileVaultRepository: VaultRepository {
                 guard !duplicateIDs.contains(note.id) else { continue }
                 result.notes.append(note); chunk.notes.append(note)
                 if chunk.notes.count >= 128 { progress?(chunk); chunk = ScanBatch() }
+            } catch let accessError as VaultAccessError {
+                throw accessError
             } catch { result.issues.append("\(url.lastPathComponent): \(error.localizedDescription)") }
         }
         cache = cache.filter { seenPaths.contains($0.key) }
         if let enumerationError { throw VaultError.storage(enumerationError) }
         let directories = try fm.contentsOfDirectory(at: root.appendingPathComponent("Sources"), includingPropertiesForKeys: nil, options: [])
         for directory in directories {
+            try validateAccess(operation: "scan")
             guard UUID(uuidString: directory.lastPathComponent) != nil else { continue }
             do {
                 var metadata = try JSONDecoder().decode(SourceMetadata.self, from: contentStore.read(at: "Sources/" + directory.lastPathComponent + "/metadata.json"))
@@ -126,6 +232,8 @@ public actor FileVaultRepository: VaultRepository {
                 let data: Data
                 do {
                     data = try metadata.linkedBookmark.map(Self.readLinkedSource) ?? contentStore.read(at: "Sources/" + directory.lastPathComponent + "/" + metadata.storedFilename)
+                } catch let accessError as VaultAccessError {
+                    throw accessError
                 } catch {
                     guard metadata.isLinked else { throw error }
                     let issue = Self.sourceAvailabilityMessage(error, linked: true)
@@ -140,6 +248,8 @@ public actor FileVaultRepository: VaultRepository {
                 let source = SourceRecord(metadata: metadata, body: body, availabilityIssue: metadata.webAvailabilityIssue)
                 result.sources.append(source); chunk.sources.append(source)
                 if chunk.sources.count >= 128 { progress?(chunk); chunk = ScanBatch() }
+            } catch let accessError as VaultAccessError {
+                throw accessError
             } catch { result.issues.append("Source \(directory.lastPathComponent): \(error.localizedDescription). Incomplete imports are left intact for recovery.") }
         }
         let onDiskSourceIDs = Set(result.sources.map(\.id))
@@ -173,6 +283,7 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     private func createPage(title: String, body: String, source: SourceRecord?, lcc: String?) throws -> NoteRecord {
+        try validateAccess(operation: "create")
         let snapshot = try scan()
         if let source {
             guard let current = snapshot.sources.first(where: { $0.id == source.id }),
@@ -200,16 +311,19 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func setEditingLock(note: NoteRecord, locked: Bool) throws -> NoteRecord {
+        try validateAccess(operation: "setEditingLock")
         var updated = note
         updated.editingLocked = locked
         return try save(note: updated, title: note.title, body: note.body, tags: note.tags, preserveUpdatedAt: true)
     }
 
     public func save(note: NoteRecord, title: String, body: String, tags: [String]) throws -> NoteRecord {
-        try save(note: note, title: title, body: body, tags: tags, preserveUpdatedAt: false)
+        try validateAccess(operation: "save")
+        return try save(note: note, title: title, body: body, tags: tags, preserveUpdatedAt: false)
     }
 
     private func save(note: NoteRecord, title: String, body: String, tags: [String], preserveUpdatedAt: Bool) throws -> NoteRecord {
+        try validateAccess(operation: "save")
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw VaultError.invalid("A wiki page needs a title.") }
         let snapshot = try scan()
@@ -267,6 +381,7 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func setSourceReference(note: NoteRecord, sourceID: UUID, linked: Bool) throws -> NoteRecord {
+        try validateAccess(operation: "setSourceReference")
         guard !note.isEditingLocked else { throw VaultError.invalid("Unlock this article before editing its sources.") }
         if linked, !((try scan()).sources.contains { $0.id == sourceID }) {
             throw VaultError.invalid("This source is unavailable. Refresh before adding it.")
@@ -279,6 +394,7 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func trash(note: NoteRecord) throws {
+        try validateAccess(operation: "trash")
         _ = try checkedWikiURL(note.relativePath)
         try ensureTrashDirectory()
         let destination = root.appendingPathComponent("\(Self.trashDirectoryName)/trash-\(Int(Date().timeIntervalSince1970))-\(note.id.uuidString)-\(UUID().uuidString).md")
@@ -288,6 +404,7 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func trashedPages() throws -> [TrashedPage] {
+        try validateAccess(operation: "trashedPages")
         let directory = root.appendingPathComponent(Self.trashDirectoryName)
         try ensureTrashDirectory()
         var files = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
@@ -298,6 +415,7 @@ public actor FileVaultRepository: VaultRepository {
             guard legacy.resolvingSymlinksInPath().path == legacy.path else { throw VaultError.invalid("The legacy Trash directory must not be a symbolic link.") }
             for url in try fm.contentsOfDirectory(at: legacy, includingPropertiesForKeys: nil) where url.pathExtension.lowercased() == "md" {
                 do { files.append(try migrateTrashedFile(url)) }
+                catch let accessError as VaultAccessError { throw accessError }
                 catch {
                     files.append(url)
                     migrationIssues[url.lastPathComponent] = "Could not preserve this legacy Trash file in Removed Pages: " + error.localizedDescription
@@ -312,6 +430,8 @@ public actor FileVaultRepository: VaultRepository {
                     let bytes = try contentStore.read(at: path); data = bytes
                     let issue = url.deletingLastPathComponent() == legacy ? migrationIssues[url.lastPathComponent] : nil
                     return TrashedPage(note: try NoteCodec.decode(bytes, path: path, vaultID: manifest.id), readIssue: issue)
+                } catch let accessError as VaultAccessError {
+                    throw accessError
                 } catch {
                     // Keep damaged/unavailable entries visible without blocking healthy pages or refresh.
                     var note = try NoteCodec.decode(Data(), path: path, vaultID: manifest.id)
@@ -332,6 +452,7 @@ public actor FileVaultRepository: VaultRepository {
         return destination
     }
     public func restore(_ page: TrashedPage) throws {
+        try validateAccess(operation: "restore")
         guard page.canRestore else { throw VaultError.invalid("Repair this page's file before restoring it.") }
         let snapshot = try scan()
         guard !snapshot.notes.contains(where: { $0.id == page.note.id }),
@@ -346,6 +467,7 @@ public actor FileVaultRepository: VaultRepository {
                      staleMessage: "This trashed page changed. Refresh Trash before restoring.")
     }
     public func permanentlyDelete(_ page: TrashedPage) throws {
+        try validateAccess(operation: "permanentlyDelete")
         guard page.canPermanentlyDelete else { throw VaultError.invalid("This trashed page could not be read. Refresh Trash before deleting it.") }
         _ = try checkedTrashURL(page.id)
         let message = "This trashed page changed. Refresh Trash before deleting."
@@ -399,7 +521,15 @@ public actor FileVaultRepository: VaultRepository {
         let directories = try fm.contentsOfDirectory(at: root.appendingPathComponent("Sources"), includingPropertiesForKeys: nil)
         for directory in directories {
             guard let id = UUID(uuidString: directory.lastPathComponent), id != excludingID else { continue }
-            guard let metadata = try? JSONDecoder().decode(SourceMetadata.self, from: contentStore.read(at: "Sources/" + directory.lastPathComponent + "/metadata.json")),
+            let rawMetadata: Data
+            do {
+                rawMetadata = try contentStore.read(at: "Sources/" + directory.lastPathComponent + "/metadata.json")
+            } catch let accessError as VaultAccessError {
+                throw accessError
+            } catch {
+                continue
+            }
+            guard let metadata = try? JSONDecoder().decode(SourceMetadata.self, from: rawMetadata),
                   metadata.id == id else { continue }
             var sameLinkedFile = false
             if let linkedURL, let bookmark = metadata.linkedBookmark, !bookmark.isEmpty {
@@ -416,20 +546,25 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func importSource(data: Data, filename: String, title: String, originURL: String?) throws -> SourceRecord {
-        try publishSource(data: data, filename: filename, title: title, originURL: originURL, isURLSource: false)
+        try validateAccess(operation: "importSource")
+        return try publishSource(data: data, filename: filename, title: title, originURL: originURL, isURLSource: false)
     }
 
     public func importURLSource(_ address: String, fetch: @Sendable (URL) async throws -> WebSourceFetch = WebSourceFetcher.fetch) async throws -> SourceRecord {
+        try validateAccess(operation: "importURLSource")
         let url = try WebSourceFetcher.validatedURL(address)
         let fetched = try await fetch(url)
+        try validateAccess(operation: "importURLSource")
         return try publishSource(data: fetched.data, filename: fetched.filename, title: url.host ?? address, originURL: url.absoluteString, isURLSource: true)
     }
 
     public func checkURLSourceAvailability(_ source: SourceRecord, fetch: @Sendable (URL) async throws -> WebSourceFetch = WebSourceFetcher.fetch) async throws -> String {
+        try validateAccess(operation: "checkURLSourceAvailability")
         guard source.metadata.isURLSource == true, let address = source.metadata.originURL else { throw VaultError.invalid("This source was not fetched from a URL.") }
         let issue: String?
         do { _ = try await fetch(WebSourceFetcher.validatedURL(address)); issue = nil }
         catch { issue = "Archived fetch · Unavailable: " + error.localizedDescription }
+        try validateAccess(operation: "checkURLSourceAvailability")
         let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
         let bytes = try contentStore.read(at: path)
         var metadata = try JSONDecoder().decode(SourceMetadata.self, from: bytes)
@@ -440,6 +575,7 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     private func publishSource(id: UUID = UUID(), capturedAt: String? = nil, data: Data, filename: String, title: String, originURL: String?, isURLSource: Bool) throws -> SourceRecord {
+        try validateAccess(operation: "publishSource")
         guard data.count <= Self.maximumImportBytes else { throw VaultError.invalid("Files larger than 2 MB must be linked instead of imported.") }
         try rejectDuplicateSource(checksum: digest(data), excludingID: id)
         let body = try Self.sourceText(data, filename: filename)
@@ -491,6 +627,19 @@ public actor FileVaultRepository: VaultRepository {
 
     public static func checkSourceAvailability(_ source: SourceRecord, root: URL, contentStore: any VaultContentStore) -> String {
         do {
+            if let gated = contentStore as? GatedVaultContentStore {
+                let normalizedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+                if normalizedRoot != gated.root {
+                    throw VaultAccessError.wrongVault(
+                        expectedVaultID: gated.vaultID,
+                        expectedRoot: gated.root,
+                        actualVaultID: nil,
+                        actualRoot: normalizedRoot,
+                        operation: "checkSourceAvailability"
+                    )
+                }
+                try gated.validateAccess(operation: "checkSourceAvailability")
+            }
             guard source.metadata.storedFilename == URL(fileURLWithPath: source.metadata.storedFilename).lastPathComponent,
                   !source.metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Invalid source path.") }
             let access = root.startAccessingSecurityScopedResource()
@@ -503,6 +652,19 @@ public actor FileVaultRepository: VaultRepository {
 
     /// Linked originals have external ownership and never pass through vault storage.
     public static func readSourceOriginal(_ source: SourceRecord, root: URL, contentStore: any VaultContentStore) throws -> Data {
+        if let gated = contentStore as? GatedVaultContentStore {
+            let normalizedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+            if normalizedRoot != gated.root {
+                throw VaultAccessError.wrongVault(
+                    expectedVaultID: gated.vaultID,
+                    expectedRoot: gated.root,
+                    actualVaultID: nil,
+                    actualRoot: normalizedRoot,
+                    operation: "readSourceOriginal"
+                )
+            }
+            try gated.validateAccess(operation: "readSourceOriginal")
+        }
         if let bookmark = source.metadata.linkedBookmark { return try readLinkedSource(bookmark) }
         let filename = source.metadata.storedFilename
         guard filename == URL(fileURLWithPath: filename).lastPathComponent, !filename.hasPrefix(".") else { throw VaultError.invalid("Invalid source path.") }
@@ -537,6 +699,7 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func beginSourceDownload(at url: URL, shouldImport: Bool) throws -> SourceRecord {
+        try validateAccess(operation: "beginSourceDownload")
         let targetURL = Self.logicalCloudURL(url)
         var st = stat()
         if lstat(url.path, &st) == 0 {
@@ -579,6 +742,7 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func completeSourceDownload(id: UUID, at url: URL, data: Data, shouldImport: Bool) throws -> SourceRecord {
+        try validateAccess(operation: "completeSourceDownload")
         guard let pending = downloadingSources[id] else {
             throw VaultError.invalid("Source download is no longer active.")
         }
@@ -618,6 +782,7 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func linkSources(at url: URL, maximumFiles: Int) throws -> [SourceRecord] {
+        try validateAccess(operation: "linkSources")
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
@@ -644,6 +809,7 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func renameSource(_ source: SourceRecord, title: String, summary: String? = nil, lcc: String? = nil) throws -> SourceRecord {
+        try validateAccess(operation: "renameSource")
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, title.count <= 120 else { throw VaultError.invalid("Invalid source title.") }
         let summary = summary?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -672,6 +838,7 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func updateSourceLCC(_ source: SourceRecord, lcc: String?) throws -> SourceRecord {
+        try validateAccess(operation: "updateSourceLCC")
         let normalizedLCC = lcc?.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanLCC = (normalizedLCC?.isEmpty == false) ? normalizedLCC : nil
         if let cleanLCC, cleanLCC.count > 24 || cleanLCC.contains("\n") || cleanLCC.contains("\r") {
@@ -697,6 +864,7 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func deleteSource(_ source: SourceRecord) throws {
+        try validateAccess(operation: "deleteSource")
         if downloadingSources.removeValue(forKey: source.id) != nil {
             let directory = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
             if !fm.fileExists(atPath: directory.path) { return }
@@ -864,6 +1032,7 @@ extension FileVaultRepository {
         return url
     }
     public func trashItems() throws -> [TrashedItem] {
+        try validateAccess(operation: "trashItems")
         var items = try trashedPages().map(TrashedItem.page)
         for url in try fm.contentsOfDirectory(at: root.appendingPathComponent(Self.trashDirectoryName), includingPropertiesForKeys: nil) where url.pathExtension == "source" {
             let path = Self.trashDirectoryName + "/" + url.lastPathComponent
@@ -880,11 +1049,14 @@ extension FileVaultRepository {
                     guard let original = files[metadata.storedFilename], digest(original) == metadata.sha256 else { throw VaultError.invalid("Imported original changed. Repair it before restoring.") }
                 }
                 items.append(.source(TrashedSource(id: path, source: SourceRecord(metadata: metadata, body: ""), contentHash: hash)))
+            } catch let accessError as VaultAccessError {
+                throw accessError
             } catch { items.append(.source(TrashedSource(id: path, contentHash: hash, readIssue: error.localizedDescription))) }
         }
         return items.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
     public func restore(_ item: TrashedItem) throws {
+        try validateAccess(operation: "restore")
         switch item {
         case .page(let page): try restore(page)
         case .source(let entry):
@@ -896,6 +1068,7 @@ extension FileVaultRepository {
         }
     }
     public func permanentlyDelete(_ item: TrashedItem) throws {
+        try validateAccess(operation: "permanentlyDelete")
         switch item {
         case .page(let page): try permanentlyDelete(page)
         case .source(let source):
@@ -911,6 +1084,7 @@ extension FileVaultRepository {
         return failures
     }
     public func expireTrash(now: Date = Date()) throws -> [String] {
+        try validateAccess(operation: "expireTrash")
         let items = try trashItems()
         let ledger = root.appendingPathComponent("Trash Retention.json")
         guard ledger.resolvingSymlinksInPath() == ledger else { throw VaultError.invalid("Unsafe trash retention file.") }

@@ -120,6 +120,7 @@ public enum VaultSessionError: Error, Sendable, Equatable, LocalizedError {
 /// independently of SwiftUI and `AppModel`. Serializes transitions and publishes read-only state observations.
 /// Note: Session locking is lifecycle state isolation, not cryptographic protection.
 public actor VaultSessionManager {
+    public nonisolated let accessGate: VaultAccessGate
     public private(set) var state: VaultSessionState = .closed
     public private(set) var generation: UInt64 = 0
     public private(set) var inFlightWaiterCount: Int = 0
@@ -132,9 +133,45 @@ public actor VaultSessionManager {
     private var activeUnlockTask: (id: UUID, task: Task<VaultSession, Error>)?
     private var activeCloseTask: (id: UUID, task: Task<Void, Error>)?
 
-    public init() {}
+    public init(accessGate: VaultAccessGate = VaultAccessGate()) {
+        self.accessGate = accessGate
+    }
 
     public var currentSession: VaultSession? { state.activeSession }
+
+    public nonisolated var currentLease: VaultSessionLease? { accessGate.currentLease }
+
+    public func issueLease(for root: URL? = nil, vaultID: UUID? = nil) throws -> VaultSessionLease {
+        try accessGate.issueLease(for: root, vaultID: vaultID)
+    }
+
+    /// Opens a vault session (if not already open for `root`), issues a session lease, and returns a
+    /// `FileVaultRepository` whose storage and actor operations are gated by `accessGate` and `lease`.
+    public func openRepository(
+        root: URL,
+        create: Bool = false,
+        storageProvider: VaultStorageProvider = .plaintext,
+        willExecuteIO: (@Sendable (String) -> Void)? = nil
+    ) async throws -> (session: VaultSession, lease: VaultSessionLease, repository: FileVaultRepository) {
+        let normalizedRoot = Self.normalize(root)
+        let session = try await open(root: normalizedRoot) { targetRoot in
+            if create {
+                let initialized = try FileVaultRepository.open(root: targetRoot, create: true, storageProvider: storageProvider)
+                return initialized.manifest.id
+            }
+            return try FileVaultRepository.inspectManifest(at: targetRoot, storageProvider: storageProvider).id
+        }
+        let lease = session.lease
+        let repository = try FileVaultRepository.open(
+            root: normalizedRoot,
+            create: false,
+            storageProvider: storageProvider,
+            sessionLease: lease,
+            accessGate: accessGate,
+            willExecuteIO: willExecuteIO
+        )
+        return (session, lease, repository)
+    }
 
     /// Returns a read-only stream of session states, immediately emitting the current state upon subscription
     /// followed by every subsequent state change in transition order.
@@ -157,6 +194,7 @@ public actor VaultSessionManager {
     private func setState(_ next: VaultSessionState) {
         guard state != next else { return }
         state = next
+        accessGate.updateState(next)
         for continuation in observers.values {
             continuation.yield(next)
         }
@@ -167,7 +205,7 @@ public actor VaultSessionManager {
     }
 
     public static let defaultVaultLoader: @Sendable (URL) async throws -> UUID = { url in
-        try FileVaultRepository.open(root: url, create: false).manifest.id
+        try FileVaultRepository.inspectManifest(at: url).id
     }
 
     /// Opens a vault from `.closed`. Duplicate requests for the same URL while `.opening` or `.open`
