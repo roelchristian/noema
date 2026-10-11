@@ -45,6 +45,14 @@ final class ExternalAIService {
         authorizationState = await sessionManager.state
     }
 
+    /// Inspect live expiry-aware authority without authenticating, renewing idle time,
+    /// minting consent or submitting content. Cached Settings status is insufficient.
+    func consentPresentation(for authority: ExternalAIVaultAuthority) async -> CloudConsentPresentation {
+        let liveState = await sessionManager.state
+        return CloudConsentPresentation.resolve(sessionState: liveState, authority: authority,
+                                                currentLease: accessGate.currentLease)
+    }
+
     func setModel(_ model: String) throws {
         let selected = try ExternalAIModelConfiguration(model: model, reasoningEffort: configuration.reasoningEffort)
         applyConfiguration(selected)
