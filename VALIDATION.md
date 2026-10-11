@@ -737,6 +737,12 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 - Supervisor selftest passed (all 17 policy parameters). After correcting temporary-directory setup in the new model tests, the service-enabled `./scripts/test.sh` passed all 115 tests, including rapid actions in both lock directions, failure/retry, and pending-content timestamp preservation. `./scripts/build.sh debug` compiled, packaged, and signed successfully with native macOS service access. Initial sandboxed runs encountered coordinated-file-write/pasteboard errors and iconutil rejected the iconset; service-enabled reruns resolved those blocks. See `.build/sidebar-lock-commit-tests.log`, `.build/sidebar-lock-build-unsandboxed.log`, and `.build/sidebar-padding-build.log` for passing evidence.
 - Outstanding: manual verification of the rebuilt UI in a temporary vault, keyboard focus and VoiceOver behavior, Reduce Motion, theme/System appearance/accent variations, and two-Mac iCloud behavior. Inspection of the running older app does not validate the rebuilt sidebar.
 
+### D01.2 protocol and plaintext content adapter (2026-10-11)
+
+- Added the vault-relative byte protocol, plaintext adapter, typed operation errors, create-only/expected-byte atomic writes, and snapshot-checked file/flat-directory moves and deletes. Existing repository flows and vault v1 bytes remain unchanged; integration is a separate step.
+- Native `./scripts/test.sh --filter VaultContentStoreTests` passed all seven tests, including eight unsafe-path cases, binary/empty-byte round trips, occupied destinations, stale/missing-file preservation, symlink ancestry, and source-directory snapshots. Tests exposed and verified a fix for nonexistent leaves under symlinked parents. Restricted execution compiled but native coordination was blocked.
+- The native full regression run passed all 122 tests (`.build/d012-regression.log`). Debug compilation, packaging, and signing passed (`.build/d012-build.log`); tracked brand exports were unchanged. Whitespace checks and supervisor selftest passed. No manual UI or two-Mac iCloud checks were performed. Actual unresolved cloud-version and provider hydration scenarios remain untested; explicit conflict refusal and hydration/unavailable handling are retained.
+
 ### Sidebar page-row trailing spacing (2026-10-11)
 
 - Reduced page-row trailing padding from 8 to 4 points, giving titles 4 more points of available width. The existing row inset, lock control, and edit timestamp remain in place.
