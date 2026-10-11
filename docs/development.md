@@ -43,7 +43,13 @@ The hygiene checker fails on root Markdown outside `README.md`/`AGENTS.md`, trac
 
 Global commands are in the native toolbar and menus; document editing controls remain
 with the heading. `⌃⌘S` toggles sidebar, `⌥⌘I` toggles contextual inspector, and
-`⇧⌘F` / `⌘P` reveal the sidebar and focus its search field. Sidebar/inspector intent
+`⇧⌘F` expands and focuses toolbar vault search; `⌘P` opens title-oriented Quick Open
+in the same control. Search retains the current document, query and library scope;
+Up/Down selects a quick result and Return opens it. Escape dismisses results first,
+then collapses the field. Narrow windows use an anchored field presentation.
+Scope refinement supports All, Pages, Sources and Semantic Blocks; **Show all results**
+opens the full list, with **Return to workspace** preserving the previous document.
+Sidebar/inspector intent
 and divider widths persist independently; narrow windows can temporarily hide a pane
 without changing intent. Welcome/locked and open workspace have separate saved frames.
 Validate native divider restoration, minimum-size collapse, full-screen transitions
@@ -89,7 +95,9 @@ Click an unlocked article or press **Edit** to start native block editing; edits
 | Shortcut | Action |
 | :--- | :--- |
 | `⌘S` | Save immediately |
-| `⌘K` / `⌘P` / `⇧⌘F` | Focus global vault search (`⌘K` edits a hyperlink while editing text) |
+| `⇧⌘F` | Focus full-vault toolbar search |
+| `⌘P` | Quick Open by page/source title or page alias |
+| `⌘K` | Edit a hyperlink while editing text |
 | `⇧⌘I` | Add sources from files |
 | `⌘B` / `⌘I` / `⌘U` | Toggle bold, italic, or underline |
 | `⇧⌘B` | Open Block Actions menu (convert, tag, status, duplicate, copy Markdown/link, move, delete) |

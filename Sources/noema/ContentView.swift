@@ -12,9 +12,7 @@ struct ContentView: View {
     @Environment(\.noemaTheme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.appearsActive) private var activeWindow
-    @FocusState private var searchFocused: Bool
-    @State private var searchFocusPending = false
-    @State private var sidebarSearchMounted = false
+    @State private var showAllSearchResults = false
     @FocusState private var sidebarTabFocused: String?
     @FocusState private var sidebarPageFocused: UUID?
     @FocusState private var sidebarItemFocused: String?
@@ -69,23 +67,10 @@ struct ContentView: View {
     private func toggleSidebarPane() {
         guard paneActions.canToggleSidebar else { return }
         paneState.toggleSidebar(presented: panePresentation.sidebar)
-        if !paneState.isSidebarVisible { searchFocused = false; searchFocusPending = false }
     }
     private func toggleInspectorPane() {
         guard paneActions.canToggleInspector else { return }
         paneState.toggleInspector(presented: isInspectorPresented)
-    }
-    private func revealSidebarSearch() {
-        guard model.isVaultAvailable else { return }
-        searchFocusPending = true
-        paneState.revealSidebar()
-        // Wait for SwiftUI to mount a previously hidden sidebar before requesting focus.
-        Task { @MainActor in
-            await Task.yield()
-            guard model.isVaultAvailable && panePresentation.sidebar && sidebarSearchMounted else { return }
-            searchFocused = true
-            searchFocusPending = false
-        }
     }
     private var inspectorContext: InspectorContext {
         InspectorContext.resolve(model: model, librarySourceSelection: sourceSelection)
@@ -96,6 +81,7 @@ struct ContentView: View {
     private func switchSidebarScope(_ scope: LibraryScope) {
         // Tab chrome animates via `.animation(_, value: activeSidebarTab)`; wrapping the whole scope
         // change in withAnimation also animated the heavy Table/workspace and made switches jitter.
+        showAllSearchResults = false
         SourcesPerformance.event("SidebarScopeChange")
         model.changeScope(scope)
     }
@@ -115,8 +101,7 @@ struct ContentView: View {
         hoveredSidebarPageID = nil
         dismissedExternalChange = false
         sourceOriginal = false
-        searchFocused = false
-        searchFocusPending = false
+        showAllSearchResults = false
     }
     private var workspacePresentation: some View {
         Group {
@@ -225,18 +210,12 @@ struct ContentView: View {
     }
     var body: some View {
         workspaceConfirmations
-        .onChange(of: model.searchText) {
-            if searchFocused && !model.searchText.isEmpty && (model.currentNote != nil || model.currentSource != nil) {
-                model.changeScope(model.scope)
-            } else {
-                model.queryChanged()
-            }
-        }
-        .onChange(of: model.body) { if model.scope == .semantic { model.queryChanged() } }
-        .onChange(of: model.title) { if model.scope == .semantic { model.queryChanged() } }
-        .onChange(of: model.searchFocusToken) { revealSidebarSearch() }
-        .onChange(of: panePresentation.sidebar) { if !panePresentation.sidebar { searchFocused = false } }
-        .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false }
+        .onChange(of: model.searchText) { model.queryChanged() }
+        .onChange(of: model.body) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
+        .onChange(of: model.title) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
+        .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false; showAllSearchResults = false }
+        .onChange(of: model.scope) { showAllSearchResults = false }
+        .onChange(of: model.workspaceNavigationToken) { showAllSearchResults = false }
         .onChange(of: model.externalChange) { dismissedExternalChange = false }
         // UI.R.REM02: Reconcile even while the inspector is hidden or unmounted.
         .onChange(of: inspectorContext.targetID, initial: true) {
@@ -253,7 +232,9 @@ struct ContentView: View {
         }
     }
     @ViewBuilder private var mainWorkspace: some View {
-        if model.currentNote != nil || model.currentSource != nil {
+        if showAllSearchResults {
+            fullSearchResults
+        } else if model.currentNote != nil || model.currentSource != nil {
             detail
         } else {
             library
@@ -365,58 +346,7 @@ struct ContentView: View {
                     Text("Noema").font(NoemaTypography.navigationEmphasis).foregroundStyle(theme.text(for: .textPrimary, on: .sidebar))
                     Spacer()
                 }
-                HStack(spacing: NoemaSpacing.sm) {
-                    Image(systemName: "magnifyingglass")
-                        .font(NoemaTypography.navigation)
-                        .foregroundStyle(theme.text(for: .textSecondary, on: .elevated))
-                    ZStack(alignment: .leading) {
-                        TextField("", text: $model.searchText)
-                            .accessibilityLabel("Search")
-                            .textFieldStyle(.plain)
-                            .font(NoemaTypography.interface)
-                            .foregroundStyle(theme.text(for: .textPrimary, on: .elevated))
-                            .focused($searchFocused)
-                            .onAppear {
-                                sidebarSearchMounted = true
-                                if searchFocusPending { revealSidebarSearch() }
-                            }
-                            .onDisappear { sidebarSearchMounted = false }
-                        if model.searchText.isEmpty {
-                            Text("Search")
-                                .font(NoemaTypography.interface)
-                                .foregroundStyle(theme.text(for: .textSecondary, on: .elevated))
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
-                        }
-                    }
-                    if !model.searchText.isEmpty {
-                        Button { model.searchText = "" } label: {
-                            Label("Clear search", systemImage: "xmark.circle.fill")
-                                .labelStyle(.iconOnly)
-                                .font(NoemaTypography.caption)
-                                .noemaChromeForeground(.textSecondary)
-                                .frame(minWidth: NoemaMetrics.toolbarControlHeight,
-                                       minHeight: NoemaMetrics.toolbarControlHeight)
-                        }.buttonStyle(NoemaChromeButtonStyle(surface: .elevated))
-                            .help("Clear search")
-                    } else {
-                        Text("⇧⌘F")
-                            .font(NoemaTypography.caption)
-                            .foregroundStyle(theme.text(for: .textTertiary, on: .elevated))
-                    }
-                }
-                .padding(.horizontal, NoemaSpacing.sm)
-                .frame(minHeight: NoemaMetrics.searchHeight)
-                .background(
-                    RoundedRectangle(cornerRadius: NoemaMetrics.radiusStandard, style: .continuous)
-                        .fill(theme.color(for: .elevated))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: NoemaMetrics.radiusStandard, style: .continuous)
-                        .strokeBorder(theme.color(for: .separator), lineWidth: NoemaMetrics.borderWidth)
-                )
-                .noemaFocusRing(searchFocused, radius: NoemaMetrics.radiusStandard)
-                if !model.isSearching {
+                Group {
                     HStack(spacing: NoemaSpacing.xs) {
                         sidebarTabButton(
                             title: "Pages",
@@ -460,7 +390,7 @@ struct ContentView: View {
             .padding(.bottom, NoemaSpacing.sm)
 
             List {
-                if model.isSearching {
+                if showAllSearchResults {
                     searchResultSections
                 } else if model.scope == .trash {
                     Section("TRASH") {
@@ -603,47 +533,82 @@ struct ContentView: View {
         }
     }
     @ViewBuilder private var searchResultSections: some View {
-        if model.sidebarSearchResults.query != model.searchText {
-            if let error = model.errorMessage {
-                DismissibleNotice(message: error, surface: .sidebar) { model.errorMessage = nil }
+        let results = model.visibleSearchResults
+        switch model.searchStatus {
+        case .idle:
+            Text("Search pages, sources and semantic blocks.").foregroundStyle(.secondary)
+        case .searching:
+            ProgressView("Searching…")
+        case .failed(let message):
+            Text(message).foregroundStyle(.secondary)
+            Button("Retry search") { model.queryChanged() }
+        case .results:
+            if results.isEmpty {
+                Text("No matches in \(model.searchScope.title)").foregroundStyle(.secondary)
+                if model.searchScope != .all {
+                    Button("Search all categories") { model.setSearchScope(.all) }
+                }
             } else {
-                ProgressView("Searching…")
-            }
-        } else if model.sidebarSearchResults.isEmpty {
-            Text("No matches").foregroundStyle(theme.text(for: .textSecondary, on: .sidebar))
-        } else {
-            if !model.sidebarSearchResults.pages.isEmpty {
-                Section("Pages") {
-                    ForEach(model.sidebarSearchResults.pages) { note in
-                        sidebarPageRow(note)
-                    }
-                }
-            }
-            if !model.sidebarSearchResults.sources.isEmpty {
-                Section("Sources") {
-                    ForEach(model.sidebarSearchResults.sources) { source in
-                        sidebarItemRow(title: source.title,
-                                       symbol: source.metadata.isLinked ? "link" : "doc.text",
-                                       active: model.currentSource?.id == source.id) {
-                            model.select(source.id)
+                if !results.pages.isEmpty {
+                    Section("Pages") {
+                        ForEach(results.pages) { note in
+                            searchResultRow(title: note.title,
+                                            excerpt: results.pageExcerpts[note.id] ?? LibraryRow(note: note).excerpt,
+                                            symbol: "doc.text") {
+                                openSearchResult(note.id, scope: .wiki)
+                            }
                         }
                     }
                 }
-            }
-            if !model.sidebarSearchResults.blocks.isEmpty {
-                Section("Semantic Blocks") {
-                    ForEach(model.sidebarSearchResults.blocks) { hit in
-                        sidebarItemRow(title: hit.preview.isEmpty ? hit.pageTitle : hit.preview,
-                                       symbol: SemanticPresentation.find(hit.semantic)?.symbol ?? "tag",
-                                       active: model.selectedSemanticID == hit.id) {
-                            model.select(hit.pageID, block: hit.blockID)
+                if !results.sources.isEmpty {
+                    Section("Sources") {
+                        ForEach(results.sources) { source in
+                            searchResultRow(title: source.title,
+                                            excerpt: results.sourceExcerpts[source.id] ?? "",
+                                            symbol: source.metadata.isLinked ? "link" : "tray") {
+                                openSearchResult(source.id, scope: .sources)
+                            }
                         }
-                        .help("\(hit.pageTitle) · \(hit.semantic)")
-                        .accessibilityLabel("\(hit.pageTitle), \(hit.semantic), \(hit.preview)")
+                    }
+                }
+                if !results.blocks.isEmpty {
+                    Section("Semantic Blocks") {
+                        ForEach(results.blocks) { hit in
+                            searchResultRow(title: hit.pageTitle,
+                                            excerpt: "\(hit.semantic.capitalized) · \(hit.preview)",
+                                            symbol: SemanticPresentation.find(hit.semantic)?.symbol ?? "tag") {
+                                openSearchResult(hit.pageID, scope: .wiki, block: hit.blockID)
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+    private func openSearchResult(_ id: UUID, scope: LibraryScope, block: UUID? = nil) {
+        showAllSearchResults = false
+        model.select(id, scope: scope, block: block)
+    }
+    private func searchResultRow(title: String, excerpt: String, symbol: String,
+                                 action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: NoemaSpacing.sm) {
+                Image(systemName: symbol).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: NoemaSpacing.xs) {
+                    Text(title).font(NoemaTypography.interfaceEmphasis).lineLimit(1)
+                    if !excerpt.isEmpty {
+                        Text(excerpt).font(NoemaTypography.metadata).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, NoemaSpacing.xs)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title), \(excerpt)")
+        .help(title)
     }
     private func sidebarTabButton(title: String, symbol: String, count: Int?, showLabel: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -697,9 +662,10 @@ struct ContentView: View {
         let active = model.currentNote?.id == note.id
         return HStack(spacing: NoemaSpacing.sm) {
             SidebarPageIcon(unread: model.unseenRenamedPages.contains(note.id), active: active, title: note.title) {
+                showAllSearchResults = false
                 model.select(note.id)
             }
-            Button { model.select(note.id) } label: {
+            Button { showAllSearchResults = false; model.select(note.id) } label: {
                 HStack(spacing: NoemaSpacing.sm) {
                     Text(note.title)
                         .font(NoemaTypography.navigation)
@@ -802,14 +768,28 @@ struct ContentView: View {
         }
     }
     @ViewBuilder private var library: some View {
-        if model.isSearching {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Search Results").font(NoemaTypography.libraryTitle)
-                    .foregroundStyle(theme.text(for: .textPrimary, on: .canvas))
-                    .padding(.horizontal, NoemaSpacing.lg).padding(.vertical, NoemaSpacing.md)
-                List { searchResultSections }.listStyle(.inset)
+        if model.scope == .trash { trashLibrary } else { pageLibrary }
+    }
+    private var fullSearchResults: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: NoemaSpacing.md) {
+                VStack(alignment: .leading, spacing: NoemaSpacing.xs) {
+                    Text(model.searchMode == .quickOpen ? "Quick Open" : "Search Results")
+                        .font(NoemaTypography.libraryTitle)
+                    Text(model.searchText.isEmpty
+                         ? "\(model.visibleSearchResults.totalCount) results · \(model.searchScope.title)"
+                         : "“\(model.searchText)” · \(model.visibleSearchResults.totalCount) results · \(model.searchScope.title)")
+                        .font(NoemaTypography.metadata).foregroundStyle(.secondary).lineLimit(2)
+                }
+                Spacer()
+                Button("Return to workspace") { showAllSearchResults = false }
+                    .help("Return to the previously open document or library")
             }
-        } else if model.scope == .trash { trashLibrary } else { pageLibrary }
+            .padding(.horizontal, NoemaSpacing.lg).padding(.vertical, NoemaSpacing.md)
+            List { searchResultSections }.listStyle(.inset)
+        }
+        .foregroundStyle(theme.text(for: .textPrimary, on: .canvas))
+        .background(theme.color(for: .canvas))
     }
     @ViewBuilder private var pageLibrary: some View {
         if model.scope == .sources {
@@ -850,7 +830,7 @@ struct ContentView: View {
             if model.scope == .semantic {
                 semanticBlockList
             } else if model.rows.isEmpty {
-                ContentUnavailableView(model.searchText.isEmpty ? "\(model.scopeTitle) is empty" : "No matches", systemImage: model.scope == .sources ? "tray" : "doc.text.magnifyingglass", description: Text(model.searchText.isEmpty ? (model.scope == .sources ? "Import a text file or paste a source to begin." : "Create a page to start building your wiki.") : "Try another word or topic."))
+                ContentUnavailableView("\(model.scopeTitle) is empty", systemImage: model.scope == .sources ? "tray" : "doc.text.magnifyingglass", description: Text(model.scope == .sources ? "Import a text file or paste a source to begin." : "Create a page to start building your wiki."))
                     .frame(maxHeight: .infinity)
             } else {
                 List(selection: Binding(get: { model.selectedID }, set: { model.select($0) })) {
@@ -1123,7 +1103,7 @@ struct ContentView: View {
     private var semanticBlockList: some View {
         Group {
             if model.semanticRows.isEmpty {
-                ContentUnavailableView(model.searchText.isEmpty ? "No semantic blocks" : "No matches",
+                ContentUnavailableView("No semantic blocks",
                     systemImage: "tag", description: Text("Search block text, semantic type, or page title."))
                     .frame(maxHeight: .infinity)
             } else {
@@ -1193,12 +1173,9 @@ struct ContentView: View {
                 .accessibilityLabel("Return to Library")
             }
             ToolbarItem(placement: .primaryAction) {
-                Button { model.performWorkspaceCommand(.search) } label: {
-                    Label("Find in Vault", systemImage: "magnifyingglass")
+                ToolbarSearchView(model: model, availableWidth: workspaceWidth) {
+                    showAllSearchResults = true
                 }
-                .disabled(!model.canPerformWorkspaceCommand(.search))
-                .help("Find in Vault (⇧⌘F)")
-                .accessibilityLabel("Find in Vault")
             }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
