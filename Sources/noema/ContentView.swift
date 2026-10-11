@@ -29,29 +29,24 @@ struct ContentView: View {
     @State private var allPagesSectionExpanded = true
     @State private var pageSortOrder: PageSortOrder = .updated
     @State private var sourceSelection: UUID?
-    @State private var sourceRowsCache: [LibraryRow] = []
+    @State private var sourceTablePresentation = SourcesTablePresentation()
     @State private var renamingSource: SourceRecord?
     @State private var sourceName = ""
     @State private var deletingSource: SourceRecord?
-    @State private var sourceSortOrder = [KeyPathComparator(\LibraryRow.title)]
     @AppStorage(EditorPreferences.aiSummariesKey) private var aiSummaries = false
     @AppStorage(EditorPreferences.aiSummaryPlacementKey) private var aiSummaryPlacement = AISummaryPlacement.defaultValue.rawValue
     private var tabAnimation: Animation? {
         reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.84, blendDuration: 0.1)
     }
-    /// Only assigns when content differs, so a tab switch whose rows already match does not re-render the keep-alive table.
-    private func syncSourceRows() {
-        guard model.scope == .sources, sourceRowsCache != model.rows else { return }
-        sourceRowsCache = model.rows
-    }
     private func switchSidebarScope(_ scope: LibraryScope) {
         // Tab chrome animates via `.animation(_, value: activeSidebarTab)`; wrapping the whole scope
         // change in withAnimation also animated the heavy Table/workspace and made switches jitter.
+        SourcesPerformance.event("SidebarScopeChange")
         model.changeScope(scope)
     }
     private func resetLocalWorkspaceState() {
         sourceSelection = nil
-        sourceRowsCache = []
+        sourceTablePresentation.clear()
         renamingSource = nil
         sourceName = ""
         deletingSource = nil
@@ -145,10 +140,6 @@ struct ContentView: View {
         .onChange(of: model.searchFocusToken) { if model.isVaultAvailable { searchFocused = true } }
         .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false }
         .onChange(of: model.externalChange) { dismissedExternalChange = false }
-        .onChange(of: model.rows) { syncSourceRows() }
-        .onChange(of: model.scope) { syncSourceRows() }
-        .onChange(of: model.sources.count) { if model.scope != .sources { sourceRowsCache = model.sources.map(LibraryRow.init(source:)) } }
-        .onAppear { sourceRowsCache = model.sources.map(LibraryRow.init(source:)) }
         .onChange(of: model.root) { resetLocalWorkspaceState() }
         .onChange(of: model.sessionState) {
             if !model.isVaultAvailable {
@@ -700,15 +691,17 @@ struct ContentView: View {
             }
         } else if model.scope == .trash { trashLibrary } else { pageLibrary }
     }
-    private var pageLibrary: some View {
-        ZStack {
-            // Keep-alive: the Sources table is built once (at app open, while Pages is showing) and
-            // only hidden afterwards, so switching tabs never pays Table construction cost again.
-            sourceTable
-                .opacity(model.scope == .sources ? 1 : 0)
-                .allowsHitTesting(model.scope == .sources)
-                .accessibilityHidden(model.scope != .sources)
-            if model.scope != .sources { pageLibraryContent }
+    @ViewBuilder private var pageLibrary: some View {
+        if model.scope == .sources {
+            SourcesLibraryView(
+                model: model,
+                presentation: sourceTablePresentation,
+                selection: $sourceSelection,
+                rename: { source in sourceName = source.title; renamingSource = source },
+                delete: { deletingSource = $0 }
+            )
+        } else {
+            pageLibraryContent
         }
     }
     private var pageLibraryContent: some View {
@@ -856,66 +849,6 @@ struct ContentView: View {
             }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
         }
         .ignoresSafeArea(.container, edges: .top)
-    }
-    /// Rows shown by the keep-alive table: live search results while Sources is active, otherwise the last
-    /// known source rows, so page rows in `model.rows` never leak into (or churn) the hidden table.
-    private var sourceTableRows: [LibraryRow] {
-        sourceRowsCache.sorted(using: sourceSortOrder)
-    }
-    private var sourceTable: some View {
-        // Build lookups once per body pass so cells don't each scan `model.sources` (O(n²)).
-        let issues = Dictionary(model.sources.map { ($0.id, $0.availabilityIssue) }, uniquingKeysWith: { first, _ in first })
-        return Table(sourceTableRows,
-              selection: $sourceSelection,
-              sortOrder: $sourceSortOrder) {
-            TableColumn("File Name", value: \.title) { row in
-                if model.downloadingSources.contains(row.id) {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.mini)
-                        Text("Downloading from iCloud").foregroundStyle(.secondary)
-                    }
-                } else if model.generatingSourceTitles.contains(row.id) {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.mini)
-                        Text("Generating title").foregroundStyle(.secondary)
-                    }
-                } else { Label(row.title, systemImage: "doc.text").lineLimit(1).help(row.title) }
-            }.width(min: 160, ideal: 220)
-            TableColumn("Original File Name", value: \.originalFilename) { row in
-                Text(row.originalFilename).lineLimit(1).help(row.originalFilename)
-            }.width(min: 100, ideal: 150)
-            TableColumn("Location", value: \.sourceLocation) { row in
-                Label(row.sourceLocation, systemImage: row.sourceLocation == "Linked" ? "link" : "tray.full")
-                    .help(row.sourceLocation == "Linked" ? "Read-only linked original" : "Original stored in vault")
-            }.width(min: 85, ideal: 95)
-            TableColumn("Availability") { row in
-                sourceAvailabilityStatus(row.id, issue: issues[row.id] ?? nil)
-            }.width(min: 150, ideal: 180)
-            TableColumn("Kind", value: \.fileKind)
-                .width(min: 80, ideal: 90)
-            TableColumn("Size", value: \.fileSize) { row in
-                Text(ByteCountFormatter.string(fromByteCount: Int64(row.fileSize), countStyle: .file))
-            }.width(min: 70, ideal: 90)
-            TableColumn("Captured", value: \.captureSortDate) { row in
-                if let date = row.updatedAt {
-                    Text(date, format: .dateTime.month(.abbreviated).day().year())
-                        .lineLimit(1).help(date.formatted(date: .long, time: .shortened))
-                } else { Text("—") }
-            }.width(min: 100, ideal: 120)
-        }
-        .contextMenu(forSelectionType: UUID.self) { ids in
-            if ids.count == 1, let id = ids.first, let source = model.sources.first(where: { $0.id == id }) {
-                Button("Open Preview") { model.openSource(id) }
-                    .disabled(model.downloadingSources.contains(id))
-                createSourcePageButton(source)
-                sourceSummaryButton(source)
-                Button("Check Availability") { model.checkSourceAvailability([source]) }
-                    .disabled(model.checkingSourceAvailability.contains(id) || model.downloadingSources.contains(id))
-                Button { sourceName = source.title; renamingSource = source } label: { Label("Rename", systemImage: "pencil") }
-                Button(role: .destructive) { deletingSource = source } label: { Label("Delete", systemImage: "trash") }
-            }
-        } primaryAction: { ids in if let id = ids.first { model.openSource(id) } }
-        .accessibilityLabel("Sources table")
     }
     @ViewBuilder private func sourceAvailabilityStatus(_ id: UUID, issue: String?) -> some View {
         if model.downloadingSources.contains(id) {
