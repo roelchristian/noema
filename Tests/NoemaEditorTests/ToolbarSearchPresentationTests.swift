@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 import VaultCore
@@ -64,5 +65,45 @@ struct ToolbarSearchPresentationTests {
         #expect(ToolbarSearchRow.nextSelection(current: rows[2].id, rows: rows, offset: 1) == rows[2].id)
         #expect(ToolbarSearchRow.nextSelection(current: "superseded", rows: rows, offset: 1) == rows[0].id)
         #expect(ToolbarSearchRow.nextSelection(current: rows[0].id, rows: [], offset: 1) == nil)
+    }
+
+    @Test func escapeHonorsInputCompositionAndStandardShortcutModifiers() {
+        func admitted(_ flags: NSEvent.ModifierFlags = [], composing: Bool = false,
+                      searchWindow: Bool = true, keyCode: UInt16 = 53) -> Bool {
+            ToolbarSearchKeyboardPolicy.handlesEscape(keyCode: keyCode, modifiers: flags,
+                                                     composing: composing, inSearchWindow: searchWindow)
+        }
+        #expect(admitted())
+        #expect(admitted([.capsLock, .numericPad]))
+        #expect(!admitted(composing: true))
+        #expect(!admitted(searchWindow: false))
+        #expect(!admitted(keyCode: 36))
+        for modifier: NSEvent.ModifierFlags in [.command, .control, .option, .shift, .function] {
+            #expect(!admitted(modifier))
+        }
+    }
+
+    @Test @MainActor func responderRestorationIsConsumedOnceAndResetInvalidatesPendingFocus() {
+        let focus = ToolbarSearchFocus()
+        let responder = NSResponder()
+        focus.previousResponder = responder
+        focus.shouldRestore = true
+        focus.acceptsInputFocus = true
+        focus.restore()
+        #expect(!focus.shouldRestore)
+        focus.restore()
+        #expect(!focus.shouldRestore)
+        focus.clear()
+        #expect(focus.previousResponder == nil)
+        #expect(!focus.acceptsInputFocus)
+        #expect(!focus.shouldRestore)
+    }
+
+    @Test func returnCannotNavigateHiddenOrUnsettledResults() {
+        #expect(ToolbarSearchKeyboardPolicy.canOpenResult(resultsVisible: true, status: .results))
+        #expect(!ToolbarSearchKeyboardPolicy.canOpenResult(resultsVisible: false, status: .results))
+        for status: VaultSearchStatus in [.idle, .searching, .failed("Search failed")] {
+            #expect(!ToolbarSearchKeyboardPolicy.canOpenResult(resultsVisible: true, status: status))
+        }
     }
 }

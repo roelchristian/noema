@@ -57,6 +57,20 @@ struct ToolbarSearchRow: Identifiable, Equatable {
     }
 }
 
+/// Lock-state flags do not turn Escape into a shortcut. Marked text remains
+/// owned by the input method before the search presentation handles dismissal.
+enum ToolbarSearchKeyboardPolicy {
+    static func canOpenResult(resultsVisible: Bool, status: VaultSearchStatus) -> Bool {
+        resultsVisible && status == .results
+    }
+
+    static func handlesEscape(keyCode: UInt16, modifiers: NSEvent.ModifierFlags,
+                              composing: Bool, inSearchWindow: Bool) -> Bool {
+        let shortcuts: NSEvent.ModifierFlags = [.command, .control, .option, .shift, .function]
+        return keyCode == 53 && inSearchWindow && !composing && modifiers.intersection(shortcuts).isEmpty
+    }
+}
+
 struct ToolbarSearchView: View {
     @Bindable var model: AppModel
     let availableWidth: CGFloat
@@ -78,8 +92,19 @@ struct ToolbarSearchView: View {
     }
     private var placeholder: String { model.searchMode == .quickOpen ? "Quick Open" : "Search vault" }
 
-    var body: some View {
+    private var navigationObservedControl: some View {
         observedControl
+            .onChange(of: model.workspaceNavigationToken) { reset() }
+            .onChange(of: model.selectedID) { reset() }
+            .onChange(of: model.selectedSemanticID) { reset() }
+            .onChange(of: model.scope) { reset() }
+            .onChange(of: model.canPerformWorkspaceCommand(.search)) {
+                if !model.canPerformWorkspaceCommand(.search) { reset() }
+            }
+    }
+
+    var body: some View {
+        navigationObservedControl
             .onChange(of: model.isLocked) { if model.isLocked { reset() } }
             .onChange(of: model.isVaultAvailable) { if !model.isVaultAvailable { reset() } }
             .onChange(of: inline) {
@@ -145,7 +170,13 @@ struct ToolbarSearchView: View {
     private var searchInput: some View {
         ToolbarSearchInput(text: $model.searchText, placeholder: placeholder,
                            focusRequest: focusRequest, focus: focus,
-                           onFocus: { if expanded { focus.acceptsInputFocus = true; resultsVisible = true } },
+                           onFocus: {
+                               if expanded {
+                                   focus.shouldRestore = true
+                                   focus.acceptsInputFocus = true
+                                   resultsVisible = true
+                               }
+                           },
                            onCommand: inputCommand)
             .accessibilityLabel(placeholder)
     }
@@ -284,7 +315,7 @@ struct ToolbarSearchView: View {
 
     private func activate() {
         guard model.canPerformWorkspaceCommand(.search) else { return }
-        if !expanded { focus.capture() }
+        if !expanded || !focus.acceptsInputFocus { focus.capture() }
         focus.shouldRestore = true
         focus.acceptsInputFocus = true
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
@@ -300,6 +331,10 @@ struct ToolbarSearchView: View {
             resultsVisible = true
             selectedID = ToolbarSearchRow.nextSelection(current: selectedID, rows: rows, offset: command == .up ? -1 : 1)
         case .submit:
+            guard ToolbarSearchKeyboardPolicy.canOpenResult(resultsVisible: resultsVisible, status: model.searchStatus) else {
+                resultsVisible = true
+                return
+            }
             if let row = rows.first(where: { $0.id == selectedID }) ?? rows.first { open(row) }
         case .escape: escape()
         }
@@ -316,9 +351,12 @@ struct ToolbarSearchView: View {
         else { collapse(restoreFocus: true) }
     }
 
-    private func dismissPresentation() {
+    private func dismissPresentation(restoreFocus: Bool) {
+        // Restore before a same-window pointer event selects its own target.
+        // A click in another window or automatic native close owns activation.
+        if !restoreFocus { focus.shouldRestore = false }
         if inline { dismissResults() }
-        else { collapse(restoreFocus: true) }
+        else { collapse(restoreFocus: restoreFocus) }
     }
 
     private func dismissResults() {
@@ -348,7 +386,7 @@ struct ToolbarSearchView: View {
 
 /// The saved responder is weak: a document that disappears during navigation
 /// cannot be retained by a search session or unexpectedly focused later.
-@MainActor private final class ToolbarSearchFocus {
+@MainActor final class ToolbarSearchFocus {
     weak var previousResponder: NSResponder?
     weak var previousWindow: NSWindow?
     weak var input: NSSearchField?
@@ -364,9 +402,13 @@ struct ToolbarSearchView: View {
     }
 
     func restore() {
-        guard shouldRestore else { return }
         resignSearch()
+        guard shouldRestore else { return }
+        shouldRestore = false
         if let previousWindow, let previousResponder, previousWindow.isVisible {
+            // A still-retained editor from an earlier document cannot become
+            // first responder after its view has left the originating window.
+            if let view = previousResponder as? NSView, view.window !== previousWindow { return }
             previousWindow.makeKey()
             previousWindow.makeFirstResponder(previousResponder)
         }
@@ -379,7 +421,10 @@ struct ToolbarSearchView: View {
         }
     }
 
-    func clear() { previousResponder = nil; previousWindow = nil; input = nil }
+    func clear() {
+        previousResponder = nil; previousWindow = nil; input = nil
+        shouldRestore = false; acceptsInputFocus = false
+    }
 }
 
 private struct ToolbarSearchInput: NSViewRepresentable {
@@ -431,6 +476,7 @@ private struct ToolbarSearchInput: NSViewRepresentable {
             parent.text = field.stringValue
         }
         func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard !textView.hasMarkedText() else { return false }
             let command: Command
             switch selector {
             case #selector(NSResponder.moveUp(_:)): command = .up
@@ -453,7 +499,7 @@ private struct ToolbarSearchPopover: NSViewRepresentable {
     let expanded: Bool
     let focus: ToolbarSearchFocus
     let content: AnyView
-    let onDismiss: () -> Void
+    let onDismiss: (Bool) -> Void
     let onEscape: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -498,7 +544,11 @@ private struct ToolbarSearchPopover: NSViewRepresentable {
                     if event.type == .keyDown {
                         guard let window = self.anchor?.window,
                               event.window === window || event.window === self.hosting.view.window else { return event }
-                        if event.keyCode == 53 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
+                        let editor = event.window?.firstResponder as? NSTextView
+                        if ToolbarSearchKeyboardPolicy.handlesEscape(
+                            keyCode: event.keyCode, modifiers: event.modifierFlags,
+                            composing: editor?.hasMarkedText() == true, inSearchWindow: true
+                        ) {
                             self.parent.onEscape()
                             return nil
                         }
@@ -506,7 +556,7 @@ private struct ToolbarSearchPopover: NSViewRepresentable {
                               event.window !== self.popover.contentViewController?.view.window,
                               let anchor = self.anchor,
                               (event.window !== anchor.window || !anchor.bounds.contains(anchor.convert(event.locationInWindow, from: nil))) {
-                        self.parent.onDismiss()
+                        self.parent.onDismiss(event.window === anchor.window && event.window === self.parent.focus.previousWindow)
                     }
                     return event
                 }
@@ -535,7 +585,7 @@ private struct ToolbarSearchPopover: NSViewRepresentable {
         }
 
         func popoverDidClose(_ notification: Notification) {
-            if !closing { parent.onDismiss() }
+            if !closing { parent.onDismiss(false) }
         }
         func removeMonitor() {
             if let monitor { NSEvent.removeMonitor(monitor) }
