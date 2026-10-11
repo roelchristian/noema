@@ -217,7 +217,7 @@ public actor FileVaultRepository: VaultRepository {
     var cachedSourceCount: Int { sourceCache.count }
 
 
-    nonisolated private func validateAccess(operation: String) throws {
+    nonisolated func validateAccess(operation: String) throws {
         if let gated = contentStore as? GatedVaultContentStore {
             try gated.validateAccess(operation: operation)
         } else if let accessGate {
@@ -504,6 +504,8 @@ public actor FileVaultRepository: VaultRepository {
         }
         var updated = note
         updated.title = title; updated.body = body; updated.tags = normalizeTags(tags)
+        if snapshot.notes.first(where: { $0.id == note.id })?.title != title { updated.aiTitleProvenance = nil }
+        if snapshot.notes.first(where: { $0.id == note.id })?.lcc != updated.lcc { updated.aiLCCProvenance = nil }
         updated.updatedAt = preserveUpdatedAt ? note.updatedAt : timestamp()
         if updated.createdAt.isEmpty { updated.createdAt = updated.updatedAt }
         if normalized(title) != normalized(note.title), !updated.aliases.contains(note.title) { updated.aliases.append(note.title) }
@@ -1052,9 +1054,10 @@ public actor FileVaultRepository: VaultRepository {
         let normalizedLCC = lcc?.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanLCC = (normalizedLCC?.isEmpty == false) ? normalizedLCC : nil
         if var pending = downloadingSources[source.id] {
+            if pending.metadata.title != title { pending.metadata.aiTitleProvenance = nil }
             pending.metadata.title = title
             if let summary { pending.metadata.aiSummary = summary; pending.metadata.aiSummaryProvenance = nil }
-            if let cleanLCC { pending.metadata.lcc = cleanLCC }
+            if let cleanLCC { pending.metadata.lcc = cleanLCC; pending.metadata.aiLCCProvenance = nil }
             downloadingSources[source.id] = pending
             return pending
         }
@@ -1065,9 +1068,10 @@ public actor FileVaultRepository: VaultRepository {
               metadata.sha256 == source.metadata.sha256, metadata.aiSummary == source.metadata.aiSummary,
               metadata.linkedBookmark == source.metadata.linkedBookmark,
               metadata.storedFilename == source.metadata.storedFilename else { throw VaultError.invalid("Source changed while its title was generated. Refresh and try again.") }
+        if metadata.title != title { metadata.aiTitleProvenance = nil }
         metadata.title = title
         if let summary { metadata.aiSummary = summary; metadata.aiSummaryProvenance = nil }
-        if let cleanLCC { metadata.lcc = cleanLCC }
+        if let cleanLCC { metadata.lcc = cleanLCC; metadata.aiLCCProvenance = nil }
         try contentStore.write(encoder.encode(metadata), at: path, condition: .replace(expected: bytes))
         return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue ?? (source.contentState == .notLoaded ? "Not verified" : source.availabilityIssue), contentState: source.contentState)
     }
@@ -1082,6 +1086,7 @@ public actor FileVaultRepository: VaultRepository {
         }
         if var pending = downloadingSources[source.id] {
             pending.metadata.lcc = cleanLCC
+            pending.metadata.aiLCCProvenance = nil
             downloadingSources[source.id] = pending
             return pending
         }
@@ -1095,6 +1100,7 @@ public actor FileVaultRepository: VaultRepository {
             throw VaultError.invalid("Source changed while updating LCC metadata. Refresh and try again.")
         }
         metadata.lcc = cleanLCC
+        metadata.aiLCCProvenance = nil
         try contentStore.write(encoder.encode(metadata), at: path, condition: .replace(expected: bytes))
         return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue ?? (source.contentState == .notLoaded ? "Not verified" : source.availabilityIssue), contentState: source.contentState)
     }

@@ -203,4 +203,88 @@ struct SourceAdapterTests {
         _ = try await repo.checkURLSourceAvailability(archived) { _ in WebSourceFetch(data: Data("New response".utf8), filename: "web.txt") }
         #expect(try await repo.scan().sources.first?.metadata.webAvailabilityIssue == nil)
     }
+
+    @Test func acceptedSourceArtifactsPersistIndependentlyAndManualChangesClearOnlyMatchingProvenance() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try SourceStoreProbe(root: root)
+        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let original = Data("Source content".utf8)
+        let source = try await repo.importSource(data: original, filename: "article.txt", title: "Original", originURL: nil)
+        let legacy = try await repo.renameSource(source, title: source.title, summary: "Legacy summary", lcc: "Q")
+        #expect(legacy.metadata.aiTitleProvenance == nil && legacy.metadata.aiLCCProvenance == nil)
+        #expect(legacy.metadata.aiSummaryProvenance == nil)
+        let provenance = SummaryProvenance(provider: "OpenAI", model: "test", generatedAt: Date(timeIntervalSince1970: 100))
+        let snapshot = try await repo.sourceSummarySnapshot(id: source.id)
+        let titled = try await repo.publishSourceTitle(snapshot, title: "Accepted title", provenance: provenance, validate: {})
+        #expect(titled.metadata.aiSummary == "Legacy summary" && titled.metadata.lcc == "Q")
+        #expect(titled.metadata.aiTitleProvenance?.sourceRevision == digest(original))
+        let lccSnapshot = try await repo.sourceSummarySnapshot(id: source.id)
+        let classified = try await repo.publishSourceLCC(lccSnapshot, lcc: "QA", provenance: provenance, validate: {})
+        #expect(classified.title == titled.title && classified.metadata.aiSummary == titled.metadata.aiSummary)
+        #expect(classified.metadata.aiTitleProvenance == titled.metadata.aiTitleProvenance)
+        let reopened = try FileVaultRepository.open(root: root, contentStore: store)
+        #expect(try await reopened.loadSource(id: source.id).metadata == classified.metadata)
+        let summarySnapshot = try await reopened.sourceSummarySnapshot(id: source.id)
+        let summarized = try await reopened.publishSourceSummary(summarySnapshot, summary: "Explicit replacement", provenance: provenance, validate: {})
+        #expect(summarized.metadata.aiTitleProvenance == classified.metadata.aiTitleProvenance)
+        #expect(summarized.metadata.aiLCCProvenance == classified.metadata.aiLCCProvenance)
+        #expect(summarized.metadata.aiSummaryProvenance?.sourceRevision == digest(original))
+        let corrected = try await reopened.updateSourceLCC(summarized, lcc: "Q")
+        #expect(corrected.metadata.aiLCCProvenance == nil)
+        #expect(corrected.metadata.aiTitleProvenance == summarized.metadata.aiTitleProvenance)
+        #expect(corrected.metadata.aiSummaryProvenance == summarized.metadata.aiSummaryProvenance)
+        let renamed = try await reopened.renameSource(corrected, title: "Manual title")
+        #expect(renamed.metadata.aiTitleProvenance == nil)
+        #expect(renamed.metadata.aiSummaryProvenance == summarized.metadata.aiSummaryProvenance)
+        #expect(try FileVaultRepository.readSourceOriginal(renamed, root: root, contentStore: store) == original)
+    }
+
+    @Test func sourceSuggestionFailureAndConcurrentManualCorrectionPreserveStoredBytes() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try SourceStoreProbe(root: root)
+        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let source = try await repo.importSource(data: Data("Original bytes".utf8), filename: "a.txt", title: "Original", originURL: nil)
+        let snapshot = try await repo.sourceSummarySnapshot(id: source.id)
+        let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
+        let originalBytes = try store.base.read(at: path)
+        let provenance = SummaryProvenance(provider: "OpenAI", model: "test", generatedAt: Date())
+        await #expect(throws: (any Error).self) {
+            try await repo.publishSourceTitle(snapshot, title: "Rejected", provenance: provenance, validate: { throw CancellationError() })
+        }
+        #expect(try store.base.read(at: path) == originalBytes)
+        let corrected = try await repo.updateSourceLCC(source, lcc: "Q")
+        let correctedBytes = try store.base.read(at: path)
+        await #expect(throws: (any Error).self) {
+            try await repo.publishSourceLCC(snapshot, lcc: "QA", provenance: provenance, validate: {})
+        }
+        await #expect(throws: (any Error).self) {
+            try await repo.publishSourceTitle(snapshot, title: "Delayed", provenance: provenance, validate: {})
+        }
+        #expect(try store.base.read(at: path) == correctedBytes)
+        let fresh = try await repo.sourceSummarySnapshot(id: source.id)
+        var raceMetadata = corrected.metadata; raceMetadata.aiSummary = "Independent summary"
+        let raceBytes = try JSONEncoder().encode(raceMetadata)
+        store.state.withLock { $0.race = raceBytes }
+        await #expect(throws: (any Error).self) {
+            try await repo.publishSourceLCC(fresh, lcc: "QA", provenance: provenance, validate: {})
+        }
+        #expect(try store.base.read(at: path) == raceBytes)
+    }
+
+    @Test func sourceTitleRejectsChangedOriginalWithoutTouchingMetadata() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try SourceStoreProbe(root: root)
+        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let original = Data("Original bytes".utf8)
+        let source = try await repo.importSource(data: original, filename: "a.txt", title: "Original", originURL: nil)
+        let snapshot = try await repo.sourceSummarySnapshot(id: source.id)
+        let path = "Sources/" + source.id.uuidString.lowercased()
+        let metadataBytes = try store.base.read(at: path + "/metadata.json")
+        try store.base.write(Data("External replacement".utf8), at: path + "/original.txt", condition: .replace(expected: original))
+        await #expect(throws: (any Error).self) {
+            try await repo.publishSourceTitle(snapshot, title: "Delayed", provenance: SummaryProvenance(provider: "OpenAI", model: "test", generatedAt: Date()), validate: {})
+        }
+        #expect(try store.base.read(at: path + "/metadata.json") == metadataBytes)
+    }
+
 }

@@ -40,6 +40,8 @@ public enum NoteCodec {
         note.sourceIDs = Array(Set(references.compactMap(UUID.init(uuidString:)))).sorted { $0.uuidString < $1.uuidString }
         let rawLCC = string("lcc")?.trimmingCharacters(in: .whitespacesAndNewlines)
         note.lcc = (rawLCC?.isEmpty == false) ? rawLCC : nil
+        note.aiTitleProvenance = provenance(node?["ai_title_provenance"])
+        note.aiLCCProvenance = provenance(node?["ai_lcc_provenance"])
         note.editingLocked = string("editing_locked") == "true"
         return note
     }
@@ -51,6 +53,8 @@ public enum NoteCodec {
             node["lcc"] = nil
         }
         if note.editingLocked != nil { node["editing_locked"] = Node(note.isEditingLocked ? "true" : "false") }
+        node["ai_title_provenance"] = provenanceNode(note.aiTitleProvenance)
+        node["ai_lcc_provenance"] = provenanceNode(note.aiLCCProvenance)
         node["sources"] = Node(note.linkedSourceIDs.map { Node($0.uuidString.lowercased()) })
         node["id"] = Node(note.id.uuidString.lowercased())
         node["title"] = Node(note.title)
@@ -59,5 +63,24 @@ public enum NoteCodec {
         node["created_at"] = Node(note.createdAt)
         node["updated_at"] = Node(note.updatedAt)
         return Data(("---\n" + (try Yams.serialize(node: node)) + "---\n" + note.body).utf8)
+    }
+
+    private static func provenance(_ node: Node?) -> SummaryProvenance? {
+        guard let provider = node?["provider"]?.scalar?.string,
+              let model = node?["model"]?.scalar?.string,
+              let rawDate = node?["generated_at"]?.scalar?.string,
+              let generatedAt = ISO8601DateFormatter().date(from: rawDate) else { return nil }
+        return SummaryProvenance(provider: provider, model: model, generatedAt: generatedAt,
+            sourceRevision: node?["source_revision"]?.scalar?.string)
+    }
+
+    private static func provenanceNode(_ provenance: SummaryProvenance?) -> Node? {
+        guard let provenance else { return nil }
+        var node = Node([:])
+        node["provider"] = Node(provenance.provider)
+        node["model"] = Node(provenance.model)
+        node["generated_at"] = Node(ISO8601DateFormatter().string(from: provenance.generatedAt))
+        if let revision = provenance.sourceRevision { node["source_revision"] = Node(revision) }
+        return node
     }
 }
