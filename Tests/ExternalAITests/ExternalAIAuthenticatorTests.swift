@@ -7,10 +7,10 @@ import Testing
 @Suite
 struct ExternalAIAuthenticatorTests {
     @Test
-    func successRequestsOnlyExternalAISummaryPurpose() async throws {
+    func successRequestsOnlyExternalAIAuthorizationPurpose() async throws {
         let native = NativeAuthenticationSpy()
         try await LocalExternalAIAuthenticator(native: native).authenticate()
-        #expect(native.purposes == [.externalAISummary])
+        #expect(native.purposes == [.externalAIAuthorization])
     }
 
     @Test(arguments: [NativeAuthenticationError.cancelled, .unavailable, .failed])

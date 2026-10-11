@@ -10,9 +10,9 @@ struct NativeAuthenticationTests {
     func successUsesOperationReasonAndInvalidatesContext() async throws {
         let context = ControlledAuthenticationContext()
         let authenticator = LocalNativeAuthenticator(makeContext: { context })
-        let task = Task { try await authenticator.authenticate(for: .externalAISummary) }
+        let task = Task { try await authenticator.authenticate(for: .externalAIAuthorization) }
         await context.waitForEvaluation()
-        #expect(context.reasons == ["Authorize summaries of selected content with OpenAI"])
+        #expect(context.reasons == ["Authorize AI actions on selected content with OpenAI"])
         context.reply(.success(()))
         try await task.value
         #expect(context.invalidations == 1)
@@ -121,7 +121,7 @@ struct NativeAuthenticationTests {
             created.continuation.yield(context)
             return context
         })
-        let first = Task { try await authenticator.authenticate(for: .externalAISummary) }
+        let first = Task { try await authenticator.authenticate(for: .externalAIAuthorization) }
         var iterator = created.stream.makeAsyncIterator()
         let one = await iterator.next()!
         await one.waitForEvaluation()

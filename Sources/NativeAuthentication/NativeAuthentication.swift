@@ -2,14 +2,14 @@ import Foundation
 
 /// A single operation's prompt. Success has no reusable authorization or expiry semantics.
 public enum NativeAuthenticationPurpose: Sendable, Equatable {
-    case externalAISummary
+    case externalAIAuthorization
     case openVault
     case unlockVault
     case changeVaultAccessPolicy
 
     var localizedReason: String {
         switch self {
-        case .externalAISummary: "Authorize summaries of selected content with OpenAI"
+        case .externalAIAuthorization: "Authorize AI actions on selected content with OpenAI"
         case .openVault: "Open this vault in Noema"
         case .unlockVault: "Unlock this vault in Noema"
         case .changeVaultAccessPolicy: "Change this vault's access authentication preference"
