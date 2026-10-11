@@ -6,6 +6,10 @@ public protocol VaultRepository: Sendable {
     func create(title: String, body: String, source: SourceRecord) async throws -> NoteRecord
     func save(note: NoteRecord, title: String, body: String, tags: [String]) async throws -> NoteRecord
     func setSourceReference(note: NoteRecord, sourceID: UUID, linked: Bool) async throws -> NoteRecord
+    func trashItems() async throws -> [TrashedItem]
+    func expireTrash(now: Date) async throws -> [String]
+    func restore(_ item: TrashedItem) async throws
+    func emptyTrashItems(_ items: [TrashedItem]) async -> [String]
     func trashedPages() async throws -> [TrashedPage]
     func restore(_ page: TrashedPage) async throws
     func permanentlyDelete(_ page: TrashedPage) async throws
@@ -245,7 +249,7 @@ public actor FileVaultRepository: VaultRepository {
     public func trash(note: NoteRecord) throws {
         let url = try checkedWikiURL(note.relativePath)
         try ensureTrashDirectory()
-        let destination = root.appendingPathComponent("\(Self.trashDirectoryName)/\(note.id.uuidString)-\(UUID().uuidString).md")
+        let destination = root.appendingPathComponent("\(Self.trashDirectoryName)/trash-\(Int(Date().timeIntervalSince1970))-\(note.id.uuidString)-\(UUID().uuidString).md")
         try Self.coordinatedMove(url, to: destination, expectedHash: note.contentHash,
                                  staleMessage: "This page changed externally. Reload it before moving it to trash.")
         cache.removeValue(forKey: note.relativePath)
@@ -681,8 +685,15 @@ public actor FileVaultRepository: VaultRepository {
         }
         let directory = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
         guard directory.resolvingSymlinksInPath().path == directory.standardizedFileURL.path else { throw VaultError.invalid("Source directory cannot be a symbolic link.") }
+        try ensureTrashDirectory()
+        let destination = root.appendingPathComponent(Self.trashDirectoryName).appendingPathComponent("trash-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString).source")
+        try Self.moveSourceToTrash(source, directory: directory, destination: destination)
+    }
+    private static func moveSourceToTrash(_ source: SourceRecord, directory: URL, destination: URL) throws {
+        let fm = FileManager.default
+        let coordinator = NSFileCoordinator(filePresenter: nil)
         var failure: Error?, coordinationError: NSError?
-        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: directory, options: .forDeleting, error: &coordinationError) { target in
+        coordinator.coordinate(writingItemAt: directory, options: .forMoving, writingItemAt: destination, options: [], error: &coordinationError) { target, destination in
             do {
                 let metadataURL = target.appendingPathComponent("metadata.json")
                 guard try metadataURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else { throw VaultError.invalid("Invalid source metadata path.") }
@@ -700,7 +711,10 @@ public actor FileVaultRepository: VaultRepository {
                           digest(try Data(contentsOf: original)) == metadata.sha256 else { throw VaultError.invalid("Imported original changed or has conflicts. Refresh before deleting it.") }
                 }
                 // Linked originals are outside this directory and are never touched.
-                try fm.removeItem(at: target)
+                _ = try Self.sourceTrashHash(target)
+                guard !fm.fileExists(atPath: destination.path) else { throw VaultError.invalid("Trash destination is occupied.") }
+                try fm.moveItem(at: target, to: destination)
+                coordinator.item(at: target, didMoveTo: destination)
             } catch { failure = error }
         }
         if let failure { throw failure }; if let coordinationError { throw coordinationError }
@@ -813,7 +827,7 @@ public actor FileVaultRepository: VaultRepository {
         var failure: Error?, coordinationError: NSError?
         coordinator.coordinate(writingItemAt: source, options: .forMoving, writingItemAt: destination, options: [], error: &coordinationError) { from, to in
             do {
-                if let expectedHash, digest(try Data(contentsOf: from)) != expectedHash { throw VaultError.invalid(staleMessage) }
+                if let expectedHash, try storedHash(from) != expectedHash { throw VaultError.invalid(staleMessage) }
                 guard !FileManager.default.fileExists(atPath: to.path) else { throw VaultError.invalid("The move destination is occupied. Refresh and try again.") }
                 try FileManager.default.moveItem(at: from, to: to)
                 coordinator.item(at: from, didMoveTo: to)
@@ -844,5 +858,115 @@ public actor FileVaultRepository: VaultRepository {
             } catch { failure = error }
         }
         if let failure { throw failure }; if let coordinatorError { throw coordinatorError }
+    }
+}
+
+
+extension FileVaultRepository {
+    public static let trashRetentionInterval: TimeInterval = 15 * 24 * 60 * 60
+
+    private static func storedHash(_ url: URL) throws -> String {
+        if try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true { return try sourceTrashHash(url) }
+        return digest(try Data(contentsOf: url))
+    }
+    private static func sourceTrashHash(_ directory: URL) throws -> String {
+        guard directory.resolvingSymlinksInPath() == directory.standardizedFileURL else { throw VaultError.invalid("Unsafe source trash path.") }
+        guard (NSFileVersion.unresolvedConflictVersionsOfItem(at: directory) ?? []).isEmpty else { throw VaultError.invalid("Resolve source conflicts first.") }
+        var bytes = Data()
+        for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true,
+                  (NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).isEmpty else { throw VaultError.invalid("Unsafe or conflicted source file.") }
+            bytes.append(Data(url.lastPathComponent.utf8)); bytes.append(0)
+            bytes.append(Data(digest(try Data(contentsOf: url)).utf8)); bytes.append(0)
+        }
+        return digest(bytes)
+    }
+    private func checkedSourceTrashURL(_ path: String) throws -> URL {
+        try ensureTrashDirectory()
+        let url = root.appendingPathComponent(path).standardizedFileURL
+        guard url.deletingLastPathComponent() == root.appendingPathComponent(Self.trashDirectoryName).standardizedFileURL,
+              url.pathExtension == "source", url.resolvingSymlinksInPath() == url else { throw VaultError.invalid("Invalid source trash path.") }
+        return url
+    }
+    public func trashItems() throws -> [TrashedItem] {
+        var items = try trashedPages().map(TrashedItem.page)
+        for url in try fm.contentsOfDirectory(at: root.appendingPathComponent(Self.trashDirectoryName), includingPropertiesForKeys: nil) where url.pathExtension == "source" {
+            let path = Self.trashDirectoryName + "/" + url.lastPathComponent
+            var hash = ""
+            do {
+                let checked = try checkedSourceTrashURL(path)
+                hash = try Self.sourceTrashHash(checked)
+                let metadata = try JSONDecoder().decode(SourceMetadata.self, from: Self.coordinatedRead(checked.appendingPathComponent("metadata.json")))
+                guard metadata.storedFilename == URL(fileURLWithPath: metadata.storedFilename).lastPathComponent,
+                      !metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Invalid source filename.") }
+                if !metadata.isLinked {
+                    guard digest(try Self.coordinatedRead(checked.appendingPathComponent(metadata.storedFilename))) == metadata.sha256 else { throw VaultError.invalid("Imported original changed. Repair it before restoring.") }
+                }
+                items.append(.source(TrashedSource(id: path, source: SourceRecord(metadata: metadata, body: ""), contentHash: hash)))
+            } catch { items.append(.source(TrashedSource(id: path, contentHash: hash, readIssue: error.localizedDescription))) }
+        }
+        return items.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+    public func restore(_ item: TrashedItem) throws {
+        switch item {
+        case .page(let page): try restore(page)
+        case .source(let entry):
+            guard entry.readIssue == nil, let source = entry.source else { throw VaultError.invalid("Repair this source before restoring it.") }
+            let destination = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
+            guard destination.deletingLastPathComponent().resolvingSymlinksInPath() == destination.deletingLastPathComponent() else { throw VaultError.invalid("Unsafe Sources directory.") }
+            try rejectDuplicateSource(checksum: source.metadata.sha256)
+            try Self.coordinatedMove(checkedSourceTrashURL(entry.id), to: destination, expectedHash: entry.contentHash)
+        }
+    }
+    public func permanentlyDelete(_ item: TrashedItem) throws {
+        switch item {
+        case .page(let page): try permanentlyDelete(page)
+        case .source(let source):
+            guard !source.contentHash.isEmpty else { throw VaultError.invalid("Unreadable source cannot be deleted.") }
+            let url = try checkedSourceTrashURL(source.id)
+            var failure: Error?, coordinationError: NSError?
+            NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: .forDeleting, error: &coordinationError) { target in
+                do {
+                    guard try Self.sourceTrashHash(target) == source.contentHash else { throw VaultError.invalid("Source changed. Refresh Trash before deleting.") }
+                    try fm.removeItem(at: target)
+                } catch { failure = error }
+            }
+            if let failure { throw failure }; if let coordinationError { throw coordinationError }
+        }
+    }
+    public func emptyTrashItems(_ items: [TrashedItem]) -> [String] {
+        var failures: [String] = []
+        for item in items {
+            do { try permanentlyDelete(item) } catch { failures.append("\(item.title): \(error.localizedDescription)") }
+        }
+        return failures
+    }
+    public func expireTrash(now: Date = Date()) throws -> [String] {
+        let items = try trashItems()
+        let ledger = root.appendingPathComponent("Trash Retention.json")
+        guard ledger.resolvingSymlinksInPath() == ledger else { throw VaultError.invalid("Unsafe trash retention file.") }
+        var dates: [String: Date] = [:]
+        var failure: Error?, coordinationError: NSError?
+        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: ledger, options: [], error: &coordinationError) { url in
+            do {
+                guard (NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).isEmpty else { throw VaultError.invalid("Resolve trash retention conflicts first.") }
+                if fm.fileExists(atPath: url.path) { dates = try JSONDecoder().decode([String: Date].self, from: Data(contentsOf: url)) }
+                let previous = dates
+                for item in items where dates[item.id] == nil {
+                    let parts = URL(fileURLWithPath: item.id).lastPathComponent.split(separator: "-")
+                    dates[item.id] = parts.first == "trash" && parts.count > 1 ? Double(parts[1]).map(Date.init(timeIntervalSince1970:)) ?? now : now
+                }
+                if dates != previous { try JSONEncoder().encode(dates).write(to: url, options: .atomic) }
+            } catch { failure = error }
+        }
+        if let failure { throw failure }; if let coordinationError { throw coordinationError }
+        let expired = items.filter { now.timeIntervalSince(dates[$0.id] ?? now) >= Self.trashRetentionInterval }
+        var failures: [String] = []
+        for item in expired {
+            guard item.readIssue == nil else { failures.append("\(item.title): repair this item before automatic deletion."); continue }
+            do { try permanentlyDelete(item) } catch { failures.append("\(item.title): \(error.localizedDescription)") }
+        }
+        return failures
     }
 }

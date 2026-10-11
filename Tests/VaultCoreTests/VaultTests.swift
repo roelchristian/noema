@@ -884,3 +884,70 @@ func wikipediaCaptureUsesFullHTML(html: String) async throws {
     #expect(completedImport.body == "# Downloaded Markdown")
     #expect(FileVaultRepository.checkSourceAvailability(completedImport, root: root) == "Available")
 }
+
+
+@Test func mixedTrashRestoresSourcesAndKeepsLinkedOriginals() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let external = folder.appendingPathComponent("linked.txt")
+    let linkedBytes = Data("Linked original".utf8); try linkedBytes.write(to: external)
+    let linked = try await repo.linkSources(at: external, maximumFiles: 1)[0]
+    let importedBytes = Data("Imported original".utf8)
+    let imported = try await repo.importSource(data: importedBytes, filename: "original.txt", title: "Imported", originURL: nil)
+    let page = try await repo.create(title: "Page", body: "A page")
+    try await repo.trash(note: page)
+    try await repo.deleteSource(linked); try await repo.deleteSource(imported)
+    let items = try await repo.trashItems()
+    #expect(items.count == 3)
+    #expect(try await repo.scan().sources.isEmpty)
+    #expect(try Data(contentsOf: external) == linkedBytes)
+    for item in items { try await repo.restore(item) }
+    #expect(try await repo.scan().sources.count == 2)
+    #expect(try await repo.trashItems().isEmpty)
+    #expect(try Data(contentsOf: folder.appendingPathComponent("Sources/" + imported.id.uuidString.lowercased() + "/original.txt")) == importedBytes)
+    try await repo.deleteSource(linked)
+    #expect(await repo.emptyTrashItems(try await repo.trashItems()).isEmpty)
+    #expect(try Data(contentsOf: external) == linkedBytes)
+}
+
+@Test func sourceTrashRejectsStaleSnapshotsAndDuplicateRestoration() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let bytes = Data("Preserved original".utf8)
+    let source = try await repo.importSource(data: bytes, filename: "original.txt", title: "Source", originURL: nil)
+    try await repo.deleteSource(source)
+    let item = try #require(await repo.trashItems().first)
+    let original = folder.appendingPathComponent(item.id + "/original.txt")
+    try Data("Changed".utf8).write(to: original)
+    await #expect(throws: (any Error).self) { try await repo.restore(item) }
+    await #expect(throws: (any Error).self) { try await repo.permanentlyDelete(item) }
+    #expect(try await repo.trashItems().first?.readIssue != nil)
+    try bytes.write(to: original)
+    _ = try await repo.importSource(data: bytes, filename: "duplicate.txt", title: "Duplicate", originURL: nil)
+    await #expect(throws: (any Error).self) { try await repo.restore(item) }
+    #expect(try Data(contentsOf: original) == bytes)
+}
+
+@Test func trashExpiresAfterFifteenDaysWithLegacyGraceAndDamagedProtection() async throws {
+    let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let external = folder.appendingPathComponent("linked.txt")
+    let bytes = Data("Keep outside vault".utf8); try bytes.write(to: external)
+    let linked = try await repo.linkSources(at: external, maximumFiles: 1)[0]
+    let imported = try await repo.importSource(data: Data("Import".utf8), filename: "original.txt", title: "Import", originURL: nil)
+    let page = try await repo.create(title: "Page", body: "Page")
+    try await repo.deleteSource(linked); try await repo.deleteSource(imported); try await repo.trash(note: page)
+    let legacy = folder.appendingPathComponent(FileVaultRepository.trashDirectoryName + "/legacy.md")
+    try Data("Legacy body".utf8).write(to: legacy)
+    let damaged = folder.appendingPathComponent(FileVaultRepository.trashDirectoryName + "/damaged.md")
+    try Data("---\ntitle: Unclosed".utf8).write(to: damaged)
+    let start = Date()
+    #expect(try await repo.expireTrash(now: start).isEmpty)
+    #expect(try await repo.expireTrash(now: start.addingTimeInterval(14 * 86400)).isEmpty)
+    #expect(try await repo.trashItems().count == 5)
+    let reopened = try FileVaultRepository.open(root: folder)
+    #expect(try await reopened.expireTrash(now: start.addingTimeInterval(15 * 86400)).count == 1)
+    #expect(try await reopened.trashItems().count == 1)
+    #expect(FileManager.default.fileExists(atPath: damaged.path))
+    #expect(try Data(contentsOf: external) == bytes)
+}

@@ -109,3 +109,24 @@ public struct TrashedPage: Identifiable, Sendable {
     public var canPermanentlyDelete: Bool { !note.contentHash.isEmpty }
     public init(note: NoteRecord, readIssue: String? = nil) { self.note = note; self.readIssue = readIssue }
 }
+
+
+public struct TrashedSource: Identifiable, Sendable {
+    public var id: String
+    public var source: SourceRecord?
+    public var contentHash: String
+    public var readIssue: String?
+    public var title: String { source?.title ?? URL(fileURLWithPath: id).lastPathComponent }
+}
+
+public enum TrashedItem: Identifiable, Sendable {
+    case page(TrashedPage)
+    case source(TrashedSource)
+    public var id: String { switch self { case .page(let page): page.id; case .source(let source): source.id } }
+    public var title: String { switch self { case .page(let page): page.note.title; case .source(let source): source.title } }
+    public var readIssue: String? { switch self { case .page(let page): page.readIssue; case .source(let source): source.readIssue } }
+    public var canRestore: Bool { switch self { case .page(let page): page.canRestore; case .source(let source): source.source != nil && source.readIssue == nil } }
+    public var canPermanentlyDelete: Bool { switch self { case .page(let page): page.canPermanentlyDelete; case .source(let source): !source.contentHash.isEmpty } }
+    public var excerpt: String { switch self { case .page(let page): String(page.note.body.prefix(240)); case .source(let source): source.source?.metadata.originalFilename ?? "" } }
+    public var kindLabel: String { switch self { case .page: "Page"; case .source(let source): source.source?.metadata.isLinked == true ? "Linked source" : "Imported source" } }
+}

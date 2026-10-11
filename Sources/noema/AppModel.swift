@@ -116,7 +116,7 @@ struct EditorAction: Equatable {
     private var sourceNamingQueue: [SourceRecord] = []
     private var sourceNamingTask: Task<Void, Never>?
 
-    var trashedPages: [TrashedPage] = []
+    var trashedPages: [TrashedItem] = []
     private(set) var trashOperationInProgress = false
     var rows: [LibraryRow] = []
     var semanticRows: [SemanticBlockHit] = []
@@ -389,7 +389,9 @@ struct EditorAction: Equatable {
             }
             notes = result.notes; sources = result.sources; issues = result.issues.filter { !dismissedVaultNotices.contains($0) }
             do {
-                let pages = try await repository.trashedPages()
+                let expirationFailures = try await repository.expireTrash(now: Date())
+                if !expirationFailures.isEmpty { errorMessage = expirationFailures.joined(separator: "\n") }
+                let pages = try await repository.trashItems()
                 guard ticket == generation else { refreshing = false; return }
                 trashedPages = pages
             } catch {
@@ -927,16 +929,16 @@ struct EditorAction: Equatable {
             } catch { errorMessage = error.localizedDescription }
         }
     }
-    func restoreTrashedPage(_ page: TrashedPage) {
+    func restoreTrashedPage(_ page: TrashedItem) {
         performTrashOperation([page], restoring: true)
     }
-    func permanentlyDeleteTrashedPage(_ page: TrashedPage) {
+    func permanentlyDeleteTrashedPage(_ page: TrashedItem) {
         performTrashOperation([page], restoring: false)
     }
-    func emptyTrash(_ pages: [TrashedPage]) {
+    func emptyTrash(_ pages: [TrashedItem]) {
         performTrashOperation(pages, restoring: false)
     }
-    private func performTrashOperation(_ pages: [TrashedPage], restoring: Bool) {
+    private func performTrashOperation(_ pages: [TrashedItem], restoring: Bool) {
         guard !trashOperationInProgress, !pages.isEmpty, let repository else { return }
         trashOperationInProgress = true; errorMessage = nil
         let ticket = generation
@@ -948,14 +950,14 @@ struct EditorAction: Equatable {
                 for page in pages {
                     guard generation == ticket else { return }
                     do { try await repository.restore(page) }
-                    catch { failures.append("\(page.note.title): \(error.localizedDescription)") }
+                    catch { failures.append("\(page.title): \(error.localizedDescription)") }
                 }
             } else {
-                failures = await repository.emptyTrash(pages)
+                failures = await repository.emptyTrashItems(pages)
             }
             guard generation == ticket else { return }
             do {
-                let remaining = try await repository.trashedPages()
+                let remaining = try await repository.trashItems()
                 guard generation == ticket else { return }
                 trashedPages = remaining
             } catch { failures.append("Could not reload Trash: " + error.localizedDescription) }

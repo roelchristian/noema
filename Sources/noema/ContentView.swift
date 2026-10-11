@@ -16,10 +16,10 @@ struct ContentView: View {
     @FocusState private var searchFocused: Bool
     @State private var showTrashConfirmation = false
     @State private var trashPageID: UUID?
-    @State private var permanentDeletion: TrashedPage?
+    @State private var permanentDeletion: TrashedItem?
     @State private var showPermanentDeletion = false
     @State private var showEmptyTrash = false
-    @State private var emptyTrashPages: [TrashedPage] = []
+    @State private var emptyTrashPages: [TrashedItem] = []
     @State private var dismissedExternalChange = false
     @State private var sourceOriginal = false
     @State private var showPageDetails = true
@@ -89,7 +89,7 @@ struct ContentView: View {
         } message: { Text("‘\(model.unresolvedTarget ?? "")’ does not exist yet.") }
         .confirmationDialog("Move this page to vault trash?", isPresented: $showTrashConfirmation) {
             Button("Move to Trash", role: .destructive) { model.trashPage(trashPageID) }
-        } message: { Text("The Markdown file stays recoverable in the vault’s Removed Pages folder until you restore or permanently delete it.") }
+        } message: { Text("The Markdown file stays recoverable in the vault’s Removed Pages folder for 15 days, unless you restore or permanently delete it sooner.") }
         .alert("Rename Source", isPresented: Binding(get: { renamingSource != nil }, set: { if !$0 { renamingSource = nil } })) {
             TextField("File Name", text: $sourceName)
             Button("Rename") {
@@ -106,8 +106,8 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) { deletingSource = nil }
         } message: {
             Text(deletingSource?.metadata.isLinked == true
-                 ? "Remove ‘\(deletingSource?.title ?? "")’ from Sources? Its linked original will remain on your filesystem."
-                 : "Permanently delete ‘\(deletingSource?.title ?? "")’ and its imported original from the vault? This cannot be undone.")
+                 ? "Move ‘\(deletingSource?.title ?? "")’ to Trash for 15 days? Its linked original will remain on your filesystem."
+                 : "Move ‘\(deletingSource?.title ?? "")’ and its imported original to Trash? Restore them within 15 days.")
         }
         .onChange(of: model.searchText) {
             if searchFocused && !model.searchText.isEmpty && (model.currentNote != nil || model.currentSource != nil) {
@@ -217,7 +217,7 @@ struct ContentView: View {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
                 )
-                if !model.isSearching {
+                if !model.isSearching && model.scope != .trash {
                     HStack(spacing: 4) {
                         sidebarTabButton(
                             title: "Pages",
@@ -1133,19 +1133,19 @@ struct ContentView: View {
     private var trashLibrary: some View {
         VStack(spacing: 0) {
             if model.trashedPages.isEmpty {
-                ContentUnavailableView("Trash is empty", systemImage: "trash", description: Text("Deleted pages appear here until restored or permanently deleted."))
+                ContentUnavailableView("Trash is empty", systemImage: "trash", description: Text("Deleted pages and sources stay recoverable for 15 days."))
             } else {
                 List {
                     ForEach(model.trashedPages) { page in
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(page.note.title).font(.headline)
+                            Text(page.title).font(.headline)
+                            Text(page.kindLabel).font(.caption).foregroundStyle(.secondary)
                             if let issue = page.readIssue {
                                 Text(issue).font(.caption).foregroundStyle(.secondary)
                                 Text("Restore is unavailable until the file is repaired.").font(.caption).foregroundStyle(.secondary)
                             } else {
-                                let row = LibraryRow(note: page.note)
-                                if !row.excerpt.isEmpty {
-                                    Text(row.excerpt).lineLimit(2).font(.callout).foregroundStyle(.secondary)
+                                if !page.excerpt.isEmpty {
+                                    Text(page.excerpt).lineLimit(2).font(.callout).foregroundStyle(.secondary)
                                 }
                             }
                             HStack {
@@ -1166,7 +1166,7 @@ struct ContentView: View {
                 }.listStyle(.inset)
             }
             HStack {
-                Text(model.trashedPages.count == 1 ? "1 deleted page" : "\(model.trashedPages.count) deleted pages")
+                Text(model.trashedPages.count == 1 ? "1 deleted item" : "\(model.trashedPages.count) deleted items")
                 if model.trashOperationInProgress { ProgressView().controlSize(.small); Text("Updating Trash…") }
             }.font(.caption).foregroundStyle(.secondary).padding(12)
             if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil }.padding(12) }
@@ -1175,6 +1175,7 @@ struct ContentView: View {
         .safeAreaBar(edge: .top) {
             HStack {
                 Text("Trash").font(.title2.bold())
+                Text("Automatically deleted after 15 days").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button { Task { await model.refresh() } } label: { Label("Refresh Trash", systemImage: "arrow.clockwise").labelStyle(.iconOnly) }
                     .help("Refresh Trash").disabled(model.trashOperationInProgress)
@@ -1183,17 +1184,17 @@ struct ContentView: View {
             }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
         }
         .ignoresSafeArea(.container, edges: .top)
-        .alert("Permanently delete this page?", isPresented: $showPermanentDeletion, presenting: permanentDeletion) { page in
+        .alert("Permanently delete this item?", isPresented: $showPermanentDeletion, presenting: permanentDeletion) { page in
             Button("Delete permanently", role: .destructive) {
                 model.permanentlyDeleteTrashedPage(page)
             }
             Button("Cancel", role: .cancel) { }
-        } message: { page in Text("‘\(page.note.title)’ will be removed from the vault. This cannot be undone.") }
+        } message: { page in Text("‘\(page.title)’ will be removed from the vault. This cannot be undone.") }
         .alert("Empty Trash?", isPresented: $showEmptyTrash, presenting: emptyTrashPages) { pages in
             Button("Empty Trash", role: .destructive) { model.emptyTrash(pages) }
             Button("Cancel", role: .cancel) { }
         } message: { pages in
-            Text("Permanently delete \(pages.count) deleted page(s)? This cannot be undone. Changed, unreadable, or conflicted files will be kept and reported.")
+            Text("Permanently delete \(pages.count) deleted item(s)? This cannot be undone. Changed, unreadable, or conflicted files will be kept and reported.")
         }
     }
     @ViewBuilder private var detail: some View {
