@@ -143,7 +143,14 @@ struct EditorAction: Equatable {
     var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var unseenRenamedPages: Set<UUID> = []
     var appIsActive = true
-    var selectedID: UUID? { didSet { if selectedID != oldValue { cloudPublicationGuard.invalidate() } } }
+    var selectedID: UUID? {
+        didSet {
+            if selectedID != oldValue {
+                cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate()
+                if let id = nativePageSummaryID { cancelSummary(target: .page(id)) }
+            }
+        }
+    }
     var currentNote: NoteRecord?
     var currentSource: SourceRecord?
     var title = "" { didSet { if title != oldValue { cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate() } } }
@@ -187,6 +194,8 @@ struct EditorAction: Equatable {
     var searchFocusToken = 0
     private let storageProvider: VaultStorageProvider
     let externalAIService: ExternalAIService
+    let aiProviderPreferences: AIProviderPreferences
+    @ObservationIgnored private let aiPreferenceDefaults: UserDefaults
     let sessionManager: VaultSessionManager
     var quiescenceCoordinator: VaultSaveQuiescenceCoordinator { sessionManager.quiescenceCoordinator }
     private(set) var sessionState: VaultSessionState = .closed
@@ -250,9 +259,12 @@ struct EditorAction: Equatable {
         repository: FileVaultRepository? = nil,
         recovery: RecoveryStore? = nil,
         storageProvider: VaultStorageProvider = .plaintext,
-        sessionManager: VaultSessionManager = VaultSessionManager()
+        sessionManager: VaultSessionManager = VaultSessionManager(),
+        aiDefaults: UserDefaults = .standard
     ) {
         self.storageProvider = storageProvider
+        self.aiPreferenceDefaults = aiDefaults
+        self.aiProviderPreferences = AIProviderPreferences(defaults: aiDefaults)
         self.sessionManager = sessionManager
         self.externalAIService = ExternalAIService(accessGate: sessionManager.accessGate)
         self.repository = repository
@@ -507,6 +519,9 @@ struct EditorAction: Equatable {
         for (_, task) in titleTasks { task.cancel() }
         titleTasks.removeAll(); untitledPages.removeAll()
         showTopicPage = false; generatingTopicPage = false
+        nativePageSummaryRequestID = nil; nativePageSummaryID = nil; nativeSourceSummaryIDs.removeAll()
+        explicitTitleTask?.cancel(); explicitTitleTask = nil; generatingPageTitle = false
+        aiProviderNotice = nil
         generatingAISummary = false; aiSummaryNotice = nil
         generatingPageLCC = false; generatingSourceLCCs = []
         generatingSourcePages = []; generatingSourceSummaries = []
@@ -571,6 +586,130 @@ struct EditorAction: Equatable {
         return false
     }
 
+    var aiProviderNotice: String?
+    private var providerPreflightTask: Task<Void, Never>?
+    private var providerPreflightTarget: ExternalAISummaryTarget?
+    private var providerPreflightID: UUID?
+    private var nativePageSummaryID: UUID?
+    private var nativePageSummaryRequestID: UUID?
+    private var nativeSourceSummaryIDs: [UUID: UUID] = [:]
+    private var explicitTitleTask: Task<Void, Never>?
+    var generatingPageTitle = false
+
+    func preferredAIProvider(for action: AIAction, temporaryOverride: AIProvider? = nil) -> AIProvider {
+        temporaryOverride ?? aiProviderPreferences.settings.preferredProvider(for: action)
+    }
+
+    private func resolveAIAction(_ action: AIAction, provider: AIProvider? = nil, openAIConfigured: Bool? = nil) -> AIProviderResolution {
+        var local: AIProviderStatus = aiClient.unavailabilityReason() == nil ? .available : .unavailable(.localModelUnavailable)
+        if action == .summarizePage && !aiPreferenceDefaults.bool(forKey: EditorPreferences.aiSummariesKey) {
+            local = .unavailable(.localDisabled)
+        }
+        let configured = openAIConfigured ?? (externalAIService.credentialStatus?.isAvailable == true || cloudSummaryOverride != nil)
+        let cloud: AIProviderStatus = configured ? .available : .unavailable(.missingCredentials)
+        let availability = AIProviderAvailability(onDevice: local, openAI: cloud)
+        let resolution = AIProviderResolver.resolve(action: action, settings: aiProviderPreferences.settings,
+            temporaryOverride: provider, execution: .userInvoked, availability: availability)
+        if !resolution.isEligible { aiProviderNotice = resolution.errorMessage }
+        else { aiProviderNotice = nil }
+        return resolution
+    }
+
+    private func admitsNativeAction(_ action: AIAction, provider: AIProvider? = nil) -> Bool {
+        let resolution = resolveAIAction(action, provider: provider)
+        return resolution.isEligible && resolution.provider == .onDevice
+    }
+
+    func requestPageSummary(id: UUID, provider: AIProvider? = nil) {
+        guard canOperateOnLoadedContent, !hasPendingCloudSummary, !isSummarizing(target: .page(id)) else { return }
+        if preferredAIProvider(for: .summarizePage, temporaryOverride: provider) == .onDevice {
+            guard currentNote?.id == id else {
+                aiProviderNotice = "Open this page before generating an on-device summary."
+                return
+            }
+            guard admitsNativeAction(.summarizePage, provider: provider) else { return }
+            summarizePage()
+        } else { preparePreferredCloudSummary(target: .page(id), action: .summarizePage) }
+    }
+
+    func requestSourceSummary(_ source: SourceRecord, provider: AIProvider? = nil) {
+        guard canOperateOnLoadedContent, !hasPendingCloudSummary, !isSummarizing(target: .source(source.id)) else { return }
+        if preferredAIProvider(for: .summarizeSource, temporaryOverride: provider) == .onDevice {
+            guard admitsNativeAction(.summarizeSource, provider: provider) else { return }
+            generateSourceSummary(source)
+        } else { preparePreferredCloudSummary(target: .source(source.id), action: .summarizeSource) }
+    }
+
+    private func preparePreferredCloudSummary(target: ExternalAISummaryTarget, action: AIAction) {
+        guard providerPreflightTarget == nil, cloudSummaryTarget == nil, cloudSummaryConfirmation == nil,
+              let lease = sessionManager.accessGate.currentLease else {
+            aiProviderNotice = "Open and unlock a vault before using OpenAI."
+            return
+        }
+        let identity = UUID(), selection = selectedID, revision = cloudEditorRevision
+        providerPreflightID = identity; providerPreflightTarget = target
+        providerPreflightTask = Task {
+            defer {
+                if providerPreflightID == identity {
+                    providerPreflightID = nil; providerPreflightTarget = nil; providerPreflightTask = nil
+                }
+            }
+            let configured: Bool
+            if let refresh = cloudCredentialAvailabilityOverride { configured = await refresh() }
+            else if cloudSummaryOverride != nil { configured = true }
+            else {
+                await externalAIService.refreshStatus()
+                configured = externalAIService.credentialStatus?.isAvailable == true
+            }
+            guard !Task.isCancelled, providerPreflightID == identity,
+                  lease == sessionManager.accessGate.currentLease, selectedID == selection,
+                  revision == cloudEditorRevision else { return }
+            providerPreflightTarget = nil; providerPreflightTask = nil
+            guard resolveAIAction(action, provider: .openAI, openAIConfigured: configured).isEligible else { return }
+            prepareCloudSummary(target: target)
+        }
+    }
+
+    var hasPendingCloudSummary: Bool {
+        providerPreflightTarget != nil || cloudSummaryTarget != nil || cloudSummaryConfirmation != nil
+    }
+
+    var nativePageSummaryTaskForTesting: Task<Void, Never>? { aiSummaryTask }
+    func nativeSourceSummaryTaskForTesting(id: UUID) -> Task<Void, Never>? { sourceSummaryTasks[id] }
+
+    func activeSummaryProvider(for target: ExternalAISummaryTarget) -> AIProvider? {
+        if providerPreflightTarget == target || cloudSummaryTarget == target || cloudSummaryConfirmation?.request.target == target { return .openAI }
+        return isSummarizing(target: target) ? .onDevice : nil
+    }
+
+    func isSummarizing(target: ExternalAISummaryTarget) -> Bool {
+        if providerPreflightTarget == target || cloudSummaryTarget == target || cloudSummaryConfirmation?.request.target == target { return true }
+        switch target {
+        case .page(let id): return generatingAISummary && nativePageSummaryID == id
+        case .source(let id): return generatingSourceSummaries.contains(id) || generatingSourceTitles.contains(id)
+        }
+    }
+
+    func cancelSummary(target: ExternalAISummaryTarget) {
+        let provider = activeSummaryProvider(for: target)
+        if providerPreflightTarget == target || cloudSummaryTarget == target || cloudSummaryConfirmation?.request.target == target { cancelCloudSummary() }
+        switch target {
+        case .page(let id):
+            if nativePageSummaryID == id {
+                nativePageSummaryRequestID = nil
+                aiSummaryTask?.cancel(); aiSummaryTask = nil
+                generatingAISummary = false; nativePageSummaryID = nil
+            }
+        case .source(let id):
+            nativeSourceSummaryIDs.removeValue(forKey: id)
+            sourceSummaryTasks[id]?.cancel(); sourceSummaryTasks.removeValue(forKey: id)
+            generatingSourceSummaries.remove(id)
+        }
+        aiProviderNotice = provider == .openAI
+            ? "Summary cancelled. Text already sent to OpenAI cannot be recalled."
+            : "On-device summary cancelled."
+    }
+
     var cloudSummaryConfirmation: CloudSummaryConfirmation?
     var cloudSummaryTarget: ExternalAISummaryTarget?
     var cloudSummaryError: String?
@@ -581,10 +720,14 @@ struct EditorAction: Equatable {
     var cloudSummaryTaskForTesting: Task<Void, Never>? { cloudSummaryTask }
     private var cloudRequestID: UUID?
     /// Test seam: restricted, consent-bound summaries only; production always uses the gateway.
+    /// Test seam for preflight status only; it cannot grant gateway authorization or consent.
+    var cloudCredentialAvailabilityOverride: (@Sendable () async -> Bool)?
     var cloudSummaryOverride: (@Sendable (ExternalAISummaryRequest, ExternalAIContentConsent) async throws -> ExternalAISummaryResult)?
     var cloudPublicationOverride: (@Sendable (ExternalAISummaryResult) async throws -> (@Sendable () throws -> Void))?
 
     func cancelCloudSummary() {
+        providerPreflightID = nil
+        providerPreflightTask?.cancel(); providerPreflightTask = nil; providerPreflightTarget = nil
         cloudPublicationGuard.invalidate()
         cloudRequestID = nil
         cloudSummaryTask?.cancel(); cloudSummaryTask = nil
@@ -596,7 +739,7 @@ struct EditorAction: Equatable {
 
     private func prepareCloudSummary(target: ExternalAISummaryTarget) {
         guard canOperateOnLoadedContent, let repository, let lease = sessionManager.accessGate.currentLease,
-              cloudSummaryTarget == nil else { return }
+              cloudSummaryTarget == nil, cloudSummaryConfirmation == nil else { return }
         cancelCloudSummary()
         let identity = UUID()
         cloudRequestID = identity; cloudSummaryTarget = target
@@ -627,9 +770,13 @@ struct EditorAction: Equatable {
                       ExternalAIVaultAuthority(lease: lease).matches(sessionManager.accessGate.currentLease) else { throw ExternalAIError.staleSession }
                 let request = try ExternalAISummaryRequest(authority: ExternalAIVaultAuthority(lease: lease),
                     target: target, contentRevision: UUID(), content: text)
+                let presentation = await externalAIService.consentPresentation(for: request.authority)
+                try Task.checkCancellation()
+                guard cloudRequestID == identity, selectedID == selection,
+                      request.authority.matches(sessionManager.accessGate.currentLease) else { throw ExternalAIError.staleSession }
                 cloudSummaryConfirmation = CloudSummaryConfirmation(request: request, snapshot: snapshot,
                     title: itemTitle, model: externalAIService.configuration.model,
-                    selection: selection, editorRevision: cloudEditorRevision)
+                    selection: selection, editorRevision: cloudEditorRevision, presentation: presentation)
                 cloudSummaryTarget = nil; cloudSummaryTask = nil
             } catch {
                 guard cloudRequestID == identity else { return }
@@ -722,17 +869,19 @@ struct EditorAction: Equatable {
     }
 
     func deleteAISummary() {
-        guard currentNote != nil, !editingLocked, !generatingAISummary else { return }
+        guard let currentNote, !editingLocked, !isSummarizing(target: .page(currentNote.id)) else { return }
         var document = BlockDocumentCodec.decode(body)
         guard document.removeAISummary() else { return }
         body = BlockDocumentCodec.encode(document); aiSummaryNotice = nil; edited()
     }
 
     func summarizePage() {
-        guard UserDefaults.standard.bool(forKey: EditorPreferences.aiSummariesKey),
-              currentNote != nil, !editingLocked, !generatingAISummary else { return }
+        guard canOperateOnLoadedContent, aiPreferenceDefaults.bool(forKey: EditorPreferences.aiSummariesKey),
+              currentNote != nil, !editingLocked, !generatingAISummary, cloudSummaryTarget == nil, cloudSummaryConfirmation == nil else { return }
         if let reason = aiClient.unavailabilityReason() { aiSummaryNotice = reason; return }
-        let capturedBody = body, capturedID = currentNote?.id
+        let capturedBody = body, capturedID = currentNote?.id, capturedRevision = cloudEditorRevision
+        let requestID = UUID()
+        nativePageSummaryID = capturedID; nativePageSummaryRequestID = requestID
         let content = BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(body).withoutAISummary))
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             aiSummaryNotice = "Add page content before generating a summary."; return
@@ -747,7 +896,8 @@ struct EditorAction: Equatable {
         aiSummaryTask?.cancel()
         aiSummaryTask = Task {
             defer {
-                if generation == completionTicket.token {
+                if generation == completionTicket.token, nativePageSummaryRequestID == requestID {
+                    nativePageSummaryRequestID = nil; nativePageSummaryID = nil
                     generatingAISummary = false
                     aiSummaryTask = nil
                 }
@@ -762,11 +912,12 @@ struct EditorAction: Equatable {
                     checkTargetID: true,
                     operation: "summarizePage"
                 ) else { return }
-                guard body == capturedBody, !editingLocked, !externalChange,
-                      UserDefaults.standard.bool(forKey: EditorPreferences.aiSummariesKey) else {
+                guard !Task.isCancelled, nativePageSummaryRequestID == requestID else { return }
+                guard body == capturedBody, capturedRevision == cloudEditorRevision, !editingLocked, !externalChange,
+                      aiPreferenceDefaults.bool(forKey: EditorPreferences.aiSummariesKey) else {
                     aiSummaryNotice = "The page changed during generation. Generate the summary again."; return
                 }
-                guard !summary.isEmpty else { aiSummaryNotice = "No summary was returned. Try again."; return }
+                guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, summary.utf8.count <= ExternalAILimits.maximumSummaryBytes else { aiSummaryNotice = "No valid summary was returned. Try again."; return }
                 if let lcc, !lcc.isEmpty {
                     lccInput = lcc
                     currentNote?.lcc = lcc
@@ -776,15 +927,19 @@ struct EditorAction: Equatable {
                 }
                 var document = BlockDocumentCodec.decode(body)
                 document.setAISummary(summary)
+                document.blocks[0].metadata.extra["aiProvider"] = "On-device"
+                document.blocks[0].metadata.extra["aiModel"] = "Apple Intelligence"
+                document.blocks[0].metadata.extra["aiGeneratedAt"] = ISO8601DateFormatter().string(from: Date())
                 body = BlockDocumentCodec.encode(document); edited()
             } catch {
+                guard !Task.isCancelled, nativePageSummaryRequestID == requestID else { return }
                 guard isCompletionValid(
                     completionTicket,
                     expectedTargetID: currentNote?.id,
                     checkTargetID: true,
                     operation: "summarizePage"
                 ) else { return }
-                aiSummaryNotice = "Could not generate an AI summary: " + error.localizedDescription
+                aiSummaryNotice = "On-device summary generation failed. Try again."
             }
         }
     }
@@ -1599,9 +1754,9 @@ struct EditorAction: Equatable {
             scheduleRefresh()
         } catch { if generation == ticket, canOperateOnLoadedContent { errorMessage = error.localizedDescription } }
     }
-    func refreshPageLCC() {
+    func refreshPageLCC(provider: AIProvider? = nil) {
         guard canOperateOnLoadedContent, let note = currentNote, !editingLocked, !generatingPageLCC else { return }
-        if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return }
+        guard admitsNativeAction(.classifyLCC, provider: provider) else { return }
         let content = BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(body).withoutAISummary))
         let fallback = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let input = content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : content
@@ -1661,10 +1816,10 @@ struct EditorAction: Equatable {
             }
         }
     }
-    func refreshSourceLCC(_ source: SourceRecord) {
+    func refreshSourceLCC(_ source: SourceRecord, provider: AIProvider? = nil) {
         guard canOperateOnLoadedContent, !downloadingSources.contains(source.id), !generatingSourceLCCs.contains(source.id),
               let repository, let root else { return }
-        if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return }
+        guard admitsNativeAction(.classifyLCC, provider: provider) else { return }
         let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: source.id)
         let client = aiClient
         generatingSourceLCCs.insert(source.id)
@@ -1904,6 +2059,35 @@ struct EditorAction: Equatable {
             } catch { /* Content is already saved; retain the placeholder for another attempt. */ }
         }
     }
+    func suggestPageTitle(provider: AIProvider? = nil) {
+        guard canOperateOnLoadedContent, let note = currentNote, !editingLocked, !externalChange, !generatingPageTitle,
+              admitsNativeAction(.suggestTitle, provider: provider) else { return }
+        let content = BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(body).withoutAISummary))
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            aiProviderNotice = "Add page content before suggesting a title."; return
+        }
+        let revision = cloudEditorRevision
+        let ticket = issueCompletionTicket(kind: .aiProcessing, targetID: note.id)
+        let client = aiClient
+        generatingPageTitle = true
+        explicitTitleTask = Task {
+            defer { if generation == ticket.token { generatingPageTitle = false; explicitTitleTask = nil } }
+            do {
+                let generated = try await client.pageTitle(content)
+                guard !Task.isCancelled, isCompletionValid(ticket, expectedTargetID: currentNote?.id, checkTargetID: true,
+                    operation: "suggestPageTitle"), revision == cloudEditorRevision, !editingLocked, !externalChange else { return }
+                guard let generated, !generated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    aiProviderNotice = "No title was returned. Try again."; return
+                }
+                title = generated; edited()
+            } catch {
+                if !Task.isCancelled, isCompletionValid(ticket, operation: "suggestPageTitle.error") {
+                    aiProviderNotice = "On-device title generation failed. Try again."
+                }
+            }
+        }
+    }
+
     func prepareUntitledPageForNaming() {
         guard canOperateOnLoadedContent, let note = currentNote, !editingLocked else { return }
         let candidate = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2386,9 +2570,9 @@ struct EditorAction: Equatable {
             return ""
         }.value
     }
-    func createPageFromSource(_ source: SourceRecord) {
+    func createPageFromSource(_ source: SourceRecord, provider: AIProvider? = nil) {
         guard canOperateOnLoadedContent, !downloadingSources.contains(source.id), !generatingSourcePages.contains(source.id), let repository, let root else { return }
-        if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return }
+        guard admitsNativeAction(.processSource, provider: provider) else { return }
         let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: source.id)
         let ticket = completionTicket.token
         let client = aiClient
@@ -2421,31 +2605,45 @@ struct EditorAction: Equatable {
     }
 
     func generateSourceSummary(_ source: SourceRecord) {
-        guard canOperateOnLoadedContent, !downloadingSources.contains(source.id), !generatingSourceTitles.contains(source.id), !generatingSourceSummaries.contains(source.id),
-              let repository, let root else { return }
-        if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return }
+        guard canOperateOnLoadedContent, !downloadingSources.contains(source.id), !generatingSourceTitles.contains(source.id),
+              !generatingSourceSummaries.contains(source.id), cloudSummaryTarget == nil, cloudSummaryConfirmation == nil,
+              let repository else { return }
+        if let reason = aiClient.unavailabilityReason() { aiProviderNotice = reason; return }
         let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: source.id)
-        let ticket = completionTicket.token
+        let requestID = UUID()
+        nativeSourceSummaryIDs[source.id] = requestID
         let client = aiClient
         generatingSourceSummaries.insert(source.id)
-        sourceSummaryTasks[source.id]?.cancel()
         sourceSummaryTasks[source.id] = Task {
-            defer { if generation == ticket { generatingSourceSummaries.remove(source.id); sourceSummaryTasks.removeValue(forKey: source.id) } }
-            do {
-                let text = try await sourceSummaryContent(source, root: root)
-                guard isCompletionValid(completionTicket, operation: "generateSourceSummary.read") else { return }
-                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    throw VaultError.unavailable("No readable text for an AI summary.")
+            defer {
+                if generation == completionTicket.token, nativeSourceSummaryIDs[source.id] == requestID {
+                    nativeSourceSummaryIDs.removeValue(forKey: source.id)
+                    generatingSourceSummaries.remove(source.id); sourceSummaryTasks.removeValue(forKey: source.id)
                 }
-                let excerpt = String(text.prefix(6000))
-                async let generatedSummary = client.summarize(excerpt)
-                async let generatedLCC = client.inferLCC(excerpt)
-                let (summary, lcc) = try await (generatedSummary, generatedLCC)
-                guard isCompletionValid(completionTicket, operation: "generateSourceSummary.generate") else { return }
-                _ = try await repository.renameSource(source, title: source.title, summary: summary, lcc: lcc)
+            }
+            do {
+                let snapshot = try await repository.sourceSummarySnapshot(id: source.id)
+                let text = try await Task.detached { try CloudSummaryConfirmation.extractedText(snapshot) }.value
+                guard isCompletionValid(completionTicket, operation: "generateSourceSummary.read") else { return }
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ExternalAIError.emptyContent }
+                let summary = try await client.summarize(String(text.prefix(6000)))
+                try Task.checkCancellation()
+                guard nativeSourceSummaryIDs[source.id] == requestID,
+                      isCompletionValid(completionTicket, operation: "generateSourceSummary.generate") else { return }
+                guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      summary.utf8.count <= ExternalAILimits.maximumSummaryBytes else { throw ExternalAIError.invalidResponse }
+                let saved = try await repository.publishSourceSummary(snapshot, summary: summary,
+                    provenance: SummaryProvenance(provider: "On-device", model: "Apple Intelligence", generatedAt: Date()),
+                    validate: { try Task.checkCancellation() })
                 guard isCompletionValid(completionTicket, operation: "generateSourceSummary.save") else { return }
+                if let i = sources.firstIndex(where: { $0.id == saved.id }) { sources[i] = saved }
+                if currentSource?.id == saved.id { currentSource = saved }
                 await refresh()
-            } catch { if isCompletionValid(completionTicket, operation: "generateSourceSummary.error") { errorMessage = "Source summary: " + error.localizedDescription } }
+            } catch {
+                guard !Task.isCancelled, nativeSourceSummaryIDs[source.id] == requestID,
+                      isCompletionValid(completionTicket, operation: "generateSourceSummary.error") else { return }
+                aiProviderNotice = Self.cloudError(error)
+            }
         }
     }
     func enqueueSourceTitle(_ source: SourceRecord) {

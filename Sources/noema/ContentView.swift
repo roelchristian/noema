@@ -42,7 +42,6 @@ struct ContentView: View {
     @State private var renamingSource: SourceRecord?
     @State private var sourceName = ""
     @State private var deletingSource: SourceRecord?
-    @AppStorage(EditorPreferences.aiSummariesKey) private var aiSummaries = false
     @AppStorage(EditorPreferences.aiSummaryPlacementKey) private var aiSummaryPlacement = AISummaryPlacement.defaultValue.rawValue
     init(model: AppModel, paneState: WorkspacePaneState? = nil) {
         self.model = model
@@ -161,6 +160,7 @@ struct ContentView: View {
         .focusedSceneValue(\.workspacePaneActions, paneActions)
         .toolbar(removing: .sidebarToggle)
         .toolbar { workspaceToolbar }
+        .safeAreaInset(edge: .bottom, spacing: 0) { AISummaryProviderNotice(model: model) }
     }
     private var workspaceSheets: some View {
         titledWorkspace
@@ -736,8 +736,7 @@ struct ContentView: View {
         .listRowInsets(EdgeInsets(top: 0.5, leading: 0, bottom: 0.5, trailing: 4))
         .listRowSeparator(.hidden)
         .contextMenu {
-            Button("Summarize with OpenAI…") { model.prepareCloudPageSummary(id: note.id) }
-                .disabled(note.isEditingLocked || model.cloudSummaryTarget != nil)
+            AISummaryMenuCommands(model: model, target: .page(note.id))
             Button(note.isEditingLocked ? "Unlock Editing" : "Lock Editing") {
                 model.toggleEditingLock(note.id)
             }
@@ -897,8 +896,7 @@ struct ContentView: View {
                         }
                         .contextMenu {
                             if row.kind == .wiki, let note = model.notes.first(where: { $0.id == row.id }) {
-                                Button("Summarize with OpenAI…") { model.prepareCloudPageSummary(id: note.id) }
-                                    .disabled(note.isEditingLocked || model.cloudSummaryTarget != nil)
+                                AISummaryMenuCommands(model: model, target: .page(note.id))
                                 Button(note.isEditingLocked ? "Unlock Editing" : "Lock Editing") { model.toggleEditingLock(row.id) }
                                     .disabled(model.editingLockOperations.contains(note.id))
                                 Button("Delete…", role: .destructive) { trashPageID = row.id; showTrashConfirmation = true }
@@ -1228,14 +1226,10 @@ struct ContentView: View {
     private var headerActions: some View {
         HStack(spacing: NoemaSpacing.sm) {
             if model.isVaultAvailable, model.currentNote != nil {
-                Button("Summarize with OpenAI…") {
-                    if let id = model.currentNote?.id { model.prepareCloudPageSummary(id: id) }
-                }.disabled(model.editingLocked || model.cloudSummaryTarget != nil)
-                if let id = model.currentNote?.id { CloudSummaryStatus(model: model, target: .page(id)) }
-                if aiSummaries {
-                    Button { model.summarizePage() } label: { Label("Summarize", systemImage: "sparkles") }
-                        .disabled(model.editingLocked || model.generatingAISummary)
-                        .help("Generate an on-device AI summary")
+                if let id = model.currentNote?.id {
+                    AISummaryControls(model: model, target: .page(id))
+                    AIProviderBadge(provider: model.preferredAIProvider(for: .summarizePage))
+                    AISummaryStatus(model: model, target: .page(id))
                 }
                 Button { if model.reading { model.beginEditing() } else { model.finishEditing() } } label: {
                     Label(model.reading ? "Edit" : "Done", systemImage: model.reading ? "pencil" : "checkmark")

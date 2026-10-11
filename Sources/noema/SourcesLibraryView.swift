@@ -176,22 +176,19 @@ private struct SourceTableContextMenu: View {
     let delete: (SourceRecord) -> Void
     var body: some View {
         if let source = model.sources.first(where: { $0.id == sourceID }) {
-            Button("Summarize with OpenAI…") { model.prepareCloudSourceSummary(source) }
-                .disabled(model.downloadingSources.contains(sourceID) || model.cloudSummaryTarget != nil
-                          || model.generatingSourceTitles.contains(sourceID) || model.generatingSourceSummaries.contains(sourceID))
+            AISummaryMenuCommands(model: model, target: .source(sourceID))
             Button("Open Preview") { model.openSource(sourceID) }
                 .disabled(model.downloadingSources.contains(sourceID))
             Button { model.createPageFromSource(source) } label: {
-                Label(model.generatingSourcePages.contains(sourceID) ? "Creating Page…" : "Create Page with AI", systemImage: "sparkles")
+                Label(model.generatingSourcePages.contains(sourceID) ? "Creating Page…" : "Create Page with AI · \(aiProviderLabel(model.preferredAIProvider(for: .processSource)))", systemImage: "sparkles")
             }
             .disabled(model.downloadingSources.contains(sourceID) || model.generatingSourcePages.contains(sourceID)
                       || model.generatingSourceTitles.contains(sourceID) || model.generatingSourceSummaries.contains(sourceID))
-            Button(source.metadata.aiSummary?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-                   ? "Regenerate AI Summary" : "Generate AI Summary") {
-                model.generateSourceSummary(source)
+            Menu("Create Page using…") {
+                Button("On-device · Runs locally") { model.createPageFromSource(source, provider: .onDevice) }
+                    .disabled(model.downloadingSources.contains(sourceID) || model.generatingSourcePages.contains(sourceID)
+                              || model.generatingSourceTitles.contains(sourceID) || model.isSummarizing(target: .source(sourceID)))
             }
-            .disabled(model.downloadingSources.contains(sourceID) || model.generatingSourceTitles.contains(sourceID)
-                      || model.generatingSourceSummaries.contains(sourceID))
             Button("Check Availability") { model.checkSourceAvailability([source]) }
                 .disabled(model.checkingSourceAvailability.contains(sourceID) || model.downloadingSources.contains(sourceID))
             Button { rename(source) } label: { Label("Rename", systemImage: "pencil") }

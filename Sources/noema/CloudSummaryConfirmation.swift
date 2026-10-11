@@ -16,7 +16,20 @@ struct CloudSummaryConfirmation: Identifiable, Sendable {
     let model: String
     let selection: UUID?
     let editorRevision: UUID
+    let presentation: CloudConsentPresentation
     var id: UUID { request.id }
+
+    init(request: ExternalAISummaryRequest, snapshot: CloudSummarySnapshot, title: String,
+         model: String, selection: UUID?, editorRevision: UUID,
+         presentation: CloudConsentPresentation = .expanded) {
+        self.request = request
+        self.snapshot = snapshot
+        self.title = title
+        self.model = model
+        self.selection = selection
+        self.editorRevision = editorRevision
+        self.presentation = presentation
+    }
 
     static func extractedText(_ snapshot: SourceSummarySnapshot) throws -> String {
         let filename = snapshot.source.metadata.originalFilename.lowercased()
@@ -46,28 +59,45 @@ struct CloudSummaryConfirmation: Identifiable, Sendable {
 struct CloudSummaryConsentSheet: View {
     @Bindable var model: AppModel
     let confirmation: CloudSummaryConfirmation
+    @State private var previewExpanded: Bool
+
+    init(model: AppModel, confirmation: CloudSummaryConfirmation) {
+        self.model = model
+        self.confirmation = confirmation
+        _previewExpanded = State(initialValue: confirmation.presentation.previewInitiallyExpanded)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Summarize with OpenAI").font(.title2.bold())
             Text(confirmation.title).font(.headline)
-            Text("This exact text will leave your device and be sent to OpenAI using \(confirmation.model). The summary will replace the current summary only if the item stays unchanged.")
+            Text("Send this selected \(confirmation.request.action == .summarizePage ? "page" : "source") text to OpenAI? It leaves your device, and API charges may apply.")
                 .foregroundStyle(.secondary)
-            Text("\(confirmation.request.contentByteCount) bytes · selected \(confirmation.request.action == .summarizePage ? "page" : "source") text")
-                .font(.caption)
-            ScrollView {
-                Text(confirmation.request.content).font(.system(.body, design: .monospaced))
-                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            Text("OpenAI · \(confirmation.model) · \(confirmation.request.contentByteCount) bytes of text")
+                .font(.caption).accessibilityIdentifier("cloudConsent.requestDetails")
+            DisclosureGroup("Preview exact text", isExpanded: $previewExpanded) {
+                ScrollView {
+                    Text(confirmation.request.content).font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                        .accessibilityIdentifier("cloudConsent.exactText")
+                }
+                .frame(minHeight: 220, maxHeight: 400)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                .padding(.top, 8)
             }
-            .frame(minHeight: 220, maxHeight: 400)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            .accessibilityIdentifier("cloudConsent.exactTextDisclosure")
+            .accessibilityHint("Shows the full text for this submission. Expanding the preview does not send it.")
+            Text("Approval applies only to this submission. The summary replaces the current summary only if the item stays unchanged.")
+                .font(.caption).foregroundStyle(.secondary)
             Text("Cancellation prevents publication and further requests; it cannot recall text already sent to OpenAI.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Spacer()
                 Button("Cancel") { model.cancelCloudSummary() }.keyboardShortcut(.cancelAction)
                 Button("Send to OpenAI") { model.confirmCloudSummary() }.keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("cloudConsent.approveSubmission")
             }
-        }.padding(24).frame(width: 640)
+        }.padding(24).frame(width: 580)
     }
 }
 

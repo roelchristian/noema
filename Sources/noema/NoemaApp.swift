@@ -100,7 +100,7 @@ import VaultCore
         .defaultSize(width: 660, height: 560)
         .windowResizability(.contentSize)
         Settings {
-            NoemaSettings(externalAIService: model.externalAIService)
+            NoemaSettings(externalAIService: model.externalAIService, aiProviderPreferences: model.aiProviderPreferences)
                 .systemNoemaTheme()
         }
     }

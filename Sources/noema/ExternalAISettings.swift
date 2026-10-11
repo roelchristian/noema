@@ -2,7 +2,7 @@ import SwiftUI
 import ExternalAI
 
 /// A credential can only enter through this transient masked field; stored keys are never read
-/// back into SwiftUI. Provider configuration is independent of Apple Intelligence preferences.
+/// back into SwiftUI. Connection configuration never authorizes an AI action.
 struct ExternalAISettings: View {
     let service: ExternalAIService
 
@@ -15,7 +15,7 @@ struct ExternalAISettings: View {
     @State private var failed = false
 
     var body: some View {
-        Section("External AI — OpenAI") {
+        Section("OpenAI connection") {
             LabeledContent("Credential", value: credentialDescription)
             if service.credentialStatus?.presence == .inaccessible {
                 Text("Noema cannot access this saved key. Remove it here, then save the key again. If removal fails, unlock the login Keychain in Keychain Access.")
@@ -85,7 +85,7 @@ struct ExternalAISettings: View {
             if let feedback {
                 Text(feedback).font(.caption).foregroundStyle(failed ? Color.red : Color.secondary)
             }
-            Text("Summarize with OpenAI sends only the selected page or source text after your confirmation. Submitted text leaves this device and API usage may incur charges. Automatic cloud actions are disabled; local AI remains independent.")
+            Text("When OpenAI is chosen for Summarize, only the selected page or source text is sent after your confirmation. Submitted text leaves this Mac and API usage may incur charges. Preferences and connection settings do not authorize a submission. Automatic intelligence remains on-device.")
                 .font(.callout).foregroundStyle(.secondary)
             Text("Connection validation sends a model metadata request with no vault content. Session access lasts at most four hours and expires after 30 minutes without external AI activity. Removing a key here does not revoke the key at OpenAI.")
                 .font(.caption).foregroundStyle(.secondary)
