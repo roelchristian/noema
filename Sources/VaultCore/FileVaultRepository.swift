@@ -28,6 +28,7 @@ public actor FileVaultRepository: VaultRepository {
     private static let legacyTrashDirectoryName = ".Trash"
     public nonisolated let root: URL
     public nonisolated let manifest: VaultManifest
+    private let contentStore: any VaultContentStore
     private var cache: [String: (Date?, Int?, NoteRecord)] = [:]
     private var downloadingSources: [UUID: SourceRecord] = [:]
     private let fm = FileManager.default
@@ -35,7 +36,8 @@ public actor FileVaultRepository: VaultRepository {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; return encoder
     }()
 
-    public static func open(root: URL, create: Bool = false) throws -> FileVaultRepository {
+    public static func open(root: URL, create: Bool = false, contentStore: (any VaultContentStore)? = nil) throws -> FileVaultRepository {
+        let accessRoot = root
         let root = root.standardizedFileURL.resolvingSymlinksInPath()
         let fm = FileManager.default
         let manifestURL = root.appendingPathComponent("vault.json")
@@ -51,9 +53,11 @@ public actor FileVaultRepository: VaultRepository {
         for name in ["Wiki", "Sources", trashDirectoryName, "Conflicts"] {
             try fm.createDirectory(at: root.appendingPathComponent(name), withIntermediateDirectories: true)
         }
-        return FileVaultRepository(root: root, manifest: manifest)
+        return FileVaultRepository(root: root, manifest: manifest, contentStore: try contentStore ?? PlaintextVaultContentStore(root: accessRoot))
     }
-    private init(root: URL, manifest: VaultManifest) { self.root = root; self.manifest = manifest }
+    private init(root: URL, manifest: VaultManifest, contentStore: any VaultContentStore) {
+        self.root = root; self.manifest = manifest; self.contentStore = contentStore
+    }
 
     public func scan(progress: (@Sendable (ScanBatch) -> Void)? = nil) throws -> ScanBatch {
         var result = ScanBatch(), chunk = ScanBatch()
@@ -85,7 +89,7 @@ public actor FileVaultRepository: VaultRepository {
                 if let previous = cache[path], previous.0 == values.contentModificationDate, previous.1 == values.fileSize {
                     note = previous.2
                 } else {
-                    note = try NoteCodec.decode(Self.coordinatedRead(url), path: path, vaultID: manifest.id)
+                    note = try NoteCodec.decode(contentStore.read(at: path), path: path, vaultID: manifest.id)
                     cache[path] = (values.contentModificationDate, values.fileSize, note)
                 }
                 guard seenIDs.insert(note.id).inserted else {
@@ -181,7 +185,8 @@ public actor FileVaultRepository: VaultRepository {
         note.lcc = (normalizedLCC?.isEmpty == false ? normalizedLCC : nil) ?? source?.metadata.lcc
         note.relativePath = availablePath(title: actualTitle)
         let data = try NoteCodec.encode(note)
-        try Self.coordinatedWrite(data, to: root.appendingPathComponent(note.relativePath), mustNotExist: true)
+        do { try contentStore.write(data, at: note.relativePath, condition: .createOnly) }
+        catch VaultContentStoreError.alreadyExists { throw VaultError.storage("A file appeared at this path. Please try again.") }
         return try NoteCodec.decode(data, path: note.relativePath, vaultID: manifest.id)
     }
 
@@ -214,35 +219,42 @@ public actor FileVaultRepository: VaultRepository {
         if normalized(title) != normalized(note.title), !updated.aliases.contains(note.title) { updated.aliases.append(note.title) }
         let data = try NoteCodec.encode(updated)
         let url = try checkedWikiURL(note.relativePath)
-        var operationError: Error?
-        var coordinatorError: NSError?
-        let coordinator = NSFileCoordinator(filePresenter: nil)
-        coordinator.coordinate(writingItemAt: url, options: [], error: &coordinatorError) { coordinatedURL in
-            do {
-                let exists = fm.fileExists(atPath: coordinatedURL.path)
-                let current = exists ? try Data(contentsOf: coordinatedURL) : Data()
-                let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: coordinatedURL) ?? []
-                if !exists || digest(current) != note.contentHash || !versions.isEmpty {
-                    let directory = root.appendingPathComponent("Conflicts")
-                    let name = "\(note.id.uuidString)-\(UUID().uuidString).md"
-                    let draftURL = directory.appendingPathComponent(name)
-                    try data.write(to: draftURL, options: .atomic)
-                    // Copy all cloud conflict versions before marking any version resolved.
-                    for version in versions {
-                        let copy = directory.appendingPathComponent("cloud-\(UUID().uuidString).md")
-                        try Data(contentsOf: version.url).write(to: copy, options: .atomic)
-                    }
-                    for version in versions { version.isResolved = true; try? version.remove() }
-                    throw VaultError.conflict(draftURL.path)
-                }
-                try data.write(to: coordinatedURL, options: .atomic)
-            } catch { operationError = error }
+        do {
+            let current = try contentStore.read(at: note.relativePath)
+            guard digest(current) == note.contentHash else { throw VaultContentStoreError.stale(note.relativePath) }
+            // The adapter checks these exact bytes again inside write coordination.
+            try contentStore.write(data, at: note.relativePath, condition: .replace(expected: current))
+        } catch let error as VaultContentStoreError {
+            switch error {
+            case .missing, .stale, .cloudConflict:
+                try preservePageConflict(data, note: note, at: url)
+            case .unavailable:
+                throw VaultError.unavailable("Downloading \(url.lastPathComponent) from iCloud. Try again when the download finishes.")
+            default: throw error
+            }
         }
-        if let operationError { throw operationError }
-        if let coordinatorError { throw coordinatorError }
         cache.removeValue(forKey: note.relativePath)
         // Keep the filename stable on title changes: aliases and metadata carry identity.
         return try NoteCodec.decode(data, path: note.relativePath, vaultID: manifest.id)
+    }
+
+    private func preservePageConflict(_ data: Data, note: NoteRecord, at url: URL) throws {
+        var failure: Error?, coordinationError: NSError?
+        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
+            do {
+                let versions = NSFileVersion.unresolvedConflictVersionsOfItem(at: coordinatedURL) ?? []
+                let path = "Conflicts/\(note.id.uuidString)-\(UUID().uuidString).md"
+                try contentStore.write(data, at: path, condition: .createOnly)
+                // OS-owned versions are external to the adapter's vault-relative boundary.
+                // Preserve every version before resolving any of them.
+                for version in versions {
+                    try contentStore.write(Self.coordinatedRead(version.url), at: "Conflicts/cloud-\(UUID().uuidString).md", condition: .createOnly)
+                }
+                for version in versions { version.isResolved = true; try? version.remove() }
+                throw VaultError.conflict(root.appendingPathComponent(path).path)
+            } catch { failure = error }
+        }
+        if let failure { throw failure }; if let coordinationError { throw coordinationError }
     }
 
     public func setSourceReference(note: NoteRecord, sourceID: UUID, linked: Bool) throws -> NoteRecord {
@@ -287,8 +299,8 @@ public actor FileVaultRepository: VaultRepository {
                 let path = url.deletingLastPathComponent().lastPathComponent + "/" + url.lastPathComponent
                 var data: Data?
                 do {
-                    let checked = try checkedTrashURL(path)
-                    let bytes = try Self.coordinatedRead(checked); data = bytes
+                    _ = try checkedTrashURL(path)
+                    let bytes = try contentStore.read(at: path); data = bytes
                     let issue = url.deletingLastPathComponent() == legacy ? migrationIssues[url.lastPathComponent] : nil
                     return TrashedPage(note: try NoteCodec.decode(bytes, path: path, vaultID: manifest.id), readIssue: issue)
                 } catch {
