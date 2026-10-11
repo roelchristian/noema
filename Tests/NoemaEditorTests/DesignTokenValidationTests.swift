@@ -6,7 +6,8 @@ import NoemaBrand
 @testable import noema
 
 /// Opt-in rendered evidence uses an isolated temporary vault and explicit environment
-/// values. The fixture also builds against pre-token 0046a9e for comparable captures.
+/// values. NOEMA_LEGACY_TOKEN_FIXTURE retains the pre-token 0046a9e capture matrix;
+/// current workspace fixtures inject isolated pane preferences instead of reading user state.
 /// No screenshots are silently overwritten by ordinary `swift test` runs.
 @Suite("Design token native rendering (UI.TK07)", .serialized)
 struct DesignTokenValidationTests {
@@ -85,8 +86,12 @@ struct DesignTokenValidationTests {
         for appearance in appearances {
             model.scope = .wiki
             model.currentNote = note
-            try await render(ContentView(model: model), name: "workspace-page", size: NSSize(width: 1200, height: 760), appearance: appearance, directory: directory)
-            try await render(ContentView(model: model), name: "workspace-minimum", size: NSSize(width: 960, height: 620), appearance: appearance, directory: directory)
+            try await renderWorkspace(model: model, name: "workspace-page", size: NSSize(width: 1200, height: 760), appearance: appearance, directory: directory)
+            // Preserve the historical comparison fixture; native minimums have separate names.
+            try await renderWorkspace(model: model, name: "workspace-minimum", size: NSSize(width: 960, height: 620), appearance: appearance, directory: directory)
+#if !NOEMA_LEGACY_TOKEN_FIXTURE
+            try await renderWorkspace(model: model, name: "workspace-native-minimum", size: NSSize(width: 720, height: 540), appearance: appearance, directory: directory)
+#endif
             for tab in InspectorTab.pageTabs {
                 state.selectTab(tab, for: .page(note))
                 try await render(InspectorContainer(model: model, state: state, context: .page(note)), name: "inspector-\(tab.rawValue)", size: NSSize(width: 340, height: 620), appearance: appearance, directory: directory)
@@ -106,20 +111,44 @@ struct DesignTokenValidationTests {
             let presentation = SourcesTablePresentation()
             presentation.synchronize(inputs: [SourceTableInput(source: source)])
             try await render(SourcesLibraryView(model: model, presentation: presentation, selection: .constant(source.id), rename: { _ in }, delete: { _ in }), name: "sources-native-table", size: NSSize(width: 760, height: 620), appearance: appearance, directory: directory)
-            try await render(ContentView(model: model), name: "workspace-sources", size: NSSize(width: 960, height: 620), appearance: appearance, directory: directory)
+            try await renderWorkspace(model: model, name: "workspace-sources", size: NSSize(width: 960, height: 620), appearance: appearance, directory: directory)
             model.scope = .wiki
             model.notes = []
-            try await render(ContentView(model: model), name: "workspace-empty", size: NSSize(width: 960, height: 620), appearance: appearance, directory: directory)
+            try await renderWorkspace(model: model, name: "workspace-empty", size: NSSize(width: 960, height: 620), appearance: appearance, directory: directory)
             model.notes = [note]
             try await render(VaultCreationSheet(model: AppModel()), name: "vault-creation-sheet-content", size: NSSize(width: 540, height: 560), appearance: appearance, directory: directory)
-            try await render(ContentView(model: AppModel()), name: "workspace-no-vault", size: NSSize(width: 960, height: 620), appearance: appearance, directory: directory)
+            try await renderWorkspace(model: AppModel(), name: "workspace-no-vault", size: NSSize(width: 960, height: 620), appearance: appearance, directory: directory)
+#if !NOEMA_LEGACY_TOKEN_FIXTURE
+            try await renderWorkspace(model: AppModel(), name: "workspace-welcome-compact", size: NSSize(width: 680, height: 480), appearance: appearance, directory: directory)
+#endif
         }
         try #require(await model.lockVault())
         for appearance in appearances {
-            try await render(ContentView(model: model), name: "workspace-locked", size: NSSize(width: 960, height: 620), appearance: appearance, directory: directory)
+            try await renderWorkspace(model: model, name: "workspace-locked", size: NSSize(width: 960, height: 620), appearance: appearance, directory: directory)
         }
         _ = await model.closeVault()
-        print("UI.TK07 captured 136 native fixture PNGs in \(directory.path); Animations disabled for static capture; actual Reduce Motion is read-only OS state.")
+#if NOEMA_LEGACY_TOKEN_FIXTURE
+        let capturedCount = 136
+#else
+        let capturedCount = 152
+#endif
+        print("UI.TK07 captured \(capturedCount) native fixture PNGs in \(directory.path); Animations disabled for static capture; actual Reduce Motion is read-only OS state.")
+    }
+
+    @MainActor private func renderWorkspace(model: AppModel, name: String, size: NSSize,
+                                            appearance: AppearanceCase, directory: URL?) async throws {
+#if NOEMA_LEGACY_TOKEN_FIXTURE
+        // The historical source has no pane persistence or injected-state initializer.
+        try await render(ContentView(model: model), name: name, size: size,
+                         appearance: appearance, directory: directory)
+#else
+        let suiteName = "NoemaTokenValidation.Panes." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let panes = WorkspacePaneState(defaults: defaults)
+        try await render(ContentView(model: model, paneState: panes), name: name, size: size,
+                         appearance: appearance, directory: directory)
+#endif
     }
 
     @MainActor private func render<V: View>(_ view: V, name: String, size: NSSize,

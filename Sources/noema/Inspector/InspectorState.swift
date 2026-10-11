@@ -8,7 +8,15 @@ import VaultCore
     static let minWidth: CGFloat = 280
     static let maxWidth: CGFloat = 420
 
-    var isVisible: Bool = true
+    private var localVisibility: Bool = true
+    private let paneState: WorkspacePaneState?
+    var isVisible: Bool {
+        get { paneState?.isInspectorVisible ?? localVisibility }
+        set {
+            if let paneState { paneState.isInspectorVisible = newValue }
+            else { localVisibility = newValue }
+        }
+    }
     private(set) var selectedPageTab: InspectorTab = .properties
     private(set) var selectedSourceTab: InspectorTab = .properties
     let insightsCache = InsightsPresentationCache()
@@ -17,9 +25,11 @@ import VaultCore
     init(
         isVisible: Bool = true,
         selectedPageTab: InspectorTab = .properties,
-        selectedSourceTab: InspectorTab = .properties
+        selectedSourceTab: InspectorTab = .properties,
+        paneState: WorkspacePaneState? = nil
     ) {
-        self.isVisible = isVisible
+        self.paneState = paneState
+        self.localVisibility = isVisible
         self.selectedPageTab = InspectorTab.pageTabs.contains(selectedPageTab) ? selectedPageTab : .properties
         self.selectedSourceTab = InspectorTab.sourceTabs.contains(selectedSourceTab) ? selectedSourceTab : .properties
     }

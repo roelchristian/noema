@@ -14,7 +14,11 @@ if [[ -n "${BASELINE_REF:-}" ]]; then
 else
     cd "$repo_root"
 fi
-NOEMA_TOKEN_SCREENSHOT_DIR="$output" ./scripts/test.sh --filter DesignTokenValidationTests
+if [[ -n "${BASELINE_REF:-}" ]]; then
+    NOEMA_TOKEN_SCREENSHOT_DIR="$output" ./scripts/test.sh --filter DesignTokenValidationTests -Xswiftc -DNOEMA_LEGACY_TOKEN_FIXTURE
+else
+    NOEMA_TOKEN_SCREENSHOT_DIR="$output" ./scripts/test.sh --filter DesignTokenValidationTests
+fi
 if [[ -n "${BASELINE_REF:-}" ]]; then
     git -C "$repo_root" rev-parse "$BASELINE_REF" > "$output/source-ref.txt"
 else

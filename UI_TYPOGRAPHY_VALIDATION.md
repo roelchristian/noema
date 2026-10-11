@@ -1,17 +1,27 @@
 # UI.TYP08 — integration validation
 
-Validated on 12 October 2026 with macOS 27.0, arm64, and Swift 6.2.4. The complete native package suite passed **285 tests in 32 suites in 64.784 seconds**, with process exit status 0. The final capture rerun passed **6 tests in 1 suite in 27.374 seconds**, also with exit status 0. Production code did not change between these runs; the capture fixture was adjusted to retain its fixed scroll viewport after native layout grows the document.
+Validated on 12 October 2026 with macOS 27.0, arm64, and Swift 6.2.4. After merging current main (`d74a938`, accepted native toolbar/workspace panes), the complete native package suite passed **311 tests in 34 suites in 30.476 seconds**, with process exit status 0. Before that merge, the typography branch passed **285 tests in 32 suites in 64.784 seconds**. Its final capture rerun passed **6 tests in 1 suite in 27.374 seconds**, also with exit status 0. Typography renderers and capture fixtures are unchanged by the main merge; the existing screenshots remain evidence for those renderers.
 
 ## Reproduce and inspect
 
 ```sh
+# Complete suite on the current integrated branch; no PNG export requested.
+scripts/test.sh --scratch-path /private/tmp/noema-ui-typ02-build -j 4
+
+# Opt-in fixture export.
 NOEMA_TYPOGRAPHY_AFTER_CAPTURE_DIR=/absolute/output scripts/test.sh --scratch-path /private/tmp/noema-ui-typ02-build -j 4
 NOEMA_TYPOGRAPHY_AFTER_CAPTURE_DIR=/absolute/output scripts/test.sh --scratch-path /private/tmp/noema-ui-typ02-build -j 4 --filter TypographyIntegrationTests
 ```
 
-Use the canonical wrapper for this Command Line Tools installation's Swift Testing framework/plugin and cross-import-overlay flags. [Full native test output](Resources/Typography/Validation/full-tests.log) and [final capture output](Resources/Typography/Validation/capture-tests.log) retain the completed results. The opt-in `benchmarkSixteenSourceRowsAndUnchangedUpdates()` benchmark was skipped; the other enabled tests completed. The storage boundary guard passed 11 regression cases, 18 adversarial fixtures, and 40 reviewed exceptional calls. The native package build includes the application module; no personal vault or packaged application was launched for validation.
+Use the canonical wrapper for this Command Line Tools installation's Swift Testing framework/plugin and cross-import-overlay flags. [Current-main native test output](Resources/Typography/Validation/merged-main-tests.log), [pre-merge native test output](Resources/Typography/Validation/full-tests.log), and [final capture output](Resources/Typography/Validation/capture-tests.log) retain the completed results. The opt-in `benchmarkSixteenSourceRowsAndUnchangedUpdates()` benchmark was skipped; the other enabled tests completed. The storage boundary guard passed 11 regression cases, 18 adversarial fixtures, and 40 reviewed exceptional calls. The native package build includes the application module; no personal vault or packaged application was launched for validation.
 
-The [capture manifest](Resources/Typography/capture-manifest.csv) records dimensions and SHA-256 hashes for **84 PNGs**: eight [baseline images](Resources/Typography/Baseline/README.md) and 76 [final images](Resources/Typography/After/README.md). [Source hashes](Resources/Typography/Validation/source-sha256.txt) identify the final production sources and capture fixtures.
+The [capture manifest](Resources/Typography/capture-manifest.csv) records dimensions and SHA-256 hashes for **84 PNGs**: eight [baseline images](Resources/Typography/Baseline/README.md) and 76 [final images](Resources/Typography/After/README.md). [Capture source hashes](Resources/Typography/Validation/source-sha256.txt) identify production sources and capture fixtures at pre-merge typography commit `2c68a2d`. [Integrated source hashes](Resources/Typography/Validation/merged-main-source-sha256.txt) identify the current merged production sources and those same capture fixtures.
+
+## Current-main integration
+
+A clean final UI.TYP08 merge joins typography commit `2c68a2d` with main commit `d74a938`. The additional toolbar, workspace pane/window state and command tests are included in the 311-test result. No production changes were needed during post-merge validation. The final merge commit was amended only with this report, provenance documentation and evidence files after the successful run; the eight task commits remain intact.
+
+The editor typography, native article/storage renderers, reading geometry, source presentation/readers, preference view, theme/brand palette and both capture fixtures compare byte-for-byte with their pre-merge versions. `ContentView` incorporates current main's toolbar/panes and retains the shared `.readingColumn(reservesEditorGutter: true)` heading layout; the parent reviewer checked that integration. The screenshots represent the unchanged typography fixture views, not the newly integrated live workspace toolbar/panes. No capture regeneration was required. The pre-merge source hash list intentionally still includes the removed `TrafficLightEnforcer.swift`; use the separate integrated hash list for the current source tree.
 
 ## Native coverage
 
