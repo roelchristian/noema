@@ -76,20 +76,21 @@ import VaultCore
             if ["md", "txt", "html", "htm"].contains(ext) {
                 guard let text = String(data: data, encoding: .utf8) else { throw VaultError.invalid("Text reader requires UTF-8.") }
                 let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
-                let reader = NSTextView(frame: window.contentView!.bounds)
+                let reader = ReadingTextView(frame: window.contentView!.bounds)
                 reader.isEditable = false; reader.isSelectable = true; reader.autoresizingMask = [.width]
-                reader.isVerticallyResizable = true; reader.textContainer?.widthTracksTextView = true
+                reader.isVerticallyResizable = true; reader.isHorizontallyResizable = false
+                reader.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+                reader.textContainer?.widthTracksTextView = true
                 reader.textContainerInset = NSSize(width: 24, height: 24)
-                reader.font = .systemFont(ofSize: 14); reader.textColor = .textColor; reader.backgroundColor = .textBackgroundColor
-                if ext == "md", let markdown = try? AttributedString(markdown: text) {
-                    reader.textStorage?.setAttributedString(NSAttributedString(markdown))
-                } else if ["html", "htm"].contains(ext), let html = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil) {
-                    reader.textStorage?.setAttributedString(html)
-                } else { reader.string = text }
+                let content: SourceReadableContent
+                if ext == "md" { content = .markdown(MarkdownService.preview(text)) }
+                else if ["html", "htm"].contains(ext), let html = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil) {
+                    content = .html(html)
+                } else { content = .plainText(text) }
                 reader.setAccessibilityLabel(source.title)
                 scroll.documentView = reader
                 window.contentView = NSHostingView(rootView: ThemedSourceTextReader(scroll: scroll,
-                    original: reader.attributedString()).systemNoemaTheme())
+                    content: content).systemNoemaTheme())
             } else {
                 guard let preview = QLPreviewView(frame: window.contentView!.bounds, style: .normal) else { throw VaultError.unavailable("Quick Look is unavailable for this file.") }
                 preview.autoresizingMask = [.width, .height]
@@ -120,25 +121,41 @@ import VaultCore
     }
 }
 
+private enum SourceReadableContent {
+    case markdown([PreviewBlock]), html(NSAttributedString), plainText(String)
+
+    @MainActor func presentation(typography: EditorTypography, theme: NoemaTheme) -> NSAttributedString {
+        switch self {
+        case .markdown(let blocks): SourceTextPresentation.markdown(blocks, typography: typography, theme: theme)
+        case .html(let imported): SourceTextPresentation.html(imported, typography: typography, theme: theme)
+        case .plainText(let text): SourceTextPresentation.plainText(text, typography: typography, theme: theme)
+        }
+    }
+}
+
 private struct ThemedSourceTextReader: NSViewRepresentable {
     @Environment(\.noemaTheme) private var theme
+    @AppStorage(EditorPreferences.fontFamilyKey) private var fontFamily = ""
+    @AppStorage(EditorPreferences.fontSizeKey) private var fontSize = EditorTypography.defaultSize
     let scroll: NSScrollView
-    let original: NSAttributedString
+    let content: SourceReadableContent
 
+    func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView { scroll }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let reader = scroll.documentView as? NSTextView else { return }
-        let selection = reader.selectedRange()
-        reader.textStorage?.setAttributedString(original)
-        // Imported formatting remains intact; full palettes override only foreground color.
-        if theme.usesFullPalette {
-            reader.textStorage?.addAttribute(.foregroundColor, value: theme.nativeText(),
-                range: NSRange(location: 0, length: original.length))
+        guard let reader = scroll.documentView as? ReadingTextView else { return }
+        let typography = EditorTypography(family: fontFamily, size: fontSize)
+        if context.coordinator.typography != typography || context.coordinator.theme != theme {
+            reader.replacePresentation(content.presentation(typography: typography, theme: theme))
+            context.coordinator.typography = typography
+            context.coordinator.theme = theme
         }
-        reader.textColor = theme.nativeText()
         reader.backgroundColor = theme.native(.surfaceElevated)
         scroll.backgroundColor = theme.native(.surfaceElevated)
-        reader.linkTextAttributes = [.foregroundColor: theme.nativeText(.accentSecondary)]
-        reader.setSelectedRange(selection)
+        reader.linkTextAttributes = [.foregroundColor: theme.nativeText(.accentSecondary), .underlineStyle: NSUnderlineStyle.single.rawValue]
+    }
+    @MainActor final class Coordinator {
+        var typography: EditorTypography?
+        var theme: NoemaTheme?
     }
 }

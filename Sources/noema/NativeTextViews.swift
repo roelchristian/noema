@@ -4,6 +4,8 @@ import VaultCore
 
 struct MarkdownEditor: NSViewRepresentable {
     @Environment(\.noemaTheme) private var theme
+    @AppStorage(EditorPreferences.fontFamilyKey) private var fontFamily = ""
+    @AppStorage(EditorPreferences.fontSizeKey) private var fontSize = EditorTypography.defaultSize
     @Binding var text: String
     var action: EditorAction?
     var onWikiQuery: (String?) -> Void
@@ -17,7 +19,7 @@ struct MarkdownEditor: NSViewRepresentable {
         view.isRichText = false; view.allowsUndo = editable; view.isEditable = editable
         view.isAutomaticQuoteSubstitutionEnabled = false; view.isAutomaticDashSubstitutionEnabled = false
         view.isAutomaticTextReplacementEnabled = false; view.isAutomaticSpellingCorrectionEnabled = false
-        view.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
+        view.font = EditorTypography(family: fontFamily, size: fontSize).font(for: .code)
         view.textColor = theme.nativeText(); view.backgroundColor = theme.native(.surfaceElevated)
         view.textContainerInset = NSSize(width: 28, height: 24)
         view.isVerticallyResizable = true; view.isHorizontallyResizable = false
@@ -39,6 +41,21 @@ struct MarkdownEditor: NSViewRepresentable {
             .backgroundColor: NSColor.selectedTextBackgroundColor
         ]
         view.isEditable = editable
+        let typography = EditorTypography(family: fontFamily, size: fontSize)
+        if context.coordinator.typography != typography {
+            context.coordinator.typography = typography
+            let selections = view.selectedRanges
+            let origin = scroll.contentView.bounds.origin
+            view.font = typography.font(for: .code)
+            view.defaultParagraphStyle = typography.paragraphStyle(for: .code, previous: nil)
+            if let storage = view.textStorage, storage.length > 0 {
+                storage.addAttribute(.paragraphStyle, value: view.defaultParagraphStyle!, range: NSRange(location: 0, length: storage.length))
+            }
+            view.selectedRanges = selections
+            if let container = view.textContainer { view.layoutManager?.ensureLayout(for: container) }
+            scroll.contentView.scroll(to: origin)
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
         if view.string != text {
             let selection = view.selectedRange()
             view.string = text
@@ -54,6 +71,7 @@ struct MarkdownEditor: NSViewRepresentable {
         var parent: MarkdownEditor
         weak var view: NSTextView?
         var lastAction: UUID?
+        var typography: EditorTypography?
         init(_ parent: MarkdownEditor) { self.parent = parent }
         func textDidChange(_ notification: Notification) {
             guard let view else { return }
@@ -98,14 +116,16 @@ struct MarkdownEditor: NSViewRepresentable {
 
 struct MarkdownPreview: NSViewRepresentable {
     @Environment(\.noemaTheme) private var theme
+    @AppStorage(EditorPreferences.fontFamilyKey) private var fontFamily = ""
+    @AppStorage(EditorPreferences.fontSizeKey) private var fontSize = EditorTypography.defaultSize
     var blocks: [PreviewBlock]
     var onWikiLink: (String) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(onWikiLink) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
-        let view = NSTextView()
+        let view = ReadingTextView()
         view.isEditable = false; view.isSelectable = true; view.drawsBackground = false
-        view.textContainerInset = NSSize(width: 28, height: 24)
+        view.textContainerInset = NSSize(width: 24, height: 24)
         view.isVerticallyResizable = true; view.isHorizontallyResizable = false; view.autoresizingMask = [.width]
         view.textContainer?.widthTracksTextView = true
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -116,56 +136,24 @@ struct MarkdownPreview: NSViewRepresentable {
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.follow = onWikiLink
-        guard let view = scroll.documentView as? NSTextView else { return }
+        guard let view = scroll.documentView as? ReadingTextView else { return }
         view.linkTextAttributes = [.foregroundColor: theme.nativeText(.accentSecondary), .underlineStyle: NSUnderlineStyle.single.rawValue]
         view.selectedTextAttributes = [
             .foregroundColor: NSColor.selectedTextColor,
             .backgroundColor: NSColor.selectedTextBackgroundColor
         ]
-        guard context.coordinator.blocks != blocks || context.coordinator.theme != theme else { return }
-        let selection = view.selectedRange()
+        let typography = EditorTypography(family: fontFamily, size: fontSize)
+        guard context.coordinator.blocks != blocks || context.coordinator.theme != theme || context.coordinator.typography != typography else { return }
         context.coordinator.blocks = blocks
         context.coordinator.theme = theme
-        let result = NSMutableAttributedString(string: "")
-        for block in blocks {
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineSpacing = 6; paragraph.paragraphSpacing = 16
-            var size: CGFloat = 15, weight: NSFont.Weight = .regular, color = theme.nativeText()
-            switch block.style {
-            case .heading(let level): size = [29, 23, 19, 17, 16, 15][min(max(level - 1, 0), 5)]; weight = .semibold; paragraph.paragraphSpacingBefore = 16
-            case .quote: color = theme.nativeText(.textMuted); paragraph.headIndent = 16; paragraph.firstLineHeadIndent = 16
-            case .code: size = 13; paragraph.lineSpacing = 3
-            case .math: size = 16; paragraph.alignment = .center; paragraph.paragraphSpacingBefore = 12; paragraph.paragraphSpacing = 18
-            case .rule: color = theme.native(.border)
-            case .paragraph: break
-            }
-            for span in block.spans {
-                var font = span.code ? NSFont.monospacedSystemFont(ofSize: size - 1, weight: span.bold ? .semibold : .regular) : NSFont.systemFont(ofSize: size, weight: span.bold ? .semibold : weight)
-                if span.math {
-                    font = NSFontDescriptor.preferredFontDescriptor(forTextStyle: .body).withDesign(.serif).flatMap { NSFont(descriptor: $0, size: size) } ?? font
-                    font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
-                }
-                if span.italic { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
-                var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: paragraph]
-                if span.code || span.math { attributes[.backgroundColor] = theme.native(.accentPrimary).withAlphaComponent(theme.dark ? 0.18 : 0.08) }
-                if let target = span.wikiTarget {
-                    var components = URLComponents(); components.scheme = "noema"; components.host = "wiki"
-                    components.queryItems = [URLQueryItem(name: "title", value: target)]
-                    attributes[.link] = components.url
-                } else if let address = span.url, let url = URL(string: address), ["http", "https", "mailto"].contains(url.scheme ?? "") { attributes[.link] = url }
-                let text = span.math ? (span.rawMath.map { TeXMath.render($0, display: block.style == .math) } ?? span.text) : span.text
-                result.append(NSAttributedString(string: text, attributes: attributes))
-            }
-            result.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: paragraph]))
-        }
-        view.textStorage?.setAttributedString(result)
-        view.setSelectedRange(NSRange(location: min(selection.location, result.length),
-                                      length: min(selection.length, max(0, result.length - selection.location))))
+        context.coordinator.typography = typography
+        view.replacePresentation(SourceTextPresentation.markdown(blocks, typography: typography, theme: theme))
     }
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         var follow: (String) -> Void
         var blocks: [PreviewBlock]?
         var theme: NoemaTheme?
+        var typography: EditorTypography?
         init(_ follow: @escaping (String) -> Void) { self.follow = follow }
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
             guard let url = link as? URL else { return false }
