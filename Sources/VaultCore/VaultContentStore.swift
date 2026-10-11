@@ -8,6 +8,10 @@ import Foundation
 public protocol VaultContentStore: Sendable {
     func createDirectory(at path: String) throws
     func read(at path: String) throws -> Data
+    /// Optional coordinated change evidence for a currently accessible, readable original.
+    /// Providers must reject unavailable/conflicted paths even when attributes are unchanged.
+    /// This is never a cryptographic verification.
+    func changeToken(at path: String) throws -> VaultContentChangeToken?
     func snapshot(at path: String) throws -> VaultContentSnapshot
     func write(_ data: Data, at path: String, condition: VaultWriteCondition) throws
     func move(from source: String, to destination: String, expected: VaultContentSnapshot) throws
@@ -49,5 +53,27 @@ public enum VaultContentStoreError: Error, Sendable, Equatable, LocalizedError {
         case .unsupportedItem(let path): "Unsupported vault item: \(path)"
         case .coordination(_, _, let message), .io(_, _, let message): message
         }
+    }
+}
+
+/// Providers without reliable change evidence conservatively return nil and reload originals.
+public extension VaultContentStore {
+    func changeToken(at path: String) throws -> VaultContentChangeToken? { nil }
+}
+
+public struct VaultContentChangeToken: Sendable, Equatable {
+    public let device: Int32
+    public let inode: UInt64
+    public let size: Int64
+    public let modifiedSeconds: Int64
+    public let modifiedNanoseconds: Int64
+    public let changedSeconds: Int64
+    public let changedNanoseconds: Int64
+
+    public init(device: Int32, inode: UInt64, size: Int64, modifiedSeconds: Int64,
+                modifiedNanoseconds: Int64, changedSeconds: Int64, changedNanoseconds: Int64) {
+        self.device = device; self.inode = inode; self.size = size
+        self.modifiedSeconds = modifiedSeconds; self.modifiedNanoseconds = modifiedNanoseconds
+        self.changedSeconds = changedSeconds; self.changedNanoseconds = changedNanoseconds
     }
 }

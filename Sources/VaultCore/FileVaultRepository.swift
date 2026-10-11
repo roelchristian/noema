@@ -32,6 +32,8 @@ public actor FileVaultRepository: VaultRepository {
     public nonisolated let sessionLease: VaultSessionLease?
     public nonisolated let accessGate: VaultAccessGate?
     private var cache: [String: (Date?, Int?, NoteRecord)] = [:]
+    private let sourceCache = SourceSnapshotCache()
+    private var cacheInvalidatorID: UUID?
     private var downloadingSources: [UUID: SourceRecord] = [:]
     private let fm = FileManager.default
     private let encoder: JSONEncoder = {
@@ -165,7 +167,22 @@ public actor FileVaultRepository: VaultRepository {
         self.contentStore = contentStore
         self.sessionLease = sessionLease
         self.accessGate = accessGate
+        let gate = (contentStore as? GatedVaultContentStore)?.gate ?? accessGate
+        if let gate, let lease = sessionLease ?? gate.currentLease {
+            let cache = sourceCache
+            cacheInvalidatorID = gate.registerContentInvalidator(lease: lease) { cache.retire() }
+        }
     }
+
+    deinit {
+        if let cacheInvalidatorID {
+            ((contentStore as? GatedVaultContentStore)?.gate ?? accessGate)?.removeContentInvalidator(cacheInvalidatorID)
+        }
+    }
+
+    /// Diagnostic count contains no content and is internal for lifecycle regression tests.
+    var cachedSourceCount: Int { sourceCache.count }
+
 
     nonisolated private func validateAccess(operation: String) throws {
         if let gated = contentStore as? GatedVaultContentStore {
@@ -181,6 +198,12 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func scan(progress: (@Sendable (ScanBatch) -> Void)? = nil) throws -> ScanBatch {
+        try scan(sourceLoading: .complete, progress: progress)
+    }
+
+    public func scan(sourceLoading: SourceLoadingPolicy, progress: (@Sendable (ScanBatch) -> Void)? = nil) throws -> ScanBatch {
+        defer { if Task.isCancelled { sourceCache.clear() } }
+        try Task.checkCancellation()
         try validateAccess(operation: "scan")
         var result = ScanBatch(), chunk = ScanBatch()
         var seenIDs: Set<UUID> = [], seenPaths: Set<String> = []
@@ -231,50 +254,150 @@ public actor FileVaultRepository: VaultRepository {
         }
         cache = cache.filter { seenPaths.contains($0.key) }
         if let enumerationError { throw VaultError.storage(enumerationError) }
-        let directories = try fm.contentsOfDirectory(at: root.appendingPathComponent("Sources"), includingPropertiesForKeys: nil, options: [])
-        for directory in directories {
-            try validateAccess(operation: "scan")
-            guard UUID(uuidString: directory.lastPathComponent) != nil else { continue }
-            do {
-                var metadata = try JSONDecoder().decode(SourceMetadata.self, from: contentStore.read(at: "Sources/" + directory.lastPathComponent + "/metadata.json"))
-                guard metadata.id.uuidString.lowercased() == directory.lastPathComponent.lowercased(),
-                      metadata.storedFilename == URL(fileURLWithPath: metadata.storedFilename).lastPathComponent,
-                      !metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Invalid source metadata.") }
-                let data: Data
-                do {
-                    data = try metadata.linkedBookmark.map(Self.readLinkedSource) ?? contentStore.read(at: "Sources/" + directory.lastPathComponent + "/" + metadata.storedFilename)
-                } catch let accessError as VaultAccessError {
-                    throw accessError
-                } catch {
-                    guard metadata.isLinked else { throw error }
-                    let issue = Self.sourceAvailabilityMessage(error, linked: true)
-                    let source = SourceRecord(metadata: metadata, body: "", availabilityIssue: issue)
-                    result.sources.append(source); chunk.sources.append(source)
-                    result.issues.append("Source \(metadata.title): \(issue)")
-                    continue
-                }
-                guard metadata.isLinked || digest(data) == metadata.sha256 else { throw VaultError.invalid("Original source has changed; its checksum does not match. Restore the original or import a new copy.") }
-                metadata.fileSize = data.count
-                let body = try Self.sourceText(data, filename: metadata.originalFilename)
-                let source = SourceRecord(metadata: metadata, body: body, availabilityIssue: metadata.webAvailabilityIssue)
-                result.sources.append(source); chunk.sources.append(source)
-                if chunk.sources.count >= 128 { progress?(chunk); chunk = ScanBatch() }
-            } catch let accessError as VaultAccessError {
-                throw accessError
-            } catch { result.issues.append("Source \(directory.lastPathComponent): \(error.localizedDescription). Incomplete imports are left intact for recovery.") }
-        }
-        let onDiskSourceIDs = Set(result.sources.map(\.id))
-        for pending in downloadingSources.values where !onDiskSourceIDs.contains(pending.id) {
-            result.sources.append(pending)
-            chunk.sources.append(pending)
-        }
+        let sourceBatch = try scanSources(loading: sourceLoading)
+        result.sources = sourceBatch.sources
+        result.issues += sourceBatch.issues
+        result.sourceVerification = sourceBatch.sourceVerification
+        result.sourceContentRevisions = sourceBatch.sourceContentRevisions
+        chunk.sources = sourceBatch.sources
         progress?(chunk)
         if let conflicts = try? fm.contentsOfDirectory(at: root.appendingPathComponent("Conflicts"), includingPropertiesForKeys: nil), !conflicts.isEmpty {
             result.issues.append("\(conflicts.count) preserved conflict file(s). Use Reveal Vault to inspect the Conflicts folder.")
         }
         result.notes.sort { $0.updatedAt > $1.updatedAt }
         result.sources.sort { $0.metadata.capturedAt > $1.metadata.capturedAt }
+        try Task.checkCancellation()
+        try validateAccess(operation: "scan.complete")
         return result
+    }
+
+    /// Discovery exposes explicit metadata-only records. Complete scans preserve the legacy
+    /// full-content contract; verifyOriginals deliberately bypasses change-indicator reuse.
+    public func scanSources(loading: SourceLoadingPolicy = .metadataOnly, sourceID: UUID? = nil) throws -> ScanBatch {
+        try SourceScanPerformance.measure("Source Scan") { try discoverSources(loading: loading, sourceID: sourceID) }
+    }
+
+    private func discoverSources(loading: SourceLoadingPolicy, sourceID: UUID?) throws -> ScanBatch {
+        do {
+            try Task.checkCancellation()
+            try validateAccess(operation: "scanSources")
+            var batch = ScanBatch()
+            let directories = try fm.contentsOfDirectory(at: root.appendingPathComponent("Sources"), includingPropertiesForKeys: nil)
+            var seen: Set<UUID> = []
+            for directory in directories {
+                try Task.checkCancellation()
+                try validateAccess(operation: "scanSources.item")
+                guard let id = UUID(uuidString: directory.lastPathComponent) else { continue }
+                seen.insert(id)
+                if let sourceID, sourceID != id { continue }
+                do {
+                    let path = "Sources/" + directory.lastPathComponent + "/"
+                    let bytes = try contentStore.read(at: path + "metadata.json")
+                    var metadata = try JSONDecoder().decode(SourceMetadata.self, from: bytes)
+                    guard metadata.id == id,
+                          metadata.storedFilename == URL(fileURLWithPath: metadata.storedFilename).lastPathComponent,
+                          !metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Invalid source metadata.") }
+                    let token: VaultContentChangeToken?
+                    do { token = try metadata.isLinked ? nil : contentStore.changeToken(at: path + metadata.storedFilename) }
+                    catch let error as VaultAccessError { throw error }
+                    catch {
+                        sourceCache.remove(id)
+                        guard loading == .metadataOnly else { throw error }
+                        let issue = Self.sourceAvailabilityMessage(error, linked: false)
+                        batch.sources.append(SourceRecord(metadata: metadata, body: "", availabilityIssue: issue, contentState: .unavailable))
+                        batch.sourceVerification[id] = .notVerified
+                        batch.issues.append("Source \(metadata.title): \(issue)")
+                        continue
+                    }
+                    let old = sourceCache.entry(id)
+                    let reusable = token != nil && old?.token == token && old?.metadataBytes == bytes
+                    if !reusable { sourceCache.remove(id) }
+                    if loading == .metadataOnly {
+                        if reusable, let old { metadata = old.record.metadata }
+                        else if let token { metadata.fileSize = Int(exactly: token.size) }
+                        batch.sources.append(SourceRecord(metadata: metadata, body: "", availabilityIssue: metadata.webAvailabilityIssue ?? "Not verified", contentState: .notLoaded))
+                        batch.sourceVerification[id] = .notVerified
+                        if reusable, let old { batch.sourceContentRevisions[id] = old.contentRevision }
+                        continue
+                    }
+                    if loading == .complete, reusable, let old {
+                        try validateAccess(operation: "scanSources.cached")
+                        SourceScanPerformance.event("Source Cache Reuse")
+                        batch.sources.append(old.record)
+                        batch.sourceContentRevisions[id] = old.contentRevision
+                        batch.sourceVerification[id] = .reusedPreviouslyVerified
+                        continue
+                    }
+                    let data: Data
+                    do {
+                        data = try SourceScanPerformance.measure("Source Original Read") {
+                            try metadata.linkedBookmark.map(Self.readLinkedSource) ?? contentStore.read(at: path + metadata.storedFilename)
+                        }
+                    } catch let error as VaultAccessError { throw error }
+                    catch {
+                        guard metadata.isLinked else { throw error }
+                        let issue = Self.sourceAvailabilityMessage(error, linked: true)
+                        batch.sources.append(SourceRecord(metadata: metadata, body: "", availabilityIssue: issue, contentState: .unavailable))
+                        batch.sourceVerification[id] = .notVerified
+                        batch.issues.append("Source \(metadata.title): \(issue)")
+                        continue
+                    }
+                    guard metadata.isLinked || digest(data) == metadata.sha256 else {
+                        throw VaultError.invalid("Original source has changed; its checksum does not match. Restore the original or import a new copy.")
+                    }
+                    metadata.fileSize = data.count
+                    let body = try SourceScanPerformance.measure("Source Text Extraction") {
+                        try Self.sourceText(data, filename: metadata.originalFilename)
+                    }
+                    let source = SourceRecord(metadata: metadata, body: body, availabilityIssue: metadata.webAvailabilityIssue)
+                    let revision = digest(Data(body.utf8))
+                    try Task.checkCancellation()
+                    try validateAccess(operation: "scanSources.loaded")
+                    // Recheck after reading; never associate bytes with a token captured before a concurrent replacement.
+                    if let token, try contentStore.changeToken(at: path + metadata.storedFilename) == token {
+                        sourceCache.insert(.init(metadataBytes: bytes, token: token, record: source, contentRevision: revision), id: id)
+                    }
+                    batch.sources.append(source)
+                    batch.sourceContentRevisions[id] = revision
+                    batch.sourceVerification[id] = metadata.isLinked ? .linkedContentRead : .verifiedThisScan
+                } catch let error as VaultAccessError { throw error }
+                catch is CancellationError { throw CancellationError() }
+                catch {
+                    sourceCache.remove(id)
+                    batch.issues.append("Source \(directory.lastPathComponent): \(error.localizedDescription). Incomplete imports are left intact for recovery.")
+                    // A metadata-only consumer can still display an inaccessible original, without old plaintext.
+                    if let data = try? contentStore.read(at: "Sources/" + directory.lastPathComponent + "/metadata.json"),
+                       let metadata = try? JSONDecoder().decode(SourceMetadata.self, from: data), metadata.id == id,
+                       case VaultContentStoreError.unavailable = error {
+                        batch.sources.append(SourceRecord(metadata: metadata, body: "", availabilityIssue: Self.sourceAvailabilityMessage(error, linked: metadata.isLinked), contentState: .unavailable))
+                        batch.sourceVerification[id] = .notVerified
+                    }
+                }
+            }
+            if sourceID == nil { sourceCache.retain(seen) }
+            else if let sourceID, !seen.contains(sourceID) { sourceCache.remove(sourceID) }
+            let ids = Set(batch.sources.map(\.id))
+            for pending in downloadingSources.values where !ids.contains(pending.id) && (sourceID == nil || sourceID == pending.id) {
+                var pending = pending; pending.contentState = .unavailable
+                batch.sources.append(pending); batch.sourceVerification[pending.id] = .notVerified
+            }
+            batch.sources.sort { $0.metadata.capturedAt > $1.metadata.capturedAt }
+            try Task.checkCancellation()
+            try validateAccess(operation: "scanSources.complete")
+            return batch
+        } catch {
+            sourceCache.clear()
+            throw error
+        }
+    }
+
+    /// Demand-driven loading by identity always rediscovers current metadata through the store.
+    public func loadSource(id: UUID, verifyOriginal: Bool = false) throws -> SourceRecord {
+        let batch = try scanSources(loading: verifyOriginal ? .verifyOriginals : .complete, sourceID: id)
+        guard let source = batch.sources.first(where: { $0.id == id }), source.contentState == .loaded else {
+            throw VaultError.unavailable(batch.issues.first ?? "Source is unavailable. Refresh the vault.")
+        }
+        return source
     }
 
     public func create(title: String = "Untitled", body: String = "") throws -> NoteRecord {
@@ -301,7 +424,7 @@ public actor FileVaultRepository: VaultRepository {
                   current.metadata.sha256 == source.metadata.sha256,
                   current.metadata.linkedBookmark == source.metadata.linkedBookmark,
                   current.metadata.storedFilename == source.metadata.storedFilename,
-                  current.body == source.body else {
+                  source.contentState == .loaded, current.body == source.body else {
                 throw VaultError.invalid("Source changed or was removed. Refresh before creating a page.")
             }
         }
@@ -747,7 +870,7 @@ public actor FileVaultRepository: VaultRepository {
             linkedBookmark: shouldImport ? nil : Data(),
             storedFilename: "original.\(storedExtension)"
         )
-        let source = SourceRecord(metadata: metadata, body: "", availabilityIssue: "Downloading from iCloud")
+        let source = SourceRecord(metadata: metadata, body: "", availabilityIssue: "Downloading from iCloud", contentState: .unavailable)
         downloadingSources[id] = source
         return source
     }
@@ -880,6 +1003,7 @@ public actor FileVaultRepository: VaultRepository {
 
     public func renameSource(_ source: SourceRecord, title: String, summary: String? = nil, lcc: String? = nil) throws -> SourceRecord {
         try validateAccess(operation: "renameSource")
+        sourceCache.remove(source.id)
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, title.count <= 120 else { throw VaultError.invalid("Invalid source title.") }
         let summary = summary?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -904,11 +1028,12 @@ public actor FileVaultRepository: VaultRepository {
         if let summary { metadata.aiSummary = summary }
         if let cleanLCC { metadata.lcc = cleanLCC }
         try contentStore.write(encoder.encode(metadata), at: path, condition: .replace(expected: bytes))
-        return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue)
+        return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue ?? (source.contentState == .notLoaded ? "Not verified" : source.availabilityIssue), contentState: source.contentState)
     }
 
     public func updateSourceLCC(_ source: SourceRecord, lcc: String?) throws -> SourceRecord {
         try validateAccess(operation: "updateSourceLCC")
+        sourceCache.remove(source.id)
         let normalizedLCC = lcc?.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanLCC = (normalizedLCC?.isEmpty == false) ? normalizedLCC : nil
         if let cleanLCC, cleanLCC.count > 24 || cleanLCC.contains("\n") || cleanLCC.contains("\r") {
@@ -930,11 +1055,12 @@ public actor FileVaultRepository: VaultRepository {
         }
         metadata.lcc = cleanLCC
         try contentStore.write(encoder.encode(metadata), at: path, condition: .replace(expected: bytes))
-        return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue)
+        return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue ?? (source.contentState == .notLoaded ? "Not verified" : source.availabilityIssue), contentState: source.contentState)
     }
 
     public func deleteSource(_ source: SourceRecord) throws {
         try validateAccess(operation: "deleteSource")
+        sourceCache.remove(source.id)
         if downloadingSources.removeValue(forKey: source.id) != nil {
             let directory = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
             if !fm.fileExists(atPath: directory.path) { return }
@@ -1118,7 +1244,7 @@ extension FileVaultRepository {
                 if !metadata.isLinked {
                     guard let original = files[metadata.storedFilename], digest(original) == metadata.sha256 else { throw VaultError.invalid("Imported original changed. Repair it before restoring.") }
                 }
-                items.append(.source(TrashedSource(id: path, source: SourceRecord(metadata: metadata, body: ""), contentHash: hash)))
+                items.append(.source(TrashedSource(id: path, source: SourceRecord(metadata: metadata, body: "", contentState: .notLoaded), contentHash: hash)))
             } catch let accessError as VaultAccessError {
                 throw accessError
             } catch { items.append(.source(TrashedSource(id: path, contentHash: hash, readIssue: error.localizedDescription))) }
@@ -1131,6 +1257,7 @@ extension FileVaultRepository {
         case .page(let page): try restore(page)
         case .source(let entry):
             guard entry.readIssue == nil, let source = entry.source else { throw VaultError.invalid("Repair this source before restoring it.") }
+            sourceCache.remove(source.id)
             let destination = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
             guard destination.deletingLastPathComponent().resolvingSymlinksInPath() == destination.deletingLastPathComponent() else { throw VaultError.invalid("Unsafe Sources directory.") }
             try rejectDuplicateSource(checksum: source.metadata.sha256)

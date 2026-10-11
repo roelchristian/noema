@@ -1013,13 +1013,20 @@ struct EditorAction: Equatable {
             }
         }
         do {
+            // Publish metadata before original verification/extraction on a cold session.
+            // Existing populated sessions retain their complete records until the scan commits.
+            if initiallyEmpty {
+                let metadata = try await repository.scanSources()
+                guard isCompletionValid(completionTicket, operation: "refresh.sourceMetadata") else { return }
+                sources = metadata.sources
+            }
             let result = try await repository.scan { [weak self] chunk in
                 guard initiallyEmpty else { return }
                 Task { @MainActor in
                     guard let self,
                           self.isCompletionValid(completionTicket, operation: "refresh.scanChunk"),
                           self.progressTicket == scanTicket else { return }
-                    self.notes.append(contentsOf: chunk.notes); self.sources.append(contentsOf: chunk.sources)
+                    self.notes.append(contentsOf: chunk.notes)
                     self.rows = self.notes.map { LibraryRow(note: $0) }
                 }
             }
@@ -1029,7 +1036,18 @@ struct EditorAction: Equatable {
             for note in result.notes {
                 if let previous = previousTitles[note.id] { recordPageRename(note.id, from: previous, to: note.title) }
             }
-            notes = result.notes; sources = result.sources; issues = result.issues.filter { !dismissedVaultNotices.contains($0) }
+            notes = result.notes; sources = result.sources
+            // Explicit checks are snapshots too: never let an old Available override a new failure.
+            let availableIDs = Set(sources.filter { $0.contentState == .loaded && $0.availabilityIssue == nil }.map(\.id))
+            sourceAvailability = sourceAvailability.filter { availableIDs.contains($0.key) }
+            if let selected = currentSource, let fresh = sources.first(where: { $0.id == selected.id }) {
+                currentSource = fresh; title = fresh.title; body = fresh.body
+                if fresh.contentState == .unavailable { preview = []; wordCount = 0 }
+                else if selected.contentState != fresh.contentState || selected.body != fresh.body { generatePreview() }
+            } else if currentSource != nil {
+                currentSource = nil; selectedID = nil; title = ""; body = ""; preview = []; wordCount = 0
+            }
+            issues = result.issues.filter { !dismissedVaultNotices.contains($0) }
             do {
                 let expirationFailures = try await repository.expireTrash(now: Date())
                 guard isCompletionValid(completionTicket, operation: "refresh.expireTrash") else { return }
@@ -1318,7 +1336,7 @@ struct EditorAction: Equatable {
                 guard isCompletionValid(completionTicket, operation: "updateSourceLCC.save") else { return }
                 if let i = sources.firstIndex(where: { $0.id == source.id }) { sources[i] = updated }
                 if currentSource?.id == source.id { currentSource = updated }
-                if let index { var entries = ScanBatch(); entries.notes = notes; entries.sources = sources; try await index.reconcile(entries) }
+                if let index { try await index.reconcile(repository.scan()) }
             } catch {
                 if isCompletionValid(completionTicket, operation: "updateSourceLCC.error") {
                     errorMessage = error.localizedDescription
@@ -2001,11 +2019,16 @@ struct EditorAction: Equatable {
             }
             try gated.validateAccess(operation: "sourceSummaryContent")
         }
+        let loaded: SourceRecord
+        if source.contentState == .loaded { loaded = source }
+        else if let repository { loaded = try await repository.loadSource(id: source.id) }
+        else { throw VaultError.unavailable("Source content is unavailable.") }
         return try await Task.detached {
+            let source = loaded
             if let gated = contentStore as? GatedVaultContentStore {
                 try gated.validateAccess(operation: "sourceSummaryContent")
             }
-            if !source.body.isEmpty {
+            if !source.metadata.originalFilename.lowercased().hasSuffix(".pdf") {
                 let ext = URL(fileURLWithPath: source.metadata.originalFilename).pathExtension.lowercased()
                 let content = ["html", "htm"].contains(ext) ? source.body.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression) : source.body
                 return BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(content).withoutAISummary))
@@ -2026,7 +2049,8 @@ struct EditorAction: Equatable {
         sourcePageTasks[source.id] = Task {
             defer { if generation == ticket { generatingSourcePages.remove(source.id); sourcePageTasks.removeValue(forKey: source.id) } }
             do {
-                let text = try await sourceSummaryContent(source, root: root)
+                let materialized = try await repository.loadSource(id: source.id)
+                let text = try await sourceSummaryContent(materialized, root: root)
                 guard isCompletionValid(completionTicket, operation: "createPageFromSource.read") else { return }
                 guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw VaultError.unavailable("No readable text for a wiki page.")
@@ -2039,7 +2063,7 @@ struct EditorAction: Equatable {
                 guard isCompletionValid(completionTicket, operation: "createPageFromSource.generate"),
                       await finishCurrentPage(),
                       isCompletionValid(completionTicket, operation: "createPageFromSource.preCreate") else { return }
-                let note = try await repository.create(title: pageTitle, body: article, source: source, lcc: lcc)
+                let note = try await repository.create(title: pageTitle, body: article, source: materialized, lcc: lcc)
                 guard isCompletionValid(completionTicket, operation: "createPageFromSource.create") else { return }
                 errorMessage = nil; searchText = ""; scope = .wiki; reading = false
                 notes.insert(note, at: 0); selectedID = note.id; currentSource = nil; apply(note)
@@ -2096,6 +2120,7 @@ struct EditorAction: Equatable {
                 }
                 do {
                     if let reason = client.unavailabilityReason() { throw VaultError.unavailable(reason) }
+                    let source = try await repository.loadSource(id: source.id)
                     let text = try await sourceSummaryContent(source, root: root)
                     guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.read") else { return }
                     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw VaultError.unavailable("No readable text for automatic naming and summary. Original file name retained.") }
@@ -2112,7 +2137,7 @@ struct EditorAction: Equatable {
                     let renamed = try await repository.renameSource(source, title: title, summary: summary, lcc: lcc)
                     guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.rename") else { return }
                     if let position = sources.firstIndex(where: { $0.id == source.id }) { sources[position] = renamed }
-                    if let index { var entries = ScanBatch(); entries.notes = notes; entries.sources = sources; try await index.reconcile(entries) }
+                    if let index { try await index.reconcile(repository.scan()) }
                     guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.reconcile") else { return }
                     await updateRows()
                 } catch { if isCompletionValid(completionTicket, operation: "enqueueSourceTitle.error") { errorMessage = "Source naming: " + error.localizedDescription } }

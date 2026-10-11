@@ -42,17 +42,47 @@ public struct SourceMetadata: Codable, Identifiable, Sendable, Equatable {
     public var isLinked: Bool { linkedBookmark != nil }
     public var storedFilename: String
 }
+public enum SourceContentState: String, Codable, Sendable {
+    case loaded, notLoaded, unavailable
+}
+
 public struct SourceRecord: Codable, Identifiable, Sendable, Equatable {
     public var metadata: SourceMetadata
     public var body: String
     public var availabilityIssue: String? = nil
+    public var contentState: SourceContentState
     public var id: UUID { metadata.id }
     public var title: String { metadata.title }
+
+    public init(metadata: SourceMetadata, body: String, availabilityIssue: String? = nil, contentState: SourceContentState = .loaded) {
+        self.metadata = metadata; self.body = body
+        self.availabilityIssue = availabilityIssue; self.contentState = contentState
+    }
+
+    private enum CodingKeys: String, CodingKey { case metadata, body, availabilityIssue, contentState }
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        metadata = try values.decode(SourceMetadata.self, forKey: .metadata)
+        body = try values.decode(String.self, forKey: .body)
+        availabilityIssue = try values.decodeIfPresent(String.self, forKey: .availabilityIssue)
+        // Existing index records contain complete bodies, including genuinely empty originals.
+        contentState = try values.decodeIfPresent(SourceContentState.self, forKey: .contentState) ?? .loaded
+    }
 }
+
+public enum SourceLoadingPolicy: Sendable { case metadataOnly, complete, verifyOriginals }
+public enum SourceScanVerification: Sendable, Equatable {
+    case notVerified, verifiedThisScan, reusedPreviouslyVerified, linkedContentRead
+}
+
 public struct ScanBatch: Sendable {
     public var notes: [NoteRecord] = []
     public var sources: [SourceRecord] = []
     public var issues: [String] = []
+    /// Transient scan evidence; neither timestamps nor metadata-only discovery verify bytes.
+    public var sourceVerification: [UUID: SourceScanVerification] = [:]
+    /// Extracted-content revisions permit index reconciliation without hashing cached bodies again.
+    public var sourceContentRevisions: [UUID: String] = [:]
     public init() {}
 }
 public struct WikiLink: Codable, Sendable, Equatable {
