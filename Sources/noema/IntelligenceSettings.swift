@@ -4,9 +4,15 @@ import SwiftUI
 /// request, read credentials, or change automatic on-device work.
 struct IntelligenceSettings: View {
     let preferences: AIProviderPreferences
+    var appModel: AppModel? = nil
+    @State private var showingActivity = false
 
     var body: some View {
         Section("Artificial Intelligence") {
+            Button("Activity History…") { showingActivity = true }
+                .sheet(isPresented: $showingActivity) {
+                    AIActivityHistoryView(model: appModel)
+                }
             Picker("Default AI provider", selection: Binding(
                 get: { preferences.settings.defaultProvider },
                 set: { preferences.setDefaultProvider($0) }

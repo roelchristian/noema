@@ -32,10 +32,12 @@ enum AISummaryPlacement: String, CaseIterable {
 struct NoemaSettings: View {
     let externalAIService: ExternalAIService
     let aiProviderPreferences: AIProviderPreferences
+    let appModel: AppModel?
 
-    init(externalAIService: ExternalAIService, aiProviderPreferences: AIProviderPreferences? = nil) {
+    init(externalAIService: ExternalAIService, aiProviderPreferences: AIProviderPreferences? = nil, appModel: AppModel? = nil) {
         self.externalAIService = externalAIService
         self.aiProviderPreferences = aiProviderPreferences ?? AIProviderPreferences()
+        self.appModel = appModel
     }
 
     @AppStorage(EditorPreferences.fontFamilyKey) private var fontFamily = ""
@@ -124,7 +126,7 @@ struct NoemaSettings: View {
                 Text("Manage custom \\newcommand definitions (0–3 arguments) for inline ($...$) and display ($$...$$) math.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            IntelligenceSettings(preferences: aiProviderPreferences)
+            IntelligenceSettings(preferences: aiProviderPreferences, appModel: appModel)
             Section("On-device intelligence") {
                 Toggle("Enable on-device AI summaries", isOn: $aiSummaries)
                 Picker("Show page summaries", selection: $aiSummaryPlacement) {
