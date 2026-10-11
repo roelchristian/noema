@@ -1,12 +1,40 @@
 import Foundation
+import SwiftUI
 import VaultCore
 
 /// Window controls and menu commands share this admission policy and the existing AppModel actions.
-enum WorkspaceCommand: CaseIterable {
-    case search, returnToLibrary, showTrash
+enum WorkspaceCommand: CaseIterable, Equatable {
+    case search, quickOpen, returnToLibrary, showTrash
     case newPage, newPersonalPage, newTopicPage, save
     case addSource, addURLSource, pasteSource, recovery, notices, revealVault, refresh
     case lock, unlock, close, openVault, createVault
+}
+
+/// The Vault menu and shortcut regression tests use the same definitions.
+/// Command-F is intentionally absent: it remains reserved for document Find.
+enum WorkspaceSearchMenuCommand: CaseIterable, Hashable {
+    case vault, quickOpen
+
+    var command: WorkspaceCommand {
+        switch self {
+        case .vault: .search
+        case .quickOpen: .quickOpen
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .vault: "Find in Vault"
+        case .quickOpen: "Quick Open"
+        }
+    }
+
+    var shortcut: KeyboardShortcut {
+        switch self {
+        case .vault: KeyboardShortcut("f", modifiers: [.command, .shift])
+        case .quickOpen: KeyboardShortcut("p", modifiers: [.command])
+        }
+    }
 }
 
 struct WorkspaceCommandAvailability {
@@ -69,7 +97,12 @@ extension AppModel {
     func performWorkspaceCommand(_ command: WorkspaceCommand) -> Task<Void, Never>? {
         guard canPerformWorkspaceCommand(command) else { return nil }
         switch command {
-        case .search: searchFocusToken += 1
+        case .search:
+            setSearchMode(.vault)
+            searchFocusToken += 1
+        case .quickOpen:
+            setSearchMode(.quickOpen)
+            searchFocusToken += 1
         case .returnToLibrary: changeScope(scope)
         case .showTrash: changeScope(.trash)
         case .newPage: newPage()
