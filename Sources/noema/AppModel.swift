@@ -273,15 +273,22 @@ struct EditorAction: Equatable {
     /// Synchronizes `AppModel` availability and purges in-memory content whenever the central
     /// `VaultSessionManager` transitions out of `.open` (including external/direct session transitions).
     func applyObservedSessionState(_ nextState: VaultSessionState) {
+        let latestState = sessionManager.accessGate.currentState
+        if nextState != latestState, nextState.isTransitioning || latestState == .closed {
+            return
+        }
         sessionState = nextState
         switch nextState {
         case .closed:
-            let hadActiveResources = root != nil || lockedVaultURL != nil || repository != nil || index != nil || recovery != nil || watcher != nil || !notes.isEmpty || !sources.isEmpty || currentNote != nil || currentSource != nil
+            let hadActiveResources = root != nil || lockedVaultURL != nil || activeSession != nil || activeLease != nil || repository != nil || index != nil || recovery != nil || watcher != nil || !notes.isEmpty || !sources.isEmpty || currentNote != nil || currentSource != nil
             lockedVaultURL = nil
             lockedVaultBookmark = nil
+            vaultName = "Noema"
             if hadActiveResources {
                 releaseActiveVaultResources()
                 clearSessionUIState()
+            } else {
+                busy = false
             }
 
         case .opening(let targetRoot, _):
@@ -710,7 +717,31 @@ struct EditorAction: Equatable {
         }
 
         if !(await flushPendingEdits()) { return }
-        busy = true; errorMessage = nil; needsPermissionReauthorization = false
+        busy = true; errorMessage = nil
+        if !isLocked { needsPermissionReauthorization = false }
+
+        let storageProvider = self.storageProvider
+        let hasScope = (scopeURL == url) ? false : securityScopeAcquirer(url)
+
+        do {
+            if requiresSecurityScopedAccess && !hasScope && scopeURL != url {
+                throw VaultError.unavailable("Permission to access ‘\(url.lastPathComponent)’ was lost. Reselect your vault folder to restore access.")
+            }
+            try await Task.detached {
+                _ = try FileVaultRepository.preflightOpen(root: url, create: create, storageProvider: storageProvider)
+            }.value
+        } catch {
+            if hasScope, scopeURL != url { securityScopeReleaser(url) }
+            sessionState = await sessionManager.state
+            busy = false
+            if !isVaultAvailable {
+                needsPermissionReauthorization = Self.isPermissionDenied(error) || (requiresSecurityScopedAccess && !hasScope)
+            }
+            errorMessage = error.localizedDescription
+            return
+        }
+
+        needsPermissionReauthorization = false
 
         // Tear down any previous vault session and SQLite handle BEFORE opening the target vault.
         if root != nil || lockedVaultURL != nil || repository != nil || index != nil || recovery != nil || watcher != nil {
@@ -724,12 +755,7 @@ struct EditorAction: Equatable {
             try? await sessionManager.close()
         }
 
-        let hasScope = securityScopeAcquirer(url)
         do {
-            if requiresSecurityScopedAccess && !hasScope {
-                throw VaultError.unavailable("Permission to access ‘\(url.lastPathComponent)’ was lost. Reselect your vault folder to restore access.")
-            }
-            let storageProvider = self.storageProvider
             let (session, lease, repo) = try await sessionManager.openRepository(
                 root: url,
                 create: create,
@@ -740,16 +766,18 @@ struct EditorAction: Equatable {
             let localBase = baseDir.appendingPathComponent("KnowledgeVault/\(vaultID.uuidString)")
             let gate = sessionManager.accessGate
             let factory = searchIndexFactory
-            let (searchIndex, journal) = try await Task.detached {
+            let (searchIndex, journal, cached, drafts) = try await Task.detached {
                 let idx = try factory(localBase.appendingPathComponent("search.sqlite"), lease, gate)
                 let recoveryStore = try RecoveryStore(
                     directory: localBase.appendingPathComponent("Drafts"),
                     sessionLease: lease,
                     accessGate: gate
                 )
-                return (idx, recoveryStore)
+                let cachedEntries = try await idx.cachedEntries()
+                let recovered = try await recoveryStore.drafts()
+                return (idx, recoveryStore, cachedEntries, recovered)
             }.value
-            self.scopeURL = hasScope ? url : nil
+            self.scopeURL = (hasScope || self.scopeURL == url) ? url : nil
             dismissedVaultNotices = []
             generation = UUID()
             activeSession = session
@@ -763,10 +791,9 @@ struct EditorAction: Equatable {
             sidebarSearchResults = SidebarSearchResults()
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
             title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; wordCount = 0; reading = true
-            let cached = try await searchIndex.cachedEntries()
             notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
             updateTags()
-            recoveredDrafts = try await journal.drafts()
+            recoveredDrafts = drafts
             if persistSecurityScopedBookmark {
                 try remember(url)
             }
@@ -780,8 +807,10 @@ struct EditorAction: Equatable {
             if await sessionManager.state != .closed {
                 try? await sessionManager.close()
             }
+            await Task.yield()
             releaseActiveVaultResources()
             clearSessionUIState()
+            vaultName = "Noema"
             sessionState = await sessionManager.state
             busy = false
             needsPermissionReauthorization = Self.isPermissionDenied(error) || (requiresSecurityScopedAccess && !hasScope)

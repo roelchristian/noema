@@ -300,10 +300,18 @@ struct AppModelSessionIntegrationTests {
     @Test @MainActor func reopenUnavailableVaultAndSwitchBetweenVaultsFromOpenAndLockedStatesWithoutCrossContamination() async throws {
         let rootA = try makeTempVault(name: "VaultAlpha")
         let rootB = try makeTempVault(name: "VaultBeta")
+        let invalidRoot = rootA.deletingLastPathComponent().appendingPathComponent("InvalidVault", isDirectory: true)
+        try FileManager.default.createDirectory(at: invalidRoot, withIntermediateDirectories: true)
+        let unsupportedRoot = rootA.deletingLastPathComponent().appendingPathComponent("UnsupportedVault", isDirectory: true)
+        try FileManager.default.createDirectory(at: unsupportedRoot, withIntermediateDirectories: true)
+        try Data(#"{"id":"00000000-0000-0000-0000-000000000099","formatVersion":99,"createdAt":"2026-10-12T00:00:00Z"}"#.utf8)
+            .write(to: unsupportedRoot.appendingPathComponent("vault.json"), options: .atomic)
         let missingRoot = rootA.deletingLastPathComponent().appendingPathComponent("MissingVault", isDirectory: true)
+        let unhydratedRoot = try makeTempVault(name: "UnhydratedVault")
         defer {
             try? FileManager.default.removeItem(at: rootA.deletingLastPathComponent())
             try? FileManager.default.removeItem(at: rootB.deletingLastPathComponent())
+            try? FileManager.default.removeItem(at: unhydratedRoot.deletingLastPathComponent())
             SourceReader.closeAll()
         }
 
@@ -314,9 +322,26 @@ struct AppModelSessionIntegrationTests {
         let repoB = try FileVaultRepository.open(root: rootB)
         let noteB = try await repoB.create(title: "Beta Only Page", body: "Beta body")
 
-        let model = AppModel()
+        let normalizedUnhydrated = unhydratedRoot.standardizedFileURL.resolvingSymlinksInPath()
+        let baseProvider = VaultStorageProvider.plaintext
+        let provider = VaultStorageProvider { url in
+            if url.standardizedFileURL.resolvingSymlinksInPath() == normalizedUnhydrated {
+                throw VaultContentStoreError.unavailable("vault.json")
+            }
+            return try baseProvider.makeStore(root: url)
+        }
+
+        let denyBetaScope = LockFlag(false)
+        let model = AppModel(storageProvider: provider)
         model.localStorageRoot = rootA.deletingLastPathComponent()
         model.persistSecurityScopedBookmark = false
+        model.requiresSecurityScopedAccess = true
+        model.securityScopeAcquirer = { url in
+            if denyBetaScope.get(), url.standardizedFileURL.resolvingSymlinksInPath() == rootB.standardizedFileURL.resolvingSymlinksInPath() {
+                return false
+            }
+            return true
+        }
 
         // Open Vault A and select note + reader window.
         await model.open(rootA, create: false)
@@ -328,32 +353,83 @@ struct AppModelSessionIntegrationTests {
             }
             return SourceReader.openReaderIDs.contains(sourceA.id)
         }
-        let staleTicketFromA = model.issueCompletionTicket(kind: .pageMutation, targetID: noteA.id)
+        let ticketFromA = model.issueCompletionTicket(kind: .pageMutation, targetID: noteA.id)
+        let indexFromA = try #require(model.index)
 
-        // Switch A -> B while open.
+        // 1. A -> invalid B (missing vault.json and unsupported formatVersion): preserves open Vault A, repository, index, editor, and reader window.
+        await model.open(invalidRoot, create: false)
+        #expect(model.isVaultAvailable && !model.isLocked && model.sessionPhase == .open)
+        #expect(model.root == rootA && model.vaultName == "VaultAlpha")
+        #expect(model.notes.map(\.id) == [noteA.id] && model.sources.map(\.id) == [sourceA.id])
+        #expect(model.currentNote?.id == noteA.id && SourceReader.openReaderIDs.contains(sourceA.id))
+        #expect(model.isCompletionValid(ticketFromA, operation: "stillValidOnA"))
+        #expect(model.errorMessage?.localizedCaseInsensitiveContains("vault.json") == true)
+
+        await model.open(unsupportedRoot, create: false)
+        #expect(model.isVaultAvailable && !model.isLocked && model.sessionPhase == .open && model.root == rootA)
+        #expect(model.notes.map(\.id) == [noteA.id] && model.sources.map(\.id) == [sourceA.id])
+        #expect(model.errorMessage?.localizedCaseInsensitiveContains("unsupported format version") == true)
+
+        // 2. A -> unavailable B (missing folder, unhydrated iCloud manifest, and denied security scope): preserves open Vault A.
+        await model.open(missingRoot, create: false)
+        #expect(model.isVaultAvailable && !model.isLocked && model.sessionPhase == .open && model.root == rootA)
+        #expect(model.notes.map(\.id) == [noteA.id] && model.sources.map(\.id) == [sourceA.id])
+        #expect(model.errorMessage?.localizedCaseInsensitiveContains("could not be found") == true)
+
+        await model.open(unhydratedRoot, create: false)
+        #expect(model.isVaultAvailable && !model.isLocked && model.sessionPhase == .open && model.root == rootA)
+        #expect(model.notes.map(\.id) == [noteA.id] && model.sources.map(\.id) == [sourceA.id])
+        #expect(model.errorMessage?.localizedCaseInsensitiveContains("iCloud") == true)
+
+        denyBetaScope.set(true)
         await model.open(rootB, create: false)
-        #expect(model.isVaultAvailable && !model.isLocked)
+        #expect(model.isVaultAvailable && !model.isLocked && model.sessionPhase == .open && model.root == rootA)
+        #expect(model.notes.map(\.id) == [noteA.id] && !model.needsPermissionReauthorization)
+        #expect(model.errorMessage?.localizedCaseInsensitiveContains("Reselect your vault folder") == true)
+        denyBetaScope.set(false)
+        #expect(try await indexFromA.cachedEntries().notes.map(\.id) == [noteA.id])
+
+        // 3. A -> B success: tears down A and opens B without cross-vault content leakage.
+        await model.open(rootB, create: false)
+        #expect(model.isVaultAvailable && !model.isLocked && model.sessionPhase == .open)
         #expect(model.root == rootB && model.vaultName == "VaultBeta")
-        #expect(model.notes.map(\.id) == [noteB.id])
-        #expect(model.sources.isEmpty)
+        #expect(model.notes.map(\.id) == [noteB.id] && model.sources.isEmpty)
         #expect(model.currentNote == nil && model.selectedID == nil)
         #expect(SourceReader.openReaderIDs.isEmpty)
-        #expect(!model.isCompletionValid(staleTicketFromA, operation: "staleFromA"))
+        #expect(!model.isCompletionValid(ticketFromA, operation: "staleFromA"))
 
-        // Lock Vault B, then switch directly from locked Vault B -> Vault A.
+        // Lock Vault B, verify locked B -> missing destination preserves locked B, then switch locked B -> Vault A.
         #expect(await model.lockVault())
         #expect(model.isLocked && model.lockedVaultURL == rootB)
-        await model.open(rootA, create: false)
-        #expect(model.isVaultAvailable && !model.isLocked)
-        #expect(model.root == rootA && model.vaultName == "VaultAlpha")
-        #expect(model.notes.map(\.id) == [noteA.id])
-        #expect(model.sources.map(\.id) == [sourceA.id])
-
-        // Attempt to switch from open Vault A to an unavailable/non-existent vault -> rolls back to closed with error, no Vault A leakage.
         await model.open(missingRoot, create: false)
+        #expect(model.isLocked && model.lockedVaultURL == rootB && model.sessionPhase == .locked)
+        await model.open(rootA, create: false)
+        #expect(model.isVaultAvailable && !model.isLocked && model.root == rootA)
+        #expect(model.notes.map(\.id) == [noteA.id] && model.sources.map(\.id) == [sourceA.id])
+
+        // 4. Failure during B's index initialisation after transition begins:
+        // Rolls back cleanly to documented recoverable .closed state with zero A or B content leakage.
+        let failIndexInit = LockFlag(true)
+        let defaultFactory = model.searchIndexFactory
+        model.searchIndexFactory = { url, lease, gate in
+            if failIndexInit.get() {
+                throw VaultError.storage("Simulated SQLite index init failure for VaultBeta.")
+            }
+            return try defaultFactory(url, lease, gate)
+        }
+        await model.open(rootB, create: false)
         #expect(!model.isVaultAvailable && !model.isLocked && model.sessionPhase == .closed)
-        #expect(model.notes.isEmpty && model.sources.isEmpty && model.rows.isEmpty)
-        #expect(model.errorMessage?.localizedCaseInsensitiveContains("could not be found") == true)
+        #expect(await model.sessionManager.state == .closed)
+        #expect(model.root == nil && model.lockedVaultURL == nil && model.vaultName == "Noema" && model.index == nil && !model.busy)
+        #expect(model.notes.isEmpty && model.sources.isEmpty && model.rows.isEmpty && model.currentNote == nil)
+        #expect(SourceReader.openReaderIDs.isEmpty)
+        #expect(model.errorMessage?.localizedCaseInsensitiveContains("Simulated SQLite index init failure") == true)
+
+        // Recover from .closed state by reopening Vault B.
+        failIndexInit.set(false)
+        await model.open(rootB, create: false)
+        #expect(model.isVaultAvailable && !model.isLocked && model.root == rootB)
+        #expect(model.notes.map(\.id) == [noteB.id] && model.errorMessage == nil)
     }
 
     @Test @MainActor func endToEndProtectedOperationEntryPointsAndRecoveryAndSourceReaderAreEnforcedAcrossSessionLifecycle() async throws {

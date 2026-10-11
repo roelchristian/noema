@@ -77,6 +77,39 @@ public actor FileVaultRepository: VaultRepository {
         return manifest
     }
 
+    @discardableResult
+    public static func preflightOpen(
+        root: URL,
+        create: Bool = false,
+        storageProvider: VaultStorageProvider = .plaintext
+    ) throws -> VaultManifest? {
+        let accessRoot = root
+        let normalizedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: normalizedRoot.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw VaultError.unavailable("The vault folder ‘\(normalizedRoot.lastPathComponent)’ could not be found. It may have been moved, renamed, or disconnected.")
+        }
+        let manifestURL = normalizedRoot.appendingPathComponent("vault.json")
+        let manifest: VaultManifest?
+        if !create || fm.fileExists(atPath: manifestURL.path) {
+            manifest = try inspectManifest(at: accessRoot, storageProvider: storageProvider)
+        } else {
+            _ = try storageProvider.makeStore(root: accessRoot)
+            manifest = nil
+        }
+        for name in ["Wiki", "Sources", trashDirectoryName, "Conflicts"] {
+            let directory = normalizedRoot.appendingPathComponent(name)
+            guard directory.resolvingSymlinksInPath() == directory else { throw VaultContentStoreError.unsafePath(name) }
+            if fm.fileExists(atPath: directory.path) {
+                guard try directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
+                    throw VaultContentStoreError.unsupportedItem(name)
+                }
+            }
+        }
+        return manifest
+    }
+
     public static func open(
         root: URL,
         create: Bool = false,
