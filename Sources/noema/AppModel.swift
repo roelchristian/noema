@@ -772,7 +772,9 @@ struct AISuggestion: Identifiable, Sendable {
     }
 
     func dismissAISuggestion() {
-        let rejectedID = pendingAISuggestion?.id ?? suggestionAcceptanceID
+        // An in-flight acceptance owns its final review outcome: cancellation
+        // must not race a canonical write that has already committed.
+        let rejectedID = pendingAISuggestion?.id
         if let rejectedID {
             let recorder = activityRecorder
             Task { await recorder.updateOutcome(rejectedID, outcome: .rejected) }
@@ -2390,7 +2392,7 @@ struct AISuggestion: Identifiable, Sendable {
                     errorMessage = "Create topic page: " + error.localizedDescription
                 }
                 return false
-        }
+            }
         }
     }
 

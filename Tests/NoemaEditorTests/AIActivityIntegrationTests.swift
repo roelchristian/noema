@@ -178,6 +178,39 @@ struct AIActivityIntegrationTests {
         #expect(record.usage?.inputTokens == 17 && record.usage?.outputTokens == 9)
         #expect(BlockDocumentCodec.decode(f.model.body).aiSummary == nil)
     }
+
+    @Test @MainActor func staleNativeSummaryPreservesEditedContentAndEndsCancelled() async throws {
+        let f = try await fixture(); defer { f.cleanup() }
+        let gate = ActivityInferenceGate()
+        f.model.aiClient.summarize = { _ in await gate.wait(); return "Stale summary" }
+        f.model.summarizePage()
+        let worker = try #require(f.model.nativePageSummaryTaskForTesting)
+        try await waitUntil { await gate.entered }
+        f.model.body = "Content changed during inference"
+        f.model.edited()
+        await gate.release()
+        await worker.value
+        let record = try #require(try await f.store.query().first)
+        #expect(record.status == .cancelled && record.failureCode == .publication)
+        #expect(f.model.body == "Content changed during inference")
+    }
+
+    @Test @MainActor func topicCreationAndInitialPageNamingGroupTheirLocalHelpers() async throws {
+        let f = try await fixture(); defer { f.cleanup() }
+        #expect(await f.model.createPageFromTopic("Fixture topic"))
+        let topicRecords = try await f.store.query(.init(action: .createPageFromTopic))
+        #expect(topicRecords.count == 1 && topicRecords.first?.outcome == .published)
+        f.model.newPage()
+        try await waitUntil { f.model.currentNote?.title == "Untitled" }
+        f.model.body = "An article needing its first topic title and initial classification"
+        f.model.edited()
+        #expect(await f.model.finishCurrentPage(waitForTitles: true))
+        let titles = try await f.store.query(.init(action: .suggestTitle))
+        #expect(titles.count == 1 && titles.first?.executionMode == .automatic)
+        #expect(titles.first?.status == .completed && titles.first?.outcome == .published)
+        #expect(f.model.currentNote?.title == "Generated Title" && f.model.currentNote?.lcc == "QA")
+        #expect(try await f.store.count() == 2)
+    }
 }
 }
 
