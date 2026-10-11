@@ -1054,6 +1054,9 @@ public actor FileVaultRepository: VaultRepository {
         let normalizedLCC = lcc?.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanLCC = (normalizedLCC?.isEmpty == false) ? normalizedLCC : nil
         if var pending = downloadingSources[source.id] {
+            guard cleanLCC == nil || pending.metadata.lcc == source.metadata.lcc else {
+                throw VaultError.invalid("Source classification changed while its title was generated. Refresh and try again.")
+            }
             if pending.metadata.title != title { pending.metadata.aiTitleProvenance = nil }
             pending.metadata.title = title
             if let summary { pending.metadata.aiSummary = summary; pending.metadata.aiSummaryProvenance = nil }
@@ -1066,6 +1069,7 @@ public actor FileVaultRepository: VaultRepository {
         var metadata = try JSONDecoder().decode(SourceMetadata.self, from: bytes)
         guard metadata.id == source.id, metadata.title == source.title,
               metadata.sha256 == source.metadata.sha256, metadata.aiSummary == source.metadata.aiSummary,
+              cleanLCC == nil || metadata.lcc == source.metadata.lcc,
               metadata.linkedBookmark == source.metadata.linkedBookmark,
               metadata.storedFilename == source.metadata.storedFilename else { throw VaultError.invalid("Source changed while its title was generated. Refresh and try again.") }
         if metadata.title != title { metadata.aiTitleProvenance = nil }

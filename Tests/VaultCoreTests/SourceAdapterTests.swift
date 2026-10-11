@@ -287,4 +287,25 @@ struct SourceAdapterTests {
         #expect(try store.base.read(at: path + "/metadata.json") == metadataBytes)
     }
 
+
+    @Test func automaticInferredLCCRefusesConcurrentManualCorrectionAndTitleOnlyRenamePreservesIt() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try SourceStoreProbe(root: root)
+        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let source = try await repo.importSource(data: Data("Source content".utf8), filename: "a.txt", title: "Original", originURL: nil)
+        let corrected = try await repo.updateSourceLCC(source, lcc: "Q")
+        let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
+        let correctedBytes = try store.base.read(at: path)
+        await #expect(throws: (any Error).self) {
+            try await repo.renameSource(source, title: "Delayed automatic title", summary: "Delayed summary", lcc: "QA")
+        }
+        #expect(try store.base.read(at: path) == correctedBytes)
+        #expect(try await repo.loadSource(id: source.id).metadata == corrected.metadata)
+        let renamed = try await repo.renameSource(source, title: "Manual title")
+        #expect(renamed.title == "Manual title")
+        #expect(renamed.metadata.lcc == "Q")
+        #expect(renamed.metadata.aiSummary == corrected.metadata.aiSummary)
+        #expect(try await repo.loadSource(id: source.id).metadata == renamed.metadata)
+    }
+
 }
