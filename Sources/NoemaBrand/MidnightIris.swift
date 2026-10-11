@@ -68,8 +68,8 @@ public struct MidnightIrisPalette: Equatable, Sendable {
         self.theme = theme
     }
     public func token(_ role: ThemeRole) -> ThemeRGB {
-        // Identity exports retain the default Midnight Iris tokens. App themes share
-        // the same semantic roles and contrast correction, in light and dark variants.
+        // Interface themes share semantic roles and contrast correction in both
+        // appearances. Permanent identity tokens live in NoemaBrandPalette.
         let values: [UInt32]
         switch theme {
         case .forest:
