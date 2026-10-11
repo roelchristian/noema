@@ -11,9 +11,12 @@ struct ContentView: View {
     @Bindable var model: AppModel
     @Environment(\.noemaTheme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.controlActiveState) private var controlActiveState
-    @Namespace private var sidebarTabNamespace
+    @Environment(\.appearsActive) private var activeWindow
     @FocusState private var searchFocused: Bool
+    @FocusState private var sidebarTabFocused: String?
+    @FocusState private var sidebarPageFocused: UUID?
+    @FocusState private var sidebarItemFocused: String?
+    @FocusState private var sidebarFooterFocused: String?
     @State private var showTrashConfirmation = false
     @State private var hoveredSidebarPageID: UUID?
     @State private var trashPageID: UUID?
@@ -212,7 +215,7 @@ struct ContentView: View {
                 }
                 .controlSize(.large)
             }
-            if model.busy { ProgressView() }
+            if model.busy { NoemaLoadingStatus("Opening vault…") }
             if let error = model.errorMessage {
                 DismissibleNotice(message: error) {
                     model.errorMessage = nil
@@ -243,7 +246,7 @@ struct ContentView: View {
             }
             Text("Choose a folder on your Mac or in iCloud Drive. Your files stay yours.")
                 .font(.callout).foregroundStyle(theme.text())
-            if model.busy { ProgressView() }
+            if model.busy { NoemaLoadingStatus("Opening vault…") }
             if let error = model.errorMessage {
                 DismissibleNotice(message: error) {
                     model.errorMessage = nil
@@ -298,7 +301,11 @@ struct ContentView: View {
                             Label("Clear search", systemImage: "xmark.circle.fill")
                                 .labelStyle(.iconOnly)
                                 .font(NoemaTypography.caption)
-                        }.buttonStyle(.plain).foregroundStyle(theme.text(for: .textSecondary, on: .elevated))
+                                .noemaChromeForeground(.textSecondary)
+                                .frame(minWidth: NoemaMetrics.toolbarControlHeight,
+                                       minHeight: NoemaMetrics.toolbarControlHeight)
+                        }.buttonStyle(NoemaChromeButtonStyle(surface: .elevated))
+                            .help("Clear search")
                     } else {
                         Text("⌘K")
                             .font(NoemaTypography.caption)
@@ -315,6 +322,7 @@ struct ContentView: View {
                     RoundedRectangle(cornerRadius: NoemaMetrics.radiusStandard, style: .continuous)
                         .strokeBorder(theme.color(for: .separator), lineWidth: NoemaMetrics.borderWidth)
                 )
+                .noemaFocusRing(searchFocused, radius: NoemaMetrics.radiusStandard)
                 if !model.isSearching {
                     HStack(spacing: NoemaSpacing.xs) {
                         sidebarTabButton(
@@ -429,7 +437,6 @@ struct ContentView: View {
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: activeSidebarTab)
 
             VStack(alignment: .leading, spacing: NoemaSpacing.sm) {
                 Divider().overlay(theme.color(for: .separator))
@@ -506,7 +513,7 @@ struct ContentView: View {
     @ViewBuilder private var searchResultSections: some View {
         if model.sidebarSearchResults.query != model.searchText {
             if let error = model.errorMessage {
-                DismissibleNotice(message: error) { model.errorMessage = nil }
+                DismissibleNotice(message: error, surface: .sidebar) { model.errorMessage = nil }
             } else {
                 ProgressView("Searching…")
             }
@@ -551,38 +558,35 @@ struct ContentView: View {
             HStack(spacing: NoemaSpacing.sm) {
                 Image(systemName: symbol)
                     .font(showLabel ? NoemaTypography.navigationEmphasis : NoemaTypography.navigation)
-                    .foregroundStyle(theme.text(for: showLabel ? .textOnSelection : .textSecondary, on: showLabel ? .selection : .elevated, active: controlActiveState != .inactive))
+                    .noemaChromeForeground(.textSecondary)
                 if showLabel {
                     HStack(spacing: NoemaSpacing.sm) {
                         Text(title)
                             .font(NoemaTypography.navigationEmphasis)
-                            .foregroundStyle(theme.text(for: .textOnSelection, on: showLabel ? .selection : .elevated, active: controlActiveState != .inactive))
+                            .noemaChromeForeground()
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
                         Spacer(minLength: 2)
                         if let count {
                             Text(count.formatted())
                                 .font(NoemaTypography.metadata)
-                                .foregroundStyle(theme.text(for: .textOnSelection, on: showLabel ? .selection : .elevated, active: controlActiveState != .inactive))
+                                .noemaChromeForeground()
                                 .monospacedDigit()
                                 .fixedSize(horizontal: true, vertical: false)
                         }
                     }
-                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .leading)))
+                    .transition(reduceMotion ? .identity : .opacity.combined(with: .scale(scale: 0.96, anchor: .leading)))
                 }
             }
             .padding(.horizontal, showLabel ? NoemaSpacing.sm : 0)
             .frame(maxWidth: showLabel ? .infinity : NoemaMetrics.compactRowHeight, minHeight: NoemaMetrics.compactRowHeight)
             .contentShape(Rectangle())
-            .background {
-                if showLabel {
-                    RoundedRectangle(cornerRadius: NoemaMetrics.radiusSmall, style: .continuous)
-                        .fill(theme.color(for: .selection, active: controlActiveState != .inactive))
-                        .matchedGeometryEffect(id: "sidebarActiveTab", in: sidebarTabNamespace)
-                }
-            }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NoemaChromeButtonStyle(selected: showLabel, surface: .elevated,
+                                            focused: sidebarTabFocused == title))
+        .focused($sidebarTabFocused, equals: title)
+        .accessibilityAddTraits(showLabel ? [.isSelected] : [])
+        .accessibilityValue(showLabel ? "Selected" : "")
         .help(title)
         .accessibilityLabel(title)
     }
@@ -607,7 +611,7 @@ struct ContentView: View {
                 HStack(spacing: NoemaSpacing.sm) {
                     Text(note.title)
                         .font(NoemaTypography.navigation)
-                        .foregroundStyle(theme.text(for: active ? .textOnSelection : .textPrimary, on: active ? .selection : .sidebar, active: controlActiveState != .inactive))
+                        .noemaChromeForeground()
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     if showRelativeEditTime {
@@ -615,7 +619,7 @@ struct ContentView: View {
                         if !relative.isEmpty {
                             Text(relative)
                                 .font(NoemaTypography.metadata)
-                                .foregroundStyle(theme.text(for: active ? .textOnSelection : .textTertiary, on: active ? .selection : .sidebar, active: controlActiveState != .inactive))
+                                .noemaChromeForeground(.textTertiary)
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
                                 .help("Last edited \(metadataDate(note.updatedAt))")
@@ -625,7 +629,9 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(NoemaChromeButtonStyle(selected: active, drawsSelection: false,
+                                                focused: sidebarPageFocused == note.id))
+            .focused($sidebarPageFocused, equals: note.id)
             SidebarEditingLockControl(locked: note.isEditingLocked,
                                       selected: active,
                                       visible: active || hoveredSidebarPageID == note.id,
@@ -643,7 +649,7 @@ struct ContentView: View {
         .contentShape(Rectangle())
         .background(
             RoundedRectangle(cornerRadius: NoemaMetrics.radiusSmall, style: .continuous)
-                .fill(active ? theme.color(for: .selection, active: controlActiveState != .inactive) : Color.clear)
+                .fill(active ? theme.color(for: .selection, active: activeWindow) : Color.clear)
         )
         .listRowInsets(EdgeInsets(top: 0.5, leading: 0, bottom: 0.5, trailing: 4))
         .listRowSeparator(.hidden)
@@ -660,11 +666,11 @@ struct ContentView: View {
             HStack(spacing: NoemaSpacing.sm) {
                 Image(systemName: symbol)
                     .font(NoemaTypography.navigation)
-                    .foregroundStyle(theme.text(for: active ? .textOnSelection : .textSecondary, on: active ? .selection : .sidebar, active: controlActiveState != .inactive))
+                    .noemaChromeForeground(.textSecondary)
                     .frame(width: NoemaMetrics.iconWidth)
                 Text(title)
                     .font(NoemaTypography.navigation)
-                    .foregroundStyle(theme.text(for: active ? .textOnSelection : .textPrimary, on: active ? .selection : .sidebar, active: controlActiveState != .inactive))
+                    .noemaChromeForeground()
                     .lineLimit(1)
                 Spacer(minLength: 4)
             }
@@ -672,12 +678,9 @@ struct ContentView: View {
             .padding(.trailing, 8)
             .frame(minHeight: NoemaMetrics.compactRowHeight)
             .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: NoemaMetrics.radiusSmall, style: .continuous)
-                    .fill(active ? theme.color(for: .selection, active: controlActiveState != .inactive) : Color.clear)
-            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NoemaChromeButtonStyle(selected: active, focused: sidebarItemFocused == title))
+        .focused($sidebarItemFocused, equals: title)
         .listRowInsets(EdgeInsets(top: 0.5, leading: 0, bottom: 0.5, trailing: 4))
         .listRowSeparator(.hidden)
     }
@@ -685,13 +688,14 @@ struct ContentView: View {
         Button(action: action) {
             Text(title)
                 .font(NoemaTypography.navigation)
-                .foregroundStyle(theme.text(for: .textSecondary, on: .sidebar))
+                .noemaChromeForeground(.textSecondary)
                 .padding(.leading, 2)
                 .padding(.trailing, 8)
                 .frame(maxWidth: .infinity, minHeight: NoemaMetrics.toolbarControlHeight, alignment: .leading)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NoemaChromeButtonStyle(focused: sidebarFooterFocused == title))
+        .focused($sidebarFooterFocused, equals: title)
         .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 4))
         .listRowSeparator(.hidden)
     }
@@ -733,10 +737,10 @@ struct ContentView: View {
                                 .disabled(model.sources.isEmpty || !model.checkingSourceAvailability.isEmpty)
                         } label: { Label("Source Actions", systemImage: "ellipsis.circle") }
                         headerActions
-                        if model.busy { ProgressView().controlSize(.small) }
+                        if model.busy { ProgressView().controlSize(.small).accessibilityLabel("Updating library").accessibilityValue("In progress") }
                     }
                     if let error = model.errorMessage {
-                        DismissibleNotice(message: error) { model.errorMessage = nil }
+                        DismissibleNotice(message: error, surface: .canvas) { model.errorMessage = nil }
                     }
                 }
                 .padding(.horizontal, NoemaSpacing.lg)
@@ -865,10 +869,10 @@ struct ContentView: View {
                     } else {
                         headerActions
                     }
-                    if model.busy { ProgressView().controlSize(.small) }
+                    if model.busy { ProgressView().controlSize(.small).accessibilityLabel("Updating library").accessibilityValue("In progress") }
                 }
                 if model.scope == .sources, let error = model.errorMessage {
-                    DismissibleNotice(message: error) { model.errorMessage = nil }
+                    DismissibleNotice(message: error, surface: .canvas) { model.errorMessage = nil }
                 }
                 if isPagesScope && !model.tags.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -934,9 +938,9 @@ struct ContentView: View {
             }
             HStack {
                 Text(model.trashedPages.count == 1 ? "1 deleted item" : "\(model.trashedPages.count) deleted items")
-                if model.trashOperationInProgress { ProgressView().controlSize(.small); Text("Updating Trash…") }
+                if model.trashOperationInProgress { NoemaLoadingStatus("Updating Trash…", surface: .canvas) }
             }.font(NoemaTypography.metadata).foregroundStyle(.secondary).padding(NoemaSpacing.md)
-            if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil }.padding(NoemaSpacing.md) }
+            if let error = model.errorMessage { DismissibleNotice(message: error, surface: .canvas) { model.errorMessage = nil }.padding(NoemaSpacing.md) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .safeAreaBar(edge: .top) {
@@ -969,7 +973,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 if let message = model.errorMessage {
                     VStack(alignment: .leading, spacing: 8) {
-                        DismissibleNotice(message: message) {
+                        DismissibleNotice(message: message, surface: .elevated) {
                             model.errorMessage = nil; dismissedExternalChange = model.externalChange
                         }.font(.callout)
                         if model.externalChange {
@@ -979,7 +983,7 @@ struct ContentView: View {
                             }
                         } else if model.currentNote != nil { Button("Try saving again") { model.saveNow() } }
 
-                    }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(.orange.opacity(0.12))
+                    }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(theme.color(for: .elevated))
                 } else if model.externalChange, !dismissedExternalChange {
                     HStack {
                         Label("This page changed or moved outside the app.", systemImage: "arrow.triangle.2.circlepath")
@@ -989,7 +993,7 @@ struct ContentView: View {
                     }.font(.callout).padding(12).background(.orange.opacity(0.12))
                 }
                 if let notice = model.editorNotice, model.currentNote != nil {
-                    DismissibleNotice(message: notice, isError: false) { model.editorNotice = nil }.font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    DismissibleNotice(message: notice, isError: false, surface: .canvas) { model.editorNotice = nil }.font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
                         .background(theme.color(for: .canvas))
                 }
                 pageHeader
@@ -1024,7 +1028,7 @@ struct ContentView: View {
                 Text(model.scope == .sources ? "Keep the original. Find your meaning." : "A personal atlas of thought.").font(.title2.weight(.medium))
                 Text(model.scope == .sources ? "Browse raw material here. Your interpretations belong in the wiki." : "Choose a page, or start with a thought you want to connect.").foregroundStyle(theme.text())
                 if model.scope != .sources { Button("New personal page") { model.newPage(template: true) }.buttonStyle(.glass) }
-                if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil }.frame(maxWidth: 500) }
+                if let error = model.errorMessage { DismissibleNotice(message: error, surface: .canvas) { model.errorMessage = nil }.frame(maxWidth: 500) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 .safeAreaBar(edge: .top) { HStack { Spacer(); headerActions }.padding(.horizontal, 28).padding(.top, 14).padding(.bottom, 6) }
                 .ignoresSafeArea(.container, edges: .top)
@@ -1153,7 +1157,7 @@ struct ContentView: View {
     }
     private var pageHeader: some View {
         VStack(alignment: .leading, spacing: NoemaSpacing.md) {
-            if let notice = model.aiSummaryNotice { DismissibleNotice(message: notice, isError: false) { model.aiSummaryNotice = nil }.font(NoemaTypography.metadata) }
+            if let notice = model.aiSummaryNotice { DismissibleNotice(message: notice, isError: false, surface: .canvas) { model.aiSummaryNotice = nil }.font(NoemaTypography.metadata) }
             if model.currentSource != nil || model.editingHint != nil {
                 HStack {
                     if model.currentSource != nil {
@@ -1304,6 +1308,7 @@ struct PasteSourceSheet: View {
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
+                if importing { NoemaLoadingStatus("Saving source…") }
                 Button("Save source") {
                     importing = true
                     Task { if await model.pasteSource(title: title, text: text, originURL: url) { dismiss() }; importing = false }
@@ -1314,21 +1319,24 @@ struct PasteSourceSheet: View {
 }
 
 struct DismissibleNotice: View {
+    @Environment(\.noemaTheme) private var theme
     var message: String
     var isError = true
+    var surface: NoemaColorRole = .window
     var dismiss: () -> Void
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(message).foregroundStyle(isError ? Color.red : Color.secondary)
+        HStack(alignment: .top, spacing: NoemaSpacing.sm) {
+            Text(message).foregroundStyle(theme.text(for: isError ? .destructive : .textSecondary, on: surface))
                 .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
             Button(action: dismiss) {
                 Label("Dismiss message", systemImage: "xmark.circle.fill").labelStyle(.iconOnly)
-            }.buttonStyle(.borderless).foregroundStyle(.secondary).help("Dismiss message")
+            }.buttonStyle(.borderless).help("Dismiss message")
         }
     }
 }
 
 struct URLSourceSheet: View {
+    @Environment(\.noemaTheme) private var theme
     @Bindable var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
@@ -1341,12 +1349,12 @@ struct URLSourceSheet: View {
             TextEditor(text: $text).font(.system(.body, design: .monospaced))
                 .accessibilityLabel("Source URLs, one per line").disabled(importing)
             if !failures.isEmpty {
-                ScrollView { Text(failures.joined(separator: "\n")).foregroundStyle(.red).textSelection(.enabled) }.frame(maxHeight: 120)
+                ScrollView { Text(failures.joined(separator: "\n")).foregroundStyle(theme.text(for: .destructive, on: .window)).textSelection(.enabled) }.frame(maxHeight: 120)
             }
             HStack {
                 Button("Close") { dismiss() }.keyboardShortcut(.cancelAction).disabled(importing)
                 Spacer()
-                if importing { ProgressView().controlSize(.small); Text("Fetching sources…").foregroundStyle(.secondary) }
+                if importing { NoemaLoadingStatus("Fetching sources…") }
                 Button("Add Sources") {
                     importing = true; failures = []
                     Task { failures = await model.addURLSources(text); importing = false; if failures.isEmpty { dismiss() } }
@@ -1367,7 +1375,7 @@ struct TopicPageSheet: View {
             Text("Searches the web with Bing and reads up to three top results. Apple Intelligence summarizes them on this Mac and adds web references. Your topic is sent to the search service.").font(.callout).foregroundStyle(.secondary)
             TextField("Topic", text: $topic).textFieldStyle(.roundedBorder).focused($topicFocused)
                 .disabled(model.generatingTopicPage)
-            if model.generatingTopicPage { HStack { ProgressView().controlSize(.small); Text("Searching web and creating page…") } }
+            if model.generatingTopicPage { NoemaLoadingStatus("Searching web and creating page…") }
             if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil } }
             HStack {
                 Spacer()
@@ -1387,13 +1395,12 @@ private struct SidebarPageIcon: View {
     let active: Bool
     let title: String
     let select: () -> Void
-    @Environment(\.noemaTheme) private var theme
-    @Environment(\.controlActiveState) private var controlActiveState
+    @FocusState private var focused: Bool
     var body: some View {
         Button(action: select) {
             Image(systemName: "doc.text")
                 .font(NoemaTypography.navigation)
-                .foregroundStyle(theme.text(for: active ? .textOnSelection : .textSecondary, on: active ? .selection : .sidebar, active: controlActiveState != .inactive))
+                .noemaChromeForeground(.textSecondary)
                 .overlay(alignment: .topTrailing) {
                     if unread {
                         Circle().fill(Color(nsColor: .systemBlue)).frame(width: 4, height: 4)
@@ -1401,10 +1408,11 @@ private struct SidebarPageIcon: View {
                     }
                 }
                 .frame(width: NoemaMetrics.iconWidth)
-                .frame(minHeight: NoemaMetrics.compactRowHeight)
+                .frame(minWidth: NoemaMetrics.toolbarControlHeight, minHeight: NoemaMetrics.compactRowHeight)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NoemaChromeButtonStyle(selected: active, drawsSelection: false, focused: focused))
+        .focused($focused)
         .help("Open page")
         .accessibilityLabel("Open \(title)")
         .accessibilityValue(unread ? "Unread title change" : "")
@@ -1421,21 +1429,19 @@ private struct SidebarEditingLockControl: View {
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @FocusState private var focused: Bool
     private var actionTitle: String { locked ? "Unlock Editing" : "Lock Editing" }
-    @Environment(\.noemaTheme) private var theme
-    @Environment(\.controlActiveState) private var controlActiveState
     var body: some View {
         Button(action: toggle) {
             Image(systemName: locked ? "lock.fill" : "lock.open")
                 .font(NoemaTypography.caption)
-                .foregroundStyle(theme.text(for: selected ? .textOnSelection : .textSecondary, on: selected ? .selection : .sidebar, active: controlActiveState != .inactive))
+                .noemaChromeForeground(.textSecondary)
                 .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace, options: .speed(3)))
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: locked)
-                .opacity(locked || visible || pending || focused || voiceOver ? 1 : 0)
-                .frame(width: 20)
-                .frame(minHeight: NoemaMetrics.compactRowHeight)
+                .opacity(NoemaChromePresentation.lockActionVisible(locked: locked, revealed: visible, pending: pending, focused: focused, voiceOver: voiceOver) ? 1 : 0)
+                .frame(width: NoemaMetrics.iconWidth)
+                .frame(minWidth: NoemaMetrics.toolbarControlHeight, minHeight: NoemaMetrics.compactRowHeight)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NoemaChromeButtonStyle(selected: selected, drawsSelection: false, focused: focused))
         .focused($focused)
         .disabled(pending)
         .help(actionTitle)

@@ -74,6 +74,8 @@ enum NoemaMetrics {
     static let radiusLarge: CGFloat = 12
     /// Custom group/search hairline; callers may strengthen for Increase Contrast.
     static let borderWidth: CGFloat = 0.5
+    /// Visible keyboard focus outline on custom plain chrome.
+    static let focusRingWidth: CGFloat = 2
     /// Optical padding around a custom tab group, independent of row padding.
     static let controlGroupInset: CGFloat = 3
 

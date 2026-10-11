@@ -10,8 +10,7 @@ struct InspectorTabBar: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.noemaTheme) private var theme
-    @Environment(\.controlActiveState) private var controlActiveState
-    @Namespace private var tabNamespace
+    @FocusState private var focusedTab: InspectorTab?
 
     var body: some View {
         HStack(spacing: NoemaSpacing.xs) {
@@ -22,18 +21,13 @@ struct InspectorTabBar: View {
                 } label: {
                     Image(systemName: tab.symbol)
                         .font(isSelected ? NoemaTypography.navigationEmphasis : NoemaTypography.navigation)
-                        .foregroundStyle(theme.text(for: isSelected ? .textOnSelection : .textSecondary, on: isSelected ? .selection : .elevated, active: controlActiveState != .inactive))
+                        .noemaChromeForeground(.textSecondary)
                         .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight)
                         .contentShape(Rectangle())
-                        .background {
-                            if isSelected {
-                                RoundedRectangle(cornerRadius: NoemaMetrics.radiusSmall, style: .continuous)
-                                    .fill(theme.color(for: .selection, active: controlActiveState != .inactive))
-                                    .matchedGeometryEffect(id: "inspectorActiveTab", in: tabNamespace)
-                            }
-                        }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(NoemaChromeButtonStyle(selected: isSelected, surface: .elevated,
+                                                    focused: focusedTab == tab))
+                .focused($focusedTab, equals: tab)
                 .help(tab.title)
                 .accessibilityLabel(tab.title)
                 .accessibilityAddTraits(isSelected ? [.isSelected] : [])
