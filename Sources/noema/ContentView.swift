@@ -249,7 +249,8 @@ struct ContentView: View {
         switch model.scope {
         case .sources: return .sources
         case .semantic: return .semantic
-        default: return .wiki
+        case .trash: return .trash
+        case .wiki, .tag: return .wiki
         }
     }
     private var sidebar: some View {
@@ -300,7 +301,7 @@ struct ContentView: View {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
                 )
-                if !model.isSearching && model.scope != .trash {
+                if !model.isSearching {
                     HStack(spacing: 4) {
                         sidebarTabButton(
                             title: "Pages",
@@ -349,6 +350,15 @@ struct ContentView: View {
             List {
                 if model.isSearching {
                     searchResultSections
+                } else if model.scope == .trash {
+                    Section("TRASH") {
+                        Label(model.trashedPages.count == 1 ? "1 deleted item" : "\(model.trashedPages.count) deleted items", systemImage: "trash")
+                        Text("Deleted pages and sources stay recoverable for 15 days.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 } else {
                     Section(isExpanded: $recentSectionExpanded) {
                         if activeSidebarTab == .sources {
