@@ -1,10 +1,8 @@
-# SRC.P4: incremental source scan contract and validation
-
-Base: integrated `main` at `7764d963b1fc5cd4064259c27e37467b76f7af36` (D02.7 and Sources presentation changes).
+# Incremental source scan contract
 
 ## Data flow and consumers
 
-Previously, `FileVaultRepository.scan()` decoded each source metadata file, read the original, verified owned-original SHA-256, and extracted text on every refresh. Source imports already produced loaded records. `SQLiteSearchIndex.reconcile()` compared only metadata revisions, so changed linked text with unchanged metadata could retain old search content.
+Repository scans distinguish metadata from original content, cache only verified eligible originals, and reconcile changed linked text even when its metadata is unchanged.
 
 The Sources table, inspector metadata, sorting, LCC edits and context menus need metadata. Search indexing, AI summaries/naming/classification/page generation, and the selected textual preview need extracted content. `SourceReader` and explicit availability checks need original bytes and continue using the existing authorized original reader. PDF AI extraction still verifies and reads the PDF original.
 
@@ -49,17 +47,4 @@ Deterministic counting-provider tests cover metadata-only zero reads, targeted l
 
 Payload-free Instruments Points of Interest: `Source Scan`, `Source Original Read`, `Source Text Extraction`, `Source Cache Reuse`. No paths, titles, UUIDs or contents are logged.
 
-Read-count evidence for 16 synthetic text sources:
-
-| Operation | Original reads |
-| --- | ---: |
-| Before: 10 ordinary scans (implementation audit) | 160 |
-| After: cold complete scan | 16 |
-| After: 10 eligible unchanged scans | 0 |
-| After: 10 forced-verification scans | 160 |
-
-A debug suite benchmark measured a cold scan at 0.154 s, 10 warm scans at 0.765 s, and 10 forced-verification scans at 1.566 s. The benchmark runs alongside tests; timing is synthetic data preparation, not app navigation latency or scrolling FPS. The forced path is a current-code comparison, not a measured pre-change wall-time baseline. Run `SOURCES_SCAN_BENCHMARK=1 ./scripts/test.sh --filter sixteenSourceReadCountBenchmark` to reproduce read counts and obtain local timings.
-
-Validation: all 194 tests in 16 suites pass with the benchmark enabled. Debug app packaging/signing, strict signature verification and the storage boundary selftest are checked before PR publication. Native UI validation is omitted at the user's request.
-
-Independent access-control reviewer: no remaining actionable findings after the cold-action, availability and selected-preview fixes. Reviewer inspected code/tests; final test/build execution is performed by the implementation owner.
+See [validation](../validation.md#performance-expectations) for reproducible read-count and timing checks. Timings measure synthetic service work, not native navigation latency or scrolling FPS.

@@ -106,7 +106,7 @@ def main():
         for (path, statement), count in sorted(items.items()):
             print(f'{kind}: {path}: {statement} (x{count})', file=sys.stderr)
     if new or stale:
-        print('Route canonical I/O through VaultContentStore; review exceptional ownership against STORAGE_ACCESS_AUDIT.md before changing the allowlist.', file=sys.stderr)
+        print('Route canonical I/O through VaultContentStore; review exceptional ownership against docs/contracts/storage-boundary.md before changing the allowlist.', file=sys.stderr)
         return 1
     print(f'Storage boundary guard passed: {sum(actual.values())} reviewed exceptional calls; canonical byte I/O belongs in {ADAPTER}.')
     return 0

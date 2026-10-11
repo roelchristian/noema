@@ -14,8 +14,9 @@ xcuserdata/
 *.xcuserstate
 .DS_Store
 
-# Local agent guidance
-/AGENTS.md
+# Private agent guidance and disposable evidence
+/AGENTS.local.md
+/.local/
 
 # Local Git signing secret
 /.env
@@ -28,3 +29,6 @@ Examples/**/.Trash/
 Examples/**/Removed Pages/
 Examples/**/Conflicts/
 Examples/**/.import-*/
+
+# Python tool caches
+__pycache__/
