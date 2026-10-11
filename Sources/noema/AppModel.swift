@@ -5,7 +5,7 @@ import VaultCore
 import PDFKit
 import ExternalAI
 
-enum LibraryScope: Hashable { case wiki, sources, semantic, trash, tag(String) }
+enum LibraryScope: Hashable, Sendable { case wiki, sources, semantic, trash, tag(String) }
 
 struct SemanticBlockHit: Identifiable, Sendable {
     var pageID: UUID
@@ -57,7 +57,7 @@ struct SidebarSearchResults: Sendable {
                     sourceExcerpts: Dictionary(sourceHits.map { ($0.id, $0.excerpt) }, uniquingKeysWith: { first, _ in first }))
     }
 }
-struct LibraryRow: Identifiable, Equatable {
+struct LibraryRow: Identifiable, Equatable, Sendable {
     var id: UUID
     var title: String
     var excerpt: String
@@ -108,8 +108,16 @@ struct EditorAction: Equatable {
     var showVaultCreation = false
     var root: URL?
     var vaultName = "Noema"
-    var notes: [NoteRecord] = []
-    var sources: [SourceRecord] = []
+    var notes: [NoteRecord] = [] {
+        didSet { libraryCatalogRevision = UUID() }
+    }
+    var sources: [SourceRecord] = [] {
+        didSet { libraryCatalogRevision = UUID() }
+    }
+    private var libraryCatalogRevision = UUID()
+    private var libraryRowsRevision: UUID?
+    private var libraryRowsScope: LibraryScope?
+    private var libraryRowsEditorRevision: UUID?
     var downloadingSources: Set<UUID> = []
     private struct PendingSourceDownload {
         var source: SourceRecord
@@ -136,6 +144,8 @@ struct EditorAction: Equatable {
     private(set) var trashOperationInProgress = false
     var rows: [LibraryRow] = []
     var semanticRows: [SemanticBlockHit] = []
+    private var semanticRowsRevision: UUID?
+    private var semanticRowsEditorRevision: UUID?
     var selectedSemanticID: String?
     var recentPageIDs: [UUID] = []
     private(set) var editingLockOperations: Set<UUID> = []
@@ -217,6 +227,7 @@ struct EditorAction: Equatable {
     var wikiQuery: String?
     var editorAction: EditorAction?
     var searchFocusToken = 0
+    var workspaceNavigationToken = 0
     private let storageProvider: VaultStorageProvider
     let externalAIService: ExternalAIService
     let aiProviderPreferences: AIProviderPreferences
@@ -576,6 +587,8 @@ struct EditorAction: Equatable {
     }
 
     private func clearSessionUIState() {
+        libraryRowsRevision = nil; libraryRowsScope = nil; libraryRowsEditorRevision = nil
+        semanticRowsRevision = nil; semanticRowsEditorRevision = nil
         notes = []; sources = []; rows = []; semanticRows = []; trashedPages = []; recoveredDrafts = []; damagedRecoveryEntries = []; issues = []
         dismissedVaultNotices = []
         tags = []; backlinks = []; outgoingLinkTargets = []; preview = []; recentPageIDs = []; unseenRenamedPages = []
@@ -1601,6 +1614,12 @@ struct EditorAction: Equatable {
             await updateRows()
         }
     }
+
+    private func semanticCatalog(_ notes: [NoteRecord], revision: UUID, editorRevision: UUID) async -> [SemanticBlockHit] {
+        if semanticRowsRevision == revision && semanticRowsEditorRevision == editorRevision { return semanticRows }
+        return await Task.detached { SemanticBlockHit.search(notes, query: "") }.value
+    }
+
     func changeScope(_ scope: LibraryScope) {
         guard canOperateOnLoadedContent else { return }
         // Revoke immediately, including while an asynchronous save delays applying the scope.
@@ -1661,32 +1680,39 @@ struct EditorAction: Equatable {
         }
         let capturedNotes = snapshot
         let capturedSources = sources
+        let catalogRevision = libraryCatalogRevision
+        let editorRevision = cloudEditorRevision
         // Query entry never narrows the underlying library. Its full collection
         // stays available until the view explicitly presents search results.
-        if isSearching || searchMode == .quickOpen {
-            let existingRows = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            let pageRow = { (note: NoteRecord) -> LibraryRow in
-                if let row = existingRows[note.id], row.title == note.title,
-                   row.tags == note.allTags, row.updatedAt == LibraryRow.date(note.updatedAt) { return row }
-                return LibraryRow(note: note)
-            }
-            let baseRows: [LibraryRow]
-            switch scope {
-            case .wiki: baseRows = capturedNotes.map(pageRow)
-            case .sources: baseRows = capturedSources.map { LibraryRow(source: $0) }
-            case .tag(let tag): baseRows = capturedNotes.filter { $0.allTags.contains(tag) }.map(pageRow)
-            case .semantic, .trash: baseRows = []
-            }
-            let sortedRows = baseRows.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-            if scope != .trash && scope != .semantic && rows != sortedRows { rows = sortedRows }
+        if (isSearching || searchMode == .quickOpen), scope != .trash, scope != .semantic,
+           libraryRowsRevision != catalogRevision || libraryRowsScope != scope || libraryRowsEditorRevision != editorRevision {
+            let catalogScope = scope
+            let baselineRows = await Task.detached {
+                let baseRows: [LibraryRow]
+                switch catalogScope {
+                case .wiki: baseRows = capturedNotes.map { LibraryRow(note: $0) }
+                case .sources: baseRows = capturedSources.map { LibraryRow(source: $0) }
+                case .tag(let tag): baseRows = capturedNotes.filter { $0.allTags.contains(tag) }.map { LibraryRow(note: $0) }
+                case .semantic, .trash: baseRows = []
+                }
+                return baseRows.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            }.value
+            guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.libraryCatalog"),
+                  revision == searchRevision, catalogRevision == libraryCatalogRevision,
+                  editorRevision == cloudEditorRevision else { return }
+            if rows != baselineRows { rows = baselineRows }
+            libraryRowsRevision = catalogRevision; libraryRowsScope = catalogScope
+            libraryRowsEditorRevision = editorRevision
         }
         if searchMode == .quickOpen {
             searchStatus = .searching
             if scope == .semantic {
-                let blocks = await Task.detached { SemanticBlockHit.search(capturedNotes, query: "") }.value
+                let blocks = await semanticCatalog(capturedNotes, revision: catalogRevision, editorRevision: editorRevision)
                 guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.quickOpenLibrary"),
-                      revision == searchRevision else { return }
+                      revision == searchRevision, catalogRevision == libraryCatalogRevision,
+                      editorRevision == cloudEditorRevision else { return }
                 semanticRows = blocks
+                semanticRowsRevision = catalogRevision; semanticRowsEditorRevision = editorRevision
             }
             let results = await Task.detached {
                 SidebarSearchResults.quickOpen(query, notes: capturedNotes, sources: capturedSources)
@@ -1704,10 +1730,12 @@ struct EditorAction: Equatable {
                 return
             }
             do {
-                let allBlocks = await Task.detached { SemanticBlockHit.search(capturedNotes, query: "") }.value
+                let allBlocks = await semanticCatalog(capturedNotes, revision: catalogRevision, editorRevision: editorRevision)
                 guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.searchLibrary"),
-                      revision == searchRevision else { return }
+                      revision == searchRevision, catalogRevision == libraryCatalogRevision,
+                      editorRevision == cloudEditorRevision else { return }
                 semanticRows = allBlocks
+                semanticRowsRevision = catalogRevision; semanticRowsEditorRevision = editorRevision
                 let results = try await SidebarSearchResults.search(query, notes: capturedNotes, sources: capturedSources, index: index, semanticBlocks: allBlocks)
                 guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.sidebarSearch"),
                       revision == searchRevision else { return }
@@ -1727,9 +1755,11 @@ struct EditorAction: Equatable {
         sidebarSearchResults = SidebarSearchResults()
         searchStatus = .idle
         if scope == .semantic || semanticRows.isEmpty {
-            let hits = await Task.detached { SemanticBlockHit.search(capturedNotes, query: query) }.value
-            if isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.semanticBlocks"), revision == searchRevision {
+            let hits = await semanticCatalog(capturedNotes, revision: catalogRevision, editorRevision: editorRevision)
+            if isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.semanticBlocks"), revision == searchRevision,
+               catalogRevision == libraryCatalogRevision, editorRevision == cloudEditorRevision {
                 semanticRows = hits
+                semanticRowsRevision = catalogRevision; semanticRowsEditorRevision = editorRevision
             }
             if scope == .semantic { return }
         }
@@ -1750,6 +1780,8 @@ struct EditorAction: Equatable {
                 return nil
             }
             if newRows != rows { rows = newRows }
+            libraryRowsRevision = catalogRevision; libraryRowsScope = capturedScope
+            libraryRowsEditorRevision = nil
         } catch {
             guard isCompletionValid(completionTicket, currentText: searchText, operation: "updateRows.indexSearchError"),
                   capturedScope == scope, revision == searchRevision else { return }

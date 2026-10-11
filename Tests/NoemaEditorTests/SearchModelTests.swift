@@ -64,6 +64,11 @@ struct SearchModelTests {
             #expect(model.visibleSearchResults.totalCount == (scope == .all ? 3 : 1))
         }
         model.setSearchScope(.all)
+        let replacement = EditorBlock(id: block.id, runs: [RichRun("Nebula replacement evidence")], metadata: metadata)
+        model.body = BlockDocumentCodec.encode(BlockDocument(blocks: [replacement]))
+        await model.updateRows()
+        #expect(model.visibleSearchResults.blocks.first?.preview == "Nebula replacement evidence")
+        #expect(model.semanticRows.first?.preview == "Nebula replacement evidence")
         model.searchText = "no-match-token"
         await model.updateRows()
         #expect(model.searchStatus == .results && model.visibleSearchResults.isEmpty)
@@ -109,8 +114,25 @@ struct SearchModelTests {
     @Test @MainActor func failedSearchHasItsOwnStateAndDoesNotReplaceDocumentError() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        let model = await open(root)
+        let repo = try FileVaultRepository.open(root: root)
+        let page = try await repo.create(title: "Nebula", body: "A searchable page")
+        let model = AppModel()
+        model.localStorageRoot = root.deletingLastPathComponent(); model.persistSecurityScopedBookmark = false
+        model.searchIndexFactory = { url, lease, gate in
+            SearchTestIndex(base: try SQLiteSearchIndex(url: url, sessionLease: lease, accessGate: gate)) { query, _ in
+                if query == "failure" { throw VaultError.storage("Injected search failure") }
+                return nil
+            }
+        }
+        await model.open(root, create: false)
         model.errorMessage = "Existing document error"
+        model.searchText = "failure"
+        await model.updateRows()
+        #expect(model.searchStatus == .failed("Injected search failure"))
+        #expect(model.visibleSearchResults.isEmpty && model.errorMessage == "Existing document error")
+        model.searchText = "Nebula"
+        await model.updateRows()
+        #expect(model.searchStatus == .results && model.visibleSearchResults.pages.map(\.id) == [page.id])
         model.index = nil; model.searchText = "Nebula"
         await model.updateRows()
         #expect(model.searchStatus == .failed("The vault search index is unavailable."))
@@ -128,6 +150,7 @@ struct SearchModelTests {
             let entered = AsyncStream.makeStream(of: Void.self)
             let release = AsyncStream.makeStream(of: Void.self)
             let pause = Mutex(false)
+            let fail = Mutex(false)
         }
         let gate = Gate()
         let model = AppModel()
@@ -138,6 +161,7 @@ struct SearchModelTests {
                 if gate.pause.withLock({ if $0 { $0 = false; return true }; return false }) {
                     gate.entered.continuation.yield(())
                     for await _ in gate.release.stream { break }
+                    if gate.fail.withLock({ $0 }) { throw VaultError.storage("Old search failed") }
                     return [SearchHit(id: old.id, kind: .wiki, excerpt: "old")]
                 }
                 return [SearchHit(id: newer.id, kind: .wiki, excerpt: "new")]
@@ -147,23 +171,68 @@ struct SearchModelTests {
         var entered = gate.entered.stream.makeAsyncIterator()
         // Each delayed operation ignores cooperative cancellation. In particular,
         // the query returns to A before old A completes, requiring a revision check.
-        for transition in 0..<4 {
+        for transition in 0..<5 {
             model.setSearchMode(.vault); model.setSearchScope(.all); model.searchText = "A"
             gate.pause.withLock { $0 = true }
+            gate.fail.withLock { $0 = transition == 4 }
             let pending = Task { @MainActor in await model.updateRows() }
             _ = await entered.next()
             switch transition {
             case 0: model.searchText = "B"; model.searchText = "A"
             case 1: model.searchMode = .quickOpen; model.searchMode = .vault
             case 2: model.searchScope = .pages; model.searchScope = .all
-            default: model.selectedID = old.id; model.selectedID = newer.id
+            case 3: model.selectedID = old.id; model.selectedID = newer.id
+            default: model.queryChanged()
             }
             await model.updateRows()
             #expect(model.visibleSearchResults.pages.map(\.id) == [newer.id])
             gate.release.continuation.yield(())
             await pending.value
             #expect(model.visibleSearchResults.pages.map(\.id) == [newer.id])
+            #expect(model.searchStatus == .results)
         }
+        #expect(await model.closeVault())
+    }
+
+    @Test @MainActor func activeSearchKeepsCompleteLibraryRowsFreshAcrossScopeAndContentChanges() async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let repo = try FileVaultRepository.open(root: root)
+        let match = try await repo.create(title: "Match", body: "Original body")
+        let other = try await repo.create(title: "Other", body: "Unrelated content")
+        let source = try await repo.importSource(data: Data("Source text".utf8), filename: "source.txt", title: "Unrelated source", originURL: nil)
+        let model = await open(root)
+        model.searchText = "Match"
+        await model.updateRows()
+        #expect(Set(model.rows.map(\.id)) == Set([match.id, other.id]))
+        #expect(model.visibleSearchResults.pages.map(\.id) == [match.id])
+        // A body update can arrive with identical metadata, such as an external
+        // edit discovered in the same timestamp interval. Cached excerpts must
+        // follow the new catalog snapshot even while a query is active.
+        let position = try #require(model.notes.firstIndex { $0.id == match.id })
+        model.notes[position].body = "Replacement body"
+        await model.updateRows()
+        #expect(model.rows.first { $0.id == match.id }?.excerpt == "Replacement body")
+        model.currentNote = model.notes[position]; model.selectedID = match.id
+        model.title = match.title; model.body = "Unsaved editor body"
+        await model.updateRows()
+        #expect(model.rows.first { $0.id == match.id }?.excerpt == "Unsaved editor body")
+        model.body = "A further editor change"
+        await model.updateRows()
+        #expect(model.rows.first { $0.id == match.id }?.excerpt == "A further editor change")
+        model.scope = .sources
+        await model.updateRows()
+        #expect(model.rows.map(\.id) == [source.id])
+        model.sources[0].metadata.title = "Renamed source"
+        await model.updateRows()
+        #expect(model.rows.first?.title == "Renamed source")
+        model.scope = .tag("missing")
+        await model.updateRows()
+        #expect(model.rows.isEmpty && model.searchText == "Match")
+        model.scope = .wiki
+        model.setSearchMode(.quickOpen)
+        await model.updateRows()
+        #expect(Set(model.rows.map(\.id)) == Set([match.id, other.id]))
         #expect(await model.closeVault())
     }
 }
