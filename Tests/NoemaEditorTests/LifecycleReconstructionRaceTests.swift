@@ -5,6 +5,7 @@ import Testing
 @testable import noema
 
 private enum ReconstructionRaceError: Error { case deadline, signalEnded, injectedIndexFailure }
+private enum RefreshOutcome: CaseIterable, Sendable { case cancellation, cancelledTask, failure }
 
 private struct ReconstructionSignal: Sendable {
     private let pair = AsyncStream.makeStream(of: Void.self)
@@ -100,6 +101,101 @@ struct LifecycleReconstructionRaceTests {
         model.localStorageRoot = base
         model.persistSecurityScopedBookmark = false
         return model
+    }
+
+    @Test @MainActor
+    func supersededScheduledRefreshDoesNotPresentAnError() async throws {
+        let fixture = try fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.base) }
+        _ = try await fixture.repository.create(title: "Existing page", body: "Content")
+        let model = model(base: fixture.base)
+        let phase = Mutex(0)
+        let entered = ReconstructionSignal(), release = ReconstructionSignal(), replacement = ReconstructionSignal()
+        defer { release.finish() }
+        model.searchIndexFactory = { url, lease, gate in
+            ReconstructionIndex(base: try SQLiteSearchIndex(url: url, sessionLease: lease, accessGate: gate), afterCommit: {
+                let step = phase.withLock { value in
+                    let step = value
+                    if value > 0 { value += 1 }
+                    return step
+                }
+                if step == 1 {
+                    entered.signal()
+                    try await release.wait()
+                } else if step == 2 {
+                    replacement.signal()
+                }
+            })
+        }
+        await model.open(fixture.root, create: false)
+        #expect(model.errorMessage == nil)
+        phase.withLock { $0 = 1 }
+        model.scheduleRefresh()
+        try await entered.wait()
+        // A second file notification cancels the running scheduled refresh.
+        model.scheduleRefresh()
+        try await replacement.wait()
+        #expect(model.errorMessage == nil)
+        #expect(model.notes.count == 1)
+        #expect(await model.closeVault(force: true))
+    }
+
+    @Test(arguments: RefreshOutcome.allCases) @MainActor
+    private func semanticEditSurvivesCancelledRefreshAndNavigation(outcome: RefreshOutcome) async throws {
+        let fixture = try fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.base) }
+        let block = EditorBlock(runs: [RichRun("Existing block")])
+        let original = BlockDocument(blocks: [block])
+        let note = try await fixture.repository.create(title: "Tagged page", body: BlockDocumentCodec.encode(original))
+        let other = try await fixture.repository.create(title: "Other page", body: "Other content")
+        let model = model(base: fixture.base)
+        let armed = Mutex(false)
+        model.searchIndexFactory = { url, lease, gate in
+            ReconstructionIndex(base: try SQLiteSearchIndex(url: url, sessionLease: lease, accessGate: gate), afterCommit: {
+                guard armed.withLock({ if $0 { $0 = false; return true }; return false }) else { return }
+                switch outcome {
+                case .cancellation: throw CancellationError()
+                case .cancelledTask:
+                    // Some operations ignore cancellation and return successfully.
+                    withUnsafeCurrentTask { $0?.cancel() }
+                case .failure: throw ReconstructionRaceError.injectedIndexFailure
+                }
+            })
+        }
+        await model.open(fixture.root, create: false)
+        model.currentNote = note; model.selectedID = note.id
+        model.title = note.title; model.body = note.body
+        var tagged = original
+        tagged.blocks[0].metadata.semantic = "claim"
+        model.body = BlockDocumentCodec.encode(tagged)
+        #expect(await model.saveCurrent())
+        #expect(model.saveStatus == "Saved locally")
+        armed.withLock { $0 = true }
+        let refresh = Task { @MainActor in await model.refresh() }
+        await refresh.value
+        if outcome == .failure {
+            #expect(model.errorMessage == ReconstructionRaceError.injectedIndexFailure.localizedDescription)
+        } else {
+            #expect(model.errorMessage == nil)
+        }
+        #expect(!model.dirty)
+        #expect(model.saveStatus == "Saved locally")
+        let persisted = try #require(try await fixture.repository.scan().notes.first { $0.id == note.id })
+        #expect(BlockDocumentCodec.decode(persisted.body).block(block.id)?.metadata.semantic == "claim")
+        for target in [other.id, note.id] {
+            model.select(target)
+            for _ in 0..<200 {
+                if model.currentNote?.id == target { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(model.currentNote?.id == target)
+        }
+        #expect(BlockDocumentCodec.decode(model.body).block(block.id)?.metadata.semantic == "claim")
+        #expect(model.errorMessage == nil)
+        // A subsequent refresh still succeeds after the canceled operation.
+        await model.refresh()
+        #expect(model.errorMessage == nil)
+        #expect(await model.closeVault(force: true))
     }
 
     @Test @MainActor

@@ -1,6 +1,6 @@
 # Block editor compatibility decision
 
-The existing working tree contained an attributed article renderer, slash commands, legacy inline block markers, and article locking. The editor retains the single native AppKit text system and the existing `AppModel.body` / repository / recovery path. The unrelated demo-vault changes are preserved.
+The editor retains a single native AppKit text system and the `AppModel.body` / repository / recovery path.
 
 Canonical pages remain frontmatter plus Markdown in vault format 1. On an editor mutation, the body gains a trailing HTML comment (`noema:document`) containing base64-encoded JSON. The envelope has its own version (1), a SHA-256 of the readable Markdown, and a complete block tree: stable UUIDs, string-backed structure kinds, rich runs, independent semantic designation, optional status/language/icon/extension metadata, timestamps, and children. Array order is position. No sidecar or index becomes canonical, and coordinated writes/conflicts/recovery operate on the complete body atomically.
 
@@ -12,4 +12,4 @@ The editable document is a value model in the coordinator, synchronized with the
 
 Keyboard behavior: Return splits; empty list Return exits; structural Backspace converts to paragraph before merging; Tab/Shift Tab indent/outdent; Shift Return inserts a code newline; Command A selects the current block, Command Option A selects the document. Command Option Up/Down moves a subtree among siblings. Command Shift Return toggles a task. Slash commands and context actions use the same mutations. The drag implementation targets sibling reordering without changing parentage; its native drop acceptance is still incomplete. Indent/outdent explicitly changes parentage.
 
-See `VALIDATION.md` for the checks performed, the deliverable checklist, and remaining native acceptance work.
+See `../validation.md` for reproducible checks and remaining native acceptance work.

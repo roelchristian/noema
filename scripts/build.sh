@@ -23,3 +23,6 @@ codesign --force --sign - --entitlements Resources/Vault.entitlements "$app"
 ditto -c -k --keepParent --norsrc --noextattr "$app" "$PWD/dist/noema.zip"
 echo "Built: $app"
 echo "Archive: $PWD/dist/noema.zip"
+
+# Retain failures; expire only completed, unpinned local runs after success.
+./scripts/cleanup-local-evidence.sh --older-than 7d --protect-active
