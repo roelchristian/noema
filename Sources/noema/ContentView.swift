@@ -211,6 +211,8 @@ struct ContentView: View {
         .onChange(of: model.body) { if model.isSearching || model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.title) { if model.isSearching || model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false; showAllSearchResults = false }
+        .onChange(of: model.scope) { showAllSearchResults = false }
+        .onChange(of: model.workspaceNavigationToken) { showAllSearchResults = false }
         .onChange(of: model.externalChange) { dismissedExternalChange = false }
         // UI.R.REM02: Reconcile even while the inspector is hidden or unmounted.
         .onChange(of: inspectorContext.targetID, initial: true) {
