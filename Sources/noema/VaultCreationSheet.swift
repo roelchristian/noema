@@ -10,6 +10,7 @@ struct VaultCreationSheet: View {
     @State private var creating = false
     @State private var failure: String?
     @State private var confirmPlaintext = false
+    @State private var accessAuthenticationRequested = false
     @FocusState private var nameFocused: Bool
 
     private var validName: String? { try? VaultCreation.validatedName(name) }
@@ -34,6 +35,7 @@ struct VaultCreationSheet: View {
                         .font(.callout).foregroundStyle(secondaryText)
                 }
             }
+            .disabled(creating)
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Save location").font(.subheadline.weight(.semibold))
@@ -63,23 +65,31 @@ struct VaultCreationSheet: View {
                         .font(.callout).foregroundStyle(secondaryText)
                 }
             }
+            .disabled(creating)
 
             Divider()
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Security").font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Text("Coming soon").font(.callout).foregroundStyle(secondaryText)
-                }
+                Text("Access on this Mac").font(.subheadline.weight(.semibold))
+                Toggle("Require authentication in Noema", isOn: $accessAuthenticationRequested)
+                    .toggleStyle(.switch)
+                Text("Require Touch ID or your Mac login password before opening or unlocking this vault in Noema, including after restarting the app. This preference applies on this Mac.")
+                    .font(.callout).foregroundStyle(secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Protects against casual access through Noema. Files, search indexes, and recovery drafts remain plaintext and readable on disk; filesystem and process access are not protected.")
+                    .font(.caption).foregroundStyle(secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                Divider()
+                Text("Encryption — coming soon").font(.subheadline.weight(.semibold))
                 Toggle("Encrypted vault", isOn: .constant(false))
                     .toggleStyle(.switch)
                     .disabled(true)
                     .accessibilityHint("Encryption is not available in this release.")
-                Text("This vault will not be encrypted. Touch ID and recovery-key protection are not yet available.")
+                Text("This vault will not be encrypted. Encryption and recovery-key protection are not yet available.")
                     .font(.callout).foregroundStyle(secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .disabled(creating)
 
             if let failure {
                 Text(failure).font(.callout).textSelection(.enabled)
@@ -87,20 +97,24 @@ struct VaultCreationSheet: View {
             }
 
             HStack(spacing: 8) {
-                if creating { ProgressView().controlSize(.small); Text("Creating vault…").font(.callout) }
+                if creating && !model.isVaultAuthenticationPending {
+                    ProgressView().controlSize(.small); Text("Creating vault…").font(.callout)
+                }
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(creating)
                 Button("Create Vault") { confirmPlaintext = true }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(parent == nil || validName == nil || creating)
+            }
+            if model.isVaultAuthenticationPending {
+                VaultAuthenticationProgress(model: model)
             }
         }
         .padding(24).frame(width: 540)
         .controlSize(.large)
         .foregroundStyle(theme.text(.textPrimary, on: .background))
         .background(theme.color(.background))
-        .disabled(creating)
         .interactiveDismissDisabled(creating)
         .task { nameFocused = true }
         .alert("Create an unencrypted vault?", isPresented: $confirmPlaintext) {
@@ -109,13 +123,18 @@ struct VaultCreationSheet: View {
                 guard let parent, let validName, !creating else { return }
                 creating = true; failure = nil
                 Task {
-                    do { try await model.createVault(parent: parent, name: validName, encryptionRequested: false) }
+                    do {
+                        try await model.createVault(
+                            parent: parent, name: validName, encryptionRequested: false,
+                            accessAuthenticationRequested: accessAuthenticationRequested
+                        )
+                    }
                     catch { failure = error.localizedDescription }
                     creating = false
                 }
             }
         } message: {
-            Text("Create \(validName ?? name) in \(parent?.path ?? "the selected folder")? Its files and search index will be readable without Touch ID or a recovery key.")
+            Text("Create \(validName ?? name) in \(parent?.path ?? "the selected folder")? Its files, search index, and recovery drafts will remain readable on disk.\(accessAuthenticationRequested ? " Noema will ask for macOS authentication before showing this vault on this Mac." : " Noema will open this vault without authentication.")")
         }
     }
 }

@@ -2,7 +2,7 @@ import Foundation
 import Synchronization
 import Testing
 @testable import ExternalAI
-import VaultCore
+@testable import VaultCore
 
 @Suite
 struct ExternalAISessionManagerTests {
