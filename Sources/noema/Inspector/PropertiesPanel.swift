@@ -34,10 +34,6 @@ struct PropertiesPanel: View {
                         HStack {
                             Button("Suggest Title") { model.suggestPageTitle() }
                                 .disabled(model.currentNote?.id != note.id || model.editingLocked || model.generatingPageTitle)
-                            Menu("Provider") {
-                                Button("Suggest Title on This Mac") { model.suggestPageTitle(provider: .onDevice) }
-                            }
-                            .disabled(model.currentNote?.id != note.id || model.editingLocked || model.generatingPageTitle)
                             if model.generatingPageTitle { ProgressView().controlSize(.mini) }
                         }
                         Text("Title suggestions: \(model.preferredAIProvider(for: .suggestTitle).displayName)")
@@ -105,8 +101,8 @@ struct PropertiesPanel: View {
                     Button("Open Preview") { model.openSource(source.id) }
                     Button("Refresh LCC · \(model.preferredAIProvider(for: .classifyLCC).displayName)") { model.refreshSourceLCC(source) }
                         .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceLCCs.contains(source.id))
-                    Button("Refresh LCC on This Mac") { model.refreshSourceLCC(source, provider: .onDevice) }
-                        .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceLCCs.contains(source.id))
+                    Button("Suggest Title · \(model.preferredAIProvider(for: .suggestTitle).displayName)") { model.suggestSourceTitle(source) }
+                        .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceTitles.contains(source.id))
                     Button("Check Availability") { model.checkSourceAvailability([source]) }
                         .disabled(model.checkingSourceAvailability.contains(source.id))
                 } label: {
@@ -239,9 +235,6 @@ struct PropertiesPanel: View {
                     }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
-                    .contextMenu {
-                        Button("Refresh LCC on This Mac") { model.refreshPageLCC(provider: .onDevice) }
-                    }
                     .help("Refresh LCC using " + model.preferredAIProvider(for: .classifyLCC).displayName)
                 }
             }

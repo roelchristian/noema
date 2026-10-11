@@ -6,7 +6,7 @@ struct IntelligenceSettings: View {
     let preferences: AIProviderPreferences
 
     var body: some View {
-        Section("Intelligence") {
+        Section("Artificial Intelligence") {
             Picker("Default AI provider", selection: Binding(
                 get: { preferences.settings.defaultProvider },
                 set: { preferences.setDefaultProvider($0) }
@@ -20,11 +20,11 @@ struct IntelligenceSettings: View {
                  ? "Process supported actions privately on this Mac."
                  : "Use the configured OpenAI connection for supported actions. Submitted content leaves this Mac and API usage may incur charges.")
                 .font(.callout).foregroundStyle(.secondary)
-            Text("Provider preferences apply to explicit actions. Choosing OpenAI does not authorize a request; each submission still requires confirmation and session access.")
+            Text("Changes affect future requests only. Existing summaries, accepted titles and classifications remain unchanged. Provider preferences apply to explicit actions. Choosing OpenAI does not authorize a request; each submission still requires confirmation and session access.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         Section("Per-action preferences") {
-            ForEach(AIAction.allCases) { action in
+            ForEach(AIAction.configurableActions) { action in
                 Picker(selection: overrideBinding(for: action)) {
                     Text("Use Default (\(preferences.settings.defaultProvider.displayName))")
                         .tag(AIProviderPreference.inheritDefault)
@@ -61,7 +61,7 @@ struct IntelligenceSettings: View {
 
     private func overrideBinding(for action: AIAction) -> Binding<AIProviderPreference> {
         Binding(
-            get: { preferences.settings.overrides[action] ?? .inheritDefault },
+            get: { preferences.settings.overrides[action.preferenceAction] ?? .inheritDefault },
             set: { preferences.setOverride($0, for: action) }
         )
     }
@@ -78,7 +78,7 @@ struct IntelligenceSettings: View {
 
     private func detail(for action: AIAction) -> String {
         switch action {
-        case .summarizePage: "Generate a concise page summary."
+        case .summarizePage: "Generate a concise summary of a page or source."
         case .summarizeSource: "Generate a concise source summary."
         case .suggestTitle: "Suggest a descriptive page or source title."
         case .classifyLCC: "Classify the selected page or source."
