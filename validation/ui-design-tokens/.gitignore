@@ -1,0 +1,5 @@
+# Full opt-in matrices and legacy inspector baseline are local validation output.
+/generated/
+/baseline/
+
+/__pycache__/
