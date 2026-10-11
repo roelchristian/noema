@@ -184,11 +184,8 @@ private struct SourceTableContextMenu: View {
             }
             .disabled(model.downloadingSources.contains(sourceID) || model.generatingSourcePages.contains(sourceID)
                       || model.generatingSourceTitles.contains(sourceID) || model.generatingSourceSummaries.contains(sourceID))
-            Menu("Create Page using…") {
-                Button("On-device · Runs locally") { model.createPageFromSource(source, provider: .onDevice) }
-                    .disabled(model.downloadingSources.contains(sourceID) || model.generatingSourcePages.contains(sourceID)
-                              || model.generatingSourceTitles.contains(sourceID) || model.isSummarizing(target: .source(sourceID)))
-            }
+            Button("Suggest Title · \(model.preferredAIProvider(for: .suggestTitle).displayName)") { model.suggestSourceTitle(source) }
+                .disabled(model.downloadingSources.contains(sourceID) || model.generatingSourceTitles.contains(sourceID))
             Button("Check Availability") { model.checkSourceAvailability([source]) }
                 .disabled(model.checkingSourceAvailability.contains(sourceID) || model.downloadingSources.contains(sourceID))
             Button { rename(source) } label: { Label("Rename", systemImage: "pencil") }

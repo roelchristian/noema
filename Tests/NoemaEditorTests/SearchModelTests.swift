@@ -194,6 +194,54 @@ struct SearchModelTests {
         #expect(await model.closeVault())
     }
 
+    @Test(arguments: [0, 1, 2]) @MainActor
+    func catalogAndEditorChangesRejectSuspendedResultsBeforeViewRefresh(change: Int) async throws {
+        let root = try makeVault()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let repo = try FileVaultRepository.open(root: root)
+        let page = try await repo.create(title: "Snapshot Page", body: "Snapshot original content")
+        final class Gate: Sendable {
+            let entered = AsyncStream.makeStream(of: Void.self)
+            let release = AsyncStream.makeStream(of: Void.self)
+            let pause = Mutex(true)
+        }
+        let gate = Gate()
+        let model = AppModel()
+        model.localStorageRoot = root.deletingLastPathComponent()
+        model.persistSecurityScopedBookmark = false
+        model.searchIndexFactory = { url, lease, accessGate in
+            SearchTestIndex(base: try SQLiteSearchIndex(url: url, sessionLease: lease, accessGate: accessGate)) { query, kind in
+                guard query == "Snapshot", kind == .wiki,
+                      gate.pause.withLock({ if $0 { $0 = false; return true }; return false }) else { return nil }
+                gate.entered.continuation.yield(())
+                for await _ in gate.release.stream { break }
+                return [SearchHit(id: page.id, kind: .wiki, excerpt: "Superseded snapshot")]
+            }
+        }
+        await model.open(root, create: false)
+        model.currentNote = page; model.selectedID = page.id
+        model.title = page.title; model.body = page.body
+        model.searchText = "Snapshot"
+        let pending = Task { @MainActor in await model.updateRows() }
+        for await _ in gate.entered.stream { break }
+        switch change {
+        case 0:
+            var fresh = page; fresh.body = "Snapshot refreshed catalog"
+            model.notes = [fresh]
+        case 1: model.body = "Snapshot edited content"
+        default: model.title = "Snapshot edited title"
+        }
+        // No queryChanged()/view refresh runs between the mutation and release.
+        gate.release.continuation.yield(())
+        await pending.value
+        #expect(model.visibleSearchResults.isEmpty)
+        #expect(model.searchStatus == .searching)
+        await model.updateRows()
+        #expect(model.searchStatus == .results)
+        #expect(model.visibleSearchResults.pages.map(\.id) == [page.id])
+        #expect(await model.closeVault())
+    }
+
     @Test @MainActor func activeSearchKeepsCompleteLibraryRowsFreshAcrossScopeAndContentChanges() async throws {
         let root = try makeVault()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }

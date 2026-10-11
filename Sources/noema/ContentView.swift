@@ -154,7 +154,10 @@ struct ContentView: View {
         }) { confirmation in
             CloudSummaryConsentSheet(model: model, confirmation: confirmation)
         }
-        .alert("OpenAI Summary", isPresented: Binding(get: { model.cloudSummaryError != nil }, set: { if !$0 { model.cloudSummaryError = nil } })) {
+        .sheet(item: $model.pendingAISuggestion, onDismiss: { model.didDismissAISuggestionReview() }) { suggestion in
+            AISuggestionReviewSheet(model: model, suggestion: suggestion)
+        }
+        .alert("OpenAI Request", isPresented: Binding(get: { model.cloudSummaryError != nil }, set: { if !$0 { model.cloudSummaryError = nil } })) {
             Button("OK") { model.cloudSummaryError = nil }
         } message: { Text(model.cloudSummaryError ?? "") }
         .sheet(isPresented: $model.showVaultCreation) {
@@ -208,8 +211,8 @@ struct ContentView: View {
     var body: some View {
         workspaceConfirmations
         .onChange(of: model.searchText) { model.queryChanged() }
-        .onChange(of: model.body) { if model.isSearching || model.scope == .semantic { model.queryChanged() } }
-        .onChange(of: model.title) { if model.isSearching || model.scope == .semantic { model.queryChanged() } }
+        .onChange(of: model.body) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
+        .onChange(of: model.title) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false; showAllSearchResults = false }
         .onChange(of: model.scope) { showAllSearchResults = false }
         .onChange(of: model.workspaceNavigationToken) { showAllSearchResults = false }

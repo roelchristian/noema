@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import Testing
 import VaultCore
+import ExternalAI
 @testable import noema
 
 extension VaultUIIntegrationTests {
@@ -104,6 +105,42 @@ extension VaultUIIntegrationTests {
             }
             model.busy = false
             _ = await model.closeVault()
+        }
+
+        @Test @MainActor
+        func searchCannotTakeFocusBehindConsentOrSuggestionSheets() async throws {
+            let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaSearchSheets-\(UUID())")
+            let root = base.appendingPathComponent("Vault")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: base) }
+            let repository = try FileVaultRepository.open(root: root, create: true)
+            let note = try await repository.create(title: "Review Page", body: "Review text")
+            let model = AppModel()
+            model.localStorageRoot = base.appendingPathComponent("Local")
+            model.persistSecurityScopedBookmark = false
+            await model.open(root, create: false)
+            let lease = try #require(model.sessionManager.accessGate.currentLease)
+            let snapshot = try await repository.pageSummarySnapshot(note)
+            let request = try ExternalAISummaryRequest(authority: ExternalAIVaultAuthority(lease: lease),
+                target: .page(note.id), contentRevision: UUID(), content: note.body)
+            let confirmation = CloudSummaryConfirmation(request: request, snapshot: .page(snapshot),
+                title: note.title, model: "test-model", selection: nil, editorRevision: UUID())
+
+            for consent in [true, false] {
+                model.cloudSummaryConfirmation = consent ? confirmation : nil
+                model.pendingAISuggestion = consent ? nil : AISuggestion(id: UUID(), action: .suggestTitle,
+                    value: "Reviewed title", rationale: nil, provider: .onDevice, target: .page(note.id))
+                for command in [WorkspaceCommand.search, .quickOpen] {
+                    #expect(!model.canPerformWorkspaceCommand(command))
+                    model.performWorkspaceCommand(command)
+                    #expect(model.searchFocusToken == 0 && model.workspaceNavigationToken == 0)
+                }
+                #expect(model.canPerformWorkspaceCommand(.lock))
+            }
+            model.cloudSummaryConfirmation = nil; model.pendingAISuggestion = nil
+            #expect(model.canPerformWorkspaceCommand(.search))
+            #expect(model.canPerformWorkspaceCommand(.quickOpen))
+            #expect(await model.closeVault())
         }
 
         @Test @MainActor

@@ -67,11 +67,30 @@ struct CloudSummaryConsentSheet: View {
         _previewExpanded = State(initialValue: confirmation.presentation.previewInitiallyExpanded)
     }
 
+    private var operationTitle: String {
+        switch confirmation.request.action {
+        case .summarizePage, .summarizeSource: "Summarize with OpenAI"
+        case .suggestTitle: "Suggest Title with OpenAI"
+        case .lccClassification: "Suggest LCC Classification with OpenAI"
+        }
+    }
+    private var publicationDescription: String {
+        switch confirmation.request.action {
+        case .summarizePage, .summarizeSource:
+            "The summary replaces the current summary only if the item stays unchanged."
+        case .suggestTitle, .lccClassification:
+            "Review the suggestion before applying it. Generating it does not change the title, classification or summary."
+        }
+    }
+    private var targetDescription: String {
+        switch confirmation.request.target { case .page: "page"; case .source: "source" }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Summarize with OpenAI").font(.title2.bold())
+            Text(operationTitle).font(.title2.bold())
             Text(confirmation.title).font(.headline)
-            Text("Send this selected \(confirmation.request.action == .summarizePage ? "page" : "source") text to OpenAI? It leaves your device, and API charges may apply.")
+            Text("Send this selected \(targetDescription) text to OpenAI? It leaves your device, and API charges may apply.")
                 .foregroundStyle(.secondary)
             Text("OpenAI · \(confirmation.model) · \(confirmation.request.contentByteCount) bytes of text")
                 .font(.caption).accessibilityIdentifier("cloudConsent.requestDetails")
@@ -87,7 +106,7 @@ struct CloudSummaryConsentSheet: View {
             }
             .accessibilityIdentifier("cloudConsent.exactTextDisclosure")
             .accessibilityHint("Shows the full text for this submission. Expanding the preview does not send it.")
-            Text("Approval applies only to this submission. The summary replaces the current summary only if the item stays unchanged.")
+            Text("Approval applies only to this submission. \(publicationDescription)")
                 .font(.caption).foregroundStyle(.secondary)
             Text("Cancellation prevents publication and further requests; it cannot recall text already sent to OpenAI.")
                 .font(.caption).foregroundStyle(.secondary)

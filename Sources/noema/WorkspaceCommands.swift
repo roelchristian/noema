@@ -88,7 +88,11 @@ extension AppModel {
     }
 
     func canPerformWorkspaceCommand(_ command: WorkspaceCommand) -> Bool {
-        commandAvailability().allows(command)
+        // Search must not move keyboard focus behind a consent or review sheet.
+        if command == .search || command == .quickOpen {
+            guard cloudSummaryConfirmation == nil, pendingAISuggestion == nil else { return false }
+        }
+        return commandAvailability().allows(command)
     }
 
     /// Returns the task for asynchronous commands so callers can await completion if needed.
