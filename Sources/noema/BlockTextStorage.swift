@@ -2,6 +2,7 @@ import AppKit
 import VaultCore
 
 extension NSAttributedString.Key {
+    static let markdownSeparator = Self("noema.markdownSeparator")
     static let blockID = Self("noema.blockID")
     static let blockKind = Self("noema.blockKind")
     static let blockMetadata = Self("noema.blockMetadata")
@@ -13,8 +14,6 @@ extension NSAttributedString.Key {
 }
 
 @MainActor enum BlockTextStorage {
-    static var semanticHeadingFont: NSFont { EditorTypography.current.font(weight: .semibold) }
-    static var semanticHeadingSpace: CGFloat { ceil(semanticHeadingFont.ascender - semanticHeadingFont.descender) + 8 }
     struct VisibleBlock { var block: EditorBlock; var depth: Int; var number: Int }
     static func visible(_ document: BlockDocument) -> [VisibleBlock] {
         func walk(_ blocks: [EditorBlock], depth: Int) -> [VisibleBlock] {
@@ -27,21 +26,19 @@ extension NSAttributedString.Key {
         return walk(document.blocks, depth: 0)
     }
     static func base(_ block: EditorBlock, depth: Int, theme: NoemaTheme, typography: EditorTypography = .init()) -> [NSAttributedString.Key: Any] {
-        let sizes: [BlockKind: CGFloat] = [.heading1: 14, .heading2: 8, .heading3: 4]
-        let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 5; paragraph.paragraphSpacing = 10
+        let role = EditorTypography.role(for: block.kind)
+        let paragraph = typography.paragraphStyle(for: role)
         let hasInsideMarker = [.bullet, .numbered, .task, .toggle].contains(block.kind)
         paragraph.headIndent = CGFloat(depth * 24 + (hasInsideMarker ? 24 : (block.kind == .quote ? 18 : 0))); paragraph.firstLineHeadIndent = paragraph.headIndent
-        if sizes[block.kind] != nil { paragraph.paragraphSpacingBefore = 12 }
-        if block.metadata.semantic != nil || [.quote, .callout, .code, .math].contains(block.kind) {
-            paragraph.paragraphSpacingBefore = 12
-            paragraph.paragraphSpacing = 18
-        }
-        let isMonoBlock = block.kind == .code || block.kind == .math
         var attrs: [NSAttributedString.Key: Any] = [
-            .font: isMonoBlock ? NSFont.monospacedSystemFont(ofSize: CGFloat(typography.size) - 2, weight: .regular) : typography.font(offset: sizes[block.kind] ?? 0, weight: sizes[block.kind] == nil ? .regular : .semibold),
+            .font: typography.font(for: role),
             .foregroundColor: theme.nativeText(), .paragraphStyle: paragraph,
             .blockID: block.id.uuidString, .blockKind: block.kind.rawValue, .blockDepth: depth
         ]
+        if block.kind == .paragraph, block.metadata.semantic == nil,
+           block.originalMarkdown?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+            attrs[.markdownSeparator] = true
+        }
         attrs[.inlineStyle] = try? JSONEncoder().encode(InlineStyle())
         attrs[.blockMetadata] = try? JSONEncoder().encode(block.metadata)
         if let semantic = block.metadata.semantic { attrs[.semanticTag] = semantic }
@@ -49,15 +46,8 @@ extension NSAttributedString.Key {
     }
     static func attributes(_ style: InlineStyle, block: EditorBlock, depth: Int, theme: NoemaTheme, typography: EditorTypography = .init()) -> [NSAttributedString.Key: Any] {
         var attrs = base(block, depth: depth, theme: theme, typography: typography)
-        var font = attrs[.font] as! NSFont
-        if style.code { font = .monospacedSystemFont(ofSize: font.pointSize, weight: .regular) }
-        else if style.math {
-            font = NSFontDescriptor.preferredFontDescriptor(forTextStyle: .body).withDesign(.serif).flatMap { NSFont(descriptor: $0, size: font.pointSize) } ?? font
-            font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
-        }
-        if style.bold { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
-        if style.italic { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
-        attrs[.font] = font; attrs[.inlineStyle] = try? JSONEncoder().encode(style)
+        attrs[.font] = typography.font(for: EditorTypography.role(for: block.kind), style: style)
+        attrs[.inlineStyle] = try? JSONEncoder().encode(style)
         if style.underline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
         if style.strike { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
         if style.highlight || style.code || style.math { attrs[.backgroundColor] = theme.native(.graphHighlight).withAlphaComponent(theme.dark ? 0.22 : 0.10) }
@@ -86,13 +76,54 @@ extension NSAttributedString.Key {
             }
             result.append(NSAttributedString(string: "\n", attributes: base(block, depth: value.depth, theme: theme, typography: typography)))
         }
-        if showSemanticHeadings { updateSemanticHeadingSpacing(result) }
+        updateParagraphRhythm(result, typography: typography)
+        if showSemanticHeadings { updateSemanticHeadingSpacing(result, typography: typography) }
         return result
     }
+    /// Normalize paragraph attributes after rendering and native editing. A
+    /// newline inside one block keeps its line rhythm, without another block gap.
+    static func updateParagraphRhythm(_ storage: NSMutableAttributedString, typography: EditorTypography = .init()) {
+        var previous: EditorTypography.Role?
+        let text = storage.string as NSString
+        var changes: [(NSRange, NSMutableParagraphStyle)] = []
+        for (_, blockRange) in ranges(storage) {
+            let kind = BlockKind(rawValue: storage.attribute(.blockKind, at: blockRange.location, effectiveRange: nil) as? String ?? "paragraph")
+            let role = EditorTypography.role(for: kind)
+            let first = NSIntersectionRange(text.paragraphRange(for: NSRange(location: blockRange.location, length: 0)), blockRange)
+            let separator = isEmptySeparator(storage, range: blockRange)
+            let rhythm = typography.paragraphStyle(for: role, previous: hasSeparatorBoundary(storage, range: blockRange) ? nil : previous)
+            storage.enumerateAttribute(.paragraphStyle, in: blockRange) { value, part, _ in
+                guard let original = value as? NSParagraphStyle else { return }
+                let leading = NSIntersectionRange(part, first)
+                let restStart = max(part.location, NSMaxRange(first))
+                let rest = NSRange(location: restStart, length: max(0, NSMaxRange(part) - restStart))
+                for (segment, before) in [(leading, rhythm.paragraphSpacingBefore), (rest, CGFloat(0))] {
+                    guard segment.length > 0,
+                          original.lineSpacing != rhythm.lineSpacing || original.paragraphSpacing != 0 || original.paragraphSpacingBefore != before,
+                          let style = original.mutableCopy() as? NSMutableParagraphStyle else { continue }
+                    style.lineSpacing = rhythm.lineSpacing
+                    style.paragraphSpacing = 0
+                    style.paragraphSpacingBefore = before
+                    changes.append((segment, style))
+                }
+            }
+            if !separator { previous = role }
+        }
+        storage.beginEditing()
+        for (range, style) in changes { storage.addAttribute(.paragraphStyle, value: style, range: range) }
+        storage.endEditing()
+    }
+
     // Reserve display space only above the first paragraph. Labels never enter
     // the editable string, selection offsets, clipboard, or canonical document.
-    static func updateSemanticHeadingSpacing(_ storage: NSMutableAttributedString, in affectedRange: NSRange? = nil) {
+    static func updateSemanticHeadingSpacing(_ storage: NSMutableAttributedString, in affectedRange: NSRange? = nil, typography: EditorTypography = .init()) {
+        var previous: EditorTypography.Role?
         for (_, range) in ranges(storage) {
+            let kind = BlockKind(rawValue: storage.attribute(.blockKind, at: range.location, effectiveRange: nil) as? String ?? "paragraph")
+            let role = EditorTypography.role(for: kind)
+            let separator = isEmptySeparator(storage, range: range)
+            let boundary = hasSeparatorBoundary(storage, range: range) ? 0 : typography.boundarySpacing(before: role, after: previous)
+            if !separator { previous = role }
             if let affectedRange, NSIntersectionRange(range, affectedRange).length == 0 { continue }
             let tag = storage.attribute(.semanticTag, at: range.location, effectiveRange: nil) as? String
             guard SemanticPresentation.find(tag) != nil else { continue }
@@ -102,7 +133,7 @@ extension NSAttributedString.Key {
                 guard let original = value as? NSParagraphStyle else { return }
                 let leading = NSIntersectionRange(part, first)
                 let rest = NSRange(location: max(part.location, NSMaxRange(first)), length: max(0, NSMaxRange(part) - max(part.location, NSMaxRange(first))))
-                for (segment, spacing) in [(leading, 12 + semanticHeadingSpace), (rest, CGFloat(12))] {
+                for (segment, spacing) in [(leading, boundary + typography.semanticHeadingSpace), (rest, CGFloat(0))] {
                     guard segment.length > 0, original.paragraphSpacingBefore != spacing,
                           let style = original.mutableCopy() as? NSMutableParagraphStyle else { continue }
                     style.paragraphSpacingBefore = spacing; styles.append((segment, style))
@@ -111,6 +142,20 @@ extension NSAttributedString.Key {
             for (part, style) in styles { storage.addAttribute(.paragraphStyle, value: style, range: part) }
         }
     }
+    /// Parsed Markdown separators retain their caret line without adding another
+    /// boundary gap. The presentation marker survives native typing so filling
+    /// that line does not move its caret; new editing blocks keep normal spacing.
+    private static func hasSeparatorBoundary(_ storage: NSAttributedString, range: NSRange) -> Bool {
+        storage.attribute(.markdownSeparator, at: range.location, effectiveRange: nil) as? Bool == true
+            && storage.attribute(.blockKind, at: range.location, effectiveRange: nil) as? String == BlockKind.paragraph.rawValue
+            && (storage.attribute(.semanticTag, at: range.location, effectiveRange: nil) as? String)?.isEmpty != false
+    }
+
+    private static func isEmptySeparator(_ storage: NSAttributedString, range: NSRange) -> Bool {
+        hasSeparatorBoundary(storage, range: range) && range.length == 1
+            && (storage.string as NSString).substring(with: range) == "\n"
+    }
+
     static func ranges(_ storage: NSAttributedString) -> [(UUID, NSRange)] {
         var result: [(UUID, NSRange)] = []
         storage.enumerateAttribute(.blockID, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
@@ -128,8 +173,12 @@ extension NSAttributedString.Key {
         style.underline = (attrs[.underlineStyle] as? Int ?? 0) != 0
         style.strike = (attrs[.strikethroughStyle] as? Int ?? 0) != 0
         style.highlight = attrs[.backgroundColor] != nil && !style.code && !style.math
-        if let link = attrs[.link] { style.link = String(describing: link) }
         style.wikiTarget = attrs[.wikiTarget] as? String ?? style.wikiTarget
+        // The rendered wiki URL is navigation metadata, not an external link.
+        // Retain explicitly serialized links instead of normalizing their bytes.
+        if let link = attrs[.link], style.wikiTarget == nil, style.link == nil {
+            style.link = String(describing: link)
+        }
         return style
     }
     static func runs(_ storage: NSAttributedString, range: NSRange) -> [RichRun] {

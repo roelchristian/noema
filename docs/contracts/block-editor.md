@@ -13,3 +13,60 @@ The editable document is a value model in the coordinator, synchronized with the
 Keyboard behavior: Return splits; empty list Return exits; structural Backspace converts to paragraph before merging; Tab/Shift Tab indent/outdent; Shift Return inserts a code newline; Command A selects the current block, Command Option A selects the document. Command Option Up/Down moves a subtree among siblings. Command Shift Return toggles a task. Slash commands and context actions use the same mutations. The drag implementation targets sibling reordering without changing parentage; its native drop acceptance is still incomplete. Indent/outdent explicitly changes parentage.
 
 See `../validation.md` for reproducible checks and remaining native acceptance work.
+
+## Editorial typography
+
+`EditorTypography` owns document font resolution, semantic roles, paragraph rhythm
+and reading measure. `BlockTextStorage` applies those attributes; `ArticleTextView`
+uses the resolved native metrics for layout, decoration and hit targets.
+`NoemaTypography` owns application controls and metadata. Document preferences do
+not restyle navigation, tables, toolbars, source metadata or Quick Look.
+
+The existing `editorFontFamily` and `editorFontSize` keys remain compatible. New
+preferences default to 16 pt; existing valid saved sizes remain selected. Finite
+sizes clamp to 10–32 pt; missing/nonfinite sizes use 16 pt. An unavailable family
+uses the system face while retaining the saved choice. Weight resolution selects
+supported medium/semibold faces before the nearest available family member.
+
+| Role | Relative size | Face |
+| --- | --- | --- |
+| H1 / H2 / H3 | 1.93 / 1.53 / 1.27 | Selected family, semibold |
+| Body, lists, quotes, semantic content | 1.00 | Selected family, regular |
+| Supporting prose | 0.88 | Selected family, regular |
+| Code and raw TeX | 0.88 | Native monospace |
+| Semantic labels | 0.88 | Native interface, semibold |
+| Rendered math | 1.00 | System serif, italic |
+
+Source H4–H6 decrease monotonically from H3 toward emphasized body. Inline bold,
+italic, underline, strike, highlight, code and link semantics survive restyling;
+presentation traits never become new serialized content styles.
+
+Body baseline separation targets 1.50 times body size using native font metrics,
+with nonnegative leading and no forced clipping. The incoming paragraph owns each
+block boundary; continued paragraphs/list text receive no additional block gap.
+Parsed Markdown separator blocks retain an empty caret line with zero extra gap.
+Their presentation-only separator marker persists when filled, keeping the first
+typed glyph on its prior baseline. Newly created empty blocks keep the ordinary
+incoming boundary. Neither case removes content or adds serialized fields.
+Semantic labels reserve their native ascender/descender plus an optical gap above
+the first paragraph only; initial-document reservation accounts for AppKit ignoring
+`paragraphSpacingBefore`. Decorations and hit targets follow native baselines.
+
+Reading measure estimates 75 characters from the selected font's native reference
+sentence width and caps at 680 pt. The actual editor viewport determines centering,
+with compact nonnegative gutters at narrow widths. This approximates a 65–80
+character prose target; language, glyphs and enlarged fonts can vary. Page titles,
+summary prose, native editors and readable source windows share this measure.
+
+Math previews occupy unused space beside a single unwrapped raw-source line.
+Measure the actual rendered expression using the same font and paragraph style as
+drawing. Show it only when its full width and height fit within the reserved box;
+expanded macros, rendered line breaks and oversized expressions retain raw source
+without a cropped preview. The preview cannot extend into adjacent text or blocks.
+
+Readable Markdown, HTML and UTF-8 sources share document roles while preserving
+heading, quote, code and link semantics. Original source bytes stay immutable;
+Quick Look retains ownership of PDF/media rendering. Preference refresh preserves
+text, complete selected ranges, caret, editing mode, native undo/redo and scroll
+where layout permits; natural reflow may change a glyph's screen position. A font
+refresh neither reloads the draft nor registers a content edit.

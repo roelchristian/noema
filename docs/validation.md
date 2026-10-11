@@ -35,6 +35,19 @@ count or fresh evidence for a subsequent maintenance merge.
 Source presence, compilation, automated passing results and device acceptance are
 separate kinds of evidence. Superseded commands/timings remain in Git history.
 
+## Editorial acceptance
+
+[Editorial typography](contracts/block-editor.md#editorial-typography) uses native
+layout tests for minimum/default/enlarged sizes, available/missing families,
+light/dark fixtures, wide/narrow measures, headings, blank separators, lists,
+semantic reservation and complete math-preview fit. Source-byte and serialization
+checks establish presentation-only changes. Native preference-refresh tests cover
+selected ranges, caret, viewport and undo/redo without registering a content edit.
+Opt-in fixture capture procedures are in [development](development.md#typography-capture-fixtures).
+Live VoiceOver, keyboard focus, OS Reduce Motion/contrast combinations and manual
+window/sidebar/inspector resizing remain outstanding; raster fixtures do not certify
+them. Long-document fixture coverage does not establish sustained typing/frame timing.
+
 ## Standing environment limits
 
 - Restricted automation can block `NSFileCoordinator` (Cocoa error 512), pasteboard,

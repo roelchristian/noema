@@ -25,7 +25,8 @@ struct RichArticleView: NSViewRepresentable {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
         let view = ArticleTextView(); view.isRichText = true; view.allowsUndo = true; view.isEditable = false; view.isSelectable = true; view.drawsBackground = false
         view.showSemanticHeadings = showSemanticHeadings
-        view.textContainerInset = NSSize(width: 80, height: 24); view.isVerticallyResizable = true; view.isHorizontallyResizable = false
+        view.typography = typography
+        view.textContainerInset = NSSize(width: 0, height: 24); view.isVerticallyResizable = true; view.isHorizontallyResizable = false
         view.autoresizingMask = [.width]; view.textContainer?.widthTracksTextView = true
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         view.isAutomaticQuoteSubstitutionEnabled = false; view.isAutomaticDashSubstitutionEnabled = false
@@ -33,6 +34,7 @@ struct RichArticleView: NSViewRepresentable {
         view.setAccessibilityHelp("Click to edit. Unlock a locked article first. Slash opens block commands. Use the Block context menu for structure, tags, and status. Command Option A selects the document.")
         view.registerForDraggedTypes([ArticleTextView.dragType])
         view.delegate = context.coordinator; context.coordinator.view = view; scroll.documentView = view
+        view.updateReadingGeometry()
         context.coordinator.load(text)
         context.coordinator.observeScrolling(in: scroll)
         return scroll
@@ -44,6 +46,7 @@ struct RichArticleView: NSViewRepresentable {
         let macrosChanged = coordinator.lastMacros != texMacros
         coordinator.lastMacros = texMacros
         view.showSemanticHeadings = showSemanticHeadings
+        view.typography = typography
         view.locked = locked || coordinator.document.unsupportedVersion
         view.isEditable = !reading && !view.locked; view.theme = theme
         view.begin = onBegin; view.end = onEnd
@@ -56,7 +59,7 @@ struct RichArticleView: NSViewRepresentable {
         view.insertionPointColor = theme.native(.accentPrimary)
         view.linkTextAttributes = [.foregroundColor: theme.nativeText(.accentSecondary), .underlineStyle: NSUnderlineStyle.single.rawValue]
         if coordinator.lastText != text { coordinator.load(text); view.undoManager?.removeAllActions() }
-        else if coordinator.lastTheme != theme || coordinator.lastTypography != typography || headingsChanged || macrosChanged { coordinator.render(selection: view.selectedRange()) }
+        else if coordinator.lastTheme != theme || coordinator.lastTypography != typography || headingsChanged || macrosChanged { coordinator.refreshPresentation() }
         if let action, coordinator.lastAction != action.id {
             if case .block = action.operation { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
             else if view.isEditable { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
@@ -101,8 +104,8 @@ struct SummarizedArticleView: View {
                                 .font(.callout).foregroundStyle(.secondary).lineLimit(1)
                         }
                             .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.horizontal, 80).padding(.vertical, 8)
-                            .frame(maxWidth: 980).frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .readingColumn(reservesEditorGutter: true)
                     }
                     if showsSummary, let summary = document.aiSummary {
                         Group {
@@ -137,9 +140,8 @@ struct SummarizedArticleView: View {
                                 .transition(.opacity)
                             }
                         }
-                        .padding(.horizontal, 80).padding(.vertical, disclosure.collapsed ? 16 : 24)
-                        .frame(maxWidth: 980, alignment: .leading)
-                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, disclosure.collapsed ? 16 : 24)
+                        .readingColumn(reservesEditorGutter: true)
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -147,7 +149,7 @@ struct SummarizedArticleView: View {
                 Divider().scaleEffect(y: 0.5).frame(height: 0.5)
             }
             RichArticleView(text: editorText, reading: model.reading, locked: model.editingLocked, action: model.editorAction, onBegin: model.beginEditing, onEnd: model.finishEditing, onWikiLink: model.followWikiLink, onWikiQuery: { model.wikiQuery = $0 }, noteID: model.currentNote?.id, onBlockLink: model.openBlockURL, onScrollOffset: { disclosure.scrolled(to: $0) })
-                .frame(maxWidth: 980).frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: disclosure.collapsed)
         .onChange(of: document.aiSummary?.text) { summaryExpanded = false }

@@ -68,14 +68,14 @@ For a quick tour, open `Examples/Demo Vault`. Keep your personal content vaults 
 - **Check availability:** Use **Check Availability** (per source or via **Source Actions → Check Availability of All Sources**) to verify linked files, imported checksums, or URL reachability off the main actor. Unreachable URL captures are marked archived while keeping their captured bytes, title, and summary intact.
 
 ### On-device Apple Intelligence
-No remote AI provider is contacted; all inference runs locally via Apple Intelligence (**Noema → Settings… → Apple Intelligence**):
+Automatic title, classification and source processing run locally via Apple Intelligence (**Noema → Settings… → Apple Intelligence**). Explicit OpenAI summaries use a separate consent flow; see the [external AI contract](contracts/external-ai.md). Local features include:
 - **Automatic titles & source naming:** Untitled new pages receive a concise topic title in the detected language when you save, switch views, or quit (and on explicit `⌘S` / **Done** for reopened `Untitled` pages). Pages renamed in the background display a session blue dot. Newly added text, Markdown, HTML, and text-bearing PDF sources queue concurrent on-device title (2–6 words, max 8) and summary generation (`aiSummary`).
 - **Page & source summaries:** Click **Summarize** on an unlocked page (or **Generate / Regenerate AI Summary** in the page or source inspector). Page summaries pin a collapsible **AI-generated summary** banner above the editor and in the inspector; **Show page summaries** can be set to **Editor when sidebar is closed** (default) or **Sidebar only**.
 - **Create pages with AI:** Choose **Create Page with AI** on a source to draft an editable wiki page from its first 6,000 characters with the source linked automatically. Choose **New page → From topic with AI…** to query Bing web search, fetch up to 3 readable top results (≤ 2 MB each), and synthesize a cited article on-device (fails cleanly without a model-knowledge fallback if search/results are unreadable).
 
 ## Block and math editing
 
-Click an unlocked article or press **Edit** to start native block editing; edits autosave after 500 ms of inactivity. Font family and size (`10–32 pt`, default `15 pt` for pages and `14 pt` for source readers) are configurable in **Settings → Editor**.
+Click an unlocked article or press **Edit** to start native block editing; edits autosave after 500 ms of inactivity. Document font family and size (`10–32 pt`, default `16 pt` for new preferences) are configurable in **Settings → Document reading and editing**. Existing saved sizes remain selected. Articles and readable Markdown, HTML and plain-text sources share these preferences; unavailable fonts retain their saved choice and use the system face. Headings, paragraph rhythm, code and semantic labels scale together within a centered reading measure capped at 680 pt. Controls, metadata and Quick Look retain native typography. See the [editorial contract](contracts/block-editor.md#editorial-typography).
 
 - **Slash commands (`/`):** Type `/` in an empty block or after whitespace (with fuzzy matching and aliases like `/h2`, `/math`, `/ques`) to insert basic blocks (paragraphs, 3 heading levels, bullets, numbered lists, tasks, quotes, code, display math `$$`, dividers, callouts, nested toggles) or semantic blocks (**Question**, **Idea**, **Important**, **Starred**, **Definition**, **Example**, **Insight**, **Warning**, **Reference**, **Summary**).
 - **Semantic blocks:** Semantic icons appear in the left margin (with optional statuses for **Question** and **Idea**); turn on **Settings → Block display → Show semantic block headings** to show labels above block text. The sidebar **Semantic Blocks** collection and the page inspector index all tagged blocks across the vault for filtering and one-click jump navigation.
@@ -121,3 +121,20 @@ My Vault/
 - **Coordinated sync:** Noema uses security-scoped folder bookmarks, `NSFileCoordinator`, and a file presenter to observe external changes. **Saved locally** confirms a local write on this Mac, not completion of an iCloud upload. Use **Refresh from Files** if external edits have not yet appeared.
 - **Conflict preservation:** If a page changes on disk while you are editing, Noema keeps the disk version and saves your competing draft to `Conflicts/` and local recovery storage so you can reload or save as a new page. iCloud conflict versions are copied before being marked resolved.
 - **Recoverable Trash (`Removed Pages`):** Open **Trash** from the bottom-left vault menu to restore or permanently delete trashed pages and source records in a single unified list (external linked files are never deleted). Restore checks for identity, title, or duplicate-source collisions, while **Empty Trash…** and permanent deletion verify snapshots so modified, unreadable, or conflicted items are preserved and reported. Items in `Removed Pages` expire automatically after **15 days** on vault open/refresh (undated items receive a full 15-day grace period, and any surviving legacy `.Trash` Markdown files are migrated automatically under coordinated access).
+
+## Typography capture fixtures
+
+The native fixtures exercise production rendering without opening a personal vault
+or changing global font preferences. Ordinary tests write no capture files. Opt in
+with an absolute output directory inside an active local evidence run:
+
+```sh
+NOEMA_TYPOGRAPHY_CAPTURE_DIR="$PWD/.local/agent-runs/<run-id>/baseline" ./scripts/test.sh --filter TypographyBaselineCaptureTests
+NOEMA_TYPOGRAPHY_AFTER_CAPTURE_DIR="$PWD/.local/agent-runs/<run-id>/after" ./scripts/test.sh --filter TypographyIntegrationTests
+```
+
+Baseline comparison requires production sources at `b6cd5c73bdc97b49c8016ac0bd97fa28a1c743c4`
+and the copied baseline fixture. Running that fixture against newer sources is an
+after comparison. Native raster captures establish fixture appearance, not live
+VoiceOver, keyboard focus, pointer dragging, OS accessibility settings or pane
+resizing. Retain provenance and images locally according to the retention policy.

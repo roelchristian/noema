@@ -39,11 +39,55 @@ extension RichArticleView {
         func render(selection: NSRange) {
             guard let view else { return }
             changing = true
+            view.typography = parent.typography
             view.textStorage?.setAttributedString(BlockTextStorage.render(document, theme: parent.theme, showSemanticHeadings: view.showSemanticHeadings, typography: parent.typography))
             view.updateSemanticHeadingTopInset()
             let location = min(selection.location, max(0, view.string.utf16.count - 1))
             view.setSelectedRange(NSRange(location: location, length: min(selection.length, max(0, view.string.utf16.count - 1 - location))))
             lastTheme = parent.theme; lastTypography = parent.typography; changing = false; updateTypingAttributes(); view.needsDisplay = true
+        }
+        /// Preference changes only replace attributes when the visible text is
+        /// unchanged. Native undo entries and all selected character ranges stay
+        /// attached to the same storage, including pending editing transactions.
+        func refreshPresentation(typography: EditorTypography? = nil) {
+            guard let view, let storage = view.textStorage else { return }
+            let typography = typography ?? parent.typography
+            view.typography = typography
+            let rendered = BlockTextStorage.render(document, theme: parent.theme,
+                showSemanticHeadings: view.showSemanticHeadings, typography: typography)
+            let selections = view.selectedRanges
+            let affinity = view.selectionAffinity
+            let clip = view.enclosingScrollView?.contentView
+            let scrollOrigin = clip?.bounds.origin
+            changing = true
+            if rendered.string == storage.string {
+                storage.beginEditing()
+                rendered.enumerateAttributes(in: NSRange(location: 0, length: rendered.length)) { attributes, range, _ in
+                    storage.setAttributes(attributes, range: range)
+                }
+                storage.endEditing()
+            } else {
+                // TeX macro changes can alter displayed characters. Preserve
+                // legal ranges while allowing that existing content refresh.
+                storage.setAttributedString(rendered)
+            }
+            view.updateSemanticHeadingTopInset()
+            let count = storage.length
+            view.setSelectedRanges(selections.map { value in
+                let range = value.rangeValue
+                let location = min(range.location, count)
+                return NSValue(range: NSRange(location: location, length: min(range.length, count - location)))
+            }, affinity: affinity, stillSelecting: false)
+            if let container = view.textContainer { view.layoutManager?.ensureLayout(for: container) }
+            if let clip, let scrollOrigin {
+                clip.scroll(to: scrollOrigin)
+                view.enclosingScrollView?.reflectScrolledClipView(clip)
+            }
+            lastTheme = parent.theme
+            lastTypography = typography
+            changing = false
+            updateTypingAttributes()
+            view.needsDisplay = true
         }
         func capture() {
             if let storage = view?.textStorage { document = BlockTextStorage.capture(storage, previous: document) }
@@ -106,10 +150,19 @@ extension RichArticleView {
                 } else { capture() }
             } else { capture() }
             pendingSingleBlock = nil
-            if view.showSemanticHeadings, let storage = view.textStorage {
-                changing = true; BlockTextStorage.updateSemanticHeadingSpacing(storage, in: current()?.1); changing = false
+            if let storage = view.textStorage {
+                changing = true
+                BlockTextStorage.updateParagraphRhythm(storage, typography: parent.typography)
+                if view.showSemanticHeadings { BlockTextStorage.updateSemanticHeadingSpacing(storage, typography: parent.typography) }
+                changing = false
             }
             view.updateSemanticHeadingTopInset()
+            // Native undo restores the attributed runs saved before a font
+            // preference change. Reapply the currently displayed typography to
+            // those runs without registering another edit or discarding redo.
+            if view.undoManager?.isUndoing == true || view.undoManager?.isRedoing == true {
+                refreshPresentation(typography: lastTypography)
+            }
             if let (block, _) = current(), block.kind != .code, block.kind != .math, let command = BlockCommand.shortcut(block.text) {
                 transaction(command.title) { document.update(block.id) { $0.runs = [] }; return document.apply(command.mutation, to: block.id) }
             } else if !convertInlineAtCaret() { publish() }
@@ -138,7 +191,9 @@ extension RichArticleView {
                         exited.rawMath = nil
                         exited.code = false
                         let depth = storage.attribute(.blockDepth, at: blockRange.location, effectiveRange: nil) as? Int ?? 0
+                        let paragraph = attrs[.paragraphStyle]
                         attrs = BlockTextStorage.attributes(exited, block: block, depth: depth, theme: parent.theme, typography: parent.typography)
+                        attrs[.paragraphStyle] = paragraph
                     }
                 } else {
                     // Inherit the preceding run when typing immediately after formatted content.

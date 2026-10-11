@@ -129,8 +129,8 @@ import VaultCore
         #expect(rich.attribute(.semanticTag, at: 0, effectiveRange: nil) as? String == "starred")
         let paragraph = rich.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as! NSParagraphStyle
         #expect(paragraph.headIndent >= 24) // Leave room inside the margin for the toggle marker.
-        #expect(paragraph.paragraphSpacingBefore > 0)
-        #expect(paragraph.paragraphSpacing > 10)
+        #expect(paragraph.paragraphSpacingBefore == 0)
+        #expect(paragraph.paragraphSpacing == 0)
     }
 }
 
@@ -165,8 +165,8 @@ import VaultCore
                 }
                 let first = storage.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as! NSParagraphStyle
                 let second = storage.attribute(.paragraphStyle, at: 11, effectiveRange: nil) as! NSParagraphStyle
-                #expect(first.paragraphSpacingBefore == 12 + (enabled ? BlockTextStorage.semanticHeadingSpace : 0))
-                #expect(second.paragraphSpacingBefore == 12)
+                #expect(first.paragraphSpacingBefore == (enabled ? view.typography.semanticHeadingSpace : 0))
+                #expect(second.paragraphSpacingBefore == 0)
             }
         }
     }
@@ -206,8 +206,9 @@ import VaultCore
         let plain = BlockTextStorage.base(EditorBlock(), depth: 0, theme: theme)[.paragraphStyle] as! NSParagraphStyle
         for kind in [BlockKind.quote, .callout, .code] {
             let style = BlockTextStorage.base(EditorBlock(kind: kind), depth: 0, theme: theme)[.paragraphStyle] as! NSParagraphStyle
-            #expect(style.paragraphSpacingBefore > plain.paragraphSpacingBefore)
-            #expect(style.paragraphSpacing > plain.paragraphSpacing)
+            #expect(style.paragraphSpacingBefore == plain.paragraphSpacingBefore)
+            #expect(style.paragraphSpacing == 0)
+            #expect(style.lineSpacing >= 0)
         }
         for kind in [BlockKind.bullet, .numbered, .task, .toggle] {
             let style = BlockTextStorage.base(EditorBlock(kind: kind), depth: 2, theme: theme)[.paragraphStyle] as! NSParagraphStyle
@@ -648,4 +649,32 @@ import VaultCore
     #expect(coordinator.document.blocks[0].runs[0].text == "a")
     #expect(coordinator.document.blocks[0].runs[1].style.math == false)
     #expect(coordinator.document.blocks[0].runs[1].text == " plain")
+}
+
+@Test @MainActor func fillingParsedMarkdownSeparatorKeepsNativeCaretAndSelection() throws {
+    let (coordinator, view, window) = editor("# Heading\n\nBody")
+    defer { window.close() }
+    let storage = try #require(view.textStorage)
+    let blank = try #require(BlockTextStorage.ranges(storage).first { (_, range) in
+        range.length == 1 && (storage.string as NSString).substring(with: range) == "\n"
+    })
+    view.setSelectedRange(NSRange(location: blank.1.location, length: 0))
+    view.layoutManager?.ensureLayout(for: try #require(view.textContainer))
+    let before = view.firstRect(forCharacterRange: view.selectedRange(), actualRange: nil)
+    let undo = try #require(view.undoManager)
+    undo.beginUndoGrouping()
+    view.insertText("A", replacementRange: view.selectedRange())
+    undo.endUndoGrouping()
+    view.layoutManager?.ensureLayout(for: try #require(view.textContainer))
+    let after = view.firstRect(forCharacterRange: view.selectedRange(), actualRange: nil)
+    #expect(abs(after.minY - before.minY) < 0.5)
+    #expect(view.selectedRange() == NSRange(location: blank.1.location + 1, length: 0))
+    #expect(coordinator.document.block(blank.0)?.text == "A")
+    let selected = view.selectedRange()
+    coordinator.refreshPresentation(typography: EditorTypography(family: "Times New Roman", size: 20))
+    #expect(view.selectedRange() == selected)
+    undo.undo()
+    #expect(coordinator.document.block(blank.0)?.text.isEmpty == true)
+    undo.redo()
+    #expect(coordinator.document.block(blank.0)?.text == "A")
 }
