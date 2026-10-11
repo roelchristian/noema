@@ -31,6 +31,12 @@ enum AISummaryPlacement: String, CaseIterable {
 
 struct NoemaSettings: View {
     let externalAIService: ExternalAIService
+    let aiProviderPreferences: AIProviderPreferences
+
+    init(externalAIService: ExternalAIService, aiProviderPreferences: AIProviderPreferences? = nil) {
+        self.externalAIService = externalAIService
+        self.aiProviderPreferences = aiProviderPreferences ?? AIProviderPreferences()
+    }
 
     @AppStorage(EditorPreferences.fontFamilyKey) private var fontFamily = ""
     @AppStorage(EditorPreferences.fontSizeKey) private var fontSize = EditorTypography.defaultSize
@@ -118,7 +124,8 @@ struct NoemaSettings: View {
                 Text("Manage custom \\newcommand definitions (0–3 arguments) for inline ($...$) and display ($$...$$) math.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            Section("Apple Intelligence") {
+            IntelligenceSettings(preferences: aiProviderPreferences)
+            Section("On-device intelligence") {
                 Toggle("Enable on-device AI summaries", isOn: $aiSummaries)
                 Picker("Show page summaries", selection: $aiSummaryPlacement) {
                     ForEach(AISummaryPlacement.allCases, id: \.rawValue) { placement in
@@ -127,7 +134,7 @@ struct NoemaSettings: View {
                 }
                 Text("Summaries are always available in the page sidebar. By default, they also appear above the editor when the sidebar is closed.")
                     .font(.callout).foregroundStyle(.secondary)
-                Text("Use Summarize on a page to generate a pinned Summary block on this Mac. Requires Apple Intelligence enabled in System Settings.")
+                Text("Enable local page summaries, then choose On-device for Summarize. Requires Apple Intelligence enabled in System Settings. This switch does not enable OpenAI or authorize external requests.")
                     .font(.callout).foregroundStyle(.secondary)
                 Text(OnDeviceSummary.unavailabilityReason ?? "On-device model is available.")
                     .font(.caption).foregroundStyle(.secondary)
