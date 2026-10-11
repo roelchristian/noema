@@ -3,6 +3,7 @@ import Testing
 import VaultCore
 @testable import noema
 
+extension VaultUIIntegrationTests {
 @Suite(.serialized)
 struct SourcesNavigationIntegrationTests {
     @MainActor private func waitUntil(_ condition: @MainActor () -> Bool) async {
@@ -90,4 +91,5 @@ struct SourcesNavigationIntegrationTests {
         #expect(await model.closeVault())
         #expect(!model.isVaultAvailable && model.rows.isEmpty)
     }
+}
 }

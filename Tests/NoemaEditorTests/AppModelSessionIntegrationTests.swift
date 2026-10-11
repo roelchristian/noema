@@ -5,6 +5,7 @@ import Testing
 @testable import VaultCore
 @testable import noema
 
+extension VaultUIIntegrationTests {
 @Suite(.serialized)
 struct AppModelSessionIntegrationTests {
     private func makeTempVault(name: String = "Vault") throws -> URL {
@@ -346,6 +347,7 @@ struct AppModelSessionIntegrationTests {
         #expect(model.notes.isEmpty && model.sources.isEmpty && model.rows.isEmpty)
         #expect(model.errorMessage?.localizedCaseInsensitiveContains("could not be found") == true)
     }
+}
 }
 
 private final class LockFlag: @unchecked Sendable {
