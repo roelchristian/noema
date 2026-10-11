@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftUI
 import UniformTypeIdentifiers
 import VaultCore
 
@@ -59,6 +60,7 @@ struct SourceTableRow: Identifiable, Equatable {
 @MainActor @Observable final class SourcesTablePresentation {
     private(set) var rows: [SourceTableRow] = []
     private(set) var sortOrder = [KeyPathComparator(\SourceTableRow.title)]
+    var columnCustomization = TableColumnCustomization<SourceTableRow>()
     @ObservationIgnored private var inputs: [SourceTableInput] = []
     @ObservationIgnored private let rowBuilder: (SourceTableInput) -> SourceTableRow
 
@@ -96,7 +98,7 @@ struct SourceTableRow: Identifiable, Equatable {
     }
 
     /// Drop all sensitive metadata when the owning workspace is locked, closed, or replaced.
-    /// Column sorting preferences are safe to preserve across sessions.
+    /// Sorting and column sizing preferences contain no vault data and can survive sessions.
     func clear() {
         inputs = []
         if !rows.isEmpty { rows = [] }

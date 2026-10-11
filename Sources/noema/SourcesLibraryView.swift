@@ -76,31 +76,46 @@ private struct SourcesNativeTable: View {
 
     var body: some View {
         Table(presentation.rows, selection: $selection,
-              sortOrder: Binding(get: { presentation.sortOrder }, set: { presentation.setSortOrder($0) })) {
+              sortOrder: Binding(get: { presentation.sortOrder }, set: { presentation.setSortOrder($0) }),
+              columnCustomization: Binding(get: { presentation.columnCustomization }, set: { presentation.columnCustomization = $0 })) {
             TableColumn("File Name", value: \.title) { row in
                 SourceTitleCell(row: row, status: statuses.status(for: row.id))
             }.width(min: 160, ideal: 220)
+                .customizationID("title")
+                .disabledCustomizationBehavior([.reorder, .visibility])
             TableColumn("Original File Name", value: \.originalFilename) { row in
                 Text(row.originalFilename).lineLimit(1).help(row.originalFilename)
             }.width(min: 100, ideal: 150)
+                .customizationID("originalFilename")
+                .disabledCustomizationBehavior([.reorder, .visibility])
             TableColumn("Location", value: \.sourceLocation) { row in
                 Label(row.sourceLocation, systemImage: row.sourceLocation == "Linked" ? "link" : "tray.full")
                     .help(row.sourceLocation == "Linked" ? "Read-only linked original" : "Original stored in vault")
             }.width(min: 85, ideal: 95)
+                .customizationID("location")
+                .disabledCustomizationBehavior([.reorder, .visibility])
             TableColumn("Availability") { row in
                 SourceAvailabilityCell(status: statuses.status(for: row.id))
             }.width(min: 150, ideal: 180)
+                .customizationID("availability")
+                .disabledCustomizationBehavior([.reorder, .visibility])
             TableColumn("Kind", value: \.fileKind)
                 .width(min: 80, ideal: 90)
+                .customizationID("kind")
+                .disabledCustomizationBehavior([.reorder, .visibility])
             TableColumn("Size", value: \.fileSize) { row in
                 Text(row.formattedFileSize)
             }.width(min: 70, ideal: 90)
+                .customizationID("size")
+                .disabledCustomizationBehavior([.reorder, .visibility])
             TableColumn("Captured", value: \.captureSortDate) { row in
                 if let date = row.updatedAt {
                     Text(date, format: .dateTime.month(.abbreviated).day().year())
                         .lineLimit(1).help(row.captureHelp)
                 } else { Text("—") }
             }.width(min: 100, ideal: 120)
+                .customizationID("captured")
+                .disabledCustomizationBehavior([.reorder, .visibility])
         }
         .contextMenu(forSelectionType: UUID.self) { ids in
             if ids.count == 1, let id = ids.first {

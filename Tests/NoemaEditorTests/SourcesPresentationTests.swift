@@ -140,9 +140,11 @@ private func presentationSource(
     let sortOrder = [KeyPathComparator(\SourceTableRow.fileSize)]
     presentation.setSortOrder(sortOrder)
     presentation.synchronize([first])
+    let columnCustomization = presentation.columnCustomization
     presentation.clear()
     #expect(presentation.rows.isEmpty)
     #expect(presentation.sortOrder == sortOrder)
+    #expect(presentation.columnCustomization == columnCustomization)
     #expect(!presentation.synchronize(inputs: []))
     #expect(presentation.synchronize([first]))
     #expect(constructionCount == 2) // Clear also discarded the metadata used to retain old rows.
