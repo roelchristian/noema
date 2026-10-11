@@ -13,6 +13,7 @@ private final class PageStoreProbe: VaultContentStore {
     let base: PlaintextVaultContentStore
     let state = Mutex(State())
     init(root: URL) throws { base = try PlaintextVaultContentStore(root: root) }
+    func createDirectory(at path: String) throws { try base.createDirectory(at: path) }
     func read(at path: String) throws -> Data {
         state.withLock { $0.reads.append(path) }
         return try base.read(at: path)

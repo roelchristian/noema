@@ -20,6 +20,23 @@ public struct PlaintextVaultContentStore: VaultContentStore {
         }
     }
 
+    public func createDirectory(at path: String) throws {
+        try withScope {
+            let url = try checked(path)
+            let _: Bool = try coordinated { coordinator, error, access in
+                coordinator.coordinate(writingItemAt: url, options: [], error: error) { url in
+                    access {
+                        let url = try self.checked(url)
+                        guard !FileManager.default.fileExists(atPath: url.path) else { throw VaultContentStoreError.alreadyExists(path) }
+                        try self.rejectConflicts(url)
+                        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+                        return true
+                    }
+                }
+            }
+        }
+    }
+
     public func read(at path: String) throws -> Data {
         let value = try snapshot(at: path)
         guard case .file(let data) = value else { throw VaultContentStoreError.unsupportedItem(path) }
@@ -138,9 +155,11 @@ public struct PlaintextVaultContentStore: VaultContentStore {
         }
         if values.isRegularFile == true { return .file(try Data(contentsOf: url)) }
         guard values.isDirectory == true else { throw VaultContentStoreError.unsupportedItem(url.path) }
+        try rejectConflicts(url)
         var files: [String: Data] = [:]
         for child in try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil) {
             let child = try checked(child)
+            try rejectConflicts(child)
             guard try child.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
                 throw VaultContentStoreError.unsupportedItem(child.path)
             }

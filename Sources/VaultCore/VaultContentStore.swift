@@ -6,6 +6,7 @@ import Foundation
 /// Calls are synchronous so repository actors can own compound domain operations;
 /// callers must keep filesystem work off the main actor. No multi-call transaction is implied.
 public protocol VaultContentStore: Sendable {
+    func createDirectory(at path: String) throws
     func read(at path: String) throws -> Data
     func snapshot(at path: String) throws -> VaultContentSnapshot
     func write(_ data: Data, at path: String, condition: VaultWriteCondition) throws

@@ -110,13 +110,13 @@ public actor FileVaultRepository: VaultRepository {
         for directory in directories {
             guard UUID(uuidString: directory.lastPathComponent) != nil else { continue }
             do {
-                var metadata = try JSONDecoder().decode(SourceMetadata.self, from: Self.coordinatedRead(directory.appendingPathComponent("metadata.json")))
+                var metadata = try JSONDecoder().decode(SourceMetadata.self, from: contentStore.read(at: "Sources/" + directory.lastPathComponent + "/metadata.json"))
                 guard metadata.id.uuidString.lowercased() == directory.lastPathComponent.lowercased(),
                       metadata.storedFilename == URL(fileURLWithPath: metadata.storedFilename).lastPathComponent,
                       !metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Invalid source metadata.") }
                 let data: Data
                 do {
-                    data = try metadata.linkedBookmark.map(Self.readLinkedSource) ?? Self.coordinatedRead(directory.appendingPathComponent(metadata.storedFilename))
+                    data = try metadata.linkedBookmark.map(Self.readLinkedSource) ?? contentStore.read(at: "Sources/" + directory.lastPathComponent + "/" + metadata.storedFilename)
                 } catch {
                     guard metadata.isLinked else { throw error }
                     let issue = Self.sourceAvailabilityMessage(error, linked: true)
@@ -374,7 +374,7 @@ public actor FileVaultRepository: VaultRepository {
         let directories = try fm.contentsOfDirectory(at: root.appendingPathComponent("Sources"), includingPropertiesForKeys: nil)
         for directory in directories {
             guard let id = UUID(uuidString: directory.lastPathComponent), id != excludingID else { continue }
-            guard let metadata = try? JSONDecoder().decode(SourceMetadata.self, from: Self.coordinatedRead(directory.appendingPathComponent("metadata.json"))),
+            guard let metadata = try? JSONDecoder().decode(SourceMetadata.self, from: contentStore.read(at: "Sources/" + directory.lastPathComponent + "/metadata.json")),
                   metadata.id == id else { continue }
             var sameLinkedFile = false
             if let linkedURL, let bookmark = metadata.linkedBookmark, !bookmark.isEmpty {
@@ -405,21 +405,12 @@ public actor FileVaultRepository: VaultRepository {
         let issue: String?
         do { _ = try await fetch(WebSourceFetcher.validatedURL(address)); issue = nil }
         catch { issue = "Archived fetch · Unavailable: " + error.localizedDescription }
-        let directory = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
-        guard directory.resolvingSymlinksInPath().path == directory.standardizedFileURL.path else { throw VaultError.invalid("Source directory cannot be a symbolic link.") }
-        let url = directory.appendingPathComponent("metadata.json")
-        var failure: Error?, coordinationError: NSError?
-        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: [], error: &coordinationError) { coordinated in
-            do {
-                guard try coordinated.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true,
-                      (NSFileVersion.unresolvedConflictVersionsOfItem(at: coordinated) ?? []).isEmpty else { throw VaultError.invalid("Resolve the source metadata conflict before checking availability.") }
-                var metadata = try JSONDecoder().decode(SourceMetadata.self, from: Data(contentsOf: coordinated))
-                guard metadata.id == source.id, metadata.sha256 == source.metadata.sha256, metadata.originURL == address, metadata.isURLSource == true else { throw VaultError.invalid("Source changed. Refresh before checking again.") }
-                metadata.webAvailabilityIssue = issue
-                try encoder.encode(metadata).write(to: coordinated, options: .atomic)
-            } catch { failure = error }
-        }
-        if let failure { throw failure }; if let coordinationError { throw coordinationError }
+        let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
+        let bytes = try contentStore.read(at: path)
+        var metadata = try JSONDecoder().decode(SourceMetadata.self, from: bytes)
+        guard metadata.id == source.id, metadata.sha256 == source.metadata.sha256, metadata.originURL == address, metadata.isURLSource == true else { throw VaultError.invalid("Source changed. Refresh before checking again.") }
+        metadata.webAvailabilityIssue = issue
+        try contentStore.write(encoder.encode(metadata), at: path, condition: .replace(expected: bytes))
         return issue ?? "Available"
     }
 
@@ -434,22 +425,21 @@ public actor FileVaultRepository: VaultRepository {
         }
         var metadata = SourceMetadata(id: id, title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent : title, capturedAt: capturedAt ?? timestamp(), originalFilename: URL(fileURLWithPath: filename).lastPathComponent, originURL: originURL?.isEmpty == true ? nil : originURL, sha256: digest(data), fileSize: data.count, storedFilename: "original.\(storedExtension)")
         metadata.isURLSource = isURLSource ? true : nil
-        let pending = root.appendingPathComponent("Sources/.import-\(id.uuidString)")
-        try fm.createDirectory(at: pending, withIntermediateDirectories: true)
-        do {
-            try Self.coordinatedWrite(data, to: pending.appendingPathComponent(metadata.storedFilename))
-            try Self.coordinatedWrite(encoder.encode(metadata), to: pending.appendingPathComponent("metadata.json"))
-            let final = root.appendingPathComponent("Sources/\(id.uuidString.lowercased())")
-            var failure: Error?, coordinatorError: NSError?
-            NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: pending, options: .forMoving, writingItemAt: final, options: [], error: &coordinatorError) { from, to in
-                do { try fm.moveItem(at: from, to: to) } catch { failure = error }
-            }
-            if let failure { throw failure }; if let coordinatorError { throw coordinatorError }
-            return SourceRecord(metadata: metadata, body: body)
-        } catch {
-            // Keep an interrupted import in the hidden staging directory for inspection.
-            throw error
+        try stageSource(metadata, original: data)
+        return SourceRecord(metadata: metadata, body: body)
+    }
+
+    private func stageSource(_ metadata: SourceMetadata, original: Data? = nil) throws {
+        let pending = "Sources/.import-" + metadata.id.uuidString
+        try contentStore.createDirectory(at: pending)
+        // Failed publication deliberately retains the staging directory for recovery.
+        var files: [String: Data] = ["metadata.json": try encoder.encode(metadata)]
+        if let original {
+            files[metadata.storedFilename] = original
+            try contentStore.write(original, at: pending + "/" + metadata.storedFilename, condition: .createOnly)
         }
+        try contentStore.write(files["metadata.json"]!, at: pending + "/metadata.json", condition: .createOnly)
+        try contentStore.move(from: pending, to: "Sources/" + metadata.id.uuidString.lowercased(), expected: .directory(files))
     }
 
     public static let maximumImportBytes = 2_000_000
@@ -465,6 +455,7 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public static func sourceAvailabilityMessage(_ error: Error, linked: Bool) -> String {
+        if case VaultContentStoreError.missing = error { return linked ? "Linked file not found" : "File not found" }
         let nsError = error as NSError
         if nsError.domain == NSCocoaErrorDomain,
            [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(nsError.code) {
@@ -479,11 +470,21 @@ public actor FileVaultRepository: VaultRepository {
                   !source.metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Invalid source path.") }
             let access = root.startAccessingSecurityScopedResource()
             defer { if access { root.stopAccessingSecurityScopedResource() } }
-            let url = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased()).appendingPathComponent(source.metadata.storedFilename)
-            let data = try source.metadata.linkedBookmark.map(readLinkedSource) ?? coordinatedRead(url)
+            let data = try readSourceOriginal(source, root: root)
             guard source.metadata.isLinked || digest(data) == source.metadata.sha256 else { throw VaultError.invalid("Original checksum does not match.") }
             return "Available"
         } catch { return sourceAvailabilityMessage(error, linked: source.metadata.isLinked) }
+    }
+
+    /// Linked originals have external ownership and never pass through vault storage.
+    public static func readSourceOriginal(_ source: SourceRecord, root: URL, contentStore: (any VaultContentStore)? = nil) throws -> Data {
+        if let bookmark = source.metadata.linkedBookmark { return try readLinkedSource(bookmark) }
+        let filename = source.metadata.storedFilename
+        guard filename == URL(fileURLWithPath: filename).lastPathComponent, !filename.hasPrefix(".") else { throw VaultError.invalid("Invalid source path.") }
+        let store = try contentStore ?? PlaintextVaultContentStore(root: root)
+        let data = try store.read(at: "Sources/" + source.id.uuidString.lowercased() + "/" + filename)
+        guard digest(data) == source.metadata.sha256 else { throw VaultError.invalid("Original checksum does not match.") }
+        return data
     }
 
     private static func makeBookmarkData(for url: URL) throws -> Data {
@@ -584,15 +585,7 @@ public actor FileVaultRepository: VaultRepository {
             linkedBookmark: bookmark,
             storedFilename: pending.metadata.storedFilename
         )
-        let staging = root.appendingPathComponent("Sources/.import-" + id.uuidString)
-        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
-        try Self.coordinatedWrite(encoder.encode(metadata), to: staging.appendingPathComponent("metadata.json"))
-        let final = root.appendingPathComponent("Sources/" + id.uuidString.lowercased())
-        var failure: Error?, coordinationError: NSError?
-        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: staging, options: .forMoving, writingItemAt: final, options: [], error: &coordinationError) { from, to in
-            do { try fm.moveItem(at: from, to: to) } catch { failure = error }
-        }
-        if let failure { throw failure }; if let coordinationError { throw coordinationError }
+        try stageSource(metadata)
         return SourceRecord(metadata: metadata, body: body)
     }
 
@@ -617,15 +610,7 @@ public actor FileVaultRepository: VaultRepository {
             return SourceRecord(metadata: metadata, body: body)
         }
         for source in prepared {
-            let pending = root.appendingPathComponent("Sources/.import-" + source.id.uuidString)
-            try fm.createDirectory(at: pending, withIntermediateDirectories: true)
-            try Self.coordinatedWrite(encoder.encode(source.metadata), to: pending.appendingPathComponent("metadata.json"))
-            let final = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
-            var failure: Error?, coordinationError: NSError?
-            NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: pending, options: .forMoving, writingItemAt: final, options: [], error: &coordinationError) { from, to in
-                do { try fm.moveItem(at: from, to: to) } catch { failure = error }
-            }
-            if let failure { throw failure }; if let coordinationError { throw coordinationError }
+            try stageSource(source.metadata)
         }
         return prepared
     }
@@ -648,25 +633,18 @@ public actor FileVaultRepository: VaultRepository {
             downloadingSources[source.id] = pending
             return pending
         }
-        let url = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/metadata.json")
-        var result: SourceRecord?, failure: Error?, coordinationError: NSError?
-        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: [], error: &coordinationError) { target in
-            do {
-                var metadata = try JSONDecoder().decode(SourceMetadata.self, from: Data(contentsOf: target))
-                guard metadata.id == source.id, metadata.title == source.title,
-                      metadata.sha256 == source.metadata.sha256, metadata.aiSummary == source.metadata.aiSummary,
-                      metadata.linkedBookmark == source.metadata.linkedBookmark,
-                      metadata.storedFilename == source.metadata.storedFilename else { throw VaultError.invalid("Source changed while its title was generated. Refresh and try again.") }
-                metadata.title = title
-                if let summary { metadata.aiSummary = summary }
-                if let cleanLCC { metadata.lcc = cleanLCC }
-                try encoder.encode(metadata).write(to: target, options: .atomic)
-                result = SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue)
-            } catch { failure = error }
-        }
-        if let failure { throw failure }; if let coordinationError { throw coordinationError }
-        guard let result else { throw VaultError.storage("Source title was not saved.") }
-        return result
+        let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
+        let bytes = try contentStore.read(at: path)
+        var metadata = try JSONDecoder().decode(SourceMetadata.self, from: bytes)
+        guard metadata.id == source.id, metadata.title == source.title,
+              metadata.sha256 == source.metadata.sha256, metadata.aiSummary == source.metadata.aiSummary,
+              metadata.linkedBookmark == source.metadata.linkedBookmark,
+              metadata.storedFilename == source.metadata.storedFilename else { throw VaultError.invalid("Source changed while its title was generated. Refresh and try again.") }
+        metadata.title = title
+        if let summary { metadata.aiSummary = summary }
+        if let cleanLCC { metadata.lcc = cleanLCC }
+        try contentStore.write(encoder.encode(metadata), at: path, condition: .replace(expected: bytes))
+        return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue)
     }
 
     public func updateSourceLCC(_ source: SourceRecord, lcc: String?) throws -> SourceRecord {
@@ -680,25 +658,18 @@ public actor FileVaultRepository: VaultRepository {
             downloadingSources[source.id] = pending
             return pending
         }
-        let url = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/metadata.json")
-        var result: SourceRecord?, failure: Error?, coordinationError: NSError?
-        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: [], error: &coordinationError) { target in
-            do {
-                var metadata = try JSONDecoder().decode(SourceMetadata.self, from: Data(contentsOf: target))
-                guard metadata.id == source.id,
-                      metadata.sha256 == source.metadata.sha256,
-                      metadata.linkedBookmark == source.metadata.linkedBookmark,
-                      metadata.storedFilename == source.metadata.storedFilename else {
-                    throw VaultError.invalid("Source changed while updating LCC metadata. Refresh and try again.")
-                }
-                metadata.lcc = cleanLCC
-                try encoder.encode(metadata).write(to: target, options: .atomic)
-                result = SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue)
-            } catch { failure = error }
+        let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
+        let bytes = try contentStore.read(at: path)
+        var metadata = try JSONDecoder().decode(SourceMetadata.self, from: bytes)
+        guard metadata.id == source.id,
+              metadata.sha256 == source.metadata.sha256,
+              metadata.linkedBookmark == source.metadata.linkedBookmark,
+              metadata.storedFilename == source.metadata.storedFilename else {
+            throw VaultError.invalid("Source changed while updating LCC metadata. Refresh and try again.")
         }
-        if let failure { throw failure }; if let coordinationError { throw coordinationError }
-        guard let result else { throw VaultError.storage("Source LCC was not saved.") }
-        return result
+        metadata.lcc = cleanLCC
+        try contentStore.write(encoder.encode(metadata), at: path, condition: .replace(expected: bytes))
+        return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue)
     }
 
     public func deleteSource(_ source: SourceRecord) throws {
@@ -710,37 +681,20 @@ public actor FileVaultRepository: VaultRepository {
         guard directory.resolvingSymlinksInPath().path == directory.standardizedFileURL.path else { throw VaultError.invalid("Source directory cannot be a symbolic link.") }
         try ensureTrashDirectory()
         let destination = root.appendingPathComponent(Self.trashDirectoryName).appendingPathComponent("trash-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString).source")
-        try Self.moveSourceToTrash(source, directory: directory, destination: destination)
-    }
-    private static func moveSourceToTrash(_ source: SourceRecord, directory: URL, destination: URL) throws {
-        let fm = FileManager.default
-        let coordinator = NSFileCoordinator(filePresenter: nil)
-        var failure: Error?, coordinationError: NSError?
-        coordinator.coordinate(writingItemAt: directory, options: .forMoving, writingItemAt: destination, options: [], error: &coordinationError) { target, destination in
-            do {
-                let metadataURL = target.appendingPathComponent("metadata.json")
-                guard try metadataURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else { throw VaultError.invalid("Invalid source metadata path.") }
-                let metadata = try JSONDecoder().decode(SourceMetadata.self, from: Data(contentsOf: metadataURL))
-                guard metadata.id == source.id, metadata.title == source.title,
-                      metadata.sha256 == source.metadata.sha256, metadata.aiSummary == source.metadata.aiSummary,
-                      metadata.linkedBookmark == source.metadata.linkedBookmark,
-                      metadata.storedFilename == source.metadata.storedFilename,
-                      metadata.storedFilename == URL(fileURLWithPath: metadata.storedFilename).lastPathComponent,
-                      !metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Source changed. Refresh before deleting it.") }
-                guard (NSFileVersion.unresolvedConflictVersionsOfItem(at: metadataURL) ?? []).isEmpty else { throw VaultError.invalid("Resolve source metadata conflicts before deletion.") }
-                if !metadata.isLinked {
-                    let original = target.appendingPathComponent(metadata.storedFilename)
-                    guard (NSFileVersion.unresolvedConflictVersionsOfItem(at: original) ?? []).isEmpty,
-                          digest(try Data(contentsOf: original)) == metadata.sha256 else { throw VaultError.invalid("Imported original changed or has conflicts. Refresh before deleting it.") }
-                }
-                // Linked originals are outside this directory and are never touched.
-                _ = try Self.sourceTrashHash(target)
-                guard !fm.fileExists(atPath: destination.path) else { throw VaultError.invalid("Trash destination is occupied.") }
-                try fm.moveItem(at: target, to: destination)
-                coordinator.item(at: target, didMoveTo: destination)
-            } catch { failure = error }
+        let path = "Sources/" + source.id.uuidString.lowercased()
+        let snapshot = try contentStore.snapshot(at: path)
+        guard case .directory(let files) = snapshot, let bytes = files["metadata.json"] else { throw VaultError.invalid("Invalid source directory.") }
+        let metadata = try JSONDecoder().decode(SourceMetadata.self, from: bytes)
+        guard metadata.id == source.id, metadata.title == source.title,
+              metadata.sha256 == source.metadata.sha256, metadata.aiSummary == source.metadata.aiSummary,
+              metadata.linkedBookmark == source.metadata.linkedBookmark,
+              metadata.storedFilename == source.metadata.storedFilename,
+              metadata.storedFilename == URL(fileURLWithPath: metadata.storedFilename).lastPathComponent,
+              !metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Source changed. Refresh before deleting it.") }
+        if !metadata.isLinked {
+            guard let original = files[metadata.storedFilename], digest(original) == metadata.sha256 else { throw VaultError.invalid("Imported original changed. Refresh before deleting it.") }
         }
-        if let failure { throw failure }; if let coordinationError { throw coordinationError }
+        try contentStore.move(from: path, to: Self.trashDirectoryName + "/" + destination.lastPathComponent, expected: snapshot)
     }
 
     private func titleExists(_ title: String, in notes: [NoteRecord]) -> Bool {
@@ -889,21 +843,22 @@ extension FileVaultRepository {
     public static let trashRetentionInterval: TimeInterval = 15 * 24 * 60 * 60
 
     private static func storedHash(_ url: URL) throws -> String {
-        if try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true { return try sourceTrashHash(url) }
         return digest(try Data(contentsOf: url))
     }
-    private static func sourceTrashHash(_ directory: URL) throws -> String {
-        guard directory.resolvingSymlinksInPath() == directory.standardizedFileURL else { throw VaultError.invalid("Unsafe source trash path.") }
-        guard (NSFileVersion.unresolvedConflictVersionsOfItem(at: directory) ?? []).isEmpty else { throw VaultError.invalid("Resolve source conflicts first.") }
+    private static func sourceSnapshotHash(_ snapshot: VaultContentSnapshot) throws -> String {
+        guard case .directory(let files) = snapshot else { throw VaultError.invalid("Invalid source directory.") }
         var bytes = Data()
-        for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-            guard values.isRegularFile == true, values.isSymbolicLink != true,
-                  (NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).isEmpty else { throw VaultError.invalid("Unsafe or conflicted source file.") }
-            bytes.append(Data(url.lastPathComponent.utf8)); bytes.append(0)
-            bytes.append(Data(digest(try Data(contentsOf: url)).utf8)); bytes.append(0)
+        for name in files.keys.sorted() {
+            bytes.append(Data(name.utf8)); bytes.append(0)
+            bytes.append(Data(digest(files[name]!).utf8)); bytes.append(0)
         }
         return digest(bytes)
+    }
+    private func checkedSourceSnapshot(_ path: String, hash: String) throws -> VaultContentSnapshot {
+        _ = try checkedSourceTrashURL(path)
+        let snapshot = try contentStore.snapshot(at: path)
+        guard try Self.sourceSnapshotHash(snapshot) == hash else { throw VaultError.invalid("Source changed. Refresh Trash before changing it.") }
+        return snapshot
     }
     private func checkedSourceTrashURL(_ path: String) throws -> URL {
         try ensureTrashDirectory()
@@ -918,13 +873,15 @@ extension FileVaultRepository {
             let path = Self.trashDirectoryName + "/" + url.lastPathComponent
             var hash = ""
             do {
-                let checked = try checkedSourceTrashURL(path)
-                hash = try Self.sourceTrashHash(checked)
-                let metadata = try JSONDecoder().decode(SourceMetadata.self, from: Self.coordinatedRead(checked.appendingPathComponent("metadata.json")))
+                _ = try checkedSourceTrashURL(path)
+                let snapshot = try contentStore.snapshot(at: path)
+                hash = try Self.sourceSnapshotHash(snapshot)
+                guard case .directory(let files) = snapshot, let bytes = files["metadata.json"] else { throw VaultError.invalid("Invalid source metadata.") }
+                let metadata = try JSONDecoder().decode(SourceMetadata.self, from: bytes)
                 guard metadata.storedFilename == URL(fileURLWithPath: metadata.storedFilename).lastPathComponent,
                       !metadata.storedFilename.hasPrefix(".") else { throw VaultError.invalid("Invalid source filename.") }
                 if !metadata.isLinked {
-                    guard digest(try Self.coordinatedRead(checked.appendingPathComponent(metadata.storedFilename))) == metadata.sha256 else { throw VaultError.invalid("Imported original changed. Repair it before restoring.") }
+                    guard let original = files[metadata.storedFilename], digest(original) == metadata.sha256 else { throw VaultError.invalid("Imported original changed. Repair it before restoring.") }
                 }
                 items.append(.source(TrashedSource(id: path, source: SourceRecord(metadata: metadata, body: ""), contentHash: hash)))
             } catch { items.append(.source(TrashedSource(id: path, contentHash: hash, readIssue: error.localizedDescription))) }
@@ -939,7 +896,7 @@ extension FileVaultRepository {
             let destination = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
             guard destination.deletingLastPathComponent().resolvingSymlinksInPath() == destination.deletingLastPathComponent() else { throw VaultError.invalid("Unsafe Sources directory.") }
             try rejectDuplicateSource(checksum: source.metadata.sha256)
-            try Self.coordinatedMove(checkedSourceTrashURL(entry.id), to: destination, expectedHash: entry.contentHash)
+            try contentStore.move(from: entry.id, to: "Sources/" + source.id.uuidString.lowercased(), expected: checkedSourceSnapshot(entry.id, hash: entry.contentHash))
         }
     }
     public func permanentlyDelete(_ item: TrashedItem) throws {
@@ -947,15 +904,7 @@ extension FileVaultRepository {
         case .page(let page): try permanentlyDelete(page)
         case .source(let source):
             guard !source.contentHash.isEmpty else { throw VaultError.invalid("Unreadable source cannot be deleted.") }
-            let url = try checkedSourceTrashURL(source.id)
-            var failure: Error?, coordinationError: NSError?
-            NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: .forDeleting, error: &coordinationError) { target in
-                do {
-                    guard try Self.sourceTrashHash(target) == source.contentHash else { throw VaultError.invalid("Source changed. Refresh Trash before deleting.") }
-                    try fm.removeItem(at: target)
-                } catch { failure = error }
-            }
-            if let failure { throw failure }; if let coordinationError { throw coordinationError }
+            try contentStore.delete(at: source.id, expected: checkedSourceSnapshot(source.id, hash: source.contentHash))
         }
     }
     public func emptyTrashItems(_ items: [TrashedItem]) -> [String] {

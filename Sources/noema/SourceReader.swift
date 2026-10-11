@@ -32,7 +32,7 @@ import VaultCore
         }
         do {
             let data = try await Task.detached {
-                let data = try FileVaultRepository.coordinatedRead(url)
+                let data = try source.metadata.isLinked ? FileVaultRepository.coordinatedRead(url) : FileVaultRepository.readSourceOriginal(source, root: root)
                 guard source.metadata.isLinked || digest(data) == source.metadata.sha256 else {
                     throw VaultError.invalid("The in-vault original changed. Refresh from Files to review the checksum notice.")
                 }
