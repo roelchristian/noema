@@ -6,6 +6,7 @@ public protocol SearchIndex: Sendable {
     func reconcile(_ entries: ScanBatch) async throws
     func search(_ query: String, kind: EntryKind, tag: String?) async throws -> [SearchHit]
     func backlinks(to note: NoteRecord) async throws -> [UUID]
+    func outgoingLinks(from pageID: UUID) async throws -> [String]
 }
 
 // The connection is confined to the index actor after initialization.
@@ -54,6 +55,7 @@ public actor SQLiteSearchIndex: SearchIndex {
         CREATE INDEX IF NOT EXISTS tag_name ON tags(tag);
         CREATE TABLE IF NOT EXISTS links (id TEXT NOT NULL, target TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS link_target ON links(target);
+        CREATE INDEX IF NOT EXISTS link_source ON links(id);
         """
         var error: UnsafeMutablePointer<CChar>?
         guard sqlite3_exec(connection.pointer, sql, nil, nil, &error) == SQLITE_OK else {
@@ -205,5 +207,20 @@ public actor SQLiteSearchIndex: SearchIndex {
         while sqlite3_step(s) == SQLITE_ROW { if let id = UUID(uuidString: text(s, 0)) { ids.append(id) } }
         try validateAccess("searchIndex.backlinks")
         return ids
+    }
+    public func outgoingLinks(from pageID: UUID) throws -> [String] {
+        try validateAccess("searchIndex.outgoingLinks")
+        let s = try statement("SELECT target FROM links WHERE id = ? ORDER BY rowid ASC", [pageID.uuidString])
+        defer { sqlite3_finalize(s) }
+        var targets: [String] = []
+        var seen: Set<String> = []
+        while sqlite3_step(s) == SQLITE_ROW {
+            let target = text(s, 0)
+            if !target.isEmpty, seen.insert(target).inserted {
+                targets.append(target)
+            }
+        }
+        try validateAccess("searchIndex.outgoingLinks")
+        return targets
     }
 }

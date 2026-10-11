@@ -704,6 +704,10 @@ private final class InitializationIndexProbe: SearchIndex, Sendable {
         try await base.search(query, kind: kind, tag: tag)
     }
     func backlinks(to note: NoteRecord) async throws -> [UUID] { try await base.backlinks(to: note) }
+    // UI.R.REM01: Preserve the complete SearchIndex contract in initialization fixtures.
+    func outgoingLinks(from pageID: UUID) async throws -> [String] {
+        try await base.outgoingLinks(from: pageID)
+    }
 }
 
 private final class LockFlag: @unchecked Sendable {

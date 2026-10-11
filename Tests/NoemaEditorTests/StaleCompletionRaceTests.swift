@@ -8,15 +8,18 @@ private final class ControlledSearchIndex: SearchIndex, Sendable {
     let base: SQLiteSearchIndex
     private let searchHook: (@Sendable (String, EntryKind, String?) async throws -> [SearchHit]?)?
     private let reconcileHook: (@Sendable (ScanBatch) async throws -> Void)?
+    private let outgoingLinksHook: (@Sendable (UUID) async throws -> [String]?)?
 
     init(
         base: SQLiteSearchIndex,
         searchHook: (@Sendable (String, EntryKind, String?) async throws -> [SearchHit]?)? = nil,
-        reconcileHook: (@Sendable (ScanBatch) async throws -> Void)? = nil
+        reconcileHook: (@Sendable (ScanBatch) async throws -> Void)? = nil,
+        outgoingLinksHook: (@Sendable (UUID) async throws -> [String]?)? = nil
     ) {
         self.base = base
         self.searchHook = searchHook
         self.reconcileHook = reconcileHook
+        self.outgoingLinksHook = outgoingLinksHook
     }
 
     func cachedEntries() async throws -> ScanBatch { try await base.cachedEntries() }
@@ -29,6 +32,10 @@ private final class ControlledSearchIndex: SearchIndex, Sendable {
         return try await base.search(query, kind: kind, tag: tag)
     }
     func backlinks(to note: NoteRecord) async throws -> [UUID] { try await base.backlinks(to: note) }
+    func outgoingLinks(from pageID: UUID) async throws -> [String] {
+        if let outgoingLinksHook, let custom = try await outgoingLinksHook(pageID) { return custom }
+        return try await base.outgoingLinks(from: pageID)
+    }
 }
 
 extension VaultUIIntegrationTests {
@@ -235,6 +242,62 @@ struct StaleCompletionRaceTests {
         }
         await model.closeVault()
         #expect(await model.sessionManager.state == .closed && model.notes.isEmpty)
+    }
+
+    @Test @MainActor func delayedOutgoingLinksAndBacklinksCannotOverwriteNewlySelectedPage() async throws {
+        let root = try makeTempVault(name: "LinkRaceVault")
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let repo = try FileVaultRepository.open(root: root)
+        let pageA = try await repo.create(title: "Page A", body: "Links to [[Target A]].")
+        let pageB = try await repo.create(title: "Page B", body: "Links to [[Target B]].")
+
+        final class LinkGate: Sendable {
+            let entered = AsyncStream.makeStream(of: Void.self)
+            let release = AsyncStream.makeStream(of: Void.self)
+            let pause = Mutex(false)
+        }
+        let gate = LinkGate()
+
+        let model = AppModel()
+        model.localStorageRoot = root.deletingLastPathComponent()
+        model.persistSecurityScopedBookmark = false
+        model.searchIndexFactory = { url, lease, accessGate in
+            let base = try SQLiteSearchIndex(url: url, sessionLease: lease, accessGate: accessGate)
+            return ControlledSearchIndex(
+                base: base,
+                outgoingLinksHook: { id in
+                    guard id == pageA.id, gate.pause.withLock({ if $0 { $0 = false; return true }; return false }) else { return nil }
+                    gate.entered.continuation.yield(())
+                    for await _ in gate.release.stream { break }
+                    return ["stale target from page a"]
+                }
+            )
+        }
+
+        await model.open(root, create: false)
+        model.currentNote = pageA
+        model.title = pageA.title
+        model.body = pageA.body
+        gate.pause.withLock { $0 = true }
+        let staleLinkTask = Task { @MainActor in await model.updateBacklinks() }
+        for await _ in gate.entered.stream { break }
+
+        // Switch selection to Page B while Page A's link query is still in flight
+        model.select(pageB.id)
+        for _ in 0..<100 {
+            if model.currentNote?.id == pageB.id && model.outgoingLinkTargets == ["target b"] { break }
+            try await Task.sleep(for: .milliseconds(15))
+        }
+        #expect(model.currentNote?.id == pageB.id)
+        #expect(model.outgoingLinkTargets == ["target b"])
+
+        // Release Page A's delayed query; targetID validation must reject it
+        gate.release.continuation.yield(())
+        await staleLinkTask.value
+
+        #expect(model.currentNote?.id == pageB.id)
+        #expect(model.outgoingLinkTargets == ["target b"])
+        await model.closeVault()
     }
 }
 }
