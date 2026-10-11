@@ -25,6 +25,7 @@ struct RichArticleView: NSViewRepresentable {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
         let view = ArticleTextView(); view.isRichText = true; view.allowsUndo = true; view.isEditable = false; view.isSelectable = true; view.drawsBackground = false
         view.showSemanticHeadings = showSemanticHeadings
+        view.typography = typography
         view.textContainerInset = NSSize(width: 0, height: 24); view.isVerticallyResizable = true; view.isHorizontallyResizable = false
         view.autoresizingMask = [.width]; view.textContainer?.widthTracksTextView = true
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -45,6 +46,7 @@ struct RichArticleView: NSViewRepresentable {
         let macrosChanged = coordinator.lastMacros != texMacros
         coordinator.lastMacros = texMacros
         view.showSemanticHeadings = showSemanticHeadings
+        view.typography = typography
         view.locked = locked || coordinator.document.unsupportedVersion
         view.isEditable = !reading && !view.locked; view.theme = theme
         view.begin = onBegin; view.end = onEnd
@@ -57,7 +59,7 @@ struct RichArticleView: NSViewRepresentable {
         view.insertionPointColor = theme.native(.accentPrimary)
         view.linkTextAttributes = [.foregroundColor: theme.nativeText(.accentSecondary), .underlineStyle: NSUnderlineStyle.single.rawValue]
         if coordinator.lastText != text { coordinator.load(text); view.undoManager?.removeAllActions() }
-        else if coordinator.lastTheme != theme || coordinator.lastTypography != typography || headingsChanged || macrosChanged { coordinator.render(selection: view.selectedRange()) }
+        else if coordinator.lastTheme != theme || coordinator.lastTypography != typography || headingsChanged || macrosChanged { coordinator.refreshPresentation() }
         if let action, coordinator.lastAction != action.id {
             if case .block = action.operation { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
             else if view.isEditable { coordinator.lastAction = action.id; coordinator.perform(action.operation) }

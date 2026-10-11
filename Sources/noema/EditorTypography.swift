@@ -34,6 +34,16 @@ import VaultCore
         self.size = size.isFinite ? min(max(size, Self.sizeRange.lowerBound), Self.sizeRange.upperBound) : Self.defaultSize
     }
 
+    /// The empty family is the saved system-font sentinel. A missing custom
+    /// family stays saved, allowing a later installation to restore the choice.
+    var isFamilyAvailable: Bool {
+        guard !family.isEmpty else { return true }
+        return NSFontManager.shared.availableMembers(ofFontFamily: family)?.contains { member in
+            guard let name = member.first as? String else { return false }
+            return NSFont(name: name, size: CGFloat(size)) != nil
+        } ?? false
+    }
+
     static var current: Self { load() }
 
     static func load(defaults: UserDefaults = .standard) -> Self {
@@ -143,7 +153,9 @@ import VaultCore
         let key = FamilyFontKey(family: family, size: pointSize, weight: weight.rawValue)
         if let cached = Self.familyFonts[key] { return cached }
         let font = resolveFamilyFont(ofSize: pointSize, weight: weight)
-        Self.familyFonts[key] = font
+        // Do not cache a missing family's system fallback: installing that font
+        // while Noema is running should let the next resolution recover it.
+        if family.isEmpty || font.familyName == family { Self.familyFonts[key] = font }
         return font
     }
 

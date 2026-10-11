@@ -47,19 +47,52 @@ struct NoemaSettings: View {
         return TeXMacroStore.load()
     }
 
+    private var typography: EditorTypography {
+        EditorTypography(family: fontFamily, size: fontSize)
+    }
+
+    // Validate for display without rewriting a saved value merely by opening
+    // Settings. A deliberate stepper change saves a compatible 10–32 pt value.
+    private var validatedFontSize: Binding<Double> {
+        Binding(get: { typography.size }, set: { fontSize = EditorTypography(size: $0).size })
+    }
+
     var body: some View {
         Form {
-            Section("Editor") {
-                Picker("Font", selection: $fontFamily) {
-                    Text("System").tag("")
+            Section("Document reading and editing") {
+                Picker("Document font", selection: $fontFamily) {
+                    Text("System (macOS)").tag("")
+                    if !typography.isFamilyAvailable {
+                        Text("\(fontFamily) — unavailable").tag(fontFamily)
+                    }
                     ForEach(NSFontManager.shared.availableFontFamilies.sorted(), id: \.self) { family in
-                        Text(family).tag(family)
+                        Text(family)
+                            .font(Font(EditorTypography(family: family, size: 13).font(for: .body)))
+                            .tag(family)
                     }
                 }
-                Stepper(value: $fontSize, in: EditorTypography.sizeRange, step: 1) {
-                    Text("Font size: \(Int(EditorTypography(size: fontSize).size)) pt")
+                Stepper(value: validatedFontSize, in: EditorTypography.sizeRange, step: 1) {
+                    Text("Document text size: \(Int(typography.size)) pt")
                 }
-                Text("Applies to page reading and editing. Headings scale with the text; code retains a monospaced font. Your choices are saved automatically.")
+                if !typography.isFamilyAvailable {
+                    Label("\(fontFamily) is unavailable. Documents use the system font until it is installed again, or you choose another font.", systemImage: "info.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                GroupBox("Document preview") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("A place for ideas")
+                            .font(Font(typography.font(for: .heading2)))
+                        Text("Read, connect, and develop your knowledge. Your chosen font follows you through articles and readable sources.")
+                            .font(Font(typography.font(for: .body)))
+                            .lineSpacing(typography.lineMetrics(for: .body).extraLeading)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("let idea = \"Something new\"")
+                            .font(Font(typography.font(for: .code)))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                }
+                Text("Applies to document reading and editing. Headings scale with the text; code stays monospaced. Navigation, menus, and other app controls keep their native macOS typography. Changes are saved automatically.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Block display") {
