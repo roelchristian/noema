@@ -113,7 +113,7 @@ struct ContentView: View {
         searchFocused = false
         searchFocusPending = false
     }
-    var body: some View {
+    private var workspacePresentation: some View {
         Group {
             if model.isLocked {
                 lockedVaultView
@@ -147,9 +147,17 @@ struct ContentView: View {
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { workspaceWidth = $0 }
             }
         }
+    }
+    private var titledWorkspace: some View {
+        workspacePresentation
+        .navigationTitle(model.windowTitle.title)
+        .navigationSubtitle(model.windowTitle.subtitle)
         .focusedSceneValue(\.workspacePaneActions, paneActions)
         .toolbar(removing: .sidebarToggle)
         .toolbar { workspaceToolbar }
+    }
+    private var workspaceSheets: some View {
+        titledWorkspace
         .sheet(isPresented: $model.showVaultCreation) {
             VaultCreationSheet(model: model).systemNoemaTheme()
         }
@@ -168,6 +176,9 @@ struct ContentView: View {
                 Button("Cancel") { model.ambiguousMatches = [] }.keyboardShortcut(.cancelAction)
             }.padding(28).frame(width: 440)
         }
+    }
+    private var workspaceConfirmations: some View {
+        workspaceSheets
         .alert("Create this page?", isPresented: Binding(get: { model.isVaultAvailable && model.unresolvedTarget != nil }, set: { if !$0 { model.unresolvedTarget = nil } })) {
             Button("Create") { if let name = model.unresolvedTarget { model.newPage(named: name) }; model.unresolvedTarget = nil }
             Button("Cancel", role: .cancel) { model.unresolvedTarget = nil }
@@ -194,6 +205,9 @@ struct ContentView: View {
                  ? "Move ‘\(deletingSource?.title ?? "")’ to Trash for 15 days? Its linked original will remain on your filesystem."
                  : "Move ‘\(deletingSource?.title ?? "")’ and its imported original to Trash? Restore them within 15 days.")
         }
+    }
+    var body: some View {
+        workspaceConfirmations
         .onChange(of: model.searchText) {
             if searchFocused && !model.searchText.isEmpty && (model.currentNote != nil || model.currentSource != nil) {
                 model.changeScope(model.scope)
@@ -244,32 +258,9 @@ struct ContentView: View {
                     .frame(maxWidth: 460)
             }
             GlassEffectContainer(spacing: 8) {
-                HStack(spacing: 14) {
-                    Button("Unlock Vault") {
-                        Task { await model.unlockVault() }
-                    }
-                    .buttonStyle(.glassProminent)
-                    .disabled(model.busy)
-                    if model.needsPermissionReauthorization {
-                        Button("Reselect Vault Folder…") {
-                            model.chooseVault(create: false)
-                        }
-                        .buttonStyle(.glass)
-                        .tint(nil)
-                        .disabled(model.busy)
-                    }
-                    Button("Open Another Vault…") {
-                        model.chooseVault(create: false)
-                    }
-                    .buttonStyle(.glass)
-                    .tint(nil)
-                    .disabled(model.busy)
-                    Button("Close Vault") {
-                        Task { _ = await model.closeVault() }
-                    }
-                    .buttonStyle(.glass)
-                    .tint(nil)
-                    .disabled(model.busy)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 14) { lockedVaultActions }
+                    VStack(spacing: 10) { lockedVaultActions }
                 }
                 .controlSize(.large)
             }
@@ -288,6 +279,18 @@ struct ContentView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Locked vault: \(model.vaultName)")
     }
+    @ViewBuilder private var lockedVaultActions: some View {
+        workspaceCommandButton("Unlock Vault", .unlock).buttonStyle(.glassProminent)
+        if model.needsPermissionReauthorization {
+            workspaceCommandButton("Reselect Vault Folder…", .openVault).buttonStyle(.glass).tint(nil)
+        }
+        workspaceCommandButton("Open Another Vault…", .openVault).buttonStyle(.glass).tint(nil)
+        workspaceCommandButton("Close Vault", .close).buttonStyle(.glass).tint(nil)
+    }
+    private func workspaceCommandButton(_ title: String, _ command: WorkspaceCommand) -> some View {
+        Button(title) { model.performWorkspaceCommand(command) }
+            .disabled(!model.canPerformWorkspaceCommand(command))
+    }
     private var welcome: some View {
         VStack(spacing: 24) {
             NoemaMark(presentation: .identity).frame(width: 116, height: 116).accessibilityHidden(true)
@@ -298,8 +301,8 @@ struct ContentView: View {
             }
             GlassEffectContainer(spacing: 8) {
                 HStack(spacing: 14) {
-                    Button("Create a vault…") { model.chooseVault(create: true) }.buttonStyle(.glassProminent)
-                    Button(model.needsPermissionReauthorization ? "Reselect Vault Folder…" : "Open a vault…") { model.chooseVault(create: false) }.buttonStyle(.glass).tint(nil)
+                    workspaceCommandButton("Create a vault…", .createVault).buttonStyle(.glassProminent)
+                    workspaceCommandButton(model.needsPermissionReauthorization ? "Reselect Vault Folder…" : "Open a vault…", .openVault).buttonStyle(.glass).tint(nil)
                 }.controlSize(.large)
             }
             Text("Choose a folder on your Mac or in iCloud Drive. Your files stay yours.")
@@ -503,39 +506,39 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Divider().opacity(colorSchemeContrast == .increased ? 0.75 : 0.2)
                 Menu {
-                    Button { model.revealVault() } label: {
+                    Button { model.performWorkspaceCommand(.revealVault) } label: {
                         Label("Open Vault in Finder", systemImage: "folder")
-                    }
-                    Button { Task { await model.refresh() } } label: {
+                    }.disabled(!model.canPerformWorkspaceCommand(.revealVault))
+                    Button { model.performWorkspaceCommand(.refresh) } label: {
                         Label("Refresh from Files", systemImage: "arrow.clockwise")
-                    }
-                    Button { switchSidebarScope(.trash) } label: {
+                    }.disabled(!model.canPerformWorkspaceCommand(.refresh))
+                    Button { model.performWorkspaceCommand(.showTrash) } label: {
                         Label(model.trashedPages.isEmpty ? "Trash" : "Trash (\(model.trashedPages.count.formatted()))", systemImage: "trash")
-                    }
+                    }.disabled(!model.canPerformWorkspaceCommand(.showTrash))
                     if !model.recoveredDrafts.isEmpty {
-                        Button { model.showRecovery = true } label: {
+                        Button { model.performWorkspaceCommand(.recovery) } label: {
                             Label("\(model.recoveredDrafts.count) recoverable draft(s)", systemImage: "clock.arrow.circlepath")
-                        }
+                        }.disabled(!model.canPerformWorkspaceCommand(.recovery))
                     }
                     if !model.issues.isEmpty {
-                        Button { model.showIssues = true } label: {
+                        Button { model.performWorkspaceCommand(.notices) } label: {
                             Label("\(model.issues.count) vault notice(s)", systemImage: "info.circle")
-                        }
+                        }.disabled(!model.canPerformWorkspaceCommand(.notices))
                     }
                     Divider()
-                    Button { Task { _ = await model.lockVault() } } label: {
+                    Button { model.performWorkspaceCommand(.lock) } label: {
                         Label("Lock Vault", systemImage: "lock")
-                    }
-                    Button { Task { _ = await model.closeVault() } } label: {
+                    }.disabled(!model.canPerformWorkspaceCommand(.lock))
+                    Button { model.performWorkspaceCommand(.close) } label: {
                         Label("Close Vault", systemImage: "xmark.circle")
-                    }
+                    }.disabled(!model.canPerformWorkspaceCommand(.close))
                     Divider()
-                    Button { model.chooseVault(create: false) } label: {
+                    Button { model.performWorkspaceCommand(.openVault) } label: {
                         Label("Open Vault…", systemImage: "folder")
-                    }
-                    Button { model.chooseVault(create: true) } label: {
+                    }.disabled(!model.canPerformWorkspaceCommand(.openVault))
+                    Button { model.performWorkspaceCommand(.createVault) } label: {
                         Label("Create Vault…", systemImage: "folder.badge.plus")
-                    }
+                    }.disabled(!model.canPerformWorkspaceCommand(.createVault))
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "folder")
@@ -1003,8 +1006,8 @@ struct ContentView: View {
                 Text("Trash").font(.title2.bold())
                 Text("Automatically deleted after 15 days").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button { Task { await model.refresh() } } label: { Label("Refresh Trash", systemImage: "arrow.clockwise").labelStyle(.iconOnly) }
-                    .help("Refresh Trash").disabled(model.trashOperationInProgress)
+                Button { model.performWorkspaceCommand(.refresh) } label: { Label("Refresh Trash", systemImage: "arrow.clockwise").labelStyle(.iconOnly) }
+                    .help("Refresh Trash").disabled(model.trashOperationInProgress || !model.canPerformWorkspaceCommand(.refresh))
                 Button("Empty Trash…", role: .destructive) { emptyTrashPages = model.trashedPages; showEmptyTrash = true }
                     .disabled(model.trashedPages.isEmpty || model.trashOperationInProgress)
             }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
@@ -1133,7 +1136,6 @@ struct ContentView: View {
             )
         }
         .disabled(!paneActions.canToggleInspector)
-        .keyboardShortcut("i", modifiers: [.command, .option])
         .help(isInspectorPresented ? "Hide Inspector (⌥⌘I)" : "Show Inspector (⌥⌘I)")
         .accessibilityLabel(isInspectorPresented ? "Hide Inspector" : "Show Inspector")
         .accessibilityValue(isInspectorPresented ? "Shown" : "Hidden")
@@ -1145,71 +1147,57 @@ struct ContentView: View {
                     Label(panePresentation.sidebar ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
                 }
                 .disabled(!paneActions.canToggleSidebar)
-                .keyboardShortcut("s", modifiers: [.command, .control])
                 .help(panePresentation.sidebar ? "Hide Sidebar (⌃⌘S)" : "Show Sidebar (⌃⌘S)")
                 .accessibilityLabel(panePresentation.sidebar ? "Hide Sidebar" : "Show Sidebar")
                 .accessibilityValue(panePresentation.sidebar ? "Shown" : "Hidden")
             }
             ToolbarItem(placement: .navigation) {
-                Button {
-                    switchSidebarScope(model.scope)
-                } label: {
+                Button { model.performWorkspaceCommand(.returnToLibrary) } label: {
                     Label("Return to Library", systemImage: "chevron.backward")
                 }
-                .disabled(model.currentNote == nil && model.currentSource == nil)
-                .help("Return to the current library")
+                .disabled(!model.canPerformWorkspaceCommand(.returnToLibrary))
+                .help("Return to Library (⌘[)")
                 .accessibilityLabel("Return to Library")
             }
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    model.searchFocusToken += 1
-                } label: {
+                Button { model.performWorkspaceCommand(.search) } label: {
                     Label("Find in Vault", systemImage: "magnifyingglass")
                 }
+                .disabled(!model.canPerformWorkspaceCommand(.search))
                 .help("Find in Vault (⇧⌘F)")
                 .accessibilityLabel("Find in Vault")
             }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
-                    Button("Blank Page") { model.newPage() }
-                    Button("Personal Page") { model.newPage(template: true) }
-                    Button("Page from Topic with AI…") { model.showTopicPage = true }
+                    workspaceCommandButton("Blank Page", .newPage)
+                    workspaceCommandButton("Personal Page", .newPersonalPage)
+                    workspaceCommandButton("Page from Topic with AI…", .newTopicPage)
                         .disabled(model.generatingTopicPage)
                     Divider()
-                    Button("Source from Files…") { model.addSource() }
-                    Button("Source by URL…") { model.showURLSource = true }
-                    Button("Paste a Source…") { model.showPasteSource = true }
-                } label: {
-                    Label("Add Page or Source", systemImage: "plus")
-                }
-                .disabled(model.busy)
+                    workspaceCommandButton("Source from Files…", .addSource)
+                    workspaceCommandButton("Source by URL…", .addURLSource)
+                    workspaceCommandButton("Paste a Source…", .pasteSource)
+                } label: { Label("Add Page or Source", systemImage: "plus") }
+                .disabled(!model.canPerformWorkspaceCommand(.newPage))
                 .help("Add a page or source")
                 .accessibilityLabel("Add Page or Source")
             }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
-                    Button("Open Another Vault…") { model.chooseVault(create: false) }
-                    Button { model.revealVault() } label: { Label("Reveal Vault in Finder", systemImage: "folder") }
-                    Button { Task { await model.refresh() } } label: { Label("Refresh from Files", systemImage: "arrow.clockwise") }
-                        .disabled(model.busy)
-                    Button { switchSidebarScope(.trash) } label: { Label("Trash", systemImage: "trash") }
-                    Button("Vault Notices (\(model.issues.count))") { model.showIssues = true }
-                    Button("Recover Drafts (\(model.recoveredDrafts.count))") { model.showRecovery = true }
-                        .disabled(model.recoveredDrafts.isEmpty)
+                    workspaceCommandButton("Open Another Vault…", .openVault)
+                    workspaceCommandButton("Reveal Vault in Finder", .revealVault)
+                    workspaceCommandButton("Refresh from Files", .refresh)
+                    workspaceCommandButton("Trash", .showTrash)
+                    workspaceCommandButton("Vault Notices (\(model.issues.count))", .notices)
+                    workspaceCommandButton("Recover Drafts (\(model.recoveredDrafts.count))", .recovery)
                     Divider()
-                    Button { Task { _ = await model.lockVault() } } label: { Label("Lock Vault", systemImage: "lock") }
-                        .disabled(model.busy)
-                    Button { Task { _ = await model.closeVault() } } label: { Label("Close Vault", systemImage: "xmark.circle") }
-                        .disabled(model.busy)
-                } label: {
-                    Label("Vault Options", systemImage: "ellipsis.circle")
-                }
+                    workspaceCommandButton("Lock Vault", .lock)
+                    workspaceCommandButton("Close Vault", .close)
+                } label: { Label("Vault Options", systemImage: "ellipsis.circle") }
                 .help("Vault options")
                 .accessibilityLabel("Vault Options")
             }
-            ToolbarItem(placement: .primaryAction) {
-                inspectorToolbarToggle
-            }
+            ToolbarItem(placement: .primaryAction) { inspectorToolbarToggle }
         }
     }
     // Document actions stay with the document heading; window actions live in the native toolbar.

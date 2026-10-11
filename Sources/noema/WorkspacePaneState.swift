@@ -160,7 +160,7 @@ struct WorkspaceSplitViewPersistence: NSViewRepresentable {
             lastMainMinimum = nil
         }
 
-        private func configure() {
+        func configure() {
             guard window != nil, let state else { return }
             var ancestor = superview
             while let view = ancestor, !(view is NSSplitView) { ancestor = view.superview }
@@ -175,10 +175,8 @@ struct WorkspaceSplitViewPersistence: NSViewRepresentable {
                   lastPresentation != presentation || lastMainMinimum != mainMinimum else { return }
             lastPresentation = presentation
             lastMainMinimum = mainMinimum
-            let mainIndex = presentation.sidebar ? 1 : 0
-            for index in split.arrangedSubviews.indices {
-                split.setHoldingPriority(index == mainIndex ? .defaultLow : NSLayoutConstraint.Priority(450), forSubviewAt: index)
-            }
+            // SwiftUI owns an NSSplitViewController. AppKit prohibits setting holding
+            // priorities directly on its split view; preserve the controller's layout policy.
             let divider = split.dividerThickness
             if presentation.sidebar {
                 let remaining = presentation.inspector ? InspectorState.minWidth + divider * 2 : divider

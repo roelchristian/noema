@@ -81,4 +81,39 @@ struct WorkspacePaneStateTests {
             #expect(restored.inspectorWidth == 360)
         }
     }
+    @Test func nativeWidthRestorationPreservesSplitViewControllerOwnership() {
+        withDefaults { defaults in
+            let state = WorkspacePaneState(defaults: defaults)
+            state.rememberWidths(sidebar: 275, inspector: nil)
+            let probe = WorkspaceSplitViewPersistence.Probe()
+            probe.state = state
+            probe.presentation = WorkspacePanePresentation(sidebar: true, inspector: false)
+            probe.mainMinimum = 420
+            let controller = NSSplitViewController()
+            let sidebar = NSViewController()
+            sidebar.view = NSView()
+            let center = NSViewController()
+            center.view = probe
+            controller.addSplitViewItem(NSSplitViewItem(viewController: sidebar))
+            controller.addSplitViewItem(NSSplitViewItem(viewController: center))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                                  styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentViewController = controller
+            defer { probe.disconnect(); window.close() }
+            controller.view.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
+            controller.splitView.frame = controller.view.bounds
+            controller.view.layoutSubtreeIfNeeded()
+            #expect(controller.splitView.bounds.width == 900)
+            let priorities = controller.splitViewItems.map(\.holdingPriority)
+            // This used to throw an Objective-C exception by setting holding priorities
+            // directly on a controller-managed NSSplitView when the workspace opened.
+            probe.configure()
+            #expect(controller.splitView.delegate as? NSSplitViewController === controller)
+            #expect(controller.splitViewItems.map(\.holdingPriority) == priorities)
+            #expect(controller.splitView.arrangedSubviews.count == 2)
+            #expect(abs(controller.splitView.arrangedSubviews[0].frame.width - 275) < 2)
+        }
+    }
+
 }

@@ -6,6 +6,7 @@ import NoemaBrand
     @State private var model = AppModel()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @Environment(\.openWindow) private var openWindow
+    @FocusedValue(\.workspacePaneActions) private var paneActions
     var body: some Scene {
         Window("Noema", id: "main") {
             ContentView(model: model)
@@ -34,6 +35,22 @@ import NoemaBrand
             }
             CommandGroup(replacing: .saveItem) {
                 Button("Save Page") { model.performWorkspaceCommand(.save) }.keyboardShortcut("s").disabled(!model.canPerformWorkspaceCommand(.save))
+            }
+            CommandGroup(replacing: .sidebar) {
+                Button(paneActions?.sidebarPresented == true ? "Hide Sidebar" : "Show Sidebar") {
+                    paneActions?.toggleSidebar()
+                }
+                .keyboardShortcut("s", modifiers: [.command, .control])
+                .disabled(paneActions?.canToggleSidebar != true)
+                Button(paneActions?.inspectorPresented == true ? "Hide Inspector" : "Show Inspector") {
+                    paneActions?.toggleInspector()
+                }
+                .keyboardShortcut("i", modifiers: [.command, .option])
+                .disabled(paneActions?.canToggleInspector != true)
+                Divider()
+                Button("Return to Library") { model.performWorkspaceCommand(.returnToLibrary) }
+                    .keyboardShortcut("[")
+                    .disabled(!model.canPerformWorkspaceCommand(.returnToLibrary))
             }
             CommandMenu("Vault") {
                 Button("Find in Vault") { model.performWorkspaceCommand(.search) }.keyboardShortcut("f", modifiers: [.command, .shift]).disabled(!model.canPerformWorkspaceCommand(.search))
