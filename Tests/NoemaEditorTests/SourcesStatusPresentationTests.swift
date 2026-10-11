@@ -67,10 +67,12 @@ struct SourcesStatusPresentationTests {
         let oldState = presentation.status(for: id)
         presentation.synchronize(SourcesStatusSnapshot(sourceIDs: []))
         let replacement = presentation.status(for: id)
+        #expect(oldState.availabilityState == .available("Available"))
         #expect(replacement !== oldState)
         #expect(replacement.availabilityState == .available("Available"))
         presentation.synchronize(SourcesStatusSnapshot(sourceIDs: [id], availability: [id: "Restored status"]))
         presentation.clear()
+        #expect(replacement.availabilityState == .available("Available"))
         #expect(presentation.status(for: id) !== replacement)
         #expect(presentation.status(for: id).availabilityState == .available("Available"))
     }

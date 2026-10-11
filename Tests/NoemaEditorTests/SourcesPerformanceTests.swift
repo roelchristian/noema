@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import VaultCore
+@testable import VaultCore
 @testable import noema
 
 struct SourcesPerformanceTests {

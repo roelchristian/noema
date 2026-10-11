@@ -42,7 +42,10 @@ struct SourcesStatusSnapshot: Equatable {
     @discardableResult
     func synchronize(_ snapshot: SourcesStatusSnapshot) -> Set<UUID> {
         SourcesPerformance.measure("SourceStatusUpdate") {
-            states = states.filter { snapshot.sourceIDs.contains($0.key) }
+            for (id, state) in states where !snapshot.sourceIDs.contains(id) {
+                state.update(title: .ready, availability: .available("Available"))
+                states.removeValue(forKey: id)
+            }
             var changed: Set<UUID> = []
             for id in snapshot.sourceIDs {
                 let title: SourceRowStatus.TitleState = snapshot.downloading.contains(id) ? .downloading
@@ -57,5 +60,12 @@ struct SourcesStatusSnapshot: Equatable {
         }
     }
 
-    func clear() { states.removeAll() }
+    func clear() {
+        // A cell can temporarily retain its status object while SwiftUI removes the table.
+        // Clear labels on those objects as well as dropping our dictionary references.
+        for state in states.values {
+            state.update(title: .ready, availability: .available("Available"))
+        }
+        states.removeAll()
+    }
 }
