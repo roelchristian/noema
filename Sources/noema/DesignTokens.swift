@@ -43,3 +43,43 @@ enum NoemaSpacing {
 // their system sizing; text-bearing custom controls should grow with their
 // content instead of clipping to enforce a fixed density. No density preference
 // or document/editor typography setting is introduced by these tokens.
+
+/// Geometry reference defaults for custom application chrome, in points.
+/// Apply row, search and action heights as minimums so text and accessibility
+/// sizing can grow. Text-bearing controls use content-driven widths; pane and
+/// window constraints remain component-owned. Native controls keep their
+/// platform metrics and focus/accessibility behavior.
+///
+/// Compact and comfortable describe layout roles, not an appearance setting or
+/// a persisted density preference. Reading measure is deliberately deferred:
+/// the editor's existing width and gutter alignment remain editorial layout.
+enum NoemaMetrics {
+    /// Minimum height for compact sidebar navigation rows and custom tabs.
+    static let compactRowHeight: CGFloat = 30
+    /// Minimum height for vault navigation and roomier custom rows.
+    static let comfortableRowHeight: CGFloat = 34
+    /// Minimum height for the custom sidebar search container.
+    static let searchHeight: CGFloat = 30
+
+    /// Horizontal framing shared by sidebar search, headers and tab groups.
+    static let sidebarInset: CGFloat = 12
+    /// Horizontal alignment shared by the inspector shell and panel contents.
+    static let inspectorInset: CGFloat = 16
+
+    /// Selected tabs and compact custom controls.
+    static let radiusSmall: CGFloat = 6
+    /// Search and grouped custom control containers.
+    static let radiusStandard: CGFloat = 8
+    /// Larger custom containers; retain native container shapes where provided.
+    static let radiusLarge: CGFloat = 12
+    /// Custom group/search hairline; callers may strengthen for Increase Contrast.
+    static let borderWidth: CGFloat = 0.5
+    /// Optical padding around a custom tab group, independent of row padding.
+    static let controlGroupInset: CGFloat = 3
+
+    /// Alignment column for chrome icons, never the interactive hit target.
+    static let iconWidth: CGFloat = 16
+    /// Minimum height for custom compact toolbar/footer actions. Apply to the
+    /// whole button label with a content shape; retain visible keyboard focus.
+    static let toolbarControlHeight: CGFloat = 28
+}
