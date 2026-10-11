@@ -1217,9 +1217,8 @@ struct ContentView: View {
                 }
             }
         }
-        // Match the article text column: 80pt text inset + 5pt default line-fragment padding, inside the same 980pt centered column.
-        .padding(.horizontal, 85).padding(.top, 14).padding(.bottom, 12)
-        .frame(maxWidth: 980, alignment: .leading).frame(maxWidth: .infinity)
+        .padding(.top, 14).padding(.bottom, 12)
+        .readingColumn(reservesEditorGutter: true)
     }
     private var pageTitle: some View {
         Group {

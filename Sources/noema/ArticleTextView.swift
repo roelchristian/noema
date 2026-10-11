@@ -2,6 +2,20 @@ import AppKit
 import VaultCore
 
 @MainActor final class ArticleTextView: NSTextView {
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        updateReadingGeometry()
+    }
+
+    func updateReadingGeometry() {
+        let geometry = ReadingGeometry(availableWidth: bounds.width, reservesEditorGutter: true)
+        if textContainerInset.width != geometry.horizontalInset {
+            // Preserve vertical space reserved for a semantic heading.
+            textContainerInset = NSSize(width: geometry.horizontalInset, height: textContainerInset.height)
+        }
+        textContainer?.lineFragmentPadding = 0
+    }
+
     var begin: (() -> Void)?
     var lockedClick: (() -> Void)?
     var end: (() -> Void)?
