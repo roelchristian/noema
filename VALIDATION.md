@@ -679,3 +679,18 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 - The native macOS About panel includes the supplied three-paragraph Greek and Husserl background, retaining italic terms and the existing tagline. App bundle metadata supplies “© 2026 Roel Christian Yambao. All rights reserved.” using NSHumanReadableCopyright. Credits use the native preferred body font and semantic label color.
 - `./scripts/build.sh debug` compiled, packaged, and signed successfully with macOS icon-service access. The initial restricted build compiled but packaging encountered Invalid Iconset. Packaged copyright metadata was verified. Supervisor selftest passed all 17 policy parameters; whitespace checks passed; tracked brand exports were unchanged. No regression tests were added or rerun for this copy-only presentation change.
 - Prepared an isolated app identity with no saved vault for native inspection, but Computer Use returned “Computer Use was not approved to use Noema.” About-panel layout/scrolling, theme and accent switching, accessibility preferences, and VoiceOver remain manually unverified. Existing unrelated edits and demo-vault content were preserved.
+
+
+## Larger themed About window — 2026-10-11
+
+- About Noema now opens a native SwiftUI window at 820 × 760 points, with a 660 × 560 minimum and standard window resizing. The three paragraphs retain italic spans and selectable text, with scrolling available in smaller windows. The header retains the app icon, tagline and version; copyright remains visible below the text.
+- The window uses the shared systemNoemaTheme modifier and semantic background/text roles, following the selected palette, full-palette/accent-only preference, System appearance, and accessibility contrast updates. No independent theme preferences were added.
+- `./scripts/build.sh debug` compiled, packaged and signed successfully with macOS service access. Supervisor selftest passed; whitespace checks passed. An attempted focused palette regression run was interrupted because AppModel.swift was modified during compilation by concurrent work; a retry was started with the exact palette-test filter. Its outcome is reported in chat.
+- Native UI access to Noema remains unavailable from the preceding attempt. Actual window layout/fit, live theme/accent changes, accessibility preferences and VoiceOver remain manually unverified. Unrelated concurrent edits and demo-vault content were preserved.
+
+
+## Fixed About window matching the reference — 2026-10-11
+
+- Locked About Noema to a 660 × 560-point content area, matching the reference image’s approximately 1320-pixel-wide window at Retina scale. SwiftUI content-size resizability fixes its dimensions; a native window attachment removes the resizable style, opts out of fullscreen and disables the zoom button. Closing, minimizing, text selection, scrolling and the shared theme layer remain available.
+- `./scripts/build.sh debug` compiled, packaged and signed successfully with macOS service access. Supervisor selftest passed all 17 policy parameters; whitespace checks passed. No regression tests were added or rerun for this window-only adjustment.
+- Native UI access remains unavailable from the earlier denied attempt. Edge dragging, zoom/fullscreen commands, reference-size comparison on screen, live theme/accent changes and VoiceOver/accessibility settings remain manually unverified. Existing unrelated and concurrent edits were preserved.

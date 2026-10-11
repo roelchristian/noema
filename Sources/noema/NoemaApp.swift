@@ -5,6 +5,7 @@ import NoemaBrand
 @main struct NoemaApp: App {
     @State private var model = AppModel()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @Environment(\.openWindow) private var openWindow
     var body: some Scene {
         Window("Noema", id: "main") {
             ContentView(model: model)
@@ -18,10 +19,7 @@ import NoemaBrand
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About Noema") {
-                    NSApplication.shared.orderFrontStandardAboutPanel(options: [
-                        .applicationName: "Noema",
-                        .credits: NoemaAbout.credits
-                    ])
+                    openWindow(id: "about")
                 }
             }
             CommandGroup(replacing: .newItem) {
@@ -59,6 +57,14 @@ import NoemaBrand
                 Button("Wiki Link") { model.format("[[", "]]") }.keyboardShortcut("l", modifiers: [.command, .shift]).disabled(model.currentNote == nil || model.reading)
             }
         }
+        Window("About Noema", id: "about") {
+            NoemaAboutView()
+                .frame(width: 660, height: 560)
+                .background(AboutWindowConstraints())
+                .systemNoemaTheme()
+        }
+        .defaultSize(width: 660, height: 560)
+        .windowResizability(.contentSize)
         Settings {
             NoemaSettings()
                 .systemNoemaTheme()

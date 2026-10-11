@@ -2,7 +2,7 @@
 
 **A personal atlas of thought.**
 
-**Noema → About Noema** includes the name’s Greek and phenomenological background, with a © 2026 Roel Christian Yambao. All rights reserved. notice.
+**Noema → About Noema** opens a native window with a fixed 660 × 560-point content area, the name’s three-paragraph Greek and phenomenological background, and a © 2026 Roel Christian Yambao. All rights reserved. notice. Edge resizing, maximize, and fullscreen are disabled. It follows the selected app theme and Light/Dark appearance; text remains scrollable if needed.
 
 A native macOS personal wiki, with a separate read-only library of raw sources.
 
