@@ -1090,7 +1090,7 @@ struct EditorAction: Equatable {
             while lifecycleActionID == actionID { await Task.yield() }
         }
         isVaultAuthenticationPending = sessionManager.isAuthenticationPending
-        if lifecycleActionID == nil { busy = false }
+        if cancelled, actionID != nil, lifecycleActionID == nil { busy = false }
     }
 
     @discardableResult
