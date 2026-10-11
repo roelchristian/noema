@@ -15,18 +15,18 @@ struct ToolbarSearchRow: Identifiable, Equatable {
 
     static func preview(_ results: SidebarSearchResults, limit: Int = 8) -> [Self] {
         let groups: [[Self]] = [
-            results.pages.map { note in
+            results.pages.prefix(max(0, limit)).map { note in
                 Self(id: "page:\(note.id)", category: .pages, title: note.title,
                      excerpt: results.pageExcerpts[note.id] ?? "", symbol: "doc.text",
                      entryID: note.id, blockID: nil)
             },
-            results.sources.map { source in
+            results.sources.prefix(max(0, limit)).map { source in
                 Self(id: "source:\(source.id)", category: .sources, title: source.title,
                      excerpt: results.sourceExcerpts[source.id] ?? "",
                      symbol: source.metadata.isLinked ? "link" : "tray",
                      entryID: source.id, blockID: nil)
             },
-            results.blocks.map { hit in
+            results.blocks.prefix(max(0, limit)).map { hit in
                 Self(id: "block:\(hit.id)", category: .blocks, title: hit.pageTitle,
                      excerpt: "\(hit.semantic) · \(hit.preview)",
                      symbol: "tag",
@@ -79,6 +79,36 @@ struct ToolbarSearchView: View {
     private var placeholder: String { model.searchMode == .quickOpen ? "Quick Open" : "Search vault" }
 
     var body: some View {
+        observedControl
+            .onChange(of: model.isLocked) { if model.isLocked { reset() } }
+            .onChange(of: model.isVaultAvailable) { if !model.isVaultAvailable { reset() } }
+            .onChange(of: inline) {
+                if expanded {
+                    focus.acceptsInputFocus = true
+                    focusRequest += 1
+                    resultsVisible = true
+                }
+            }
+            .onDisappear { reset() }
+    }
+
+    private var observedControl: some View {
+        toolbarControl
+            .background { popoverAnchor }
+            .disabled(!model.canPerformWorkspaceCommand(.search))
+            .onChange(of: model.searchFocusToken) { activate() }
+            .onChange(of: model.searchText) {
+                selectedID = nil
+                if expanded { resultsVisible = true }
+            }
+            .onChange(of: model.searchScope) { selectedID = nil }
+            .onChange(of: model.searchMode) { selectedID = nil }
+            .onChange(of: rows.map(\.id)) {
+                if let selectedID, !rows.contains(where: { $0.id == selectedID }) { self.selectedID = nil }
+            }
+    }
+
+    private var toolbarControl: some View {
         HStack(spacing: NoemaSpacing.xs) {
             if expanded && inline {
                 searchInput
@@ -92,7 +122,7 @@ struct ToolbarSearchView: View {
                 .help("Close search (Escape)")
                 .accessibilityLabel("Close search")
             } else {
-                Button(action: activate) {
+                Button { model.performWorkspaceCommand(.search) } label: {
                     Label("Search vault", systemImage: "magnifyingglass")
                         .labelStyle(.iconOnly)
                 }
@@ -101,37 +131,15 @@ struct ToolbarSearchView: View {
                 .accessibilityValue(expanded ? "Expanded" : "Collapsed")
             }
         }
-        .background {
-            ToolbarSearchPopover(
-                presented: popoverVisible, expanded: expanded,
-                focus: focus,
-                content: AnyView(searchPresentation
-                    .environment(\.noemaTheme, theme)
-                    .environment(\.accessibilityReduceMotion, reduceMotion)),
-                onDismiss: dismissPresentation, onEscape: escape
-            )
-        }
-        .disabled(!model.canPerformWorkspaceCommand(.search))
-        .onChange(of: model.searchFocusToken) { activate() }
-        .onChange(of: model.searchText) {
-            selectedID = nil
-            if expanded { resultsVisible = true }
-        }
-        .onChange(of: model.searchScope) { selectedID = nil }
-        .onChange(of: model.searchMode) { selectedID = nil }
-        .onChange(of: rows.map(\.id)) {
-            if let selectedID, !rows.contains(where: { $0.id == selectedID }) { self.selectedID = nil }
-        }
-        .onChange(of: model.isLocked) { if model.isLocked { reset() } }
-        .onChange(of: model.isVaultAvailable) { if !model.isVaultAvailable { reset() } }
-        .onChange(of: inline) {
-            if expanded {
-                focus.acceptsInputFocus = true
-                focusRequest += 1
-                resultsVisible = true
-            }
-        }
-        .onDisappear { reset() }
+    }
+
+    private var popoverAnchor: some View {
+        ToolbarSearchPopover(
+            presented: popoverVisible, expanded: expanded,
+            focus: focus,
+            content: AnyView(searchPresentation.environment(\.noemaTheme, theme)),
+            onDismiss: dismissPresentation, onEscape: escape
+        )
     }
 
     private var searchInput: some View {
@@ -377,6 +385,7 @@ struct ToolbarSearchView: View {
 private struct ToolbarSearchInput: NSViewRepresentable {
     enum Command { case up, down, submit, escape }
     @Binding var text: String
+    @Environment(\.isEnabled) private var isEnabled
     let placeholder: String
     let focusRequest: Int
     let focus: ToolbarSearchFocus
@@ -398,6 +407,7 @@ private struct ToolbarSearchInput: NSViewRepresentable {
     func updateNSView(_ field: NSSearchField, context: Context) {
         context.coordinator.parent = self
         focus.input = field
+        field.isEnabled = isEnabled
         if field.stringValue != text { field.stringValue = text }
         field.placeholderString = placeholder
         field.setAccessibilityLabel(placeholder)

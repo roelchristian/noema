@@ -89,6 +89,19 @@ document editing controls remain with the document heading. Toolbar and menu act
 share guarded `AppModel.performWorkspaceCommand`, with lifecycle admission reserved
 before queuing. Activation/termination still use existing save/recovery/session hooks.
 
+`AppModel.searchText` owns the query. Search mode, category scope and explicit
+idle/searching/results/failure status share the existing `SidebarSearchResults`;
+full-vault search retains SQLite FTS and semantic snapshot search, while Quick Open
+filters page/source titles and page aliases. Query publication checks a search
+revision alongside the existing session completion ticket, so superseded queries,
+mode/scope changes, selection and vault revocation cannot publish older results.
+The 120 ms debounce remains. Toolbar expansion, responder restoration, keyboard
+selection and the anchored results popover belong to `ToolbarSearchView`; compact
+windows place its field inside the popover. The first eight results share a route
+to the explicit full results view. Entry and category refinement preserve the open
+document and library scope; result navigation uses the existing save-before-select
+path, including semantic block targets. Search does not require a visible sidebar.
+
 `WorkspaceWindowTitle` derives identity from existing metadata and the central gate,
 without reading source bodies. Welcome uses Noema; library/page/primary-source identity
 and vault subtitle are available only to an authorized open session. Locking/locked/
@@ -101,9 +114,8 @@ inspector state and does not become a primary document title.
 editor, while inspector availability is independent. `WorkspacePaneState` persists
 sidebar/inspector intent and widths separately from effective visibility. Narrow
 windows/context loss can suppress panes without erasing intent; widening restores
-requested panes. Search prioritizes mounting the sidebar before focusing its existing
-field; an explicit inspector request prioritizes the inspector when one outer pane
-fits. Session resets clear transient tabs/caches while retaining visibility/widths.
+requested panes. Search is independent of sidebar visibility; an explicit inspector
+request prioritizes the inspector when one outer pane fits. Session resets clear transient tabs/caches while retaining visibility/widths.
 
 Center minimums are 420 pt for documents and 520 pt for Sources; sidebar min/initial/
 max is 190/265/320 pt, and inspector is 280/340/420 pt. Native dividers own dragging.
