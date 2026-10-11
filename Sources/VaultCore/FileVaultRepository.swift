@@ -1033,6 +1033,11 @@ public actor FileVaultRepository: VaultRepository {
         return prepared
     }
 
+    func invalidateSummaryCaches(pagePath: String?, sourceID: UUID?) {
+        if let pagePath { cache.removeValue(forKey: pagePath) }
+        if let sourceID { sourceCache.remove(sourceID) }
+    }
+
     public func renameSource(_ source: SourceRecord, title: String, summary: String? = nil) throws -> SourceRecord {
         try renameSource(source, title: title, summary: summary, lcc: nil)
     }
@@ -1048,7 +1053,7 @@ public actor FileVaultRepository: VaultRepository {
         let cleanLCC = (normalizedLCC?.isEmpty == false) ? normalizedLCC : nil
         if var pending = downloadingSources[source.id] {
             pending.metadata.title = title
-            if let summary { pending.metadata.aiSummary = summary }
+            if let summary { pending.metadata.aiSummary = summary; pending.metadata.aiSummaryProvenance = nil }
             if let cleanLCC { pending.metadata.lcc = cleanLCC }
             downloadingSources[source.id] = pending
             return pending
@@ -1061,7 +1066,7 @@ public actor FileVaultRepository: VaultRepository {
               metadata.linkedBookmark == source.metadata.linkedBookmark,
               metadata.storedFilename == source.metadata.storedFilename else { throw VaultError.invalid("Source changed while its title was generated. Refresh and try again.") }
         metadata.title = title
-        if let summary { metadata.aiSummary = summary }
+        if let summary { metadata.aiSummary = summary; metadata.aiSummaryProvenance = nil }
         if let cleanLCC { metadata.lcc = cleanLCC }
         try contentStore.write(encoder.encode(metadata), at: path, condition: .replace(expected: bytes))
         return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue ?? (source.contentState == .notLoaded ? "Not verified" : source.availabilityIssue), contentState: source.contentState)

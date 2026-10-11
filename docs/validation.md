@@ -71,6 +71,18 @@ separate kinds of evidence. Superseded commands/timings remain in Git history.
 - Cryptographic storage, key/recovery design, encrypted draft/index/preview policy
   and device acceptance remain prerequisites. Encrypted vault creation is disabled.
 
+<a id="d02a-device-acceptance-checklist"></a>
+
+### External AI device/provider acceptance
+
+All items are **pending**; this checklist is a device/provider release gate, not an automated pass record.
+
+1. Launch the signed development bundle. Save/replace/remove a test key without a vault open; restart and verify status without prefilling the field. Inspect preferences, a test vault and application diagnostics for absence of the key. Verify Keychain access follows the intended signing identity without a sharing entitlement.
+2. Open a test vault and confirm a page summary disclosure. Exercise Touch ID success, cancellation/failure and permitted password fallback. Confirm a second explicitly approved page/source summary reuses authentication while ordinary editing/status reads do not renew expiry.
+3. During a pending authentication prompt and active request, lock/close/switch the vault, replace/remove the key, sleep/wake and lock/unlock the macOS screen session. Verify requests cancel and the next summary needs fresh authentication; aborted vault lock still requires it. Test shortened injected deadlines for expiry and a real idle/absolute session boundary as appropriate.
+4. With a disposable provider key and nonsensitive content, confirm page/source summaries and connection validation work, provider/model labels and generation metadata persist after reopening, local Apple Intelligence title/LCC/source processing still works independently, and provider failures leave canonical content intact. Change/delete content or its prior summary, switch selection and cancel while a response is delayed; verify stale results do not publish.
+5. Review provider account expiry/spending limits and data-retention policy. Verify the disclosure communicates outbound text, possible billing/retry transmission, and the inability to recall already-sent text. Keep the in-process and plaintext-vault limitations visible.
+
 ### Two-Mac acceptance procedure
 
 1. Open the same iCloud vault on two Macs signed into the same account; download files.
@@ -290,3 +302,7 @@ Git history retains provenance, and new captures remain local/PR attachments.
 Remaining partial/pending rows prevent a complete platform/accessibility acceptance
 claim. Native controls retain system styling; model pass results alone do not resolve
 old offscreen glass ambiguity or validate live menu/alert/sheet presentation.
+
+## External AI acceptance
+
+The [external AI contract](contracts/external-ai.md) defines the in-process boundary and residual risks. Credential, authorization, gateway and actual URLSession adversarial suites use synthetic keys and intercepted/mock transport. Cloud summary integration tests cover exact consent, provenance, conditional publication, stale sessions/content, independent summaries and source selection/scope changes away and back; canceled-worker assertions await task completion. These scenarios do not establish hardware authentication, signed-Keychain access, real system-event delivery or live-provider behavior. The device/provider checklist above remains pending.

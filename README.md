@@ -2,7 +2,7 @@
 
 **A personal atlas of thought.**
 
-Noema is a native macOS personal wiki with a read-only source library, structured block and TeX math editing, optional on-device Apple Intelligence and portable plaintext storage.
+Noema is a native macOS personal wiki with a read-only source library, structured block and TeX math editing, optional on-device Apple Intelligence, explicit OpenAI summaries and portable plaintext storage.
 
 ## Build and quick start
 
@@ -20,6 +20,8 @@ open "dist/noema.app"
 Open `Examples/Demo Vault` for a tour, or choose **Create a vault** and select a parent folder. Keep personal vaults outside this repository. Pages are editable Markdown; imported originals retain their bytes, and linked originals remain read-only.
 
 Vault locking revokes access inside Noema. Canonical files, indexes, drafts, previews and linked originals remain plaintext. Encrypted creation is disabled pending cryptographic storage. **Saved locally** confirms this Mac's save; two-Mac iCloud transport acceptance remains pending.
+
+Selected page/source summaries can be sent to OpenAI only through a separate deliberate action and exact-text consent preview. Credentials stay in Keychain; cloud authorization expires and revokes with vault/device lifecycle events. API use can incur charges, and cancellation cannot recall transmitted text. See the [external AI contract](docs/contracts/external-ai.md) and [pending device/provider acceptance](docs/validation.md#d02a-device-acceptance-checklist).
 
 ## Documentation
 
