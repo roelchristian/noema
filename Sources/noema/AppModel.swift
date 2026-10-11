@@ -180,6 +180,12 @@ struct EditorAction: Equatable {
     /// Typed manager failures retained at the UI boundary, including rollback failures.
     private(set) var sessionTransitionErrors: [VaultSessionError] = []
     private var lifecycleAction: String?
+    var workspaceCommandPending = false
+    private(set) var isChoosingVault = false
+    private(set) var isChoosingSource = false
+    private var vaultCommandPanel: NSOpenPanel?
+    private var sourceCommandPanel: NSOpenPanel?
+    var isLifecycleActionInProgress: Bool { lifecycleAction != nil }
     @ObservationIgnored private nonisolated(unsafe) var sessionObservationTask: Task<Void, Never>?
     private var activeSession: VaultSession?
     private var activeLease: VaultSessionLease?
@@ -496,6 +502,10 @@ struct EditorAction: Equatable {
     }
 
     private func releaseActiveVaultResources() {
+        vaultCommandPanel?.cancel(nil)
+        sourceCommandPanel?.cancel(nil)
+        vaultCommandPanel = nil; sourceCommandPanel = nil
+        isChoosingVault = false; isChoosingSource = false
         SourceReader.closeAll()
         watcher?.stop(); watcher = nil
         if let scopeURL { securityScopeReleaser(scopeURL); self.scopeURL = nil }
@@ -639,14 +649,30 @@ struct EditorAction: Equatable {
         }
     }
     func chooseVault(create: Bool) {
+        guard canPerformWorkspaceCommand(create ? .createVault : .openVault) else { return }
         if create { showVaultCreation = true; return }
+        isChoosingVault = true
+        let admittedState = sessionState
         let panel = NSOpenPanel()
+        vaultCommandPanel = panel
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = false
         panel.prompt = "Open Vault"
         panel.message = "Choose the folder containing your vault.json file."
         presentPanel(panel) { [weak self] response in
-            guard response == .OK, let url = panel.url else { return }
-            Task { @MainActor in await self?.open(url, create: false) }
+            guard let self, self.vaultCommandPanel === panel else { return }
+            self.isChoosingVault = false
+            self.vaultCommandPanel = nil
+            guard response == .OK, let url = panel.url,
+                  self.sessionState == admittedState,
+                  self.canPerformWorkspaceCommand(.openVault) else { return }
+            self.workspaceCommandPending = true
+            Task { @MainActor in
+                defer { self.workspaceCommandPending = false }
+                guard self.sessionState == admittedState,
+                      self.sessionState == self.sessionManager.accessGate.currentState,
+                      !self.isLifecycleActionInProgress, !self.busy else { return }
+                await self.open(url, create: false)
+            }
         }
     }
     func chooseVaultParent(completion: @escaping (URL) -> Void) {
@@ -1935,8 +1961,11 @@ struct EditorAction: Equatable {
     func importFiles() { addSource() }
     func linkSources() { addSource() }
     func addSource() {
-        guard canOperateOnLoadedContent else { return }
+        guard canOperateOnLoadedContent, !isChoosingSource else { return }
+        isChoosingSource = true
+        let completionTicket = issueCompletionTicket(kind: .sourceLoading)
         let panel = NSOpenPanel()
+        sourceCommandPanel = panel
         panel.canChooseFiles = true; panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true; panel.prompt = "Add Source"
         panel.message = "Choose up to 5 files. Link by default, or import files up to 2 MB each."
@@ -1944,12 +1973,17 @@ struct EditorAction: Equatable {
         importOption.state = .off; importOption.setFrameSize(NSSize(width: 380, height: 28))
         panel.accessoryView = importOption; panel.isAccessoryViewDisclosed = true
         presentPanel(panel) { [weak self] response in
-            guard response == .OK else { return }
+            guard let self, self.sourceCommandPanel === panel else { return }
+            self.isChoosingSource = false
+            self.sourceCommandPanel = nil
+            guard response == .OK,
+                  self.isCompletionValid(completionTicket, operation: "addSource.panel") else { return }
             let urls = panel.urls
-            guard urls.count <= 5 else { self?.errorMessage = "Add up to 5 files at a time."; return }
+            guard urls.count <= 5 else { self.errorMessage = "Add up to 5 files at a time."; return }
             let shouldImport = importOption.state == .on
             Task { @MainActor in
-                await self?.addSourceFiles(urls, shouldImport: shouldImport)
+                guard self.isCompletionValid(completionTicket, operation: "addSource.panelCompletion") else { return }
+                await self.addSourceFiles(urls, shouldImport: shouldImport)
             }
         }
     }
