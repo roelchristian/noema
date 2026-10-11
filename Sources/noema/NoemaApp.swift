@@ -20,7 +20,7 @@ import NoemaBrand
                 Button("About Noema") {
                     NSApplication.shared.orderFrontStandardAboutPanel(options: [
                         .applicationName: "Noema",
-                        .credits: NSAttributedString(string: "A personal atlas of thought.")
+                        .credits: NoemaAbout.credits
                     ])
                 }
             }

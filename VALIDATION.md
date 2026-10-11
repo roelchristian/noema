@@ -672,3 +672,10 @@ Until this procedure passes, iCloud support is implemented but cross-device beha
 - Increased the post-lock/unlock move cue from 90% to 75% opacity. It now starts 120 ms after relocation, fades out over 300 ms, holds near the lighter state for 900 ms, then fades back over 650 ms. The task stays alive through the return animation so cleanup cannot interrupt it. Reduce Motion handling, ordering, and move-cue eligibility remain unchanged.
 - `./scripts/build.sh debug` compiled, packaged, and signed successfully. Supervisor selftest and changed-file whitespace checks passed; tracked brand exports were unchanged. No regression suite rerun for this opacity/timing-only adjustment (the previous cue-change suite passed all 98 tests).
 - UI validation, perceived visibility/timing, theme/accent switching, accessibility preferences, and VoiceOver remain manually unverified per the session's no-UI-validation instruction. Existing unrelated edits were preserved.
+
+
+## About Noema background and copyright — 2026-10-11
+
+- The native macOS About panel includes the supplied three-paragraph Greek and Husserl background, retaining italic terms and the existing tagline. App bundle metadata supplies “© 2026 Roel Christian Yambao. All rights reserved.” using NSHumanReadableCopyright. Credits use the native preferred body font and semantic label color.
+- `./scripts/build.sh debug` compiled, packaged, and signed successfully with macOS icon-service access. The initial restricted build compiled but packaging encountered Invalid Iconset. Packaged copyright metadata was verified. Supervisor selftest passed all 17 policy parameters; whitespace checks passed; tracked brand exports were unchanged. No regression tests were added or rerun for this copy-only presentation change.
+- Prepared an isolated app identity with no saved vault for native inspection, but Computer Use returned “Computer Use was not approved to use Noema.” About-panel layout/scrolling, theme and accent switching, accessibility preferences, and VoiceOver remain manually unverified. Existing unrelated edits and demo-vault content were preserved.

@@ -2,6 +2,8 @@
 
 **A personal atlas of thought.**
 
+**Noema → About Noema** includes the name’s Greek and phenomenological background, with a © 2026 Roel Christian Yambao. All rights reserved. notice.
+
 A native macOS personal wiki, with a separate read-only library of raw sources.
 
 The interface uses native macOS Liquid Glass navigation and toolbars, glass search and editing controls, and an orbital glass mark inspired by connected thoughts. Writing and source content retain readable standard backgrounds. The mark shares geometry with the packaged icon; see `Resources/Brand/README.md` for the exported layers and the current `.icns` packaging limitation.
