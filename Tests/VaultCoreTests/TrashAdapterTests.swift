@@ -130,20 +130,28 @@ struct TrashAdapterTests {
         #expect(try await repo.scan().notes.isEmpty)
     }
 
-    @Test func legacyFailedMoveAndCollisionKeepBothVersions() async throws {
+    // UI.R.REM03: retain migration failure reporting and both versions across URL directory hints.
+    @Test(arguments: [false, true]) func legacyFailedMoveAndCollisionKeepBothVersions(rootDirectoryHint: Bool) async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try TrashStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let repoRoot = URL(fileURLWithPath: root.path, isDirectory: rootDirectoryHint)
+        let repo = try FileVaultRepository.open(root: repoRoot, create: true, contentStore: store)
         try store.base.createDirectory(at: ".Trash")
         let bytes = Data("Legacy bytes".utf8), occupied = Data("Existing trash".utf8)
         try store.base.write(bytes, at: ".Trash/Legacy.md", condition: .createOnly)
         try store.base.write(occupied, at: "Removed Pages/Legacy.md", condition: .createOnly)
         store.state.withLock { $0.failMove = true }
         let failed = try await repo.trashedPages()
-        #expect(failed.first { $0.id == ".Trash/Legacy.md" }?.readIssue != nil)
+        #expect(failed.count == 2)
+        let legacy = try #require(failed.first { $0.id == ".Trash/Legacy.md" })
+        #expect(legacy.readIssue?.contains("Injected failed move") == true)
+        #expect(!legacy.canRestore)
+        await #expect(throws: (any Error).self) { try await repo.restore(legacy) }
         #expect(try store.base.read(at: ".Trash/Legacy.md") == bytes)
+        #expect(try store.base.read(at: "Removed Pages/Legacy.md") == occupied)
         let migrated = try await repo.trashedPages()
         #expect(migrated.count == 2)
+        #expect(migrated.allSatisfy { $0.readIssue == nil })
         #expect(try store.base.read(at: "Removed Pages/Legacy.md") == occupied)
         let preserved = try #require(migrated.first { $0.id != "Removed Pages/Legacy.md" })
         #expect(try store.base.read(at: preserved.id) == bytes)

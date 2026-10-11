@@ -595,7 +595,10 @@ public actor FileVaultRepository: VaultRepository {
                 do {
                     _ = try checkedTrashURL(path)
                     let bytes = try contentStore.read(at: path); data = bytes
-                    let issue = url.deletingLastPathComponent() == legacy ? migrationIssues[url.lastPathComponent] : nil
+                    // UI.R.REM03: classify the validated relative path so URL directory hints
+                    // and canonical representations cannot hide a failed legacy migration.
+                    let issue = path.hasPrefix(Self.legacyTrashDirectoryName + "/")
+                        ? migrationIssues[url.lastPathComponent] : nil
                     return TrashedPage(note: try NoteCodec.decode(bytes, path: path, vaultID: manifest.id), readIssue: issue)
                 } catch let accessError as VaultAccessError {
                     throw accessError
