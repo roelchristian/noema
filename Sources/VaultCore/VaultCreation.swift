@@ -38,10 +38,7 @@ extension FileVaultRepository {
                 let staging = parent.appendingPathComponent(".noema-create-\(UUID().uuidString)", isDirectory: true)
                 try fm.createDirectory(at: staging, withIntermediateDirectories: false)
                 defer { try? fm.removeItem(at: staging) }
-                for directory in ["Wiki", "Sources", trashDirectoryName, "Conflicts"] {
-                    try fm.createDirectory(at: staging.appendingPathComponent(directory), withIntermediateDirectories: false)
-                }
-                try JSONEncoder().encode(VaultManifest()).write(to: staging.appendingPathComponent("vault.json"), options: .atomic)
+                _ = try FileVaultRepository.open(root: staging, create: true)
                 // moveItem refuses an occupied destination, including one created after the check.
                 try fm.moveItem(at: staging, to: destination)
                 return destination

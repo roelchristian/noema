@@ -41,19 +41,28 @@ public actor FileVaultRepository: VaultRepository {
         let root = root.standardizedFileURL.resolvingSymlinksInPath()
         let fm = FileManager.default
         let manifestURL = root.appendingPathComponent("vault.json")
+        guard create || fm.fileExists(atPath: manifestURL.path) else {
+            throw VaultError.invalid("Choose a vault folder containing vault.json, or create a new vault.")
+        }
+        let store = try contentStore ?? PlaintextVaultContentStore(root: accessRoot)
         let manifest: VaultManifest
         if fm.fileExists(atPath: manifestURL.path) {
-            manifest = try JSONDecoder().decode(VaultManifest.self, from: coordinatedRead(manifestURL))
+            manifest = try JSONDecoder().decode(VaultManifest.self, from: store.read(at: "vault.json"))
             guard manifest.formatVersion == 1 else { throw VaultError.invalid("This vault uses an unsupported format version.") }
         } else {
             guard create else { throw VaultError.invalid("Choose a vault folder containing vault.json, or create a new vault.") }
             manifest = VaultManifest()
-            try coordinatedWrite(JSONEncoder().encode(manifest), to: manifestURL)
+            try store.write(JSONEncoder().encode(manifest), at: "vault.json", condition: .createOnly)
         }
         for name in ["Wiki", "Sources", trashDirectoryName, "Conflicts"] {
-            try fm.createDirectory(at: root.appendingPathComponent(name), withIntermediateDirectories: true)
+            let directory = root.appendingPathComponent(name)
+            guard directory.resolvingSymlinksInPath() == directory else { throw VaultContentStoreError.unsafePath(name) }
+            if !fm.fileExists(atPath: directory.path) { try store.createDirectory(at: name) }
+            guard try directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
+                throw VaultContentStoreError.unsupportedItem(name)
+            }
         }
-        return FileVaultRepository(root: root, manifest: manifest, contentStore: try contentStore ?? PlaintextVaultContentStore(root: accessRoot))
+        return FileVaultRepository(root: root, manifest: manifest, contentStore: store)
     }
     private init(root: URL, manifest: VaultManifest, contentStore: any VaultContentStore) {
         self.root = root; self.manifest = manifest; self.contentStore = contentStore
@@ -270,11 +279,11 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     public func trash(note: NoteRecord) throws {
-        let url = try checkedWikiURL(note.relativePath)
+        _ = try checkedWikiURL(note.relativePath)
         try ensureTrashDirectory()
         let destination = root.appendingPathComponent("\(Self.trashDirectoryName)/trash-\(Int(Date().timeIntervalSince1970))-\(note.id.uuidString)-\(UUID().uuidString).md")
-        try Self.coordinatedMove(url, to: destination, expectedHash: note.contentHash,
-                                 staleMessage: "This page changed externally. Reload it before moving it to trash.")
+        try movePage(from: note.relativePath, to: Self.trashDirectoryName + "/" + destination.lastPathComponent,
+                     hash: note.contentHash, staleMessage: "This page changed externally. Reload it before moving it to trash.")
         cache.removeValue(forKey: note.relativePath)
     }
 
@@ -312,12 +321,14 @@ public actor FileVaultRepository: VaultRepository {
             }.sorted { $0.note.title.localizedStandardCompare($1.note.title) == .orderedAscending }
     }
     private func migrateTrashedFile(_ url: URL) throws -> URL {
-        let source = try checkedTrashURL(Self.legacyTrashDirectoryName + "/" + url.lastPathComponent)
+        let path = Self.legacyTrashDirectoryName + "/" + url.lastPathComponent
+        _ = try checkedTrashURL(path)
         var destination = root.appendingPathComponent(Self.trashDirectoryName).appendingPathComponent(url.lastPathComponent)
         if fm.fileExists(atPath: destination.path) {
             destination = root.appendingPathComponent(Self.trashDirectoryName).appendingPathComponent(UUID().uuidString + ".md")
         }
-        try Self.coordinatedMove(source, to: destination)
+        try contentStore.move(from: path, to: Self.trashDirectoryName + "/" + destination.lastPathComponent,
+                              expected: .file(contentStore.read(at: path)))
         return destination
     }
     public func restore(_ page: TrashedPage) throws {
@@ -328,24 +339,38 @@ public actor FileVaultRepository: VaultRepository {
             throw VaultError.invalid("A page with this identity already exists. Resolve the duplicate before restoring.")
         }
         guard !titleExists(page.note.title, in: snapshot.notes) else { throw VaultError.duplicateTitle(page.note.title) }
-        let source = try checkedTrashURL(page.id)
-        let destination = try checkedWikiURL(availablePath(title: page.note.title))
-        try Self.coordinatedMove(source, to: destination, expectedHash: page.note.contentHash,
-                                 staleMessage: "This trashed page changed. Refresh Trash before restoring.")
+        _ = try checkedTrashURL(page.id)
+        let path = try availablePath(title: page.note.title)
+        _ = try checkedWikiURL(path)
+        try movePage(from: page.id, to: path, hash: page.note.contentHash,
+                     staleMessage: "This trashed page changed. Refresh Trash before restoring.")
     }
     public func permanentlyDelete(_ page: TrashedPage) throws {
         guard page.canPermanentlyDelete else { throw VaultError.invalid("This trashed page could not be read. Refresh Trash before deleting it.") }
-        let url = try checkedTrashURL(page.id)
-        var failure: Error?, coordinationError: NSError?
-        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: .forDeleting, error: &coordinationError) { url in
-            do {
-                guard digest(try Data(contentsOf: url)) == page.note.contentHash else { throw VaultError.invalid("This trashed page changed. Refresh Trash before deleting.") }
-                guard (NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).isEmpty else { throw VaultError.invalid("Resolve this page's cloud conflicts before permanently deleting it.") }
-                try fm.removeItem(at: url)
-            } catch { failure = error }
+        _ = try checkedTrashURL(page.id)
+        let message = "This trashed page changed. Refresh Trash before deleting."
+        do {
+            try contentStore.delete(at: page.id, expected: checkedPageSnapshot(page.id, hash: page.note.contentHash, message: message))
+        } catch VaultContentStoreError.stale { throw VaultError.invalid(message) }
+        catch VaultContentStoreError.cloudConflict {
+            throw VaultError.invalid("Resolve this page's cloud conflicts before permanently deleting it.")
         }
-        if let failure { throw failure }; if let coordinationError { throw coordinationError }
     }
+    private func checkedPageSnapshot(_ path: String, hash: String, message: String) throws -> VaultContentSnapshot {
+        let bytes = try contentStore.read(at: path)
+        guard digest(bytes) == hash else { throw VaultError.invalid(message) }
+        return .file(bytes)
+    }
+    private func movePage(from source: String, to destination: String, hash: String, staleMessage: String) throws {
+        do {
+            try contentStore.move(from: source, to: destination,
+                                  expected: checkedPageSnapshot(source, hash: hash, message: staleMessage))
+        } catch VaultContentStoreError.stale { throw VaultError.invalid(staleMessage) }
+        catch VaultContentStoreError.alreadyExists {
+            throw VaultError.invalid("The move destination is occupied. Refresh and try again.")
+        }
+    }
+
     public func emptyTrash(_ pages: [TrashedPage]) -> [String] {
         // Delete only the confirmed snapshot; keep changed/conflicted files and report partial failures.
         var failures: [String] = []
@@ -359,7 +384,7 @@ public actor FileVaultRepository: VaultRepository {
         let directory = root.appendingPathComponent(Self.trashDirectoryName)
         guard directory.resolvingSymlinksInPath().path == directory.path else { throw VaultError.invalid("The Trash directory must not be a symbolic link.") }
         if !fm.fileExists(atPath: directory.path) {
-            try fm.createDirectory(at: directory, withIntermediateDirectories: false)
+            try contentStore.createDirectory(at: Self.trashDirectoryName)
         }
     }
     private func checkedTrashURL(_ path: String) throws -> URL {
@@ -797,21 +822,6 @@ public actor FileVaultRepository: VaultRepository {
             throw VaultError.unavailable("Downloading \(targetURL.lastPathComponent) from iCloud. Try again when the download finishes.")
         }.value
     }
-    private static func coordinatedMove(_ source: URL, to destination: URL, expectedHash: String? = nil,
-                                        staleMessage: String = "This file changed before it could be moved.") throws {
-        // Own the non-Sendable coordinator entirely within this synchronous, nonisolated operation.
-        let coordinator = NSFileCoordinator(filePresenter: nil)
-        var failure: Error?, coordinationError: NSError?
-        coordinator.coordinate(writingItemAt: source, options: .forMoving, writingItemAt: destination, options: [], error: &coordinationError) { from, to in
-            do {
-                if let expectedHash, try storedHash(from) != expectedHash { throw VaultError.invalid(staleMessage) }
-                guard !FileManager.default.fileExists(atPath: to.path) else { throw VaultError.invalid("The move destination is occupied. Refresh and try again.") }
-                try FileManager.default.moveItem(at: from, to: to)
-                coordinator.item(at: from, didMoveTo: to)
-            } catch { failure = error }
-        }
-        if let failure { throw failure }; if let coordinationError { throw coordinationError }
-    }
     public static func coordinatedRead(_ url: URL) throws -> Data {
         let values = try url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
         if values.ubiquitousItemDownloadingStatus == .notDownloaded {
@@ -826,25 +836,12 @@ public actor FileVaultRepository: VaultRepository {
         guard let data else { throw VaultError.storage("Could not read \(url.lastPathComponent).") }
         return data
     }
-    private static func coordinatedWrite(_ data: Data, to url: URL, mustNotExist: Bool = false) throws {
-        var failure: Error?, coordinatorError: NSError?
-        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: [], error: &coordinatorError) { coordinatedURL in
-            do {
-                if mustNotExist, FileManager.default.fileExists(atPath: coordinatedURL.path) { throw VaultError.storage("A file appeared at this path. Please try again.") }
-                try data.write(to: coordinatedURL, options: .atomic)
-            } catch { failure = error }
-        }
-        if let failure { throw failure }; if let coordinatorError { throw coordinatorError }
-    }
 }
 
 
 extension FileVaultRepository {
     public static let trashRetentionInterval: TimeInterval = 15 * 24 * 60 * 60
 
-    private static func storedHash(_ url: URL) throws -> String {
-        return digest(try Data(contentsOf: url))
-    }
     private static func sourceSnapshotHash(_ snapshot: VaultContentSnapshot) throws -> String {
         guard case .directory(let files) = snapshot else { throw VaultError.invalid("Invalid source directory.") }
         var bytes = Data()
@@ -918,21 +915,24 @@ extension FileVaultRepository {
         let items = try trashItems()
         let ledger = root.appendingPathComponent("Trash Retention.json")
         guard ledger.resolvingSymlinksInPath() == ledger else { throw VaultError.invalid("Unsafe trash retention file.") }
-        var dates: [String: Date] = [:]
-        var failure: Error?, coordinationError: NSError?
-        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: ledger, options: [], error: &coordinationError) { url in
-            do {
-                guard (NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).isEmpty else { throw VaultError.invalid("Resolve trash retention conflicts first.") }
-                if fm.fileExists(atPath: url.path) { dates = try JSONDecoder().decode([String: Date].self, from: Data(contentsOf: url)) }
-                let previous = dates
-                for item in items where dates[item.id] == nil {
-                    let parts = URL(fileURLWithPath: item.id).lastPathComponent.split(separator: "-")
-                    dates[item.id] = parts.first == "trash" && parts.count > 1 ? Double(parts[1]).map(Date.init(timeIntervalSince1970:)) ?? now : now
-                }
-                if dates != previous { try JSONEncoder().encode(dates).write(to: url, options: .atomic) }
-            } catch { failure = error }
+        guard (NSFileVersion.unresolvedConflictVersionsOfItem(at: ledger) ?? []).isEmpty else {
+            throw VaultError.invalid("Resolve trash retention conflicts first.")
         }
-        if let failure { throw failure }; if let coordinationError { throw coordinationError }
+        let path = "Trash Retention.json"
+        let bytes: Data?
+        do { bytes = try contentStore.read(at: path) }
+        catch VaultContentStoreError.missing { bytes = nil }
+        var dates = try bytes.map { try JSONDecoder().decode([String: Date].self, from: $0) } ?? [:]
+        let previous = dates
+        for item in items where dates[item.id] == nil {
+            let parts = URL(fileURLWithPath: item.id).lastPathComponent.split(separator: "-")
+            dates[item.id] = parts.first == "trash" && parts.count > 1 ? Double(parts[1]).map(Date.init(timeIntervalSince1970:)) ?? now : now
+        }
+        // A competing ledger update aborts expiration; never delete using lost retention dates.
+        if dates != previous {
+            try contentStore.write(JSONEncoder().encode(dates), at: path,
+                                   condition: bytes.map { .replace(expected: $0) } ?? .createOnly)
+        }
         let expired = items.filter { now.timeIntervalSince(dates[$0.id] ?? now) >= Self.trashRetentionInterval }
         var failures: [String] = []
         for item in expired {
