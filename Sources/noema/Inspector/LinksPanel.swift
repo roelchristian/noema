@@ -52,38 +52,14 @@ struct LinksPanelModel: Equatable, Sendable {
     ) {
         self.pageID = pageID
         self.backlinks = backlinks
-        var seen: Set<String> = []
-        var items: [OutgoingLinkItem] = []
-        for rawTarget in outgoingLinkTargets {
-            let key = normalized(rawTarget)
-            guard !key.isEmpty, seen.insert(key).inserted else { continue }
-            let matches = allNotes
-                .filter { note in
-                    normalized(note.title) == key || note.aliases.contains(where: { normalized($0) == key })
-                }
-                .sorted {
-                    let cmp = $0.title.localizedStandardCompare($1.title)
-                    if cmp != .orderedSame { return cmp == .orderedAscending }
-                    return $0.id.uuidString < $1.id.uuidString
-                }
-            let resolution: OutgoingLinkResolution
-            if matches.count == 1 {
-                let note = matches[0]
-                let matchedAlias: String?
-                if normalized(note.title) == key {
-                    matchedAlias = nil
-                } else {
-                    matchedAlias = note.aliases.first(where: { normalized($0) == key }) ?? rawTarget
-                }
-                resolution = .resolved(note: note, matchedAlias: matchedAlias)
-            } else if matches.isEmpty {
-                resolution = .unresolved(target: rawTarget)
-            } else {
-                resolution = .ambiguous(target: rawTarget, matches: matches)
-            }
-            items.append(OutgoingLinkItem(target: rawTarget, resolution: resolution))
-        }
-        self.outgoingLinks = items
+        let lookup = OutgoingLinkLookup(notes: allNotes)
+        self.outgoingLinks = lookup.resolve(outgoingLinkTargets).map { $0.item(notes: allNotes, positions: lookup.notePositions) }
+    }
+
+    init(pageID: UUID, backlinks: [NoteRecord], outgoingLinks: [OutgoingLinkItem]) {
+        self.pageID = pageID
+        self.backlinks = backlinks
+        self.outgoingLinks = outgoingLinks
     }
 
     var totalCount: Int {
@@ -95,11 +71,12 @@ struct LinksPanelModel: Equatable, Sendable {
 struct LinksPanel: View {
     @Bindable var model: AppModel
     let note: NoteRecord
+    let cache: LinksPresentationCache
     var scrollPosition: Binding<ScrollPosition>? = nil
 
     private var panelModel: LinksPanelModel {
         let isCurrentPage = model.currentNote?.id == note.id
-        return LinksPanelModel(
+        return cache.model(
             pageID: note.id,
             backlinks: isCurrentPage ? model.backlinks : [],
             outgoingLinkTargets: isCurrentPage ? model.outgoingLinkTargets : [],

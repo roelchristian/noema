@@ -12,6 +12,7 @@ import VaultCore
     private(set) var selectedPageTab: InspectorTab = .properties
     private(set) var selectedSourceTab: InspectorTab = .properties
     let insightsCache = InsightsPresentationCache()
+    let linksCache = LinksPresentationCache()
 
     init(
         isVisible: Bool = true,
@@ -91,8 +92,10 @@ import VaultCore
     func reconcile(with context: InspectorContext) {
         if case .page(let note) = context {
             insightsCache.reconcileTarget(id: note.id)
+            linksCache.reconcileTarget(id: note.id)
         } else {
             insightsCache.invalidate()
+            linksCache.invalidate()
         }
     }
 
@@ -101,5 +104,6 @@ import VaultCore
         selectedPageTab = .properties
         selectedSourceTab = .properties
         insightsCache.invalidate()
+        linksCache.invalidate()
     }
 }

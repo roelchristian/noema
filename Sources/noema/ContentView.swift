@@ -146,6 +146,13 @@ struct ContentView: View {
         .onChange(of: model.searchFocusToken) { if model.isVaultAvailable { searchFocused = true } }
         .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false }
         .onChange(of: model.externalChange) { dismissedExternalChange = false }
+        // UI.R.REM02: Reconcile even while the inspector is hidden or unmounted.
+        .onChange(of: inspectorContext.targetID, initial: true) {
+            inspectorState.reconcile(with: inspectorContext)
+        }
+        .onChange(of: inspectorContext.targetKind) {
+            inspectorState.reconcile(with: inspectorContext)
+        }
         .onChange(of: model.root) { resetLocalWorkspaceState() }
         .onChange(of: model.sessionState) {
             if !model.isVaultAvailable {

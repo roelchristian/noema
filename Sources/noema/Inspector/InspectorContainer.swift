@@ -46,7 +46,6 @@ struct InspectorContainer: View {
         )
         .onChange(of: context.targetID) {
             scrollPositions.removeAll()
-            state.reconcile(with: context)
         }
     }
 
@@ -74,7 +73,7 @@ struct InspectorContainer: View {
         switch tab {
         case .links:
             if case .page(let note) = context {
-                LinksPanel(model: model, note: note, scrollPosition: position)
+                LinksPanel(model: model, note: note, cache: state.linksCache, scrollPosition: position)
             } else {
                 PropertiesPanel(model: model, context: context, scrollPosition: position)
             }
