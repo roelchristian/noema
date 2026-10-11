@@ -29,6 +29,19 @@ struct PropertiesPanel: View {
                 VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                     InspectorSection(title: "Classification & Identity", showTopDivider: false) {
                         pageLCCRow(note)
+                        Text("Classification: \(model.preferredAIProvider(for: .classifyLCC).displayName)")
+                            .font(NoemaTypography.metadata).foregroundStyle(.secondary)
+                        HStack {
+                            Button("Suggest Title") { model.suggestPageTitle() }
+                                .disabled(model.currentNote?.id != note.id || model.editingLocked || model.generatingPageTitle)
+                            Menu("Provider") {
+                                Button("Suggest Title on This Mac") { model.suggestPageTitle(provider: .onDevice) }
+                            }
+                            .disabled(model.currentNote?.id != note.id || model.editingLocked || model.generatingPageTitle)
+                            if model.generatingPageTitle { ProgressView().controlSize(.mini) }
+                        }
+                        Text("Title suggestions: \(model.preferredAIProvider(for: .suggestTitle).displayName)")
+                            .font(NoemaTypography.metadata).foregroundStyle(.secondary)
                         LabeledContent("Location") {
                             Button(note.relativePath) {
                                 if let root = model.root {
@@ -90,7 +103,9 @@ struct PropertiesPanel: View {
             InspectorPanelHeader(title: "Properties") {
                 Menu {
                     Button("Open Preview") { model.openSource(source.id) }
-                    Button("Refresh LCC with AI") { model.refreshSourceLCC(source) }
+                    Button("Refresh LCC · \(model.preferredAIProvider(for: .classifyLCC).displayName)") { model.refreshSourceLCC(source) }
+                        .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceLCCs.contains(source.id))
+                    Button("Refresh LCC on This Mac") { model.refreshSourceLCC(source, provider: .onDevice) }
                         .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceLCCs.contains(source.id))
                     Button("Check Availability") { model.checkSourceAvailability([source]) }
                         .disabled(model.checkingSourceAvailability.contains(source.id))
@@ -112,6 +127,8 @@ struct PropertiesPanel: View {
                         }
                         .font(NoemaTypography.metadata)
                         sourceLCCRow(source)
+                        Text("Classification: \(model.preferredAIProvider(for: .classifyLCC).displayName)")
+                            .font(NoemaTypography.metadata).foregroundStyle(.secondary)
                         InspectorProperty("Original file", source.metadata.originalFilename)
                         InspectorProperty("Kind", kindLabel)
                         InspectorProperty("Location", source.metadata.isLinked ? "Linked" : "In vault")
@@ -184,7 +201,7 @@ struct PropertiesPanel: View {
                     .buttonStyle(.borderless)
                     .controlSize(.small)
                     .disabled(model.downloadingSources.contains(source.id))
-                    .help("Refresh LCC with AI")
+                    .help("Refresh LCC using " + model.preferredAIProvider(for: .classifyLCC).displayName)
                 }
             }
         } label: {
@@ -222,7 +239,10 @@ struct PropertiesPanel: View {
                     }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
-                    .help("Refresh LCC with AI")
+                    .contextMenu {
+                        Button("Refresh LCC on This Mac") { model.refreshPageLCC(provider: .onDevice) }
+                    }
+                    .help("Refresh LCC using " + model.preferredAIProvider(for: .classifyLCC).displayName)
                 }
             }
         } label: {

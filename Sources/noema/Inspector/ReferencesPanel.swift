@@ -221,11 +221,13 @@ struct ReferencesPanel: View {
                             model.createPageFromSource(source)
                         } label: {
                             Label(
-                                isCreatingPageWithAI ? "Creating Page…" : "Create Page with AI",
+                                isCreatingPageWithAI ? "Creating Page…" : "Create Page with AI · \(model.preferredAIProvider(for: .processSource).displayName)",
                                 systemImage: "sparkles"
                             )
                         }
                         .disabled(!canCreatePageWithAI)
+                        Button("Create Page on This Mac") { model.createPageFromSource(source, provider: .onDevice) }
+                            .disabled(!canCreatePageWithAI)
                         Divider().overlay(theme.color(for: .separator))
                         ForEach(availablePagesToAdd) { note in
                             Button(note.title) {

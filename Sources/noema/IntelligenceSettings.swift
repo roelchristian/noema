@@ -68,7 +68,7 @@ struct IntelligenceSettings: View {
 
     private func capabilityExplanation(for action: AIAction) -> String? {
         let provider = preferences.settings.preferredProvider(for: action)
-        switch AIProviderCapabilities.capability(for: action, provider: provider).support {
+        return switch AIProviderCapabilities.capability(for: action, provider: provider).support {
         case .supported: nil
         case .unsupported: AIProviderUnavailableReason.unsupportedAction.errorMessage
         case .unauthorized: AIProviderUnavailableReason.unauthorizedAction.errorMessage
