@@ -65,6 +65,8 @@ The page details sidebar automatically gathers semantic tags in their own sectio
 
 Reading and editing use compact 80-point side margins, retaining a gutter for block icons and handles.
 
+Page reading and editing default to 15-point system text. **Noema → Settings… → Editor** lets you choose an installed font family and a size from 10 to 32 points. Changes apply to open articles and persist across launches; headings scale with the body text and code remains monospaced. Source text readers default to 14 points and retain imported rich formatting.
+
 Type `/` in an empty paragraph or after whitespace to search block commands. The compact menu opens directly above or below the caret within the visible editor, scrolls to fit the available space, separates basic and semantic blocks, and shows semantic icon colors. Aliases such as `/h2`, `/math`, and `/ques` and fuzzy matching are supported; use arrows and Return, or Escape to dismiss. Paragraphs, three heading levels, bullets, numbering, tasks, quotes, code, display math (`$$`), dividers, callouts, and nested toggles share the same command layer.
 
 The caret and block accent stay aligned when you start typing in an empty block after choosing a command.

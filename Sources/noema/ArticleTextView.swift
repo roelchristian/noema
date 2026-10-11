@@ -54,7 +54,7 @@ import VaultCore
             // block decoration on the native insertion line so it won't jump.
             let line = layoutManager.lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
             let used = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphs.location, effectiveRange: nil)
-            let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont ?? NSFont.systemFont(ofSize: 16)
+            let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont ?? EditorTypography.current.font()
             let paragraph = storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle
             // The newline's fragment omits leading paragraph spacing after the first block.
             let leadingSpace = range.location > 0 ? (paragraph?.paragraphSpacingBefore ?? 0) : 0
@@ -69,7 +69,7 @@ import VaultCore
             var ascender: CGFloat = 0, descender: CGFloat = 0
             let characters = layoutManager.characterRange(forGlyphRange: included, actualGlyphRange: nil)
             storage.enumerateAttribute(.font, in: characters) { value, _, _ in
-                let font = value as? NSFont ?? NSFont.systemFont(ofSize: 16)
+                let font = value as? NSFont ?? EditorTypography.current.font()
                 ascender = max(ascender, font.ascender); descender = max(descender, -font.descender)
             }
             bounds = bounds.union(NSRect(x: used.minX, y: baseline - ascender, width: used.width, height: ascender + descender))

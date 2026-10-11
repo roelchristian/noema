@@ -3,6 +3,8 @@ import VaultCore
 import NoemaBrand
 
 enum EditorPreferences {
+    static let fontFamilyKey = "editorFontFamily"
+    static let fontSizeKey = "editorFontSize"
     static let aiSummariesKey = "enableOnDeviceAISummaries"
     static let aiSummaryPlacementKey = "aiSummaryPlacement"
     static let showSemanticHeadingsKey = "showSemanticBlockHeadings"
@@ -28,6 +30,8 @@ enum AISummaryPlacement: String, CaseIterable {
 }
 
 struct NoemaSettings: View {
+    @AppStorage(EditorPreferences.fontFamilyKey) private var fontFamily = ""
+    @AppStorage(EditorPreferences.fontSizeKey) private var fontSize = EditorTypography.defaultSize
     @AppStorage(EditorPreferences.showSemanticHeadingsKey) private var showSemanticHeadings = false
     @AppStorage(EditorPreferences.aiSummariesKey) private var aiSummaries = false
     @AppStorage(EditorPreferences.aiSummaryPlacementKey) private var aiSummaryPlacement = AISummaryPlacement.defaultValue.rawValue
@@ -45,6 +49,19 @@ struct NoemaSettings: View {
 
     var body: some View {
         Form {
+            Section("Editor") {
+                Picker("Font", selection: $fontFamily) {
+                    Text("System").tag("")
+                    ForEach(NSFontManager.shared.availableFontFamilies.sorted(), id: \.self) { family in
+                        Text(family).tag(family)
+                    }
+                }
+                Stepper(value: $fontSize, in: EditorTypography.sizeRange, step: 1) {
+                    Text("Font size: \(Int(EditorTypography(size: fontSize).size)) pt")
+                }
+                Text("Applies to page reading and editing. Headings scale with the text; code retains a monospaced font. Your choices are saved automatically.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Block display") {
                 Toggle("Show semantic block headings", isOn: $showSemanticHeadings)
                 Text("Show names such as Idea and Question above block text. Icons are always shown.")

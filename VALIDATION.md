@@ -1,5 +1,12 @@
 # Validation — 10 October 2026
 
+## Editor font preferences and smaller defaults — 2026-10-11
+
+- Reduced article body text from 16 to 15 points, with headings and code one point smaller, and source/plain readers from 15 to 14 points. Settings → Editor now offers System or an installed font family and a 10–32-point body size. Preferences persist and trigger article re-rendering with the existing selection and undo behavior; headings scale and code remains monospaced. Unavailable families fall back to the system font; invalid sizes are bounded or fall back to 15 points. Imported rich source formatting remains intact.
+- `./scripts/test.sh` passed all 109 tests with native service access, including new preference persistence/fallback, body/heading/code scaling, rich font traits, and unchanged canonical-content checks. The first sandboxed run encountered macOS file-coordination and pasteboard restrictions; the native retry passed.
+- `./scripts/build.sh debug` compiled, packaged, and signed the app and archive with native access after the sandboxed packaging attempt failed at `iconutil` with `Invalid Iconset`. Supervisor selftest and changed-file whitespace checks passed; generated brand assets were unchanged.
+- Manual UI validation was omitted at the user's request. Live Settings interaction, theme/accent/accessibility combinations, font switching during editing, and relaunch presentation remain unverified. Unrelated demo-vault changes were preserved.
+
 ## Trash access stays inside the vault menu — 2026-10-11
 
 - Removed the standalone sidebar Trash button. Trash and its nonzero count remain inside the vault-name menu at the bottom of the sidebar. The retained storage, restore, permanent-delete, and Empty Trash handlers are unchanged. README navigation instructions now match.

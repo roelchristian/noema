@@ -17,7 +17,7 @@ struct MarkdownEditor: NSViewRepresentable {
         view.isRichText = false; view.allowsUndo = editable; view.isEditable = editable
         view.isAutomaticQuoteSubstitutionEnabled = false; view.isAutomaticDashSubstitutionEnabled = false
         view.isAutomaticTextReplacementEnabled = false; view.isAutomaticSpellingCorrectionEnabled = false
-        view.font = .monospacedSystemFont(ofSize: 15, weight: .regular)
+        view.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
         view.textColor = theme.nativeText(); view.backgroundColor = theme.native(.surfaceElevated)
         view.textContainerInset = NSSize(width: 28, height: 24)
         view.isVerticallyResizable = true; view.isHorizontallyResizable = false
@@ -130,12 +130,12 @@ struct MarkdownPreview: NSViewRepresentable {
         for block in blocks {
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineSpacing = 6; paragraph.paragraphSpacing = 16
-            var size: CGFloat = 16, weight: NSFont.Weight = .regular, color = theme.nativeText()
+            var size: CGFloat = 15, weight: NSFont.Weight = .regular, color = theme.nativeText()
             switch block.style {
-            case .heading(let level): size = [30, 24, 20, 18, 17, 16][min(max(level - 1, 0), 5)]; weight = .semibold; paragraph.paragraphSpacingBefore = 16
+            case .heading(let level): size = [29, 23, 19, 17, 16, 15][min(max(level - 1, 0), 5)]; weight = .semibold; paragraph.paragraphSpacingBefore = 16
             case .quote: color = theme.nativeText(.textMuted); paragraph.headIndent = 16; paragraph.firstLineHeadIndent = 16
-            case .code: size = 14; paragraph.lineSpacing = 3
-            case .math: size = 17; paragraph.alignment = .center; paragraph.paragraphSpacingBefore = 12; paragraph.paragraphSpacing = 18
+            case .code: size = 13; paragraph.lineSpacing = 3
+            case .math: size = 16; paragraph.alignment = .center; paragraph.paragraphSpacingBefore = 12; paragraph.paragraphSpacing = 18
             case .rule: color = theme.native(.border)
             case .paragraph: break
             }

@@ -48,7 +48,7 @@ import VaultCore
                 reader.isEditable = false; reader.isSelectable = true; reader.autoresizingMask = [.width]
                 reader.isVerticallyResizable = true; reader.textContainer?.widthTracksTextView = true
                 reader.textContainerInset = NSSize(width: 24, height: 24)
-                reader.font = .systemFont(ofSize: 15); reader.textColor = .textColor; reader.backgroundColor = .textBackgroundColor
+                reader.font = .systemFont(ofSize: 14); reader.textColor = .textColor; reader.backgroundColor = .textBackgroundColor
                 if ext == "md", let markdown = try? AttributedString(markdown: text) {
                     reader.textStorage?.setAttributedString(NSAttributedString(markdown))
                 } else if ["html", "htm"].contains(ext), let html = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil) {

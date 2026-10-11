@@ -13,7 +13,7 @@ extension NSAttributedString.Key {
 }
 
 @MainActor enum BlockTextStorage {
-    static let semanticHeadingFont = NSFont.systemFont(ofSize: 16, weight: .semibold)
+    static var semanticHeadingFont: NSFont { EditorTypography.current.font(weight: .semibold) }
     static var semanticHeadingSpace: CGFloat { ceil(semanticHeadingFont.ascender - semanticHeadingFont.descender) + 8 }
     struct VisibleBlock { var block: EditorBlock; var depth: Int; var number: Int }
     static func visible(_ document: BlockDocument) -> [VisibleBlock] {
@@ -26,9 +26,8 @@ extension NSAttributedString.Key {
         }
         return walk(document.blocks, depth: 0)
     }
-    static func base(_ block: EditorBlock, depth: Int, theme: NoemaTheme) -> [NSAttributedString.Key: Any] {
-        let sizes: [BlockKind: CGFloat] = [.heading1: 30, .heading2: 24, .heading3: 20]
-        let size = sizes[block.kind] ?? 16
+    static func base(_ block: EditorBlock, depth: Int, theme: NoemaTheme, typography: EditorTypography = .init()) -> [NSAttributedString.Key: Any] {
+        let sizes: [BlockKind: CGFloat] = [.heading1: 14, .heading2: 8, .heading3: 4]
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 5; paragraph.paragraphSpacing = 10
         let hasInsideMarker = [.bullet, .numbered, .task, .toggle].contains(block.kind)
         paragraph.headIndent = CGFloat(depth * 24 + (hasInsideMarker ? 24 : (block.kind == .quote ? 18 : 0))); paragraph.firstLineHeadIndent = paragraph.headIndent
@@ -39,7 +38,7 @@ extension NSAttributedString.Key {
         }
         let isMonoBlock = block.kind == .code || block.kind == .math
         var attrs: [NSAttributedString.Key: Any] = [
-            .font: isMonoBlock ? NSFont.monospacedSystemFont(ofSize: 14, weight: .regular) : NSFont.systemFont(ofSize: size, weight: sizes[block.kind] == nil ? .regular : .semibold),
+            .font: isMonoBlock ? NSFont.monospacedSystemFont(ofSize: CGFloat(typography.size) - 2, weight: .regular) : typography.font(offset: sizes[block.kind] ?? 0, weight: sizes[block.kind] == nil ? .regular : .semibold),
             .foregroundColor: theme.nativeText(), .paragraphStyle: paragraph,
             .blockID: block.id.uuidString, .blockKind: block.kind.rawValue, .blockDepth: depth
         ]
@@ -48,8 +47,8 @@ extension NSAttributedString.Key {
         if let semantic = block.metadata.semantic { attrs[.semanticTag] = semantic }
         return attrs
     }
-    static func attributes(_ style: InlineStyle, block: EditorBlock, depth: Int, theme: NoemaTheme) -> [NSAttributedString.Key: Any] {
-        var attrs = base(block, depth: depth, theme: theme)
+    static func attributes(_ style: InlineStyle, block: EditorBlock, depth: Int, theme: NoemaTheme, typography: EditorTypography = .init()) -> [NSAttributedString.Key: Any] {
+        var attrs = base(block, depth: depth, theme: theme, typography: typography)
         var font = attrs[.font] as! NSFont
         if style.code { font = .monospacedSystemFont(ofSize: font.pointSize, weight: .regular) }
         else if style.math {
@@ -69,12 +68,12 @@ extension NSAttributedString.Key {
         } else if let link = style.link { attrs[.link] = URL(string: link) }
         return attrs
     }
-    static func render(_ document: BlockDocument, theme: NoemaTheme, showSemanticHeadings: Bool = false) -> NSAttributedString {
+    static func render(_ document: BlockDocument, theme: NoemaTheme, showSemanticHeadings: Bool = false, typography: EditorTypography = .init()) -> NSAttributedString {
         let result = NSMutableAttributedString(string: "")
         for value in visible(document) {
             let block = value.block
             for run in block.runs {
-                var attrs = attributes(run.style, block: block, depth: value.depth, theme: theme)
+                var attrs = attributes(run.style, block: block, depth: value.depth, theme: theme, typography: typography)
                 let displayString: String
                 if run.style.math, let raw = run.style.rawMath {
                     let rendered = TeXMath.render(raw, display: false)
@@ -85,7 +84,7 @@ extension NSAttributedString.Key {
                 }
                 result.append(NSAttributedString(string: displayString, attributes: attrs))
             }
-            result.append(NSAttributedString(string: "\n", attributes: base(block, depth: value.depth, theme: theme)))
+            result.append(NSAttributedString(string: "\n", attributes: base(block, depth: value.depth, theme: theme, typography: typography)))
         }
         if showSemanticHeadings { updateSemanticHeadingSpacing(result) }
         return result

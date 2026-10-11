@@ -9,6 +9,7 @@ extension RichArticleView {
         var document = BlockDocument()
         var lastText: String?
         var lastTheme: NoemaTheme?
+        var lastTypography: EditorTypography?
         var lastMacros: String?
         var lastAction: UUID?
         var changing = false
@@ -38,11 +39,11 @@ extension RichArticleView {
         func render(selection: NSRange) {
             guard let view else { return }
             changing = true
-            view.textStorage?.setAttributedString(BlockTextStorage.render(document, theme: parent.theme, showSemanticHeadings: view.showSemanticHeadings))
+            view.textStorage?.setAttributedString(BlockTextStorage.render(document, theme: parent.theme, showSemanticHeadings: view.showSemanticHeadings, typography: parent.typography))
             view.updateSemanticHeadingTopInset()
             let location = min(selection.location, max(0, view.string.utf16.count - 1))
             view.setSelectedRange(NSRange(location: location, length: min(selection.length, max(0, view.string.utf16.count - 1 - location))))
-            lastTheme = parent.theme; changing = false; updateTypingAttributes(); view.needsDisplay = true
+            lastTheme = parent.theme; lastTypography = parent.typography; changing = false; updateTypingAttributes(); view.needsDisplay = true
         }
         func capture() {
             if let storage = view?.textStorage { document = BlockTextStorage.capture(storage, previous: document) }
@@ -137,7 +138,7 @@ extension RichArticleView {
                         exited.rawMath = nil
                         exited.code = false
                         let depth = storage.attribute(.blockDepth, at: blockRange.location, effectiveRange: nil) as? Int ?? 0
-                        attrs = BlockTextStorage.attributes(exited, block: block, depth: depth, theme: parent.theme)
+                        attrs = BlockTextStorage.attributes(exited, block: block, depth: depth, theme: parent.theme, typography: parent.typography)
                     }
                 } else {
                     // Inherit the preceding run when typing immediately after formatted content.
@@ -335,7 +336,7 @@ extension RichArticleView {
             if selection.length == 0 {
                 var style = firstStyle; apply(&style, enabled: enabled)
                 let depth = storage.attribute(.blockDepth, at: blockRange.location, effectiveRange: nil) as? Int ?? 0
-                view.typingAttributes = BlockTextStorage.attributes(style, block: block, depth: depth, theme: parent.theme); return
+                view.typingAttributes = BlockTextStorage.attributes(style, block: block, depth: depth, theme: parent.theme, typography: parent.typography); return
             }
             transaction("Format " + name) {
                 for (id, range) in BlockTextStorage.ranges(storage) {
