@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 public enum VaultSessionPhase: String, Sendable, Equatable, CaseIterable {
     case closed
@@ -49,6 +50,13 @@ public enum VaultSessionState: Sendable, Equatable {
     public var activeSession: VaultSession? {
         if case .open(let session) = self { return session }
         return nil
+    }
+
+    public var sessionID: UUID? {
+        switch self {
+        case .open(let session), .locking(let session): session.id
+        case .closed, .opening, .locked, .unlocking: nil
+        }
     }
 
     public var root: URL? {
@@ -121,6 +129,7 @@ public enum VaultSessionError: Error, Sendable, Equatable, LocalizedError {
 /// Note: Session locking is lifecycle state isolation, not cryptographic protection.
 public actor VaultSessionManager {
     public nonisolated let accessGate: VaultAccessGate
+    public nonisolated let quiescenceCoordinator: VaultSaveQuiescenceCoordinator
     public private(set) var state: VaultSessionState = .closed
     public private(set) var generation: UInt64 = 0
     public private(set) var inFlightWaiterCount: Int = 0
@@ -135,6 +144,7 @@ public actor VaultSessionManager {
 
     public init(accessGate: VaultAccessGate = VaultAccessGate()) {
         self.accessGate = accessGate
+        self.quiescenceCoordinator = VaultSaveQuiescenceCoordinator(accessGate: accessGate)
     }
 
     public var currentSession: VaultSession? { state.activeSession }
@@ -392,6 +402,33 @@ public actor VaultSessionManager {
             activeLockTask = (transitionID, task)
             try await awaitLockTask(task, id: transitionID)
         }
+    }
+
+    /// Locks the active session using `quiescenceCoordinator` to drain in-flight saves, autosaves,
+    /// LCC updates, and source imports/downloads, preserving unsaved edits to `recovery` where needed.
+    /// On unrecoverable quiescence failure, rolls back to `.open` and throws `VaultSessionError.lockAborted`
+    /// without falsely publishing `.locked`.
+    @discardableResult
+    public func lockWithQuiescence(
+        repository: FileVaultRepository,
+        recovery: RecoveryStore?,
+        pendingState: VaultPendingEditorState = VaultPendingEditorState(),
+        cancelPreCommitSaves: Bool = false,
+        teardown: @escaping @Sendable (VaultSession, VaultQuiescenceReport) async throws -> Void = { _, _ in }
+    ) async throws -> VaultQuiescenceReport? {
+        let reportBox = Mutex<VaultQuiescenceReport?>(nil)
+        try await lock { [quiescenceCoordinator] session in
+            let report = try await quiescenceCoordinator.quiesceForLock(
+                session: session,
+                repository: repository,
+                recovery: recovery,
+                pendingState: pendingState,
+                cancelPreCommitSaves: cancelPreCommitSaves
+            )
+            try await teardown(session, report)
+            reportBox.withLock { $0 = report }
+        }
+        return reportBox.withLock { $0 }
     }
 
     private func awaitLockTask(_ task: Task<Void, Error>, id: UUID) async throws {

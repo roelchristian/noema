@@ -172,6 +172,11 @@ struct EditorAction: Equatable {
     var editorAction: EditorAction?
     var searchFocusToken = 0
     private let storageProvider: VaultStorageProvider
+    let sessionManager: VaultSessionManager
+    var quiescenceCoordinator: VaultSaveQuiescenceCoordinator { sessionManager.quiescenceCoordinator }
+    private var activeSession: VaultSession?
+    private var activeLease: VaultSessionLease?
+    private(set) var lockedVaultURL: URL?
     private var repository: FileVaultRepository?
     private var index: SQLiteSearchIndex?
     private var recovery: RecoveryStore?
@@ -189,10 +194,17 @@ struct EditorAction: Equatable {
     private var generation = UUID()
     private var progressTicket: UUID?
 
-    init(repository: FileVaultRepository? = nil, recovery: RecoveryStore? = nil, storageProvider: VaultStorageProvider = .plaintext) {
+    init(
+        repository: FileVaultRepository? = nil,
+        recovery: RecoveryStore? = nil,
+        storageProvider: VaultStorageProvider = .plaintext,
+        sessionManager: VaultSessionManager = VaultSessionManager()
+    ) {
         self.storageProvider = storageProvider
+        self.sessionManager = sessionManager
         self.repository = repository
         self.recovery = recovery
+        self.activeLease = repository?.sessionLease
     }
 
     var editedTags: [String] { normalizeTags(tagInput.components(separatedBy: ",")) }
@@ -336,13 +348,22 @@ struct EditorAction: Equatable {
         let bookmark = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
         UserDefaults.standard.set(bookmark, forKey: "vaultBookmark")
     }
+    var isLocked: Bool { lockedVaultURL != nil && root == nil }
+
     func open(_ url: URL, create: Bool) async {
         if !(await finishCurrentPage()) { return }
         busy = true; errorMessage = nil
         let hasScope = url.startAccessingSecurityScopedResource()
         do {
+            if await sessionManager.state != .closed {
+                try? await sessionManager.close()
+            }
             let storageProvider = self.storageProvider
-            let repo = try await Task.detached { try FileVaultRepository.open(root: url, create: create, storageProvider: storageProvider) }.value
+            let (session, lease, repo) = try await sessionManager.openRepository(
+                root: url,
+                create: create,
+                storageProvider: storageProvider
+            )
             let vaultID = repo.manifest.id
             let localBase = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 .appendingPathComponent("KnowledgeVault/\(vaultID.uuidString)")
@@ -362,7 +383,8 @@ struct EditorAction: Equatable {
             generatingSourceSummaries = []
             generatingSourceTitles = []; sourceRenameCompleted = 0; sourceRenameTotal = 0
             dismissedVaultNotices = []
-            generation = UUID(); repository = repo; index = searchIndex; recovery = journal
+            generation = UUID(); activeSession = session; activeLease = lease; lockedVaultURL = nil
+            repository = repo; index = searchIndex; recovery = journal
             unseenRenamedPages.removeAll()
             recentPageIDs.removeAll()
             editingLockOperations.removeAll()
@@ -381,6 +403,85 @@ struct EditorAction: Equatable {
         } catch {
             if hasScope, scopeURL != url { url.stopAccessingSecurityScopedResource() }
             busy = false; errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Quiesces in-flight saves, autosaves, LCC metadata updates, and source imports/downloads,
+    /// preserving unsaved edits in `RecoveryStore` if needed, before transitioning the vault to `.locked`.
+    /// On unrecoverable quiescence failure, surfaces `errorMessage` and keeps the vault open without falsely publishing `.locked`.
+    @discardableResult
+    func lockVault(cancelPreCommitSaves: Bool = false) async -> Bool {
+        guard let repository, let currentRoot = root else { return false }
+        busy = true; errorMessage = nil
+        autosaveTask?.cancel(); autosaveTask = nil
+        lccSaveTask?.cancel(); lccSaveTask = nil
+        for (_, task) in sourceLCCSaveTasks { task.cancel() }
+        sourceLCCSaveTasks.removeAll()
+
+        let dirtySnapshot: VaultPendingEditorState.DirtyNoteState? = {
+            guard dirty, let note = currentNote else { return nil }
+            return VaultPendingEditorState.DirtyNoteState(
+                note: note,
+                title: title,
+                body: body,
+                tags: editedTags,
+                lcc: lccInput,
+                preferDirectSave: !cancelPreCommitSaves
+            )
+        }()
+        let pendingLCCSnapshot: VaultPendingEditorState.PendingPageLCCUpdate? = {
+            guard let note = currentNote else { return nil }
+            let trimmed = lccInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedLCC = trimmed.isEmpty ? nil : trimmed
+            guard normalizedLCC != note.lcc else { return nil }
+            return VaultPendingEditorState.PendingPageLCCUpdate(note: note, lcc: normalizedLCC)
+        }()
+        let pendingState = VaultPendingEditorState(
+            dirtyNote: dirtySnapshot,
+            pendingPageLCC: pendingLCCSnapshot,
+            pendingSourceLCCs: [],
+            activeDownloadSourceIDs: Array(downloadingSources)
+        )
+
+        do {
+            _ = try await sessionManager.lockWithQuiescence(
+                repository: repository,
+                recovery: recovery,
+                pendingState: pendingState,
+                cancelPreCommitSaves: cancelPreCommitSaves
+            )
+            // Quiescence succeeded and session is now .locked. Tear down UI & vault resources.
+            SourceReader.closeAll()
+            watcher?.stop(); watcher = nil
+            if let scopeURL { scopeURL.stopAccessingSecurityScopedResource(); self.scopeURL = nil }
+            sourceDownloadTask?.cancel(); sourceDownloadTask = nil; sourceDownloadQueue = []; downloadingSources = []
+            sourceNamingTask?.cancel(); sourceNamingTask = nil; sourceNamingQueue = []; sourceNamingOverrides = []
+            sourceAvailabilityTask?.cancel(); sourceAvailabilityTask = nil; sourceAvailabilityQueue = []
+            sourceAvailability = [:]; checkingSourceAvailability = []
+            queryTask?.cancel(); queryTask = nil
+            refreshTask?.cancel(); refreshTask = nil
+            previewTask?.cancel(); previewTask = nil
+            for (_, task) in titleTasks { task.cancel() }
+            titleTasks.removeAll(); untitledPages.removeAll()
+            generation = UUID()
+            activeSession = nil; activeLease = nil
+            self.repository = nil; self.index = nil; self.recovery = nil
+            lockedVaultURL = currentRoot; root = nil
+            notes = []; sources = []; rows = []; semanticRows = []; trashedPages = []; recoveredDrafts = []; issues = []
+            tags = []; backlinks = []; preview = []; recentPageIDs = []; unseenRenamedPages = []
+            selectedID = nil; selectedSemanticID = nil; currentNote = nil; currentSource = nil
+            title = ""; body = ""; tagInput = ""; lccInput = ""; wordCount = 0; reading = true
+            editorNotice = nil; editingHint = nil; editorReadOnly = false; externalChange = false
+            saveStatus = "Saved locally"; busy = false
+            return true
+        } catch {
+            busy = false
+            saveStatus = "Draft preserved · save failed"
+            errorMessage = error.localizedDescription
+            if let recovery {
+                recoveredDrafts = (try? await recovery.drafts()) ?? recoveredDrafts
+            }
+            return false
         }
     }
     func scheduleRefresh() {
@@ -781,6 +882,7 @@ struct EditorAction: Equatable {
         await waitForSave()
         guard dirty, var note = currentNote, let repository, let recovery else { return !saving }
         guard !saving else { return false }
+        let ticket = generation
         saving = true; saveStatus = "Saving…"
         let trimmedLCC = lccInput.trimmingCharacters(in: .whitespacesAndNewlines)
         note.lcc = trimmedLCC.isEmpty ? nil : trimmedLCC
@@ -789,6 +891,7 @@ struct EditorAction: Equatable {
             wordCount = await Task.detached { BlockDocumentCodec.markdownBody(draft.body).split(whereSeparator: \.isWhitespace).count }.value
             try await recovery.store(draft)
             let saved = try await repository.save(note: note, title: draft.title, body: draft.body, tags: draft.tags)
+            guard generation == ticket else { saving = false; return false }
             recordPageRename(saved.id, from: note.title, to: saved.title)
             if currentNote?.id == saved.id {
                 currentNote = saved
@@ -805,6 +908,7 @@ struct EditorAction: Equatable {
             if dirty { edited() }
             return !dirty
         } catch {
+            guard generation == ticket else { saving = false; return false }
             saving = false; saveStatus = "Draft preserved · save failed"
             errorMessage = error.localizedDescription
             if case VaultError.conflict = error { externalChange = true }

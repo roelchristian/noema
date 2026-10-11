@@ -781,6 +781,65 @@ public actor FileVaultRepository: VaultRepository {
         downloadingSources.removeValue(forKey: id)
     }
 
+    @discardableResult
+    public func cancelAllSourceDownloads() -> [UUID] {
+        let ids = Array(downloadingSources.keys)
+        downloadingSources.removeAll()
+        return ids
+    }
+
+    public var activeDownloadingSourceIDs: [UUID] {
+        Array(downloadingSources.keys)
+    }
+
+    public func importPreparedSource(
+        id: UUID = UUID(),
+        capturedAt: String? = nil,
+        data: Data,
+        filename: String,
+        title: String,
+        originURL: String?,
+        isURLSource: Bool
+    ) throws -> SourceRecord {
+        try validateAccess(operation: "importSource")
+        return try publishSource(
+            id: id,
+            capturedAt: capturedAt,
+            data: data,
+            filename: filename,
+            title: title,
+            originURL: originURL,
+            isURLSource: isURLSource
+        )
+    }
+
+    @discardableResult
+    public func cleanupInterruptedImportStaging(id: UUID) throws -> Bool {
+        try validateAccess(operation: "cleanupInterruptedImportStaging")
+        let pending = "Sources/.import-" + id.uuidString
+        let url = root.appendingPathComponent(pending).standardizedFileURL
+        guard fm.fileExists(atPath: url.path) else { return false }
+        let snapshot = try contentStore.snapshot(at: pending)
+        try contentStore.delete(at: pending, expected: snapshot)
+        return true
+    }
+
+    @discardableResult
+    public func cleanupAllInterruptedImportStaging() throws -> [String] {
+        try validateAccess(operation: "cleanupAllInterruptedImportStaging")
+        let sourcesDir = root.appendingPathComponent("Sources")
+        guard fm.fileExists(atPath: sourcesDir.path) else { return [] }
+        let entries = try fm.contentsOfDirectory(at: sourcesDir, includingPropertiesForKeys: nil, options: [])
+        var cleaned: [String] = []
+        for entry in entries where entry.lastPathComponent.hasPrefix(".import-") {
+            let relativePath = "Sources/" + entry.lastPathComponent
+            let snapshot = try contentStore.snapshot(at: relativePath)
+            try contentStore.delete(at: relativePath, expected: snapshot)
+            cleaned.append(relativePath)
+        }
+        return cleaned.sorted()
+    }
+
     public func linkSources(at url: URL, maximumFiles: Int) throws -> [SourceRecord] {
         try validateAccess(operation: "linkSources")
         let access = url.startAccessingSecurityScopedResource()

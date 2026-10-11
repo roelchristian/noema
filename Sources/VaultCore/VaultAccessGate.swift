@@ -312,6 +312,7 @@ public final class VaultAccessGate: Sendable {
         var trackedSessionID: UUID?
         var activeOperations: [UUID: VaultAdmittedOperation] = [:]
         var activeOrder: [UUID] = []
+        var quiescenceOperations: [UUID: (sessionID: UUID, generation: UInt64)] = [:]
         var totalAdmittedCount: Int = 0
         var totalCompletedCount: Int = 0
         var totalCancelledCount: Int = 0
@@ -361,9 +362,11 @@ public final class VaultAccessGate: Sendable {
                         gate.activeOperations.removeAll()
                         gate.activeOrder.removeAll()
                     }
+                    gate.quiescenceOperations.removeAll()
                     gate.trackedSessionID = session.id
                     return Self.collectReadyWaiters(&gate)
                 }
+                gate.quiescenceOperations.removeAll()
                 return []
 
             case .locking(let session):
@@ -377,6 +380,7 @@ public final class VaultAccessGate: Sendable {
                     gate.activeOperations.removeAll()
                     gate.activeOrder.removeAll()
                 }
+                gate.quiescenceOperations.removeAll()
                 gate.trackedSessionID = nil
                 return Self.collectReadyWaiters(&gate)
             }
@@ -537,11 +541,17 @@ public final class VaultAccessGate: Sendable {
                         operation: operation
                     )
                 }
-                if let activeOpID = VaultLockAdmissionBarrier.currentOperationID,
-                   let registered = gate.activeOperations[activeOpID],
-                   registered.sessionID == session.id,
-                   registered.generation == session.generation {
-                    return
+                if let activeOpID = VaultLockAdmissionBarrier.currentOperationID {
+                    if let registered = gate.activeOperations[activeOpID],
+                       registered.sessionID == session.id,
+                       registered.generation == session.generation {
+                        return
+                    }
+                    if let quiescenceOp = gate.quiescenceOperations[activeOpID],
+                       quiescenceOp.sessionID == session.id,
+                       quiescenceOp.generation == session.generation {
+                        return
+                    }
                 }
                 throw VaultAccessError.sessionLocked(vaultID: session.vaultID, root: session.root, operation: operation)
 
@@ -875,6 +885,20 @@ public final class VaultAccessGate: Sendable {
                 gate.drainWaiters.removeValue(forKey: waiterID)?.continuation
             }
             cancelledWaiter?.resume(throwing: VaultOperationAdmissionError.cancelled(operation: "awaitInFlightOperations"))
+        }
+    }
+
+    func registerQuiescenceScope(id: UUID, session: VaultSession) {
+        state.withLock { gate in
+            gate.quiescenceOperations[id] = (sessionID: session.id, generation: session.generation)
+        }
+    }
+
+    func unregisterQuiescenceScope(id: UUID, sessionID: UUID) {
+        state.withLock { gate in
+            if gate.quiescenceOperations[id]?.sessionID == sessionID {
+                gate.quiescenceOperations.removeValue(forKey: id)
+            }
         }
     }
 }
