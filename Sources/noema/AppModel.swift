@@ -252,10 +252,18 @@ struct EditorAction: Equatable {
     private func startObservingSessionState() {
         sessionObservationTask?.cancel()
         let manager = sessionManager
+        let initialState = sessionState
         sessionObservationTask = Task { @MainActor [weak self] in
             let stream = await manager.observations()
+            var isFirstEmission = true
             for await nextState in stream {
                 guard let self, !Task.isCancelled else { break }
+                if isFirstEmission {
+                    isFirstEmission = false
+                    if nextState == initialState {
+                        continue
+                    }
+                }
                 self.applyObservedSessionState(nextState)
             }
         }
@@ -309,6 +317,9 @@ struct EditorAction: Equatable {
 
     var sessionPhase: VaultSessionPhase { sessionState.phase }
     var isVaultAvailable: Bool { sessionState.phase == .open && root != nil && repository != nil }
+    private var canOperateOnLoadedContent: Bool {
+        isVaultAvailable || (!isLocked && sessionState == .closed && activeSession == nil && (repository != nil || !notes.isEmpty || !sources.isEmpty || currentNote != nil || currentSource != nil))
+    }
     var isLocked: Bool {
         switch sessionState {
         case .locked, .unlocking:
@@ -430,7 +441,7 @@ struct EditorAction: Equatable {
         ) else {
             return false
         }
-        return !isLocked && isVaultAvailable
+        return !isLocked && canOperateOnLoadedContent
     }
 
     private func cancelAllAsyncWork() {
@@ -1038,7 +1049,7 @@ struct EditorAction: Equatable {
     }
     func queryChanged() {
         queryTask?.cancel()
-        guard isVaultAvailable else { return }
+        guard canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .search, capturedText: searchText)
         queryTask = Task {
             do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
@@ -1047,7 +1058,7 @@ struct EditorAction: Equatable {
         }
     }
     func changeScope(_ scope: LibraryScope) {
-        guard isVaultAvailable else { return }
+        guard canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .lifecycle)
         let applyScope = { @MainActor in
             self.autosaveTask?.cancel(); self.wikiQuery = nil; self.editorAction = nil
@@ -1092,7 +1103,7 @@ struct EditorAction: Equatable {
         }
     }
     func updateRows() async {
-        guard isVaultAvailable else { return }
+        guard canOperateOnLoadedContent else { return }
         let query = searchText
         let completionTicket = issueCompletionTicket(kind: .search, capturedText: query)
         var snapshot = notes
@@ -1145,7 +1156,7 @@ struct EditorAction: Equatable {
         }
     }
     func select(_ id: UUID?, scope targetScope: LibraryScope? = nil, block blockID: UUID? = nil) {
-        guard isVaultAvailable else { return }
+        guard canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: id)
         Task {
             await waitForSave()
