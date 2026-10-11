@@ -129,6 +129,39 @@ struct AIProviderIntegrationTests {
         #expect(try await f.repository.scan().notes.count == 1)
     }
 
+    @Test @MainActor func unavailableNativeChoiceNeverFallsBackToCloudOrChangesPreferences() async throws {
+        let f = try await fixture(); defer { f.cleanup() }
+        let probe = ProviderProbe(); mock(f.model, probe: probe)
+        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+        let saved = f.defaults.data(forKey: AIProviderPreferences.preferenceKey)
+        f.model.aiClient.unavailabilityReason = { "Unavailable native model" }
+        f.model.requestPageSummary(id: f.note.id, provider: .onDevice)
+        #expect(f.model.aiProviderNotice == AIProviderUnavailableReason.localModelUnavailable.errorMessage)
+        #expect(!f.model.isSummarizing(target: .page(f.note.id)))
+        #expect(f.model.cloudSummaryConfirmation == nil)
+        #expect(await probe.total == 0)
+        #expect(f.defaults.data(forKey: AIProviderPreferences.preferenceKey) == saved)
+        #expect(BlockDocumentCodec.decode(f.model.body).aiSummary?.text == "Prior summary")
+    }
+
+    @Test @MainActor func missingCloudKeyRejectsBeforeConsentWithoutNativeFallback() async throws {
+        let f = try await fixture(); defer { f.cleanup() }
+        let probe = ProviderProbe(); mock(f.model, probe: probe)
+        f.model.cloudSummaryOverride = nil
+        f.model.cloudCredentialAvailabilityOverride = { false }
+        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+        let saved = f.defaults.data(forKey: AIProviderPreferences.preferenceKey)
+        f.model.requestPageSummary(id: f.note.id)
+        try await waitUntil { !f.model.isSummarizing(target: .page(f.note.id)) }
+        #expect(f.model.aiProviderNotice == "Configure an OpenAI API key in Intelligence settings, then try again.")
+        #expect(f.model.cloudSummaryConfirmation == nil)
+        #expect(f.model.cloudSummaryTaskForTesting == nil)
+        #expect(await probe.total == 0)
+        #expect(f.defaults.data(forKey: AIProviderPreferences.preferenceKey) == saved)
+        #expect(f.model.preferredAIProvider(for: .summarizePage) == .openAI)
+        #expect(BlockDocumentCodec.decode(f.model.body).aiSummary?.text == "Prior summary")
+    }
+
     @Test @MainActor func explicitNativeOverridesExecuteTitleClassificationAndSourcePage() async throws {
         let f = try await fixture(); defer { f.cleanup() }
         let selected = try await source(f)
@@ -192,6 +225,38 @@ struct AIProviderIntegrationTests {
         #expect(BlockDocumentCodec.decode(stored.body).aiSummary?.text == "Prior summary")
     }
 
+    @Test @MainActor func cancelledNativePageFailureCannotReplaceCancellationOrNewRequestState() async throws {
+        for startReplacement in [false, true] {
+            let f = try await fixture(); defer { f.cleanup() }
+            let delayed = ProviderProbe(holdSummary: true); mock(f.model, probe: delayed)
+            f.model.requestPageSummary(id: f.note.id)
+            let oldWorker = try #require(f.model.nativePageSummaryTaskForTesting)
+            try await waitUntil { await delayed.count("summarize") == 1 }
+            f.model.cancelSummary(target: .page(f.note.id))
+            let cancellationNotice = f.model.aiProviderNotice
+            var replacementWorker: Task<Void, Never>?
+            let replacement = ProviderProbe(holdSummary: true)
+            if startReplacement {
+                mock(f.model, probe: replacement)
+                f.model.requestPageSummary(id: f.note.id)
+                replacementWorker = try #require(f.model.nativePageSummaryTaskForTesting)
+                try await waitUntil { await replacement.count("summarize") == 1 }
+            }
+            try await delayed.releaseSummaryFailure()
+            await oldWorker.value
+            #expect(f.model.aiSummaryNotice == nil)
+            #expect(f.model.aiProviderNotice == (startReplacement ? nil : cancellationNotice))
+            #expect(f.model.isSummarizing(target: .page(f.note.id)) == startReplacement)
+            #expect(BlockDocumentCodec.decode(f.model.body).aiSummary?.text == "Prior summary")
+            if let replacementWorker {
+                try await replacement.releaseSummary()
+                await replacementWorker.value
+                #expect(BlockDocumentCodec.decode(f.model.body).aiSummary?.text == "Native fixture summary")
+                #expect(await f.model.saveCurrent())
+            }
+        }
+    }
+
     @Test @MainActor func editorBodyABARejectsDelayedNativeSummary() async throws {
         let f = try await fixture(); defer { f.cleanup() }
         let probe = ProviderProbe(holdSummary: true); mock(f.model, probe: probe)
@@ -216,6 +281,8 @@ struct AIProviderIntegrationTests {
         try await waitUntil { await probe.count("summarize") == 1 }
         f.model.select(other.id)
         try await waitUntil { f.model.currentNote?.id == other.id }
+        #expect(!f.model.generatingAISummary)
+        #expect(!f.model.isSummarizing(target: .page(f.note.id)))
         f.model.select(f.note.id)
         try await waitUntil { f.model.currentNote?.id == f.note.id }
         try await probe.releaseSummary()
@@ -271,7 +338,7 @@ struct AIProviderIntegrationTests {
 }
 }
 
-private enum ProviderFixtureFailure: Error { case timedOut }
+private enum ProviderFixtureFailure: Error { case timedOut, providerFailure }
 
 @MainActor private struct ProviderFixture {
     let root: URL
@@ -307,5 +374,10 @@ private actor ProviderProbe {
         guard let pendingSummary else { throw ProviderFixtureFailure.timedOut }
         self.pendingSummary = nil
         pendingSummary.resume(returning: "Native fixture summary")
+    }
+    func releaseSummaryFailure() throws {
+        guard let pendingSummary else { throw ProviderFixtureFailure.timedOut }
+        self.pendingSummary = nil
+        pendingSummary.resume(throwing: ProviderFixtureFailure.providerFailure)
     }
 }
