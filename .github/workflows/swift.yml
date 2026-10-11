@@ -16,6 +16,11 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Repository hygiene and maintenance safety
+      run: |
+        python3 scripts/check-repository-hygiene.py --selftest
+        python3 scripts/test-local-evidence.py
+        python3 scripts/check-storage-boundary.py --selftest
     - name: Build
       run: swift build -v
     - name: Run tests
