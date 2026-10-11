@@ -17,6 +17,9 @@ xcuserdata/
 # Local agent guidance
 /AGENTS.md
 
+# Local Git signing secret
+/.env
+
 # Disposable indexes and example-vault recovery output
 *.sqlite
 *.sqlite-wal
