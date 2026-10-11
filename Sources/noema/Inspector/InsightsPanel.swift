@@ -76,6 +76,7 @@ final class InsightsPresentationCache {
 
 /// Inspector panel consolidating AI summaries and semantic blocks (UI.R6).
 struct InsightsPanel: View {
+    @Environment(\.noemaTheme) private var theme
     @Bindable var model: AppModel
     let context: InspectorContext
     let cache: InsightsPresentationCache
@@ -101,30 +102,30 @@ struct InsightsPanel: View {
 
         return VStack(spacing: 0) {
             InspectorPanelHeader(title: "Insights")
-            Divider()
+            Divider().overlay(theme.color(for: .separator))
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                     InspectorSection(title: "AI summary", showTopDivider: false) {
                         if !aiSummaries {
                             Text("Enable summaries in Noema → Settings → Apple Intelligence.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(NoemaTypography.metadata)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         }
                         if isCurrent && model.generatingAISummary {
-                            HStack(spacing: 6) {
+                            HStack(spacing: NoemaSpacing.sm) {
                                 ProgressView().controlSize(.mini)
                                 Text("Generating summary…")
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                             }
                         }
                         if let summaryText = snapshot.summaryText {
                             SidebarAISummary(text: summaryText).id(note.id)
                             Text("AI-generated")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(NoemaTypography.metadata)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         } else {
                             Text("No AI summary available.")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         }
                     } actions: {
                         Menu {
@@ -154,7 +155,7 @@ struct InsightsPanel: View {
                     ) {
                         if snapshot.semanticGroups.isEmpty {
                             Text("No semantic blocks on this page.")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         } else {
                             ForEach(snapshot.semanticGroups) { group in
                                 ForEach(group.blocks) { block in
@@ -167,8 +168,8 @@ struct InsightsPanel: View {
                     }
                 }
                 .textSelection(.enabled)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.horizontal, NoemaMetrics.inspectorInset)
+                .padding(.vertical, NoemaSpacing.md)
             }
             .modifier(OptionalScrollPositionModifier(position: scrollPosition))
         }
@@ -182,25 +183,25 @@ struct InsightsPanel: View {
 
         return VStack(spacing: 0) {
             InspectorPanelHeader(title: "Insights")
-            Divider()
+            Divider().overlay(theme.color(for: .separator))
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                     InspectorSection(title: "AI summary", showTopDivider: false) {
                         if model.generatingSourceSummaries.contains(source.id) || model.generatingSourceTitles.contains(source.id) {
-                            HStack(spacing: 6) {
+                            HStack(spacing: NoemaSpacing.sm) {
                                 ProgressView().controlSize(.mini)
                                 Text("Generating summary…")
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                             }
                         }
                         if let summary = source.metadata.aiSummary, hasSummary {
                             SidebarAISummary(text: summary).id(source.id)
                             Text("AI-generated")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(NoemaTypography.metadata)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         } else {
                             Text("No AI summary available.")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         }
                     } actions: {
                         Button(hasSummary ? "Regenerate" : "Generate") {
@@ -215,8 +216,8 @@ struct InsightsPanel: View {
                     }
                 }
                 .textSelection(.enabled)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.horizontal, NoemaMetrics.inspectorInset)
+                .padding(.vertical, NoemaSpacing.md)
             }
             .modifier(OptionalScrollPositionModifier(position: scrollPosition))
         }

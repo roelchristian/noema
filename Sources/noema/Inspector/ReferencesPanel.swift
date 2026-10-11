@@ -120,6 +120,7 @@ struct ReferencesPanelModel: Equatable, Sendable {
 
 /// Inspector panel presenting explicit page-to-source associations (UI.R5).
 struct ReferencesPanel: View {
+    @Environment(\.noemaTheme) private var theme
     @Bindable var model: AppModel
     let context: InspectorContext
     var scrollPosition: Binding<ScrollPosition>? = nil
@@ -163,16 +164,16 @@ struct ReferencesPanel: View {
                             : "Attach a source to this page"
                     )
                 }
-                Divider()
+                Divider().overlay(theme.color(for: .separator))
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                         InspectorSection(title: "Sources", count: linkedSources.count, showTopDivider: false) {
                             if linkedSources.isEmpty {
                                 Text("No sources linked")
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                                 Text("Attach a reference from your source library.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .font(NoemaTypography.metadata)
+                                    .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                             } else {
                                 ForEach(linkedSources) { item in
                                     SourceAssociationRow(
@@ -189,8 +190,8 @@ struct ReferencesPanel: View {
                         }
                     }
                     .textSelection(.enabled)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
+                    .padding(.horizontal, NoemaMetrics.inspectorInset)
+                    .padding(.vertical, NoemaSpacing.md)
                 }
                 .modifier(OptionalScrollPositionModifier(position: scrollPosition))
             }
@@ -225,7 +226,7 @@ struct ReferencesPanel: View {
                             )
                         }
                         .disabled(!canCreatePageWithAI)
-                        Divider()
+                        Divider().overlay(theme.color(for: .separator))
                         ForEach(availablePagesToAdd) { note in
                             Button(note.title) {
                                 model.setSourceReference(pageID: note.id, sourceID: source.id, linked: true)
@@ -235,24 +236,24 @@ struct ReferencesPanel: View {
                     .disabled(!canPresentAddMenu)
                     .help("Reference this source from a page")
                 }
-                Divider()
+                Divider().overlay(theme.color(for: .separator))
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                         InspectorSection(title: "Referring pages", count: referringPages.count, showTopDivider: false) {
                             if isCreatingPageWithAI {
-                                HStack(spacing: 6) {
+                                HStack(spacing: NoemaSpacing.sm) {
                                     ProgressView().controlSize(.mini)
                                     Text("Creating page…")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .font(NoemaTypography.metadata)
+                                        .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                                 }
                             }
                             if referringPages.isEmpty {
                                 Text("No pages reference this source.")
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                                 Text("Link an existing page or create a new page from this source.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .font(NoemaTypography.metadata)
+                                    .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                             } else {
                                 ForEach(referringPages) { item in
                                     SourceAssociationRow(
@@ -269,8 +270,8 @@ struct ReferencesPanel: View {
                         }
                     }
                     .textSelection(.enabled)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
+                    .padding(.horizontal, NoemaMetrics.inspectorInset)
+                    .padding(.vertical, NoemaSpacing.md)
                 }
                 .modifier(OptionalScrollPositionModifier(position: scrollPosition))
             }

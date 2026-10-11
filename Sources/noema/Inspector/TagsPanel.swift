@@ -58,26 +58,25 @@ struct TagsPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             InspectorPanelHeader(title: "Tags", count: totalCount)
-            Divider()
+            Divider().overlay(theme.color(for: .separator))
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                     InspectorSection(title: "Page tags", count: pageTags.count, showTopDivider: false) {
                         if pageTags.isEmpty {
                             Text("No page tags")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                             Text("Page tags are saved in the note’s frontmatter.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(NoemaTypography.metadata)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         } else {
-                            VStack(alignment: .leading, spacing: 6) {
+                            VStack(alignment: .leading, spacing: NoemaSpacing.sm) {
                                 ForEach(pageTags, id: \.self) { tag in
-                                    HStack(spacing: 8) {
+                                    HStack(spacing: NoemaSpacing.sm) {
                                         Button {
                                             model.changeScope(.tag(tag))
                                         } label: {
                                             Label("#" + tag, systemImage: "tag")
-                                                .font(.caption.weight(.medium))
-                                                .foregroundStyle(theme.text(.graphHighlight, on: .background))
+                                                .font(NoemaTypography.metadataEmphasis)
                                         }
                                         .buttonStyle(.bordered)
                                         .tint(theme.color(.graphHighlight))
@@ -93,7 +92,7 @@ struct TagsPanel: View {
                                             } label: {
                                                 Label("Remove #\(tag)", systemImage: "xmark.circle.fill")
                                                     .labelStyle(.iconOnly)
-                                                    .foregroundStyle(.secondary)
+                                                    .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                                             }
                                             .buttonStyle(.borderless)
                                             .controlSize(.small)
@@ -106,11 +105,11 @@ struct TagsPanel: View {
                         }
 
                         if canEdit {
-                            HStack(spacing: 6) {
+                            HStack(spacing: NoemaSpacing.sm) {
                                 TextField("Add tag…", text: $newTagText)
                                     .textFieldStyle(.roundedBorder)
                                     .controlSize(.small)
-                                    .font(.caption)
+                                    .font(NoemaTypography.metadata)
                                     .onSubmit {
                                         commitNewTag()
                                     }
@@ -119,7 +118,7 @@ struct TagsPanel: View {
                                     commitNewTag()
                                 }
                                 .controlSize(.small)
-                                .font(.caption)
+                                .font(NoemaTypography.metadata)
                                 .disabled(normalizeTags(newTagText.components(separatedBy: ",")).isEmpty)
                             }
                             .padding(.top, 2)
@@ -128,34 +127,33 @@ struct TagsPanel: View {
                                 TextField("Comma-separated tags", text: $model.tagInput)
                                     .textFieldStyle(.roundedBorder)
                                     .controlSize(.small)
-                                    .font(.caption)
+                                    .font(NoemaTypography.metadata)
                                     .accessibilityLabel("Page tags frontmatter")
                             }
-                            .font(.caption)
+                            .font(NoemaTypography.metadata)
                         } else if note.isEditingLocked || model.editingLocked {
                             Label("Unlock editing to add or remove page tags.", systemImage: "lock")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(NoemaTypography.metadata)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         }
                     }
 
                     InspectorSection(title: "Inline tags", count: derivedInlineTags.count) {
                         if derivedInlineTags.isEmpty {
                             Text("No inline #tags in the article body.")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                             Text("Type #tag in the article text to derive inline tags automatically.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(NoemaTypography.metadata)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         } else {
-                            VStack(alignment: .leading, spacing: 6) {
+                            VStack(alignment: .leading, spacing: NoemaSpacing.sm) {
                                 ForEach(derivedInlineTags, id: \.self) { tag in
-                                    HStack(spacing: 8) {
+                                    HStack(spacing: NoemaSpacing.sm) {
                                         Button {
                                             model.changeScope(.tag(tag))
                                         } label: {
                                             Label("#" + tag, systemImage: "number")
-                                                .font(.caption)
-                                                .foregroundStyle(theme.text(.graphHighlight, on: .background))
+                                                .font(NoemaTypography.metadata)
                                         }
                                         .buttonStyle(.bordered)
                                         .tint(theme.color(.graphHighlight))
@@ -166,8 +164,8 @@ struct TagsPanel: View {
                                         Spacer()
 
                                         Text("In text")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
+                                            .font(NoemaTypography.caption)
+                                            .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                                     }
                                 }
                             }
@@ -175,8 +173,8 @@ struct TagsPanel: View {
                     }
                 }
                 .textSelection(.enabled)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.horizontal, NoemaMetrics.inspectorInset)
+                .padding(.vertical, NoemaSpacing.md)
             }
             .modifier(OptionalScrollPositionModifier(position: scrollPosition))
         }
