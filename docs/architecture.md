@@ -70,3 +70,51 @@ Plaintext v1 remains the only supported format. Any future encryption requires e
 Lifecycle actions in `AppModel` reject overlapping open/lock/unlock/close requests and retain manager failures as typed `sessionTransitionErrors` alongside their UI message. A failed close preserves existing resources; successful close requires the central `.closed` state before resources and bookmarks are discarded. Lock completion verifies the vault identity and generation, and open/unlock publish initialized resources only while their session still owns the gate. Rollback failures are presented with the initialization error and reconcile to the actual central state. State observations ignore obsolete emissions and purge loaded resources when a new open session has a different lease. Coalesced manager close callers await the shared state commit and receive the same typed failure. Recovery construction requires a gate and an explicit valid lease; ungated fixtures use a separate internal initializer.
 
 Implementation and acceptance are tracked separately in the [milestone evidence matrix](validation.md#d02-evidence-matrix), with links to named session, gate, quiescence, AppModel, and stale-completion tests. Those tests exercise specified interleavings and injected failures, not every possible task schedule. The durable commit window prevents cooperative lifecycle cancellation from interrupting a canonical operation; it does not establish process-crash, power-loss, or real provider atomic-write fault guarantees. `NSFileCoordinator` covers cooperating access, while separate storage calls remain separate operations. A local save acknowledgment does not establish iCloud upload or arrival on another device; the [two-Mac acceptance procedure](validation.md#two-mac-acceptance-procedure) remains required for transport sign-off. Phase 3 encryption, key management, and protection of all plaintext copies remain future work.
+
+
+## Native workspace window and pane ownership
+
+The singleton `Window("Noema", id: "main")` owns one `AppModel`. Native titled chrome
+owns standard controls and top safe areas; no traffic-light coordinate enforcer or
+workspace titlebar overlap is permitted. Global controls live in one native toolbar;
+document editing controls remain with the document heading. Toolbar and menu actions
+share guarded `AppModel.performWorkspaceCommand`, with lifecycle admission reserved
+before queuing. Activation/termination still use existing save/recovery/session hooks.
+
+`WorkspaceWindowTitle` derives identity from existing metadata and the central gate,
+without reading source bodies. Welcome uses Noema; library/page/primary-source identity
+and vault subtitle are available only to an authorized open session. Locking/locked/
+unlocking presentation must withhold previous private document names immediately,
+including before asynchronous observations catch up. Keep full accessibility labels
+while native titlebar truncation handles long names. Sources row selection remains
+inspector state and does not become a primary document title.
+
+`HSplitView` remains because the center alternates between library/native Table and
+editor, while inspector availability is independent. `WorkspacePaneState` persists
+sidebar/inspector intent and widths separately from effective visibility. Narrow
+windows/context loss can suppress panes without erasing intent; widening restores
+requested panes. Search prioritizes mounting the sidebar before focusing its existing
+field; an explicit inspector request prioritizes the inspector when one outer pane
+fits. Session resets clear transient tabs/caches while retaining visibility/widths.
+
+Center minimums are 420 pt for documents and 520 pt for Sources; sidebar min/initial/
+max is 190/265/320 pt, and inspector is 280/340/420 pt. Native dividers own dragging.
+The split probe preserves controller holding priorities and the SwiftUI delegate,
+restores widths through `setPosition` only for pane arrangement/center-minimum changes,
+and records widths only from native resize notifications during mouse dragging.
+Window resizing must not overwrite preferred widths or animate heavy document/Table
+layout; pane/title/toolbar evaluation must not decode source bodies or rebuild the
+Sources metadata/status presentation bridge. Inspector respects native top safe area.
+
+`WindowGeometryProfile` separates saved welcome and workspace frames: defaults
+680×480 and 1280×820 content points, minimums 560×400 and 720×540. Restoration clamps
+to current usable displays, including disconnected/offscreen display changes. Opening
+retains the prior profile; open/locking uses workspace, closed/locked/unlocking uses
+welcome. Full-screen transitions defer frame changes and preserve saved geometry.
+Window probes operate only on their attached main window, never whichever auxiliary
+window is key. About (660×560), Settings, source readers and nonactivating caret panels
+retain their existing chrome/focus/security-scope/preview cleanup ownership. Geometry
+restoration must not open a vault twice or introduce a second lifecycle controller.
+
+See [native window acceptance](validation.md#native-window-acceptance) for source tests,
+scoped performed UI checks and remaining interaction/accessibility acceptance.

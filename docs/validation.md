@@ -29,7 +29,9 @@ Never treat a lexical scan as a semantic boundary proof.
 The native suite uses temporary vaults, failure injection and editor fixtures.
 The latest recorded lifecycle/recovery/preview baseline passed 247 tests in 27
 suites; the earlier token full-suite run passed 244 tests in 26 suites after UI.TK06.
-These counts describe those scoped runs, not a required fixed test count or a new run.
+The upstream native-toolbar/token integration passed 284 tests in 31 suites, including
+its opt-in 152-image captures. These counts describe scoped runs, not a fixed test
+count or fresh evidence for a subsequent maintenance merge.
 Source presence, compilation, automated passing results and device acceptance are
 separate kinds of evidence. Superseded commands/timings remain in Git history.
 
@@ -203,8 +205,10 @@ SOURCES_SCAN_BENCHMARK=1 ./scripts/test.sh --filter sixteenSourceReadCountBenchm
 The [design contract](contracts/design-tokens.md) retains semantic APIs, approved
 component exceptions, native control ownership and visual acceptance requirements.
 Fixture source: [DesignTokenValidationTests](../Tests/NoemaEditorTests/DesignTokenValidationTests.swift).
-Before application source: `0046a9e`; after: `8ebe0b9` (UI.TK06), preceding the nonvisual
-full-title tooltip follow-up. The baseline archive receives only the shared test fixture;
+Before application source: `0046a9e`; current native-toolbar application source:
+`40acf50` (integrated in main `d74a938`). Historical UI.TK06 comparison used `8ebe0b9`.
+The baseline archive receives only the shared test fixture with
+`NOEMA_LEGACY_TOKEN_FIXTURE`;
 application sources are unchanged. Machine: macOS 27.0 (26A428), arm64, Swift 6.2.4.
 
 ```sh
@@ -217,15 +221,21 @@ Both matrices remain local; selection/manifest output remains in the managed run
 Attach selected review captures to the PR when needed. No capture/report is canonical
 source or a permanent golden fixture. Reproduction retains commit/fixture provenance.
 
-- Each matrix renders 17 states × System/Midnight Iris × light/dark × standard/
-  increased contrast = 136 native PNGs. Ordinary runs render five inspector tabs
+- Baseline renders 17 states × System/Midnight Iris × light/dark × standard/
+  increased contrast = 136 PNGs. Current capture adds 720×540 native-minimum workspace
+  and 680×480 compact-welcome fixtures across eight modes, producing 152 PNGs.
+  Isolated pane preferences avoid reading/writing real workspace state.
+  Ordinary runs render five inspector tabs
   at 280 points in eight modes without writing images. Bitmap/dimension checks
   reject blank rasters; fixed outer bounds do not prove descendants fit or actions work.
 - Offscreen `NSHostingView`/borderless-window snapshots omit live titlebar, desktop
   glass composition, menus, alerts and presented sheets. Creation shows content,
-  not live sheet presentation. Root toolbar safe area adds 32 points: requested
-  960×620 yields 960×652, and 1200×760 yields 1200×792. This does not certify a live
-  minimum outer window. Inspector captures are 280/340×620; sheet letterboxing remains.
+  not live sheet presentation. Historical hidden-titlebar roots added 32 safe-area
+  points (960×620 → 960×652); current native-toolbar content does not inherit that
+  fixed expansion. Fixture assertions use observed host bounds/safe-area insets.
+  Historical 960×620 comparison is distinct from current 720×540 workspace minimum
+  and 680×480 welcome default. Hosted scrollable descendants can extend below viewport;
+  no hosted capture certifies live outer-window, toolbar or traffic-light behavior.
 - Theme/high-contrast appearance are injected, not actual OS accessibility toggles.
   Reduce Motion is not injected; disabled capture animation stabilizes static images.
   Both revisions bypass `.systemNoemaTheme()`, so captures do not validate production
@@ -241,4 +251,42 @@ source or a permanent golden fixture. Reproduction retains commit/fixture proven
   composition limits from defects; neither a regression nor a fix is established.
 - Live keyboard/VoiceOver, OS Reduce Motion timing, real split-pane resizing,
   native glass controls, alerts, menus, presented sheets and appearance transitions
-  remain unverified. Static screenshot success does not close this acceptance gate.
+  remain incomplete except the scoped native window checks below. Static screenshot
+  success does not close this acceptance gate.
+
+
+## Native window acceptance
+
+[WindowGeometryTests](../Tests/NoemaEditorTests/WindowGeometryTests.swift),
+[WorkspaceCommandTests](../Tests/NoemaEditorTests/WorkspaceCommandTests.swift),
+[WorkspacePaneStateTests](../Tests/NoemaEditorTests/WorkspacePaneStateTests.swift) and
+[WorkspaceWindowTitleTests](../Tests/NoemaEditorTests/WorkspaceWindowTitleTests.swift)
+cover separate profiles, deferred full-screen policy, display clamping, every lifecycle
+phase, admission/duplicate reservation, damaged-only recovery command availability,
+independent pane intent/width thresholds, controller-owned split configuration and
+identity withholding. Model/source tests do not simulate native focus, divider dragging,
+full-screen transitions or VoiceOver announcements.
+
+Upstream UI.TBR08 used a separate QA app identity and synthetic Toolbar QA Vault.
+Keyboard/lifecycle checks were performed at `73e37d0`; final token-merged live light/
+dark captures rechecked pane/toolbar clearance and contextual identity, without
+claiming fresh reruns of every earlier interaction. Light was forced in the temporary
+QA bundle, re-signed/relaunched; global preferences were unchanged. Accessibility-tree
+observations are not VoiceOver. Screenshots are disposable review evidence; upstream
+Git history retains provenance, and new captures remain local/PR attachments.
+
+| Native check | Scoped standing result and remaining acceptance |
+| --- | --- |
+| Light/dark workspace | Synthetic page toolbar/title/three-pane clearance reviewed in final merged build. |
+| Welcome and relaunch | 680×480 welcome observed; restored workspace frame and 265 pt sidebar verified. Inspector widths/manual divider edits remain unverified. |
+| Search/sidebar/inspector shortcuts | ⇧⌘F/⌘P reveal/focus search; ⌃⌘S toggles sidebar; ⌥⌘I toggles inspector and disables in library context. Full keyboard traversal/focus traps still pending. |
+| Lifecycle identity | ⌥⌘L locks to Vault Locked, Unlock returns to Pages, ⇧⌘W closes to compact welcome without previous document identity. Source/other-library contexts pending. |
+| Standard controls/long title | Native controls exposed once; full long title retained in accessibility tree. Complete close/minimize/zoom/activation cycle and small-width truncation remain pending. |
+| Full screen | Enter/exit and lock/unlock exercised without crash/overlap; exit restoration observed. Full resize/pane-toggle/frame-corruption matrix pending. |
+| Pane minimum/dividers | Native minimum-size collapse/restoration, manual divider dragging and divider-width relaunch persistence pending. |
+| Sources and auxiliary windows | Native Sources selection/inspector/resizing and About/Settings/source-reader focus isolation pending. Existing source navigation/presentation regressions pass. |
+| Accessibility | Actual Reduce Motion, Increase Contrast in both appearances, VoiceOver pane/control announcements and Full Keyboard Access traversal remain pending. |
+
+Remaining partial/pending rows prevent a complete platform/accessibility acceptance
+claim. Native controls retain system styling; model pass results alone do not resolve
+old offscreen glass ambiguity or validate live menu/alert/sheet presentation.

@@ -204,7 +204,12 @@ def capture(args):
                 shutil.copy2(REPO / 'Tests/NoemaEditorTests/DesignTokenValidationTests.swift',
                              Path(snapshot) / 'Tests/NoemaEditorTests/DesignTokenValidationTests.swift')
                 cwd = Path(snapshot)
-            subprocess.run(['./scripts/test.sh', '--filter', 'DesignTokenValidationTests'], cwd=cwd, env=env, check=True)
+            command = ['./scripts/test.sh', '--filter', 'DesignTokenValidationTests']
+            if baseline:
+                # Current fixture preserves the 136-image matrix on historical
+                # sources without native pane state or its injected initializer.
+                command += ['-Xswiftc', '-DNOEMA_LEGACY_TOKEN_FIXTURE']
+            subprocess.run(command, cwd=cwd, env=env, check=True)
         ref = subprocess.check_output(['git', 'rev-parse', baseline or 'HEAD'], cwd=REPO)
         (output / 'source-ref.txt').write_bytes(ref)
         platform = subprocess.check_output(['sw_vers']) + subprocess.check_output(['swift', '--version'])

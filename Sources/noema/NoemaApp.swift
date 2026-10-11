@@ -7,16 +7,19 @@ import VaultCore
     @State private var model = AppModel()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @Environment(\.openWindow) private var openWindow
+    @FocusedValue(\.workspacePaneActions) private var paneActions
     var body: some Scene {
         Window("Noema", id: "main") {
             ContentView(model: model)
-                .frame(minWidth: 960, minHeight: 620)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(WorkspaceWindowState(phase: model.sessionPhase))
                 .systemNoemaTheme()
                 .task { delegate.model = model; await model.restore() }
                 .onOpenURL { model.openBlockURL($0) }
         }
-        .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1280, height: 820)
+        // Let macOS own the titlebar, traffic lights, and full-screen transitions.
+        .windowStyle(.titleBar)
+        .defaultSize(width: 680, height: 480)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About Noema") {
@@ -24,39 +27,56 @@ import VaultCore
                 }
             }
             CommandGroup(replacing: .newItem) {
-                Button("New Page from Topic with AI…") { model.showTopicPage = true }.disabled(!model.isVaultAvailable)
-                Button("New Page") { model.newPage() }.keyboardShortcut("n").disabled(!model.isVaultAvailable)
-                Button("New Personal Page") { model.newPage(template: true) }.keyboardShortcut("n", modifiers: [.command, .shift]).disabled(!model.isVaultAvailable)
+                Button("New Page from Topic with AI…") { model.performWorkspaceCommand(.newTopicPage) }.disabled(!model.canPerformWorkspaceCommand(.newTopicPage))
+                Button("New Page") { model.performWorkspaceCommand(.newPage) }.keyboardShortcut("n").disabled(!model.canPerformWorkspaceCommand(.newPage))
+                Button("New Personal Page") { model.performWorkspaceCommand(.newPersonalPage) }.keyboardShortcut("n", modifiers: [.command, .shift]).disabled(!model.canPerformWorkspaceCommand(.newPersonalPage))
                 Divider()
-                Button("Open Vault…") { model.chooseVault(create: false) }.keyboardShortcut("o")
-                Button("Create Vault…") { model.chooseVault(create: true) }
+                Button("Open Vault…") { model.performWorkspaceCommand(.openVault) }.keyboardShortcut("o").disabled(!model.canPerformWorkspaceCommand(.openVault))
+                Button("Create Vault…") { model.performWorkspaceCommand(.createVault) }.disabled(!model.canPerformWorkspaceCommand(.createVault))
             }
             CommandGroup(replacing: .saveItem) {
-                Button("Save Page") { model.savePage() }.keyboardShortcut("s").disabled(!model.isVaultAvailable || model.currentNote == nil)
+                Button("Save Page") { model.performWorkspaceCommand(.save) }.keyboardShortcut("s").disabled(!model.canPerformWorkspaceCommand(.save))
+            }
+            CommandGroup(replacing: .sidebar) {
+                Button(paneActions?.sidebarPresented == true ? "Hide Sidebar" : "Show Sidebar") {
+                    paneActions?.toggleSidebar()
+                }
+                .keyboardShortcut("s", modifiers: [.command, .control])
+                .disabled(paneActions?.canToggleSidebar != true)
+                Button(paneActions?.inspectorPresented == true ? "Hide Inspector" : "Show Inspector") {
+                    paneActions?.toggleInspector()
+                }
+                .keyboardShortcut("i", modifiers: [.command, .option])
+                .disabled(paneActions?.canToggleInspector != true)
+                Divider()
+                Button("Return to Library") { model.performWorkspaceCommand(.returnToLibrary) }
+                    .keyboardShortcut("[")
+                    .disabled(!model.canPerformWorkspaceCommand(.returnToLibrary))
             }
             CommandMenu("Vault") {
-                Button("Find in Vault") { model.searchFocusToken += 1 }.keyboardShortcut("f", modifiers: [.command, .shift]).disabled(!model.isVaultAvailable)
-                Button("Quick Open") { model.searchFocusToken += 1 }.keyboardShortcut("p").disabled(!model.isVaultAvailable)
+                Button("Find in Vault") { model.performWorkspaceCommand(.search) }.keyboardShortcut("f", modifiers: [.command, .shift]).disabled(!model.canPerformWorkspaceCommand(.search))
+                Button("Quick Open") { model.performWorkspaceCommand(.search) }.keyboardShortcut("p").disabled(!model.canPerformWorkspaceCommand(.search))
                 Divider()
-                Button("Add Source…") { model.addSource() }.keyboardShortcut("i", modifiers: [.command, .shift]).disabled(!model.isVaultAvailable)
-                Button("Add Sources by URL…") { model.showURLSource = true }.disabled(!model.isVaultAvailable)
-                Button("Paste a Source…") { model.showPasteSource = true }.disabled(!model.isVaultAvailable)
-                Button("Reveal Vault in Finder") { model.revealVault() }.disabled(!model.isVaultAvailable)
-                Button("Refresh from Files") { Task { await model.refresh() } }.disabled(!model.isVaultAvailable)
-                Button("Recover Drafts…") { model.showRecovery = true }.disabled(!model.isVaultAvailable || !model.hasRecoveryEntries)
+                Button("Add Source…") { model.performWorkspaceCommand(.addSource) }.keyboardShortcut("i", modifiers: [.command, .shift]).disabled(!model.canPerformWorkspaceCommand(.addSource))
+                Button("Add Sources by URL…") { model.performWorkspaceCommand(.addURLSource) }.disabled(!model.canPerformWorkspaceCommand(.addURLSource))
+                Button("Paste a Source…") { model.performWorkspaceCommand(.pasteSource) }.disabled(!model.canPerformWorkspaceCommand(.pasteSource))
+                Button("Reveal Vault in Finder") { model.performWorkspaceCommand(.revealVault) }.disabled(!model.canPerformWorkspaceCommand(.revealVault))
+                Button("Refresh from Files") { model.performWorkspaceCommand(.refresh) }.disabled(!model.canPerformWorkspaceCommand(.refresh))
+                Button("Recover Drafts…") { model.performWorkspaceCommand(.recovery) }.disabled(!model.canPerformWorkspaceCommand(.recovery))
+                Button("Vault Notices…") { model.performWorkspaceCommand(.notices) }.disabled(!model.canPerformWorkspaceCommand(.notices))
                 Divider()
                 if model.isLocked {
-                    Button("Unlock Vault") { Task { await model.unlockVault() } }
+                    Button("Unlock Vault") { model.performWorkspaceCommand(.unlock) }
                         .keyboardShortcut("l", modifiers: [.command, .option])
-                        .disabled(model.busy)
+                        .disabled(!model.canPerformWorkspaceCommand(.unlock))
                 } else {
-                    Button("Lock Vault") { Task { await model.lockVault() } }
+                    Button("Lock Vault") { model.performWorkspaceCommand(.lock) }
                         .keyboardShortcut("l", modifiers: [.command, .option])
-                        .disabled(!model.isVaultAvailable || model.busy)
+                        .disabled(!model.canPerformWorkspaceCommand(.lock))
                 }
-                Button("Close Vault") { Task { _ = await model.closeVault() } }
+                Button("Close Vault") { model.performWorkspaceCommand(.close) }
                     .keyboardShortcut("w", modifiers: [.command, .shift])
-                    .disabled((!model.isVaultAvailable && !model.isLocked) || model.busy)
+                    .disabled(!model.canPerformWorkspaceCommand(.close))
             }
             CommandMenu("Format") {
                 Button("Block Actions…") { model.format("block-actions", "") }.keyboardShortcut("b", modifiers: [.command, .shift]).disabled(!model.isVaultAvailable || model.currentNote == nil || model.reading)

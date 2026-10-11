@@ -31,7 +31,6 @@ struct InspectorContainer: View {
                 }
                 .frame(maxHeight: .infinity)
                 .background(theme.color(for: .inspector))
-                .ignoresSafeArea(.container, edges: .top)
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel(accessibilityLabel)
             } else {

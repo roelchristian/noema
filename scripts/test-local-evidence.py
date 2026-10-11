@@ -11,6 +11,8 @@ sys.dont_write_bytecode = True
 import tempfile
 import time
 import unittest
+from unittest import mock
+from types import SimpleNamespace
 
 SOURCE = Path(__file__).resolve().parent.parent
 
@@ -205,6 +207,40 @@ class LocalEvidenceTests(unittest.TestCase):
             result = subprocess.run(command, env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
 
+    def test_historical_baseline_compiles_current_fixture_with_legacy_flag(self):
+        spec = importlib.util.spec_from_file_location('baseline_under_test', SOURCE / 'scripts/local_evidence.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.REPO = self.repo
+        fixture = self.repo / 'Tests/NoemaEditorTests/DesignTokenValidationTests.swift'
+        fixture.parent.mkdir(parents=True)
+        fixture.write_text('// current conditional native fixture')
+        calls = []
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[0] == 'tar':
+                snapshot = Path(command[-1])
+                (snapshot / 'Tests/NoemaEditorTests').mkdir(parents=True)
+                # Historical snapshot has neither pane injection nor title source.
+                self.assertFalse((snapshot / 'Sources/noema/WorkspaceWindowTitle.swift').exists())
+            elif command[0] == './scripts/test.sh':
+                self.assertEqual(command, ['./scripts/test.sh', '--filter', 'DesignTokenValidationTests',
+                                           '-Xswiftc', '-DNOEMA_LEGACY_TOKEN_FIXTURE'])
+                self.assertEqual((kwargs['cwd'] / 'Tests/NoemaEditorTests/DesignTokenValidationTests.swift').read_text(),
+                                 fixture.read_text())
+                output = Path(kwargs['env']['NOEMA_TOKEN_SCREENSHOT_DIR'])
+                self.assertEqual(output, self.managed / 'legacy/baseline')
+                self.assertTrue((output.parent / '.active').is_dir())
+            return SimpleNamespace(stdout=b'archive')
+        with mock.patch.dict(os.environ, {'BASELINE_REF': '0046a9e'}), \
+                mock.patch.object(module.subprocess, 'run', side_effect=run), \
+                mock.patch.object(module.subprocess, 'check_output', return_value=b'fixture metadata\n'):
+            module.capture(SimpleNamespace(run_id='legacy', phase='baseline'))
+        self.assertIn(['git', 'archive', '0046a9e'], calls)
+        self.assertFalse((self.managed / 'legacy/.active').exists())
+        self.assertFalse((self.managed / 'legacy/.complete').exists())
+        self.assertTrue((self.managed / 'legacy/baseline/source-ref.txt').is_file())
+
     def test_selection_stays_local_and_requires_full_matrix(self):
         fixture = self.repo / 'Tests/NoemaEditorTests/DesignTokenValidationTests.swift'
         fixture.parent.mkdir(parents=True)
@@ -220,7 +256,10 @@ class LocalEvidenceTests(unittest.TestCase):
         for phase in ('baseline', 'after'):
             directory = run / phase
             directory.mkdir()
-            for name in selected + [f'additional-{i}.png' for i in range(120)]:
+            names = selected + [f'additional-{i}.png' for i in range(120)]
+            if phase == 'after':
+                names += [f'{view}-{mode}.png' for view in ('workspace-native-minimum', 'workspace-welcome-compact') for mode in modes]
+            for name in names:
                 (directory / name).write_bytes(b'fixture-image')
             (directory / 'source-ref.txt').write_text(f'{phase}-commit')
             (directory / 'platform.txt').write_text('test fixture environment')
@@ -229,6 +268,9 @@ class LocalEvidenceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         manifest = json.loads((run / 'capture-manifest.json').read_text())
         self.assertEqual(len(manifest['captures']['baseline']), 136)
+        self.assertEqual(len(manifest['captures']['after']), 152)
+        self.assertIn('workspace-native-minimum-system-light-standard.png', manifest['captures']['after'])
+        self.assertIn('workspace-welcome-compact-midnightIris-dark-increased.png', manifest['captures']['after'])
         self.assertEqual(len(list((run / 'evidence').rglob('*.png'))), 32)
         self.assertTrue((run / '.complete').is_file())
         self.assertFalse((run / '.active').exists())
@@ -237,7 +279,7 @@ class LocalEvidenceTests(unittest.TestCase):
         result = subprocess.run(command, text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue((run / '.failed').exists())
-        self.assertIn('found 135', result.stderr)
+        self.assertIn('Expected 152 after captures, found 151', result.stderr)
 
 
 if __name__ == '__main__':

@@ -23,6 +23,7 @@ GENERATED = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.pdf', '.log', '.txt',
 # HTML can be a genuine executable fixture, but requires explicit reviewed ownership.
 REPORT = re.compile(r'(?:^|[-_.])(?:milestone|journal|transcript|investigation|'
                     r'completion-report|validation-report|task-report)(?:[-_.]|$)', re.I)
+MILESTONE_REPORT = re.compile(r'^(?:UI[._-][A-Z0-9]+|D[0-9]+|MAINT[._-]CL[0-9]+|SRC[._-]P[0-9]+)[._-].*(?:VALIDATION|AUDIT|REPORT|EVIDENCE|JOURNAL|TRANSCRIPT|INVESTIGATION|COMPLETION)(?:[._-]|$)', re.I)
 LINK = re.compile(r'!?\[[^\]\n]*\]\(\s*(<[^>]+>|[^\s)]+)(?:\s+["\'][^\n]*?["\'])?\s*\)')
 REFERENCE = re.compile(r'^\s*\[[^\]]+\]:\s*(<[^>]+>|\S+)', re.M)
 # Source/script literals and Markdown code references to repository docs are audited,
@@ -52,7 +53,7 @@ def fixture_registry(root, files):
             parsed = PurePosixPath(path)
             if (not isinstance(reason, str) or not reason.strip() or
                     parsed.is_absolute() or '..' in parsed.parts or
-                    not path.startswith('validation/') or path not in files or
+                    not path.startswith(('validation/', 'docs/')) or path not in files or
                     path in approved):
                 raise ValueError(f'invalid/stale/duplicate fixture ownership: {path}')
             approved.add(path)
@@ -69,8 +70,10 @@ def path_errors(path, approved):
         errors.append(f'Root Markdown is not allowlisted: {path}')
     if parts[0] == '.local' or path == 'AGENTS.local.md':
         errors.append(f'Private/local output must be untracked: {path}')
-    if suffix in {'.md', '.markdown', '.txt'} and REPORT.search(PurePosixPath(path).name):
+    if suffix in {'.md', '.markdown', '.txt'} and (REPORT.search(PurePosixPath(path).name) or MILESTONE_REPORT.search(PurePosixPath(path).stem)):
         errors.append(f'Historical execution report must remain local: {path}')
+    if parts[0] == 'docs' and len(parts) > 2 and parts[1].lower() in {'screenshots', 'evidence', 'generated', 'captures', 'reports'} and path not in approved:
+        errors.append(f'Generated documentation evidence must remain local: {path}')
     if parts[0] == 'validation' and path not in approved:
         if suffix in GENERATED or any(p.lower() in {'evidence', 'generated', 'captures', 'screenshots', 'reports'} for p in parts[1:-1]) or 'manifest' in parts[-1].lower():
             errors.append(f'Generated validation artifact needs reviewed fixture ownership: {path}')

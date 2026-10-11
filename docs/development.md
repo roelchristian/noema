@@ -35,7 +35,17 @@ Successful test/build wrappers run age-based cleanup. `--force` bypasses age onl
 
 Update current contracts in place; remove superseded statements. Routine passing runs belong in the PR validation section (normally at most 15 lines), not a new report or appended journal. Update [validation](validation.md) only for a changed baseline, procedure, acceptance status or limitation. New permanent decisions must explain lasting choices and belong under `docs/decisions/`; do not archive execution reports there.
 
-The hygiene checker fails on root Markdown outside `README.md`/`AGENTS.md`, tracked local output, generated validation artifacts, historical-report names and broken repository documentation references. Size limits initially warn: 120 lines for agent policy; approximately 200–300 lines for standing validation. Never shorten safety contracts or suppress failure evidence to meet a numerical limit.
+The hygiene checker fails on root Markdown outside `README.md`/`AGENTS.md`, tracked local output, generated validation artifacts or documentation evidence directories, historical-report names and broken repository documentation references. Size limits initially warn: 120 lines for agent policy; approximately 200–300 lines for standing validation. Never shorten safety contracts or suppress failure evidence to meet a numerical limit.
+
+## Native workspace controls
+
+Global commands are in the native toolbar and menus; document editing controls remain
+with the heading. `⌃⌘S` toggles sidebar, `⌥⌘I` toggles contextual inspector, and
+`⇧⌘F` / `⌘P` reveal the sidebar and focus its search field. Sidebar/inspector intent
+and divider widths persist independently; narrow windows can temporarily hide a pane
+without changing intent. Welcome/locked and open workspace have separate saved frames.
+Validate native divider restoration, minimum-size collapse, full-screen transitions
+and auxiliary-window isolation using the [standing matrix](validation.md#native-window-acceptance).
 
 ## Core workflow
 

@@ -37,8 +37,9 @@ def select(run_id):
         for source in ('baseline', 'after'):
             generated = run / source
             files = sorted(generated.glob('*.png'))
-            if len(files) != 136:
-                raise ValueError(f'Expected 136 {source} captures, found {len(files)}')
+            expected = 136 if source == 'baseline' else 152
+            if len(files) != expected:
+                raise ValueError(f'Expected {expected} {source} captures, found {len(files)}')
             missing = set(selected) - {file.name for file in files}
             if missing:
                 raise ValueError(f'Missing representative {source} captures: {sorted(missing)}')

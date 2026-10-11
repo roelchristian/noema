@@ -173,3 +173,16 @@ Existing `SidebarEditingLockControl` already reveals itself for locked/hovered/p
 Visual acceptance must exercise Light/Dark at standard/increased contrast; System accent and Midnight Iris; Reduce Motion; minimum-size window; sidebar/editor/Sources/inspector; locked/empty/no-vault; keyboard-only and VoiceOver; native controls/alerts/sheets. Preserve other selectable palettes and accent-only/full-palette settings as regression coverage. Capture baseline and migrated components where possible; if baseline, VoiceOver or environment automation cannot be obtained, explicitly record the gap rather than declaring the matrix complete. Build success alone is insufficient visual acceptance.
 
 Run the repository's existing build and test scripts and retain relevant regression coverage for inspector context/tab memory, Sources selection/customization, Trash navigation, theme modes, editor typography and session-driven content visibility. Meaningful new tests exercise semantic-role resolution/contrast and interaction invariants rather than merely restating literal constants. Do not modify storage/session/scanning/indexing/file format semantics to satisfy presentation tests.
+
+
+## Native toolbar integration
+
+The native toolbar retains SwiftUI/AppKit fonts, geometry, focus, hover, pressed and
+disabled drawing with the scene's `NoemaTheme` tint. Do not apply custom row fonts,
+hit-target frames or `NoemaChromeButtonStyle` to native toolbar controls. Shared
+sidebar/search/footer and inspector content retain semantic typography, spacing,
+colors and focus. Content stays below the native titlebar; sidebar top inset uses
+`NoemaSpacing.md`, and welcome/locked text resolves against `.window`. Native glass
+buttons retain their own foreground and sizing. Window/pane dimensions remain
+component-owned rather than density tokens. Isolated hosted fixture preferences must
+not modify real workspace defaults. See [validation](../validation.md#native-window-acceptance).

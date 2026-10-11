@@ -45,6 +45,17 @@ class HygieneTests(unittest.TestCase):
         for path in ['validation/tokens/capture.sh', 'validation/tokens/.gitignore', 'Tests/sample.png', 'Resources/Brand/Icon.png', 'Examples/Demo Vault/Wiki/Story.md']:
             self.assertFalse(hygiene.path_errors(path, set()), path)
 
+    def test_docs_evidence_directories_do_not_bypass_retention(self):
+        for directory in ['screenshots', 'evidence', 'generated', 'captures', 'reports']:
+            self.assertTrue(hygiene.path_errors(f'docs/{directory}/output.png', set()))
+            self.assertTrue(hygiene.path_errors(f'docs/{directory}/run.md', set()))
+        self.assertFalse(hygiene.path_errors('docs/diagrams/storage.svg', set()))
+        self.assertFalse(hygiene.path_errors('Resources/Brand/Canonical.png', set()))
+        self.assertFalse(hygiene.path_errors('Tests/Fixtures/Expected.png', set()))
+        self.write('docs/screenshots/fixture.png')
+        self.write(hygiene.REGISTRY, '[{"path":"docs/screenshots/fixture.png","reason":"Reviewed exact golden fixture"}]')
+        self.assertFalse(self.inspect()[0])
+
     def test_reviewed_fixture_needs_valid_exact_owner(self):
         self.write('validation/fixture.png')
         self.write(hygiene.REGISTRY, '[{"path":"validation/fixture.png","reason":"Reviewed render regression input"}]')
@@ -61,6 +72,12 @@ class HygieneTests(unittest.TestCase):
         self.assertTrue(hygiene.path_errors('docs/decisions/task-report.md', set()))
         self.assertTrue(hygiene.path_errors('docs/milestone-07.md', set()))
         self.assertFalse(hygiene.path_errors('docs/contracts/storage-boundary.md', set()))
+
+    def test_milestone_reports_do_not_become_new_permanent_documents(self):
+        for path in ['docs/UI_TBR_VALIDATION.md', 'docs/UI_TBR_ARCHITECTURE_AUDIT.md', 'docs/D02_RECONSTRUCTION_REPORT.md', 'docs/MAINT.CL02_retention_completion.md', 'docs/UI.TK07_visual_evidence.md']:
+            self.assertTrue(hygiene.path_errors(path, set()), path)
+        for path in ['docs/validation.md', 'docs/contracts/storage-boundary.md', 'docs/contracts/UI_TBR_toolbar.md', 'docs/decisions/D02_schema-selection.md', 'Resources/Brand/CONTRACT.md']:
+            self.assertFalse(hygiene.path_errors(path, set()), path)
 
     def test_relative_links_escaped_spaces_fragments_and_references(self):
         self.write('docs/contracts/storage.md', '# Storage\n\n<a id="review"></a>')
