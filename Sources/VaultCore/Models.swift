@@ -19,6 +19,8 @@ public struct NoteRecord: Codable, Identifiable, Sendable, Equatable {
     public var relativePath: String
     public var contentHash: String
     public var lcc: String? = nil
+    public var aiTitleProvenance: SummaryProvenance? = nil
+    public var aiLCCProvenance: SummaryProvenance? = nil
     public var editingLocked: Bool? = nil
     public var isEditingLocked: Bool { editingLocked == true }
     public var sourceIDs: [UUID]? = nil
@@ -26,13 +28,15 @@ public struct NoteRecord: Codable, Identifiable, Sendable, Equatable {
     public var originalHeader: String?
     public var allTags: [String] { Array(Set(tags + inlineTags)).sorted() }
 }
-/// Portable facts about an explicitly generated cloud summary; no request authority or secret.
+/// Portable generation facts for an accepted AI artifact; no request authority or secret.
 public struct SummaryProvenance: Codable, Sendable, Equatable {
     public var provider: String
     public var model: String
     public var generatedAt: Date
-    public init(provider: String, model: String, generatedAt: Date) {
+    public var sourceRevision: String? = nil
+    public init(provider: String, model: String, generatedAt: Date, sourceRevision: String? = nil) {
         self.provider = provider; self.model = model; self.generatedAt = generatedAt
+        self.sourceRevision = sourceRevision
     }
 }
 public struct SourceMetadata: Codable, Identifiable, Sendable, Equatable {
@@ -43,6 +47,8 @@ public struct SourceMetadata: Codable, Identifiable, Sendable, Equatable {
     public var originURL: String?
     public var sha256: String
     public var lcc: String? = nil
+    public var aiTitleProvenance: SummaryProvenance? = nil
+    public var aiLCCProvenance: SummaryProvenance? = nil
     public var aiSummary: String? = nil
     public var aiSummaryProvenance: SummaryProvenance? = nil
     public var isURLSource: Bool? = nil

@@ -68,3 +68,43 @@ struct ExternalAIContractsTests {
         #expect(ExternalAISessionPolicy.default.maximumLifetime == 14_400)
     }
 }
+
+@Test func actionConsentCannotBeReusedForDifferentOperationOnSameSnapshot() throws {
+    let summary = try ExternalAISummaryRequest(authority: ExternalAIVaultAuthority(lease: VaultSessionLease(
+        vaultID: UUID(), root: URL(fileURLWithPath: "/tmp/action-contract"), generation: 1)),
+        target: .page(UUID()), contentRevision: UUID(), content: "Selected text")
+    let consent = ExternalAIContentConsent(approving: summary)
+    for action in [ExternalAIAction.suggestTitle, .lccClassification] {
+        let changed = try ExternalAISummaryRequest(id: summary.id, authority: summary.authority,
+            target: summary.target, contentRevision: summary.contentRevision, content: summary.content, action: action)
+        #expect(!consent.approves(changed))
+        #expect(ExternalAIContentConsent(approving: changed).approves(changed))
+    }
+    #expect(throws: ExternalAIError.unsupportedAction) {
+        try ExternalAISummaryRequest(authority: summary.authority, target: .page(UUID()),
+            contentRevision: UUID(), content: "Selected text", action: .summarizeSource)
+    }
+}
+
+@Test func titleAndClassificationOutputsAreBoundedValidatedAndRedacted() throws {
+    for title in ["\nInjected title", "Title: Topic", "Two\nLines", "# Heading", "<b>Topic</b>",
+                  "**Topic**", "[Topic](https://example.com)", "A\u{0}Topic", "\"Topic\"",
+                  String(repeating: "a", count: 121), "one two three four five six seven eight nine"] {
+        #expect(throws: ExternalAIError.invalidResponse) { try ExternalAIOutputValidation.validateTitle(title) }
+    }
+    try ExternalAIOutputValidation.validateTitle("Sourdough Starter Maintenance")
+    #expect(LCCClassificationVocabulary.suggestionCode(fromCallNumber: "QA76.9") == "QA")
+    #expect(LCCClassificationVocabulary.suggestionCode(fromCallNumber: "ZZ999") == nil)
+    let valid = try ExternalAIOutputValidation.lccSuggestion(from: #"{"code":"QA","rationale":"Mathematical subject."}"#)
+    #expect(valid.code == "QA")
+    #expect(!String(reflecting: valid).contains("Mathematical subject."))
+    for output in [#"{"code":"ZZ","rationale":"Unknown"}"#, #"{"code":"QA76","rationale":"Full number"}"#,
+                   #"{"code":"QA","rationale":""}"#, #"{"code":"QA","rationale":"<b>Topic</b>"}"#,
+                   #"{"code":"QA","rationale":"Topic","extra":"secret"}"#, #"{"code":42,"rationale":"Topic"}"#,
+                   #"{"code":"QA"}"#, #"```json {"code":"QA","rationale":"Topic"} ```"#] {
+        #expect(throws: ExternalAIError.invalidResponse) { try ExternalAIOutputValidation.lccSuggestion(from: output) }
+    }
+    #expect(throws: ExternalAIError.invalidResponse) {
+        try ExternalAILCCSuggestion(code: "QA", rationale: String(repeating: "🙂", count: 513))
+    }
+}
