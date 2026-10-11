@@ -17,6 +17,7 @@ struct CloudSummaryIntegrationTests {
 
     @MainActor private func fixture() async throws -> (URL, AppModel, NoteRecord, FileVaultRepository) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-cloud-summary-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let repository = try FileVaultRepository.open(root: root, create: true)
         var document = BlockDocumentCodec.decode("Selected page body")
         document.setAISummary("Existing local summary")
@@ -131,6 +132,7 @@ struct CloudSummaryIntegrationTests {
     @Test func sourceOriginalMutationRejectsPublication() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-cloud-cas-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let repository = try FileVaultRepository.open(root: root, create: true)
         let source = try await repository.importSource(data: Data("Original".utf8), filename: "fixture.txt", title: "Source", originURL: nil)
         let snapshot = try await repository.sourceSummarySnapshot(id: source.id)
@@ -145,6 +147,7 @@ struct CloudSummaryIntegrationTests {
     @Test func sourceProvenanceRoundTripAndLocalRegenerationClearsIt() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-cloud-provenance-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let repository = try FileVaultRepository.open(root: root, create: true)
         let source = try await repository.importSource(data: Data("Original".utf8), filename: "fixture.txt", title: "Source", originURL: nil)
         let snapshot = try await repository.sourceSummarySnapshot(id: source.id)
@@ -153,6 +156,76 @@ struct CloudSummaryIntegrationTests {
         let local = try await repository.renameSource(cloud, title: cloud.title, summary: "Local")
         #expect(local.metadata.aiSummaryProvenance == nil)
         #expect(try await repository.loadSource(id: source.id).metadata.aiSummaryProvenance == nil)
+    }
+
+    @MainActor private func sourceLibraryFixture() async throws -> (URL, AppModel, SourceRecord, SourceRecord, FileVaultRepository) {
+        let (root, model, _, repository) = try await fixture()
+        let first = try await repository.importSource(data: Data("First selected source".utf8), filename: "first.txt", title: "First", originURL: nil)
+        let second = try await repository.importSource(data: Data("Second selected source".utf8), filename: "second.txt", title: "Second", originURL: nil)
+        await model.refresh()
+        model.changeScope(.sources)
+        try await waitUntil { model.scope == .sources && model.currentNote == nil && model.selectedID == nil }
+        model.setLibrarySourceSelection(first.id)
+        return (root, model, first, second, repository)
+    }
+
+    @Test @MainActor func sourceLibrarySelectionABARejectsDelayedResponseThroughTableRoute() async throws {
+        let (root, model, first, second, repository) = try await sourceLibraryFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let latch = CloudResponseLatch(); mock(model, latch: latch)
+        model.prepareCloudSourceSummary(first)
+        try await waitUntil { model.cloudSummaryConfirmation != nil || model.cloudSummaryError != nil }
+        _ = try #require(model.cloudSummaryConfirmation)
+        model.confirmCloudSummary(); await latch.waitForRequest()
+        let originalTask = try #require(model.cloudSummaryTaskForTesting)
+        #expect(model.selectedID == nil)
+        // This is the same synchronous setter used by ContentView's Table selection binding.
+        model.setLibrarySourceSelection(second.id)
+        model.setLibrarySourceSelection(first.id)
+        #expect(model.cloudSummaryTarget == nil)
+        try await latch.finish()
+        await originalTask.value
+        #expect(try await repository.loadSource(id: first.id).metadata.aiSummary == nil)
+        #expect(try await repository.loadSource(id: second.id).metadata.aiSummary == nil)
+    }
+
+    @Test @MainActor func sourceSelectionAndScopeABADiscardConsentBeforeItCanRearm() async throws {
+        let (root, model, first, second, _) = try await sourceLibraryFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let latch = CloudResponseLatch(); mock(model, latch: latch)
+        for changeScope in [false, true] {
+            model.prepareCloudSourceSummary(first)
+            try await waitUntil { model.cloudSummaryConfirmation != nil || model.cloudSummaryError != nil }
+            _ = try #require(model.cloudSummaryConfirmation)
+            if changeScope {
+                // Direct scope mutations also revoke when selectedID/body remain unchanged.
+                model.scope = .wiki; model.scope = .sources
+            } else {
+                model.setLibrarySourceSelection(second.id)
+                model.setLibrarySourceSelection(first.id)
+            }
+            #expect(model.cloudSummaryConfirmation == nil)
+            model.confirmCloudSummary()
+            #expect(model.cloudSummaryTarget == nil)
+            #expect(await latch.count == 0)
+        }
+    }
+
+    @Test @MainActor func sourceScopeABARejectsDelayedResponseWithNoPageSelection() async throws {
+        let (root, model, first, _, repository) = try await sourceLibraryFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let latch = CloudResponseLatch(); mock(model, latch: latch)
+        model.prepareCloudSourceSummary(first)
+        try await waitUntil { model.cloudSummaryConfirmation != nil || model.cloudSummaryError != nil }
+        _ = try #require(model.cloudSummaryConfirmation)
+        model.confirmCloudSummary(); await latch.waitForRequest()
+        let originalTask = try #require(model.cloudSummaryTaskForTesting)
+        #expect(model.selectedID == nil)
+        model.scope = .wiki; model.scope = .sources
+        try await latch.finish()
+        await originalTask.value
+        #expect(model.cloudSummaryTarget == nil)
+        #expect(try await repository.loadSource(id: first.id).metadata.aiSummary == nil)
     }
 
     @Test func queuedPublicationPredicateRejectsInvalidatedRequest() throws {

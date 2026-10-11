@@ -1,10 +1,11 @@
 import Foundation
 import Synchronization
-import XCTest
+import Testing
 @testable import ExternalAI
 import VaultCore
 
-final class ExternalAISessionManagerTests: XCTestCase, @unchecked Sendable {
+@Suite
+struct ExternalAISessionManagerTests {
     private struct Fixture {
         let vault: VaultSessionManager
         let session: VaultSession
@@ -29,19 +30,21 @@ final class ExternalAISessionManagerTests: XCTestCase, @unchecked Sendable {
                        clock: clock, manager: manager)
     }
 
+    @Test
     func testAuthorizationReusedWithoutAnotherPrompt() async throws {
         let f = try await fixture()
         let initial = await f.manager.state
-        XCTAssertEqual(initial, .unauthorized)
+        #expect(initial == .unauthorized)
         let capability = try await f.manager.authorize(f.authority)
         let reused = try await f.manager.authorize(f.authority)
-        XCTAssertEqual(capability, reused)
+        #expect(capability == reused)
         let count = await f.authenticator.count
-        XCTAssertEqual(count, 1)
+        #expect(count == 1)
         let state = await f.manager.state
-        XCTAssertEqual(state, .authorized)
+        #expect(state == .authorized)
     }
 
+    @Test
     func testConcurrentPromptsCoalesce() async throws {
         let f = try await fixture(held: true)
         let first = Task { try await f.manager.authorize(f.authority) }
@@ -50,15 +53,16 @@ final class ExternalAISessionManagerTests: XCTestCase, @unchecked Sendable {
         // Both queued callers can join the same actor-owned authentication task.
         for _ in 0..<100 { await Task.yield() }
         let state = await f.manager.state
-        XCTAssertEqual(state, .authorising)
+        #expect(state == .authorising)
         await f.authenticator.succeed()
         let one = try await first.value
         let two = try await second.value
-        XCTAssertEqual(one, two)
+        #expect(one == two)
         let count = await f.authenticator.count
-        XCTAssertEqual(count, 1)
+        #expect(count == 1)
     }
 
+    @Test
     func testLockRevokesAndCancelsSynchronouslyBeforeObservation() async throws {
         let f = try await fixture()
         let capability = try await f.manager.authorize(f.authority)
@@ -66,49 +70,52 @@ final class ExternalAISessionManagerTests: XCTestCase, @unchecked Sendable {
         _ = try f.manager.registerCancellation(for: capability) { cancelled.withLock { $0 = true } }
         // Direct gate transition demonstrates no asynchronous stream delivery is required.
         f.vault.accessGate.updateState(.locking(f.session))
-        XCTAssertTrue(cancelled.withLock { $0 })
-        XCTAssertThrowsError(try f.manager.validateSynchronously(capability)) {
-            XCTAssertEqual($0 as? ExternalAIError, .vaultUnavailable)
+        #expect(cancelled.withLock { $0 })
+        expectError(try f.manager.validateSynchronously(capability)) {
+            #expect($0 as? ExternalAIError == .vaultUnavailable)
         }
         let state = await f.manager.state
-        XCTAssertEqual(state, .revoked)
+        #expect(state == .revoked)
     }
 
+    @Test
     func testSessionReplacementAtSamePathRejectsOldAuthority() async throws {
         let f = try await fixture()
         let capability = try await f.manager.authorize(f.authority)
         let replacement = VaultSession(vaultID: f.session.vaultID, root: f.session.root,
                                        generation: f.session.generation + 1)
         f.vault.accessGate.updateState(.open(replacement))
-        XCTAssertThrowsError(try f.manager.validateSynchronously(capability)) {
-            XCTAssertEqual($0 as? ExternalAIError, .vaultUnavailable)
+        expectError(try f.manager.validateSynchronously(capability)) {
+            #expect($0 as? ExternalAIError == .vaultUnavailable)
         }
         do {
             _ = try await f.manager.authorize(f.authority)
-            XCTFail("Stale authority must not authenticate")
-        } catch { XCTAssertEqual(error as? ExternalAIError, .vaultUnavailable) }
+            Issue.record("Stale authority must not authenticate")
+        } catch { #expect(error as? ExternalAIError == .vaultUnavailable) }
         let count = await f.authenticator.count
-        XCTAssertEqual(count, 1)
+        #expect(count == 1)
     }
 
+    @Test
     func testIdleExpiryCancelsOutstandingRequestAndRequiresFreshPrompt() async throws {
         let f = try await fixture()
         let capability = try await f.manager.authorize(f.authority)
         let cancelled = Mutex(false)
         _ = try f.manager.registerCancellation(for: capability) { cancelled.withLock { $0 = true } }
         f.clock.advance(30 * 60)
-        XCTAssertThrowsError(try f.manager.validateSynchronously(capability)) {
-            XCTAssertEqual($0 as? ExternalAIError, .authorizationExpired)
+        expectError(try f.manager.validateSynchronously(capability)) {
+            #expect($0 as? ExternalAIError == .authorizationExpired)
         }
-        XCTAssertTrue(cancelled.withLock { $0 })
+        #expect(cancelled.withLock { $0 })
         let expired = await f.manager.state
-        XCTAssertEqual(expired, .expired)
+        #expect(expired == .expired)
         let refreshed = try await f.manager.authorize(f.authority)
-        XCTAssertNotEqual(capability, refreshed)
+        #expect(capability != refreshed)
         let count = await f.authenticator.count
-        XCTAssertEqual(count, 2)
+        #expect(count == 2)
     }
 
+    @Test
     func testValidationDoesNotRefreshIdleButAuthorizedOperationDoes() async throws {
         let f = try await fixture()
         let capability = try await f.manager.authorize(f.authority)
@@ -117,11 +124,12 @@ final class ExternalAISessionManagerTests: XCTestCase, @unchecked Sendable {
         f.clock.advance(29 * 60)
         try await f.manager.validate(capability)
         f.clock.advance(60)
-        XCTAssertThrowsError(try f.manager.validateSynchronously(capability)) {
-            XCTAssertEqual($0 as? ExternalAIError, .authorizationExpired)
+        expectError(try f.manager.validateSynchronously(capability)) {
+            #expect($0 as? ExternalAIError == .authorizationExpired)
         }
     }
 
+    @Test
     func testFourHourMaximumExpiresDespiteActivity() async throws {
         let f = try await fixture()
         let capability = try await f.manager.authorize(f.authority)
@@ -130,28 +138,30 @@ final class ExternalAISessionManagerTests: XCTestCase, @unchecked Sendable {
             try f.manager.validateSynchronously(capability, activity: true)
         }
         f.clock.advance(8 * 60)
-        XCTAssertThrowsError(try f.manager.validateSynchronously(capability)) {
-            XCTAssertEqual($0 as? ExternalAIError, .authorizationExpired)
+        expectError(try f.manager.validateSynchronously(capability)) {
+            #expect($0 as? ExternalAIError == .authorizationExpired)
         }
     }
 
+    @Test
     func testCredentialReplacementAndRemovalImmediatelyCancel() async throws {
         let f = try await fixture()
         let capability = try await f.manager.authorize(f.authority)
         let cancelled = Mutex(false)
         _ = try f.manager.registerCancellation(for: capability) { cancelled.withLock { $0 = true } }
         try await f.broker.replace("replacement-synthetic-session-key")
-        XCTAssertTrue(cancelled.withLock { $0 })
-        XCTAssertThrowsError(try f.manager.validateSynchronously(capability)) {
-            XCTAssertEqual($0 as? ExternalAIError, .authorizationRevoked)
+        #expect(cancelled.withLock { $0 })
+        expectError(try f.manager.validateSynchronously(capability)) {
+            #expect($0 as? ExternalAIError == .authorizationRevoked)
         }
         let second = try await f.manager.authorize(f.authority)
         try await f.broker.remove()
-        XCTAssertThrowsError(try f.manager.validateSynchronously(second)) {
-            XCTAssertEqual($0 as? ExternalAIError, .authorizationRevoked)
+        expectError(try f.manager.validateSynchronously(second)) {
+            #expect($0 as? ExternalAIError == .authorizationRevoked)
         }
     }
 
+    @Test
     func testCancellationFailsClosedEvenIfAuthenticatorLaterSucceeds() async throws {
         let f = try await fixture(held: true)
         let authorization = Task { try await f.manager.authorize(f.authority) }
@@ -159,24 +169,26 @@ final class ExternalAISessionManagerTests: XCTestCase, @unchecked Sendable {
         authorization.cancel()
         // Injected authenticators may ignore cancellation; the registry still rejects completion.
         await f.authenticator.succeed()
-        do { _ = try await authorization.value; XCTFail("Cancelled prompt issued authority") }
-        catch { XCTAssertEqual(error as? ExternalAIError, .cancelled) }
+        do { _ = try await authorization.value; Issue.record("Cancelled prompt issued authority") }
+        catch { #expect(error as? ExternalAIError == .cancelled) }
         let state = await f.manager.state
-        XCTAssertEqual(state, .revoked)
+        #expect(state == .revoked)
     }
 
+    @Test
     func testLockDuringPromptFailsClosed() async throws {
         let f = try await fixture(held: true)
         let authorization = Task { try await f.manager.authorize(f.authority) }
         await f.authenticator.waitUntilStarted()
         f.vault.accessGate.updateState(.locking(f.session))
         await f.authenticator.succeed()
-        do { _ = try await authorization.value; XCTFail("Revoked prompt issued authority") }
-        catch { XCTAssertTrue([ExternalAIError.cancelled, .vaultUnavailable, .authorizationRevoked].contains(where: { $0 == error as? ExternalAIError })) }
+        do { _ = try await authorization.value; Issue.record("Revoked prompt issued authority") }
+        catch { #expect([ExternalAIError.cancelled, .vaultUnavailable, .authorizationRevoked].contains(where: { $0 == error as? ExternalAIError })) }
         let state = await f.manager.state
-        XCTAssertEqual(state, .revoked)
+        #expect(state == .revoked)
     }
 
+    @Test
     func testAtomicDispatchRejectsLockedOrRevokedAuthorityWithoutCallingBody() async throws {
         let f = try await fixture()
         let capability = try await f.manager.authorize(f.authority)
@@ -184,40 +196,43 @@ final class ExternalAISessionManagerTests: XCTestCase, @unchecked Sendable {
         try f.vault.accessGate.withOpenSession(lease: f.session.lease, operation: "testCloudDispatch") {
             try f.manager.withValidatedAuthorization(capability) { dispatched.withLock { $0 += 1 } }
         }
-        XCTAssertEqual(dispatched.withLock { $0 }, 1)
+        #expect(dispatched.withLock { $0 } == 1)
         try await f.broker.replace("replacement-synthetic-session-key")
-        XCTAssertThrowsError(try f.vault.accessGate.withOpenSession(lease: f.session.lease, operation: "testCloudDispatch") {
+        expectError(try f.vault.accessGate.withOpenSession(lease: f.session.lease, operation: "testCloudDispatch") {
             try f.manager.withValidatedAuthorization(capability) { dispatched.withLock { $0 += 1 } }
         })
         f.vault.accessGate.updateState(.locking(f.session))
-        XCTAssertThrowsError(try f.vault.accessGate.withOpenSession(lease: f.session.lease, operation: "testCloudDispatch") {
+        expectError(try f.vault.accessGate.withOpenSession(lease: f.session.lease, operation: "testCloudDispatch") {
             dispatched.withLock { $0 += 1 }
         })
-        XCTAssertEqual(dispatched.withLock { $0 }, 1)
+        #expect(dispatched.withLock { $0 } == 1)
     }
 
+    @Test
     func testAuthenticationFailureUsesBoundedErrorAndIssuesNoCapability() async throws {
         let f = try await fixture()
         let manager = ExternalAISessionManager(accessGate: f.vault.accessGate, credentialBroker: f.broker,
                                                authenticator: FailingSessionAuthenticator(), observeSystemEvents: false)
-        do { _ = try await manager.authorize(f.authority); XCTFail("Failed authentication issued authority") }
-        catch { XCTAssertEqual(error as? ExternalAIError, .authenticationFailed) }
+        do { _ = try await manager.authorize(f.authority); Issue.record("Failed authentication issued authority") }
+        catch { #expect(error as? ExternalAIError == .authenticationFailed) }
         let state = await manager.state
-        XCTAssertEqual(state, .revoked)
+        #expect(state == .revoked)
     }
 
+    @Test
     func testCredentialReplacementDuringPromptRejectsLateSuccess() async throws {
         let f = try await fixture(held: true)
         let authorization = Task { try await f.manager.authorize(f.authority) }
         await f.authenticator.waitUntilStarted()
         try await f.broker.replace("replacement-synthetic-session-key")
         await f.authenticator.succeed()
-        do { _ = try await authorization.value; XCTFail("Credential change issued stale authority") }
-        catch { XCTAssertTrue([ExternalAIError.cancelled, .authorizationRevoked].contains(where: { $0 == error as? ExternalAIError })) }
+        do { _ = try await authorization.value; Issue.record("Credential change issued stale authority") }
+        catch { #expect([ExternalAIError.cancelled, .authorizationRevoked].contains(where: { $0 == error as? ExternalAIError })) }
         let state = await f.manager.state
-        XCTAssertEqual(state, .revoked)
+        #expect(state == .revoked)
     }
 
+    @Test
     func testUnregisteredCompletedRequestIsNotCancelled() async throws {
         let f = try await fixture()
         let capability = try await f.manager.authorize(f.authority)
@@ -225,20 +240,21 @@ final class ExternalAISessionManagerTests: XCTestCase, @unchecked Sendable {
         let id = try f.manager.registerCancellation(for: capability) { cancelled.withLock { $0 = true } }
         f.manager.unregisterCancellation(id)
         f.manager.revoke(reason: .deviceSleep)
-        XCTAssertFalse(cancelled.withLock { $0 })
+        #expect(!(cancelled.withLock { $0 }))
     }
 
+    @Test
     func testExplicitLifecycleRevocationAndClockRollbackFailClosed() async throws {
         let f = try await fixture()
         let capability = try await f.manager.authorize(f.authority)
         f.clock.advance(-1)
-        XCTAssertThrowsError(try f.manager.validateSynchronously(capability)) {
-            XCTAssertEqual($0 as? ExternalAIError, .authorizationExpired)
+        expectError(try f.manager.validateSynchronously(capability)) {
+            #expect($0 as? ExternalAIError == .authorizationExpired)
         }
         let second = try await f.manager.authorize(f.authority)
         f.manager.revoke(reason: .screenLocked)
-        XCTAssertThrowsError(try f.manager.validateSynchronously(second)) {
-            XCTAssertEqual($0 as? ExternalAIError, .authorizationRevoked)
+        expectError(try f.manager.validateSynchronously(second)) {
+            #expect($0 as? ExternalAIError == .authorizationRevoked)
         }
     }
 }
@@ -281,4 +297,13 @@ private actor SessionTestAuthenticator: ExternalAIAuthenticating {
 
 private struct FailingSessionAuthenticator: ExternalAIAuthenticating {
     func authenticate() async throws { throw NSError(domain: "untrusted-auth-error", code: 1) }
+}
+
+private func expectError(_ body: @autoclosure () throws -> Void, verify: (Error) -> Void = { _ in }) {
+    do {
+        try body()
+        Issue.record("Expected operation to throw")
+    } catch {
+        verify(error)
+    }
 }
