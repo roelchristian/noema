@@ -49,10 +49,30 @@ struct ContentView: View {
         // change in withAnimation also animated the heavy Table/workspace and made switches jitter.
         model.changeScope(scope)
     }
+    private func resetLocalWorkspaceState() {
+        sourceSelection = nil
+        sourceRowsCache = []
+        renamingSource = nil
+        sourceName = ""
+        deletingSource = nil
+        showPermanentDeletion = false
+        permanentDeletion = nil
+        showEmptyTrash = false
+        emptyTrashPages = []
+        showTrashConfirmation = false
+        trashPageID = nil
+        hoveredSidebarPageID = nil
+        dismissedExternalChange = false
+        sourceOriginal = false
+        searchFocused = false
+    }
     var body: some View {
         Group {
-            if model.root == nil { welcome }
-            else {
+            if model.isLocked {
+                lockedVaultView
+            } else if !model.isVaultAvailable {
+                welcome
+            } else {
                 HSplitView {
                     sidebar.frame(minWidth: 250, idealWidth: 265, maxWidth: 280, maxHeight: .infinity)
                     mainWorkspace.frame(minWidth: model.scope == .sources && model.currentNote == nil && model.currentSource == nil ? 520 : 420, maxHeight: .infinity).transaction { $0.animation = nil }
@@ -72,12 +92,12 @@ struct ContentView: View {
         .sheet(isPresented: $model.showVaultCreation) {
             VaultCreationSheet(model: model).systemNoemaTheme()
         }
-        .sheet(isPresented: $model.showTopicPage) { TopicPageSheet(model: model) }
-        .sheet(isPresented: $model.showURLSource) { URLSourceSheet(model: model) }
-        .sheet(isPresented: $model.showPasteSource) { PasteSourceSheet(model: model) }
-        .sheet(isPresented: $model.showRecovery) { recoverySheet }
-        .sheet(isPresented: $model.showIssues) { noticesSheet }
-        .sheet(isPresented: Binding(get: { !model.ambiguousMatches.isEmpty }, set: { if !$0 { model.ambiguousMatches = [] } })) {
+        .sheet(isPresented: Binding(get: { model.isVaultAvailable && model.showTopicPage }, set: { model.showTopicPage = $0 })) { TopicPageSheet(model: model) }
+        .sheet(isPresented: Binding(get: { model.isVaultAvailable && model.showURLSource }, set: { model.showURLSource = $0 })) { URLSourceSheet(model: model) }
+        .sheet(isPresented: Binding(get: { model.isVaultAvailable && model.showPasteSource }, set: { model.showPasteSource = $0 })) { PasteSourceSheet(model: model) }
+        .sheet(isPresented: Binding(get: { model.isVaultAvailable && model.showRecovery }, set: { model.showRecovery = $0 })) { recoverySheet }
+        .sheet(isPresented: Binding(get: { model.isVaultAvailable && model.showIssues }, set: { model.showIssues = $0 })) { noticesSheet }
+        .sheet(isPresented: Binding(get: { model.isVaultAvailable && !model.ambiguousMatches.isEmpty }, set: { if !$0 { model.ambiguousMatches = [] } })) {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Choose a page").font(.title2.bold())
                 Text("More than one page matches this title or alias.").foregroundStyle(theme.text())
@@ -87,14 +107,14 @@ struct ContentView: View {
                 Button("Cancel") { model.ambiguousMatches = [] }.keyboardShortcut(.cancelAction)
             }.padding(28).frame(width: 440)
         }
-        .alert("Create this page?", isPresented: Binding(get: { model.unresolvedTarget != nil }, set: { if !$0 { model.unresolvedTarget = nil } })) {
+        .alert("Create this page?", isPresented: Binding(get: { model.isVaultAvailable && model.unresolvedTarget != nil }, set: { if !$0 { model.unresolvedTarget = nil } })) {
             Button("Create") { if let name = model.unresolvedTarget { model.newPage(named: name) }; model.unresolvedTarget = nil }
             Button("Cancel", role: .cancel) { model.unresolvedTarget = nil }
         } message: { Text("‘\(model.unresolvedTarget ?? "")’ does not exist yet.") }
         .confirmationDialog("Move this page to vault trash?", isPresented: $showTrashConfirmation) {
             Button("Move to Trash", role: .destructive) { model.trashPage(trashPageID) }
         } message: { Text("The Markdown file stays recoverable in the vault’s Removed Pages folder for 15 days, unless you restore or permanently delete it sooner.") }
-        .alert("Rename Source", isPresented: Binding(get: { renamingSource != nil }, set: { if !$0 { renamingSource = nil } })) {
+        .alert("Rename Source", isPresented: Binding(get: { model.isVaultAvailable && renamingSource != nil }, set: { if !$0 { renamingSource = nil } })) {
             TextField("File Name", text: $sourceName)
             Button("Rename") {
                 if let source = renamingSource { model.renameSource(source, title: sourceName) }
@@ -102,7 +122,7 @@ struct ContentView: View {
             }.disabled(sourceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) { renamingSource = nil }
         } message: { Text("Changes the source name stored in the vault. The original file name and file stay unchanged.") }
-        .alert("Delete Source?", isPresented: Binding(get: { deletingSource != nil }, set: { if !$0 { deletingSource = nil } })) {
+        .alert("Delete Source?", isPresented: Binding(get: { model.isVaultAvailable && deletingSource != nil }, set: { if !$0 { deletingSource = nil } })) {
             Button("Delete", role: .destructive) {
                 if let source = deletingSource { model.deleteSource(source) }
                 deletingSource = nil
@@ -122,16 +142,18 @@ struct ContentView: View {
         }
         .onChange(of: model.body) { if model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.title) { if model.scope == .semantic { model.queryChanged() } }
-        .onChange(of: model.searchFocusToken) { searchFocused = true }
+        .onChange(of: model.searchFocusToken) { if model.isVaultAvailable { searchFocused = true } }
         .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false }
         .onChange(of: model.externalChange) { dismissedExternalChange = false }
         .onChange(of: model.rows) { syncSourceRows() }
         .onChange(of: model.scope) { syncSourceRows() }
         .onChange(of: model.sources.count) { if model.scope != .sources { sourceRowsCache = model.sources.map(LibraryRow.init(source:)) } }
         .onAppear { sourceRowsCache = model.sources.map(LibraryRow.init(source:)) }
-        .onChange(of: model.root) {
-            sourceSelection = nil; renamingSource = nil; deletingSource = nil
-            showPermanentDeletion = false; permanentDeletion = nil; showEmptyTrash = false; emptyTrashPages = []
+        .onChange(of: model.root) { resetLocalWorkspaceState() }
+        .onChange(of: model.sessionState) {
+            if !model.isVaultAvailable {
+                resetLocalWorkspaceState()
+            }
         }
     }
     @ViewBuilder private var mainWorkspace: some View {
@@ -140,6 +162,66 @@ struct ContentView: View {
         } else {
             library
         }
+    }
+    private var lockedVaultView: some View {
+        VStack(spacing: 22) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 46, weight: .medium))
+                .foregroundStyle(theme.text())
+                .accessibilityHidden(true)
+            VStack(spacing: 8) {
+                Text(model.vaultName)
+                    .font(.system(size: 32, weight: .semibold))
+                Text("This vault session is locked. Unlock to view or edit its pages and sources.")
+                    .font(.callout)
+                    .foregroundStyle(theme.text())
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 460)
+            }
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 14) {
+                    Button("Unlock Vault") {
+                        Task { await model.unlockVault() }
+                    }
+                    .buttonStyle(.glassProminent)
+                    .disabled(model.busy)
+                    if model.needsPermissionReauthorization {
+                        Button("Reselect Vault Folder…") {
+                            model.chooseVault(create: false)
+                        }
+                        .buttonStyle(.glass)
+                        .tint(nil)
+                        .disabled(model.busy)
+                    }
+                    Button("Open Another Vault…") {
+                        model.chooseVault(create: false)
+                    }
+                    .buttonStyle(.glass)
+                    .tint(nil)
+                    .disabled(model.busy)
+                    Button("Close Vault") {
+                        Task { _ = await model.closeVault() }
+                    }
+                    .buttonStyle(.glass)
+                    .tint(nil)
+                    .disabled(model.busy)
+                }
+                .controlSize(.large)
+            }
+            if model.busy { ProgressView() }
+            if let error = model.errorMessage {
+                DismissibleNotice(message: error) {
+                    model.errorMessage = nil
+                    model.needsPermissionReauthorization = false
+                }
+                .frame(maxWidth: 560)
+            }
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(theme.color(.background))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Locked vault: \(model.vaultName)")
     }
     private var welcome: some View {
         VStack(spacing: 24) {
@@ -152,13 +234,19 @@ struct ContentView: View {
             GlassEffectContainer(spacing: 8) {
                 HStack(spacing: 14) {
                     Button("Create a vault…") { model.chooseVault(create: true) }.buttonStyle(.glassProminent)
-                    Button("Open a vault…") { model.chooseVault(create: false) }.buttonStyle(.glass).tint(nil)
+                    Button(model.needsPermissionReauthorization ? "Reselect Vault Folder…" : "Open a vault…") { model.chooseVault(create: false) }.buttonStyle(.glass).tint(nil)
                 }.controlSize(.large)
             }
             Text("Choose a folder on your Mac or in iCloud Drive. Your files stay yours.")
                 .font(.callout).foregroundStyle(theme.text())
             if model.busy { ProgressView() }
-            if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil }.frame(maxWidth: 560) }
+            if let error = model.errorMessage {
+                DismissibleNotice(message: error) {
+                    model.errorMessage = nil
+                    model.needsPermissionReauthorization = false
+                }
+                .frame(maxWidth: 560)
+            }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     private var isPagesScope: Bool {
@@ -353,6 +441,13 @@ struct ContentView: View {
                         Button { model.showIssues = true } label: {
                             Label("\(model.issues.count) vault notice(s)", systemImage: "info.circle")
                         }
+                    }
+                    Divider()
+                    Button { Task { _ = await model.lockVault() } } label: {
+                        Label("Lock Vault", systemImage: "lock")
+                    }
+                    Button { Task { _ = await model.closeVault() } } label: {
+                        Label("Close Vault", systemImage: "xmark.circle")
                     }
                     Divider()
                     Button { model.chooseVault(create: false) } label: {
@@ -1373,6 +1468,9 @@ struct ContentView: View {
                         Button { Task { await model.refresh() } } label: { Label("Refresh from files", systemImage: "arrow.clockwise") }
                         Button("Vault notices (\(model.issues.count))") { model.showIssues = true }
                         Button("Recover drafts (\(model.recoveredDrafts.count))") { model.showRecovery = true }.disabled(model.recoveredDrafts.isEmpty)
+                        Divider()
+                        Button { Task { _ = await model.lockVault() } } label: { Label("Lock vault", systemImage: "lock") }
+                        Button { Task { _ = await model.closeVault() } } label: { Label("Close vault", systemImage: "xmark.circle") }
                     } label: { Label("Vault options", systemImage: "ellipsis.circle") }
                         .accessibilityLabel("Vault options")
                 }

@@ -174,6 +174,8 @@ struct EditorAction: Equatable {
     private let storageProvider: VaultStorageProvider
     let sessionManager: VaultSessionManager
     var quiescenceCoordinator: VaultSaveQuiescenceCoordinator { sessionManager.quiescenceCoordinator }
+    private(set) var sessionState: VaultSessionState = .closed
+    @ObservationIgnored private nonisolated(unsafe) var sessionObservationTask: Task<Void, Never>?
     private var activeSession: VaultSession?
     private var activeLease: VaultSessionLease?
     private(set) var lockedVaultURL: URL?
@@ -213,6 +215,12 @@ struct EditorAction: Equatable {
     var sourceAvailabilityChecker: (@Sendable (SourceRecord, URL, any VaultContentStore) async -> String)?
     var localStorageRoot: URL?
     var persistSecurityScopedBookmark: Bool = true
+    var requiresSecurityScopedAccess: Bool = false
+    var securityScopeAcquirer: @Sendable (URL) -> Bool = { $0.startAccessingSecurityScopedResource() }
+    var securityScopeReleaser: @Sendable (URL) -> Void = { $0.stopAccessingSecurityScopedResource() }
+    var bookmarkResolver: (@Sendable (Data) throws -> (url: URL, isStale: Bool))?
+    private(set) var lockedVaultBookmark: Data?
+    var needsPermissionReauthorization = false
 
     init(
         repository: FileVaultRepository? = nil,
@@ -225,6 +233,89 @@ struct EditorAction: Equatable {
         self.repository = repository
         self.recovery = recovery
         self.activeLease = repository?.sessionLease
+        let initialState = sessionManager.accessGate.currentState
+        self.sessionState = initialState
+        if case .locked(_, let lockedRoot, let name, _) = initialState {
+            self.lockedVaultURL = lockedRoot
+            self.vaultName = name
+        } else if case .open(let session) = initialState {
+            self.activeSession = session
+            self.vaultName = session.vaultName
+        }
+        startObservingSessionState()
+    }
+
+    deinit {
+        sessionObservationTask?.cancel()
+    }
+
+    private func startObservingSessionState() {
+        sessionObservationTask?.cancel()
+        let manager = sessionManager
+        sessionObservationTask = Task { @MainActor [weak self] in
+            let stream = await manager.observations()
+            for await nextState in stream {
+                guard let self, !Task.isCancelled else { break }
+                self.applyObservedSessionState(nextState)
+            }
+        }
+    }
+
+    /// Synchronizes `AppModel` availability and purges in-memory content whenever the central
+    /// `VaultSessionManager` transitions out of `.open` (including external/direct session transitions).
+    func applyObservedSessionState(_ nextState: VaultSessionState) {
+        sessionState = nextState
+        switch nextState {
+        case .closed:
+            let hadActiveResources = root != nil || lockedVaultURL != nil || repository != nil || index != nil || recovery != nil || watcher != nil || !notes.isEmpty || !sources.isEmpty || currentNote != nil || currentSource != nil
+            lockedVaultURL = nil
+            lockedVaultBookmark = nil
+            if hadActiveResources {
+                releaseActiveVaultResources()
+                clearSessionUIState()
+            }
+
+        case .opening(let targetRoot, _):
+            lockedVaultURL = nil
+            vaultName = targetRoot.lastPathComponent
+            busy = true
+
+        case .open(let session):
+            activeSession = session
+            lockedVaultURL = nil
+            vaultName = session.vaultName
+
+        case .locking(let session):
+            vaultName = session.vaultName
+            busy = true
+
+        case .locked(_, let lockedRoot, let name, _):
+            let needsTeardown = root != nil || repository != nil || index != nil || recovery != nil || watcher != nil || !notes.isEmpty || !sources.isEmpty || currentNote != nil || currentSource != nil
+            lockedVaultURL = lockedRoot
+            vaultName = name
+            if needsTeardown {
+                releaseActiveVaultResources()
+                clearSessionUIState()
+            } else {
+                busy = false
+            }
+
+        case .unlocking(_, let lockedRoot, let name, _):
+            lockedVaultURL = lockedRoot
+            vaultName = name
+            busy = true
+        }
+    }
+
+    var sessionPhase: VaultSessionPhase { sessionState.phase }
+    var isVaultAvailable: Bool { sessionState.phase == .open && root != nil && repository != nil }
+    var isLocked: Bool {
+        switch sessionState {
+        case .locked, .unlocking:
+            return true
+        default:
+            return lockedVaultURL != nil && root == nil
+        }
     }
 
     var editedTags: [String] { normalizeTags(tagInput.components(separatedBy: ",")) }
@@ -339,7 +430,7 @@ struct EditorAction: Equatable {
         ) else {
             return false
         }
-        return !isLocked
+        return !isLocked && isVaultAvailable
     }
 
     private func cancelAllAsyncWork() {
@@ -374,15 +465,54 @@ struct EditorAction: Equatable {
         refreshing = false; pendingRefresh = false; progressTicket = nil; saving = false
     }
 
+    private func releaseActiveVaultResources() {
+        SourceReader.closeAll()
+        watcher?.stop(); watcher = nil
+        if let scopeURL { securityScopeReleaser(scopeURL); self.scopeURL = nil }
+        cancelAllAsyncWork()
+        generation = UUID()
+        activeSession = nil
+        activeLease = nil
+        repository = nil
+        index = nil
+        recovery = nil
+        root = nil
+    }
+
     private func clearSessionUIState() {
         notes = []; sources = []; rows = []; semanticRows = []; trashedPages = []; recoveredDrafts = []; issues = []
+        dismissedVaultNotices = []
         tags = []; backlinks = []; preview = []; recentPageIDs = []; unseenRenamedPages = []
-        searchText = ""; sidebarSearchResults = SidebarSearchResults()
+        searchText = ""; sidebarSearchResults = SidebarSearchResults(); scope = .wiki
         selectedID = nil; selectedSemanticID = nil; currentNote = nil; currentSource = nil
         title = ""; body = ""; tagInput = ""; lccInput = ""; wordCount = 0; reading = true
         editorNotice = nil; editingHint = nil; editorReadOnly = false; externalChange = false
+        showRecovery = false; showTopicPage = false; generatingTopicPage = false
+        showURLSource = false; showPasteSource = false; showIssues = false
         ambiguousMatches = []; unresolvedTarget = nil; wikiQuery = nil; editorAction = nil
         saveStatus = "Saved locally"; busy = false
+    }
+
+    private static func isPermissionDenied(_ error: Error) -> Bool {
+        if let storeError = error as? VaultContentStoreError {
+            switch storeError {
+            case .coordination(let domain, let code, let message),
+                 .io(let domain, let code, let message):
+                if domain == NSCocoaErrorDomain && code == NSFileReadNoPermissionError { return true }
+                if domain == NSPOSIXErrorDomain && code == Int(EACCES) { return true }
+                if message.localizedCaseInsensitiveContains("permission") { return true }
+            default:
+                break
+            }
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoPermissionError { return true }
+        if nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(EACCES) { return true }
+        if nsError.localizedDescription.localizedCaseInsensitiveContains("permission")
+            || nsError.localizedDescription.localizedCaseInsensitiveContains("reselect your vault folder") {
+            return true
+        }
+        return false
     }
 
     func deleteAISummary() {
@@ -453,14 +583,30 @@ struct EditorAction: Equatable {
         }
     }
 
+    private func resolveBookmarkData(_ data: Data) throws -> (url: URL, isStale: Bool) {
+        if let bookmarkResolver {
+            return try bookmarkResolver(data)
+        }
+        var stale = false
+        let url = try URL(
+            resolvingBookmarkData: data,
+            options: [.withSecurityScope],
+            relativeTo: nil,
+            bookmarkDataIsStale: &stale
+        )
+        return (url, stale)
+    }
+
     func restore() async {
         guard let data = UserDefaults.standard.data(forKey: "vaultBookmark") else { return }
         do {
-            var stale = false
-            let url = try URL(resolvingBookmarkData: data, options: [.withSecurityScope], relativeTo: nil, bookmarkDataIsStale: &stale)
+            let (url, stale) = try resolveBookmarkData(data)
             await open(url, create: false)
-            if stale, root != nil { try remember(url) }
-        } catch { errorMessage = "Reselect your vault folder to restore access. " + error.localizedDescription }
+            if stale, root != nil, persistSecurityScopedBookmark { try remember(url) }
+        } catch {
+            needsPermissionReauthorization = true
+            errorMessage = "Reselect your vault folder to restore access. " + error.localizedDescription
+        }
     }
     func chooseVault(create: Bool) {
         if create { showVaultCreation = true; return }
@@ -487,9 +633,9 @@ struct EditorAction: Equatable {
     func createVault(parent: URL, name: String, encryptionRequested: Bool) async throws {
         // A UI bypass must never silently create plaintext for an encrypted request.
         guard !encryptionRequested else { throw VaultError.invalid(VaultCreation.encryptionUnavailable) }
-        guard await finishCurrentPage() else { throw VaultError.invalid("Save the current page before creating a vault.") }
-        let hasScope = parent.startAccessingSecurityScopedResource()
-        defer { if hasScope { parent.stopAccessingSecurityScopedResource() } }
+        guard await flushPendingEdits() else { throw VaultError.invalid("Save the current page before creating a vault.") }
+        let hasScope = securityScopeAcquirer(parent)
+        defer { if hasScope { securityScopeReleaser(parent) } }
         let storageProvider = self.storageProvider
         let url = try await Task.detached {
             try FileVaultRepository.createNewVault(parent: parent, name: name, encryptionRequested: encryptionRequested, storageProvider: storageProvider)
@@ -505,18 +651,71 @@ struct EditorAction: Equatable {
     }
     private func remember(_ url: URL) throws {
         let bookmark = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
+        lockedVaultBookmark = bookmark
         UserDefaults.standard.set(bookmark, forKey: "vaultBookmark")
     }
-    var isLocked: Bool { lockedVaultURL != nil && root == nil }
+
+    @discardableResult
+    func flushPendingEdits(waitForTitles: Bool = false) async -> Bool {
+        autosaveTask?.cancel(); autosaveTask = nil
+        if lccSaveTask != nil {
+            lccSaveTask?.cancel(); lccSaveTask = nil
+            if let note = currentNote, !editingLocked {
+                let trimmed = lccInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                let normalizedValue = trimmed.isEmpty ? nil : trimmed
+                if !dirty {
+                    await persistPageLCC(pageID: note.id, lcc: normalizedValue, ticket: generation)
+                    if errorMessage != nil { return false }
+                }
+            }
+        }
+        let pendingSourceLCC = Array(sourceLCCSaveTasks.values)
+        for task in pendingSourceLCC { await task.value }
+        return await finishCurrentPage(waitForTitles: waitForTitles)
+    }
 
     func open(_ url: URL, create: Bool) async {
-        if !(await finishCurrentPage()) { return }
-        busy = true; errorMessage = nil
-        let hasScope = url.startAccessingSecurityScopedResource()
+        let normalizedTarget = url.standardizedFileURL.resolvingSymlinksInPath()
+        if !create,
+           isVaultAvailable,
+           let currentRoot = root?.standardizedFileURL.resolvingSymlinksInPath(),
+           currentRoot == normalizedTarget {
+            guard await flushPendingEdits() else { return }
+            await refresh()
+            if let url = pendingBlockURL { pendingBlockURL = nil; openBlockURL(url) }
+            return
+        }
+
+        // If the vault is currently locked and the user re-selected the same vault folder (e.g. via
+        // "Reselect Vault Folder…" after lost security-scoped permissions), route through unlockVault(using:)
+        // so the locked session is unlocked cleanly with its fresh security-scoped URL.
+        if !create, isLocked {
+            let lockedTarget = (lockedVaultURL ?? sessionState.root)?.standardizedFileURL.resolvingSymlinksInPath()
+            if lockedTarget == normalizedTarget {
+                _ = await unlockVault(using: url)
+                return
+            }
+        }
+
+        if !(await flushPendingEdits()) { return }
+        busy = true; errorMessage = nil; needsPermissionReauthorization = false
+
+        // Tear down any previous vault session and SQLite handle BEFORE opening the target vault.
+        if root != nil || lockedVaultURL != nil || repository != nil || index != nil || recovery != nil || watcher != nil {
+            releaseActiveVaultResources()
+            clearSessionUIState()
+            busy = true
+        }
+        lockedVaultURL = nil
+        lockedVaultBookmark = nil
+        if await sessionManager.state != .closed {
+            try? await sessionManager.close()
+        }
+
+        let hasScope = securityScopeAcquirer(url)
         do {
-            cancelAllAsyncWork()
-            if await sessionManager.state != .closed {
-                try? await sessionManager.close()
+            if requiresSecurityScopedAccess && !hasScope {
+                throw VaultError.unavailable("Permission to access ‘\(url.lastPathComponent)’ was lost. Reselect your vault folder to restore access.")
             }
             let storageProvider = self.storageProvider
             let (session, lease, repo) = try await sessionManager.openRepository(
@@ -534,13 +733,13 @@ struct EditorAction: Equatable {
                 let recoveryStore = try RecoveryStore(directory: localBase.appendingPathComponent("Drafts"))
                 return (idx, recoveryStore)
             }.value
-            SourceReader.closeAll()
-            watcher?.stop()
-            if let scopeURL { scopeURL.stopAccessingSecurityScopedResource() }
             self.scopeURL = hasScope ? url : nil
-            cancelAllAsyncWork()
             dismissedVaultNotices = []
-            generation = UUID(); activeSession = session; activeLease = lease; lockedVaultURL = nil
+            generation = UUID()
+            activeSession = session
+            activeLease = lease
+            sessionState = .open(session)
+            lockedVaultURL = nil
             repository = repo; index = searchIndex; recovery = journal
             unseenRenamedPages.removeAll()
             recentPageIDs.removeAll()
@@ -561,8 +760,16 @@ struct EditorAction: Equatable {
             await refresh()
             if let url = pendingBlockURL { pendingBlockURL = nil; openBlockURL(url) }
         } catch {
-            if hasScope, scopeURL != url { url.stopAccessingSecurityScopedResource() }
-            busy = false; errorMessage = error.localizedDescription
+            if hasScope, scopeURL != url { securityScopeReleaser(url) }
+            if await sessionManager.state != .closed {
+                try? await sessionManager.close()
+            }
+            releaseActiveVaultResources()
+            clearSessionUIState()
+            sessionState = await sessionManager.state
+            busy = false
+            needsPermissionReauthorization = Self.isPermissionDenied(error) || (requiresSecurityScopedAccess && !hasScope)
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -571,8 +778,9 @@ struct EditorAction: Equatable {
     /// On unrecoverable quiescence failure, surfaces `errorMessage` and keeps the vault open without falsely publishing `.locked`.
     @discardableResult
     func lockVault(cancelPreCommitSaves: Bool = false) async -> Bool {
+        if isLocked { return true }
         guard let repository, let currentRoot = root else { return false }
-        busy = true; errorMessage = nil
+        busy = true; errorMessage = nil; needsPermissionReauthorization = false
         autosaveTask?.cancel(); autosaveTask = nil
         lccSaveTask?.cancel(); lccSaveTask = nil
         for (_, task) in sourceLCCSaveTasks { task.cancel() }
@@ -611,17 +819,18 @@ struct EditorAction: Equatable {
                 cancelPreCommitSaves: cancelPreCommitSaves
             )
             // Quiescence succeeded and session is now .locked. Tear down UI & vault resources.
-            SourceReader.closeAll()
-            watcher?.stop(); watcher = nil
-            if let scopeURL { scopeURL.stopAccessingSecurityScopedResource(); self.scopeURL = nil }
-            cancelAllAsyncWork()
-            generation = UUID()
-            activeSession = nil; activeLease = nil
-            self.repository = nil; self.index = nil; self.recovery = nil
-            lockedVaultURL = currentRoot; root = nil
+            let observed = await sessionManager.state
+            lockedVaultURL = currentRoot
+            if persistSecurityScopedBookmark, lockedVaultBookmark == nil {
+                lockedVaultBookmark = UserDefaults.standard.data(forKey: "vaultBookmark")
+            }
+            vaultName = currentRoot.lastPathComponent
+            releaseActiveVaultResources()
             clearSessionUIState()
+            sessionState = observed
             return true
         } catch {
+            sessionState = await sessionManager.state
             busy = false
             saveStatus = "Draft preserved · save failed"
             errorMessage = error.localizedDescription
@@ -633,29 +842,45 @@ struct EditorAction: Equatable {
     }
 
     @discardableResult
-    func unlockVault() async -> Bool {
-        guard let url = lockedVaultURL else { return false }
-        busy = true; errorMessage = nil
-        let hasScope = url.startAccessingSecurityScopedResource()
+    func unlockVault(using overrideURL: URL? = nil) async -> Bool {
+        let initialLockedRoot: URL? = {
+            if let overrideURL { return overrideURL }
+            if let lockedVaultURL { return lockedVaultURL }
+            if case .locked(_, let root, _, _) = sessionState { return root }
+            return nil
+        }()
+        guard let fallbackRoot = initialLockedRoot else { return false }
+        busy = true; errorMessage = nil; needsPermissionReauthorization = false
+
+        var candidateURL = fallbackRoot
+        var resolvedStaleBookmark = false
+        if overrideURL == nil,
+           let bookmarkData = lockedVaultBookmark ?? (persistSecurityScopedBookmark ? UserDefaults.standard.data(forKey: "vaultBookmark") : nil) {
+            do {
+                let resolved = try resolveBookmarkData(bookmarkData)
+                candidateURL = resolved.url
+                resolvedStaleBookmark = resolved.isStale
+            } catch {
+                sessionState = await sessionManager.state
+                busy = false
+                needsPermissionReauthorization = true
+                errorMessage = "Reselect your vault folder to restore access. " + error.localizedDescription
+                return false
+            }
+        }
+
+        let hasScope = securityScopeAcquirer(candidateURL)
         do {
+            if requiresSecurityScopedAccess && !hasScope {
+                needsPermissionReauthorization = true
+                throw VaultError.unavailable("Permission to access ‘\(candidateURL.lastPathComponent)’ was lost. Reselect your vault folder to restore access.")
+            }
             cancelAllAsyncWork()
-            let session = try await sessionManager.unlock()
-            let lease = session.lease
             let storageProvider = self.storageProvider
-            let gatedProvider = storageProvider.gated(
-                by: sessionManager.accessGate,
-                lease: lease,
-                vaultID: session.vaultID
+            let (session, lease, repo) = try await sessionManager.unlockRepository(
+                root: candidateURL,
+                storageProvider: storageProvider
             )
-            let repo = try await Task.detached {
-                try FileVaultRepository.open(
-                    root: url,
-                    create: false,
-                    storageProvider: gatedProvider,
-                    sessionLease: lease,
-                    accessGate: self.sessionManager.accessGate
-                )
-            }.value
             let vaultID = repo.manifest.id
             let baseDir = try localStorageRoot ?? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             let localBase = baseDir.appendingPathComponent("KnowledgeVault/\(vaultID.uuidString)")
@@ -668,15 +893,19 @@ struct EditorAction: Equatable {
             }.value
             SourceReader.closeAll()
             watcher?.stop()
-            if let scopeURL { scopeURL.stopAccessingSecurityScopedResource() }
-            self.scopeURL = hasScope ? url : nil
+            if let scopeURL { securityScopeReleaser(scopeURL) }
+            self.scopeURL = hasScope ? candidateURL : nil
             cancelAllAsyncWork()
             dismissedVaultNotices = []
-            generation = UUID(); activeSession = session; activeLease = lease; lockedVaultURL = nil
+            generation = UUID()
+            activeSession = session
+            activeLease = lease
+            sessionState = .open(session)
+            lockedVaultURL = nil
             repository = repo; index = searchIndex; recovery = journal
             unseenRenamedPages.removeAll()
             recentPageIDs.removeAll()
-            root = url; vaultName = url.lastPathComponent; scope = .wiki; searchText = ""
+            root = candidateURL; vaultName = candidateURL.lastPathComponent; scope = .wiki; searchText = ""
             sidebarSearchResults = SidebarSearchResults()
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
             title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; wordCount = 0; reading = true
@@ -684,35 +913,58 @@ struct EditorAction: Equatable {
             notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
             updateTags()
             recoveredDrafts = try await journal.drafts()
-            watcher = VaultWatcher(url: url) { [weak self] in Task { @MainActor in self?.scheduleRefresh() } }
+            if persistSecurityScopedBookmark, (resolvedStaleBookmark || overrideURL != nil) {
+                try? remember(candidateURL)
+            }
+            watcher = VaultWatcher(url: candidateURL) { [weak self] in Task { @MainActor in self?.scheduleRefresh() } }
             busy = false
             await updateRows()
             await refresh()
             if let url = pendingBlockURL { pendingBlockURL = nil; openBlockURL(url) }
             return true
         } catch {
-            if hasScope, scopeURL != url { url.stopAccessingSecurityScopedResource() }
-            busy = false; errorMessage = error.localizedDescription
+            if hasScope, scopeURL != candidateURL { securityScopeReleaser(candidateURL) }
+            // Ensure central session state rolls back to .locked if a later step (like SQLite init) threw after sessionManager.unlockRepository
+            if await sessionManager.state.phase == .open {
+                try? await sessionManager.lock()
+            }
+            releaseActiveVaultResources()
+            clearSessionUIState()
+            lockedVaultURL = fallbackRoot
+            vaultName = fallbackRoot.lastPathComponent
+            sessionState = await sessionManager.state
+            busy = false
+            if Self.isPermissionDenied(error) || (requiresSecurityScopedAccess && !hasScope) {
+                needsPermissionReauthorization = true
+            }
+            errorMessage = error.localizedDescription
             return false
         }
     }
 
-    func closeVault() async {
-        SourceReader.closeAll()
-        watcher?.stop(); watcher = nil
-        if let scopeURL { scopeURL.stopAccessingSecurityScopedResource(); self.scopeURL = nil }
-        cancelAllAsyncWork()
+    @discardableResult
+    func closeVault(force: Bool = false) async -> Bool {
+        if !force, isVaultAvailable {
+            guard await flushPendingEdits() else { return false }
+        }
+        releaseActiveVaultResources()
+        lockedVaultURL = nil
+        lockedVaultBookmark = nil
+        needsPermissionReauthorization = false
         if await sessionManager.state != .closed {
             try? await sessionManager.close()
         }
-        generation = UUID()
-        activeSession = nil; activeLease = nil
-        lockedVaultURL = nil; root = nil
-        repository = nil; index = nil; recovery = nil
+        sessionState = await sessionManager.state
+        if persistSecurityScopedBookmark {
+            UserDefaults.standard.removeObject(forKey: "vaultBookmark")
+        }
         clearSessionUIState()
+        errorMessage = nil
+        return true
     }
 
     func scheduleRefresh() {
+        guard isVaultAvailable else { return }
         refreshTask?.cancel()
         let completionTicket = issueCompletionTicket(kind: .refresh)
         refreshTask = Task {
@@ -722,7 +974,7 @@ struct EditorAction: Equatable {
         }
     }
     func refresh() async {
-        guard let repository, let index else { return }
+        guard isVaultAvailable, let repository, let index else { return }
         if refreshing { pendingRefresh = true; return }
         refreshing = true
         let completionTicket = issueCompletionTicket(kind: .indexing)
@@ -786,6 +1038,7 @@ struct EditorAction: Equatable {
     }
     func queryChanged() {
         queryTask?.cancel()
+        guard isVaultAvailable else { return }
         let completionTicket = issueCompletionTicket(kind: .search, capturedText: searchText)
         queryTask = Task {
             do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
@@ -794,6 +1047,7 @@ struct EditorAction: Equatable {
         }
     }
     func changeScope(_ scope: LibraryScope) {
+        guard isVaultAvailable else { return }
         let completionTicket = issueCompletionTicket(kind: .lifecycle)
         let applyScope = { @MainActor in
             self.autosaveTask?.cancel(); self.wikiQuery = nil; self.editorAction = nil
@@ -838,6 +1092,7 @@ struct EditorAction: Equatable {
         }
     }
     func updateRows() async {
+        guard isVaultAvailable else { return }
         let query = searchText
         let completionTicket = issueCompletionTicket(kind: .search, capturedText: query)
         var snapshot = notes
@@ -890,6 +1145,7 @@ struct EditorAction: Equatable {
         }
     }
     func select(_ id: UUID?, scope targetScope: LibraryScope? = nil, block blockID: UUID? = nil) {
+        guard isVaultAvailable else { return }
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: id)
         Task {
             await waitForSave()
@@ -908,6 +1164,9 @@ struct EditorAction: Equatable {
             else if let source = sources.first(where: { $0.id == id }) {
                 currentSource = source; title = source.title; body = source.body; reading = true
                 generatePreview(); backlinks = []
+            } else {
+                title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; wordCount = 0
+                editorNotice = nil; editingHint = nil; editorReadOnly = false
             }
             selectedSemanticID = nil
             if let blockID, let note = currentNote, BlockDocumentCodec.decode(body).block(blockID) != nil {
@@ -1089,7 +1348,7 @@ struct EditorAction: Equatable {
     func openBlockURL(_ url: URL) {
         guard url.scheme == "noema", url.host == "page", let noteID = UUID(uuidString: url.lastPathComponent),
               let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "block" })?.value, let blockID = UUID(uuidString: value) else { return }
-        guard root != nil, !busy else { pendingBlockURL = url; return }
+        guard isVaultAvailable, !busy else { pendingBlockURL = url; return }
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: noteID)
         Task {
             await waitForSave()
@@ -1287,7 +1546,11 @@ struct EditorAction: Equatable {
         prepareUntitledPageForNaming()
         saveNow()
     }
-    func saveNow() { autosaveTask?.cancel(); Task { _ = await finishCurrentPage() } }
+    func saveNow() {
+        autosaveTask?.cancel()
+        guard isVaultAvailable else { return }
+        Task { _ = await finishCurrentPage() }
+    }
     func generatePreview() {
         previewTask?.cancel(); let captured = body
         let targetID = currentNote?.id ?? currentSource?.id

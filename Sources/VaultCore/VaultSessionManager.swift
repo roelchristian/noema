@@ -495,8 +495,12 @@ public actor VaultSessionManager {
     /// Transitions a `.locked` session through `.unlocking` to `.open` with a newly incremented generation.
     @discardableResult
     public func unlock(
-        loader: @escaping @Sendable (URL) async throws -> UUID = VaultSessionManager.defaultVaultLoader
+        storageProvider: VaultStorageProvider = .plaintext,
+        loader: (@Sendable (URL) async throws -> UUID)? = nil
     ) async throws -> VaultSession {
+        let effectiveLoader: @Sendable (URL) async throws -> UUID = loader ?? { url in
+            try FileVaultRepository.inspectManifest(at: url, storageProvider: storageProvider).id
+        }
         if activeCloseTask != nil {
             throw VaultSessionError.transitionInProgress(current: state.phase, requested: "unlock")
         }
@@ -530,7 +534,7 @@ public actor VaultSessionManager {
 
             let task = Task<VaultSession, Error> {
                 try Task.checkCancellation()
-                let resolvedID = try await loader(root)
+                let resolvedID = try await effectiveLoader(root)
                 try Task.checkCancellation()
                 guard resolvedID == lockedVaultID else {
                     throw VaultSessionError.identityMismatch(expected: lockedVaultID, actual: resolvedID)
@@ -549,6 +553,52 @@ public actor VaultSessionManager {
                 id: transitionID,
                 fallback: (lockedVaultID, root, vaultName, lockedGeneration)
             )
+        }
+    }
+
+    /// Unlocks a `.locked` session, issues a fresh session lease, and constructs a `FileVaultRepository`
+    /// gated by `accessGate` and `lease`. Rolls back to `.locked` if opening or validation fails.
+    public func unlockRepository(
+        root: URL? = nil,
+        storageProvider: VaultStorageProvider = .plaintext,
+        willExecuteIO: (@Sendable (String) -> Void)? = nil
+    ) async throws -> (session: VaultSession, lease: VaultSessionLease, repository: FileVaultRepository) {
+        guard case .locked(let lockedVaultID, let lockedRoot, let lockedName, let lockedGeneration) = state else {
+            throw VaultSessionError.invalidTransition(from: state.phase, action: "unlock")
+        }
+        let accessRoot = root ?? lockedRoot
+        let session = try await unlock(storageProvider: storageProvider) { _ in
+            try FileVaultRepository.inspectManifest(at: accessRoot, storageProvider: storageProvider).id
+        }
+        let lease = session.lease
+        do {
+            let gatedProvider = storageProvider.gated(
+                by: accessGate,
+                lease: lease,
+                vaultID: session.vaultID,
+                willExecuteIO: willExecuteIO
+            )
+            let repository = try FileVaultRepository.open(
+                root: accessRoot,
+                create: false,
+                storageProvider: gatedProvider,
+                sessionLease: lease,
+                accessGate: accessGate,
+                willExecuteIO: willExecuteIO
+            )
+            return (session, lease, repository)
+        } catch {
+            setState(.locked(
+                vaultID: lockedVaultID,
+                root: lockedRoot,
+                vaultName: lockedName,
+                generation: lockedGeneration
+            ))
+            if let sessionError = error as? VaultSessionError {
+                throw sessionError
+            }
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            throw VaultSessionError.unlockFailed(root: lockedRoot, message: message)
         }
     }
 

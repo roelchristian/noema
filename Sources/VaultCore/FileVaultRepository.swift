@@ -48,16 +48,27 @@ public actor FileVaultRepository: VaultRepository {
         let accessRoot = root
         let normalizedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
         let fm = FileManager.default
-        let manifestURL = normalizedRoot.appendingPathComponent("vault.json")
-        guard fm.fileExists(atPath: manifestURL.path) else {
-            throw VaultError.invalid("Choose a vault folder containing vault.json, or create a new vault.")
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: normalizedRoot.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw VaultError.unavailable("The vault folder ‘\(normalizedRoot.lastPathComponent)’ could not be found. It may have been moved, renamed, or disconnected.")
         }
         let store = try contentStore ?? storageProvider.makeStore(root: accessRoot)
         let data: Data
-        if let gated = store as? GatedVaultContentStore {
-            data = try gated.inspectManifestData()
-        } else {
-            data = try store.read(at: "vault.json")
+        do {
+            if let gated = store as? GatedVaultContentStore {
+                data = try gated.inspectManifestData()
+            } else {
+                data = try store.read(at: "vault.json")
+            }
+        } catch let storeError as VaultContentStoreError {
+            switch storeError {
+            case .missing:
+                throw VaultError.invalid("Choose a vault folder containing vault.json, or create a new vault.")
+            case .unavailable:
+                throw VaultError.unavailable("Downloading vault metadata from iCloud. Try again when the download finishes.")
+            default:
+                throw storeError
+            }
         }
         let manifest = try JSONDecoder().decode(VaultManifest.self, from: data)
         guard manifest.formatVersion == 1 else {
