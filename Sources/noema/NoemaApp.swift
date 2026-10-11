@@ -9,14 +9,15 @@ import NoemaBrand
     var body: some Scene {
         Window("Noema", id: "main") {
             ContentView(model: model)
-                .frame(minWidth: 960, minHeight: 620)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(WorkspaceWindowState(phase: model.sessionPhase))
                 .systemNoemaTheme()
                 .task { delegate.model = model; await model.restore() }
                 .onOpenURL { model.openBlockURL($0) }
         }
         // Let macOS own the titlebar, traffic lights, and full-screen transitions.
         .windowStyle(.titleBar)
-        .defaultSize(width: 1280, height: 820)
+        .defaultSize(width: 680, height: 480)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About Noema") {
