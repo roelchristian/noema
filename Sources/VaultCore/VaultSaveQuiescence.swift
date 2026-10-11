@@ -67,6 +67,8 @@ public enum VaultQuiescenceError: Error, Sendable, Equatable, LocalizedError {
     case pendingLCCSaveFailed(targetID: UUID, isSource: Bool, message: String)
     case inFlightOperationFailed(operationID: UUID, kind: VaultQuiescenceOperationKind, message: String)
     case stagingCleanupFailed(path: String, message: String)
+    case recoveryCleanupFailed(noteID: UUID, message: String)
+    case sourceImportCleanupFailed(sourceID: UUID, operationMessage: String, cleanupMessage: String)
     case cancelled
 
     public var errorDescription: String? {
@@ -85,6 +87,10 @@ public enum VaultQuiescenceError: Error, Sendable, Equatable, LocalizedError {
             "In-flight \(kind.rawValue) operation failed during lock quiescence: \(message)"
         case .stagingCleanupFailed(let path, let message):
             "Could not clean up interrupted import staging at '\(path)' before locking: \(message)"
+        case .recoveryCleanupFailed(let noteID, let message):
+            "Page \(noteID.uuidString) was saved, but its recovery draft could not be removed: \(message)"
+        case .sourceImportCleanupFailed(let sourceID, let operationMessage, let cleanupMessage):
+            "Source import \(sourceID.uuidString) failed (\(operationMessage)) and staging cleanup also failed (\(cleanupMessage))."
         case .cancelled:
             "Vault lock quiescence was cancelled."
         }
@@ -529,7 +535,15 @@ public final class VaultSaveQuiescenceCoordinator: Sendable {
                     )
                 }
                 if let recovery {
-                    try? await recovery.remove(saved.id)
+                    do {
+                        try await recovery.remove(saved.id)
+                    } catch {
+                        let qError = VaultQuiescenceError.recoveryCleanupFailed(
+                            noteID: saved.id, message: error.localizedDescription
+                        )
+                        context.recordQuiescenceFailure(qError)
+                        throw qError
+                    }
                 }
                 return saved
             } catch {
@@ -602,7 +616,17 @@ public final class VaultSaveQuiescenceCoordinator: Sendable {
             } catch {
                 if !context.isCommitted {
                     await repository.cancelSourceDownload(id: sourceID)
-                    _ = try? await repository.cleanupInterruptedImportStaging(id: sourceID)
+                    do {
+                        _ = try await repository.cleanupInterruptedImportStaging(id: sourceID)
+                    } catch let cleanupError {
+                        let qError = VaultQuiescenceError.sourceImportCleanupFailed(
+                            sourceID: sourceID,
+                            operationMessage: error.localizedDescription,
+                            cleanupMessage: cleanupError.localizedDescription
+                        )
+                        context.recordQuiescenceFailure(qError)
+                        throw qError
+                    }
                 }
                 throw error
             }
@@ -883,10 +907,19 @@ public final class VaultSaveQuiescenceCoordinator: Sendable {
                             )
                             state.withLock { $0.committedNotesByID[saved.id] = saved }
                             if let recovery {
-                                try? await recovery.remove(saved.id)
+                                do {
+                                    try await recovery.remove(saved.id)
+                                } catch {
+                                    throw VaultQuiescenceError.recoveryCleanupFailed(
+                                        noteID: saved.id, message: error.localizedDescription
+                                    )
+                                }
                             }
                             preservedDraftIDs.removeAll { $0 == saved.id }
                             outcomes.append(.committed(operationID: quiescenceOpID, kind: .save))
+                        } catch let cleanupError as VaultQuiescenceError {
+                            // A durable save followed by failed cleanup must abort locking.
+                            throw cleanupError
                         } catch {
                             // Direct save failed (e.g. conflict/stale/empty title): preserve via RecoveryStore if available.
                             guard recovery != nil else {

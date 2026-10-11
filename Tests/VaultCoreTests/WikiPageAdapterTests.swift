@@ -103,7 +103,7 @@ struct WikiPageAdapterTests {
         let external = try NoteCodec.encode(changed)
         let draft = DraftRecord(note: note, title: note.title, body: "Unsaved competing draft", tags: [])
         let journalURL = root.appendingPathComponent("LocalDrafts")
-        let journal = try RecoveryStore(directory: journalURL)
+        let journal = try RecoveryStore(unguardedTestingDirectory: journalURL)
         try await journal.store(draft)
         store.state.withLock { $0.race = deleted ? nil : external; $0.deleteBeforeWrite = deleted }
         do {
@@ -116,7 +116,7 @@ struct WikiPageAdapterTests {
         }
         if deleted { #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(note.relativePath).path)) }
         else { #expect(try store.base.read(at: note.relativePath) == external) }
-        let reopenedJournal = try RecoveryStore(directory: journalURL)
+        let reopenedJournal = try RecoveryStore(unguardedTestingDirectory: journalURL)
         #expect(try await reopenedJournal.drafts().first?.body == draft.body)
         #expect(store.state.withLock { $0.writes.contains { $0.hasPrefix("Conflicts/") } })
     }
