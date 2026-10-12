@@ -414,39 +414,6 @@ struct InspectorRedesignTests {
         #expect(cache.currentCachedNoteID == nil)
     }
 
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["NOEMA_PERFORMANCE_TESTS"] == "1"))
-    @MainActor func benchmarkTabSwitchingWithCachedInsights() {
-        var blocks: [EditorBlock] = []
-        for i in 0..<240 {
-            var meta = BlockMetadata()
-            if i.isMultiple(of: 20) { meta.semantic = "evidence" }
-            blocks.append(EditorBlock(runs: [RichRun("Paragraph \(i) with [[Target \(i % 12)]] and #tag\(i % 5).")], metadata: meta))
-        }
-        var doc = BlockDocument(blocks: blocks)
-        doc.setAISummary("Synthesized summary for benchmark page.")
-        let richBody = BlockDocumentCodec.encode(doc)
-        let note = makeNote(title: "Benchmark Page", tags: ["alpha", "beta"], body: richBody)
-        let context = InspectorContext.page(note)
-        let clock = ContinuousClock()
-
-        // 200 tab switches across Links, References, Tags, Properties, and Insights.
-        let state = InspectorState()
-        let tabs = InspectorTab.pageTabs
-        let tabbedDuration = clock.measure {
-            for i in 0..<200 {
-                let tab = tabs[i % tabs.count]
-                state.selectTab(tab, for: context)
-                if tab == .insights {
-                    let snapshot = state.insightsCache.snapshot(for: note.id, body: richBody)
-                    #expect(snapshot.hasSummary)
-                }
-            }
-        }
-
-        #expect(state.insightsCache.decodeCount == 1)
-        print("INSPECTOR_BENCHMARK 200 passes (240 blocks): tabbed inspector with cached Insights=\(tabbedDuration), insights decodes=\(state.insightsCache.decodeCount)")
-    }
-
     @Test @MainActor func inspectorLayoutMatrixCoversApplicableTabsWidthsAndContrast() throws {
         var claimMeta = BlockMetadata(); claimMeta.semantic = "claim"
         var questionMeta = BlockMetadata(); questionMeta.semantic = "question"
@@ -495,16 +462,23 @@ struct InspectorRedesignTests {
         let pageContext = InspectorContext.page(noteA)
         let sourceContext = InspectorContext.source(sourceA, isDetail: false)
 
-        // Routine layout coverage uses standard light/dark at every width and
-        // representative full-palette high contrast at the minimum width.
-        // The exhaustive theme/contrast raster matrix is in the visual harness.
-        let appearances: [(preference: ThemePreference, dark: Bool, increased: Bool, widths: [CGFloat])] = [
-            (.system, false, false, [InspectorState.minWidth, InspectorState.idealWidth, InspectorState.maxWidth]),
-            (.system, true, false, [InspectorState.minWidth, InspectorState.idealWidth, InspectorState.maxWidth]),
-            (.midnightIris, false, true, [InspectorState.minWidth]),
-            (.midnightIris, true, true, [InspectorState.minWidth])
+        // Eight boundary representatives cover every applicable tab, both contexts,
+        // all supported widths and both standard and increased-contrast appearances.
+        // The original 64 combinations remain in InspectorLayoutMatrixTests.
+        let cases: [(context: InspectorContext, tab: InspectorTab, width: CGFloat,
+                     preference: ThemePreference, dark: Bool, increased: Bool)] = [
+            (pageContext, .links, InspectorState.minWidth, .system, false, false),
+            (pageContext, .references, InspectorState.idealWidth, .system, true, false),
+            (pageContext, .tags, InspectorState.maxWidth, .system, false, false),
+            (pageContext, .properties, InspectorState.minWidth, .midnightIris, false, true),
+            (pageContext, .insights, InspectorState.minWidth, .midnightIris, true, true),
+            (sourceContext, .references, InspectorState.minWidth, .system, true, false),
+            (sourceContext, .properties, InspectorState.idealWidth, .system, false, false),
+            (sourceContext, .insights, InspectorState.maxWidth, .midnightIris, true, true)
         ]
-        for appearance in appearances {
+        #expect(cases.count == 8)
+        for appearance in cases {
+            let context = appearance.context, tab = appearance.tab, width = appearance.width
             var theme = NoemaTheme(dark: appearance.dark, increasedContrast: appearance.increased)
             theme.preference = appearance.preference
             theme.fullPalette = true
@@ -512,29 +486,23 @@ struct InspectorRedesignTests {
                 ? (appearance.dark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua)
                 : (appearance.dark ? .darkAqua : .aqua)
             let nativeAppearance = try #require(NSAppearance(named: name))
-            for width in appearance.widths {
-                for context in [pageContext, sourceContext] {
-                    for tab in context.applicableTabs {
-                        state.selectTab(tab, for: context)
-                        #expect(state.activeTab(for: context) == tab)
-                        let view = InspectorContainer(model: model, state: state, context: context)
-                            .environment(\.noemaTheme, theme)
-                            .environment(\.colorScheme, appearance.dark ? .dark : .light)
-                            .transaction { $0.disablesAnimations = true }
-                            .frame(width: width, height: 640)
-                        let hosting = NSHostingView(rootView: view)
-                        hosting.appearance = nativeAppearance
-                        hosting.frame = NSRect(x: 0, y: 0, width: width, height: 640)
-                        hosting.layoutSubtreeIfNeeded()
-                        let kind = context.targetKind == .page ? "page" : "source"
-                        let label = "\(kind)-\(tab.rawValue) at \(width)pt, \(appearance.preference.rawValue), dark=\(appearance.dark), contrast=\(appearance.increased)"
-                        #expect(hosting.fittingSize.width >= InspectorState.minWidth, "\(label): below minimum")
-                        #expect(hosting.fittingSize.width <= width + 1, "\(label): horizontal overflow")
-                        let safeArea = hosting.safeAreaInsets.top + hosting.safeAreaInsets.bottom
-                        #expect(hosting.fittingSize.height <= 640 + safeArea + 1, "\(label): vertical overflow")
-                    }
-                }
-            }
+            state.selectTab(tab, for: context)
+            #expect(state.activeTab(for: context) == tab)
+            let view = InspectorContainer(model: model, state: state, context: context)
+                .environment(\.noemaTheme, theme)
+                .environment(\.colorScheme, appearance.dark ? .dark : .light)
+                .transaction { $0.disablesAnimations = true }
+                .frame(width: width, height: 640)
+            let hosting = NSHostingView(rootView: view)
+            hosting.appearance = nativeAppearance
+            hosting.frame = NSRect(x: 0, y: 0, width: width, height: 640)
+            hosting.layoutSubtreeIfNeeded()
+            let kind = context.targetKind == .page ? "page" : "source"
+            let label = "\(kind)-\(tab.rawValue) at \(width)pt, \(appearance.preference.rawValue), dark=\(appearance.dark), contrast=\(appearance.increased)"
+            #expect(hosting.fittingSize.width >= InspectorState.minWidth, "\(label): below minimum")
+            #expect(hosting.fittingSize.width <= width + 1, "\(label): horizontal overflow")
+            let safeArea = hosting.safeAreaInsets.top + hosting.safeAreaInsets.bottom
+            #expect(hosting.fittingSize.height <= 640 + safeArea + 1, "\(label): vertical overflow")
         }
     }
 }

@@ -44,6 +44,16 @@ light/dark fixtures, wide/narrow measures, headings, blank separators, lists,
 semantic reservation and complete math-preview fit. Source-byte and serialization
 checks establish presentation-only changes. Native preference-refresh tests cover
 selected ranges, caret, viewport and undo/redo without registering a content edit.
+Routine inspector layout validation uses eight representatives covering every page/source
+tab, minimum/ideal/maximum widths and standard/increased-contrast appearances.
+Routine typography integration uses eight font/size/measure/appearance representatives
+(16 editor layouts including heading modes; 24 source layouts including Markdown,
+HTML and plain text). The original 64 inspector and 72 editor/108 source combinations
+remain in `InspectorLayoutMatrixTests` and `TypographyLayoutMatrixTests`, compiled
+only in the opt-in `NoemaVisualValidationTests` target. Existing raster matrices remain
+there as well. These representatives retain source-byte, serialization and selection
+assertions; specialized coverage is still required when changing layout boundaries.
+Benchmarks are physically isolated in the opt-in `NoemaPerformanceTests` target.
 Opt-in fixture capture procedures are in [development](development.md#explicit-visual-validation).
 Live VoiceOver, keyboard focus, OS Reduce Motion/contrast combinations and manual
 window/sidebar/inspector resizing remain outstanding; raster fixtures do not certify
@@ -238,7 +248,7 @@ injection does not close those acceptance gaps. PRs record actual command outcom
   On-device AI publishes only against unchanged captured content/session identity.
 - Inspector links/references/tags/properties/insights preserve context, selections
   and session invalidation. [InspectorRedesignTests](../Tests/NoemaEditorTests/InspectorRedesignTests.swift)
-  and [InspectorLinksPerformanceTests](../Tests/NoemaEditorTests/InspectorLinksPerformanceTests.swift)
+  and [InspectorLinksTests](../Tests/NoemaEditorTests/InspectorLinksTests.swift)
   cover cache invalidation and resolution; native/typing telemetry stays separate.
 - [BrandPaletteTests](../Tests/NoemaBrandTests/BrandPaletteTests.swift) and [ThemeTests](../Tests/NoemaBrandTests/ThemeTests.swift) checks palette
   contrast/identity in light, dark and increased contrast. Five themes and
