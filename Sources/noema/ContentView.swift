@@ -343,7 +343,7 @@ struct ContentView: View {
            model.currentNote != nil || model.currentSource != nil {
             return .recent(id)
         }
-        if let source = model.currentSource { return .recent(.source(source.id)) }
+        if model.currentSource != nil { return .destination(.sources) }
         if let note = model.currentNote { return .recent(.page(note.id)) }
         switch model.scope {
         case .wiki, .tag: return .destination(.wiki)

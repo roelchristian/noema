@@ -558,7 +558,7 @@ struct AISuggestion: Identifiable, Sendable {
     func openSidebarRecentItem(_ id: RecentItemID) {
         switch id {
         case .page(let pageID): select(pageID, scope: .wiki)
-        case .source(let sourceID): select(sourceID, scope: .sources)
+        case .source(let sourceID): select(sourceID, scope: .sources, previewSource: true)
         case .semanticBlock(let pageID, let blockID): select(pageID, scope: .wiki, block: blockID)
         }
     }
@@ -2010,7 +2010,6 @@ struct AISuggestion: Identifiable, Sendable {
                 if let previous = previousTitles[note.id] { recordPageRename(note.id, from: previous, to: note.title) }
             }
             notes = result.notes; sources = result.sources
-            pruneSidebarRecentHistory()
             // Explicit checks are snapshots too: never let an old Available override a new failure.
             let availableIDs = Set(sources.filter { $0.contentState == .loaded && $0.availabilityIssue == nil }.map(\.id))
             sourceAvailability = sourceAvailability.filter { availableIDs.contains($0.key) }
@@ -2041,6 +2040,7 @@ struct AISuggestion: Identifiable, Sendable {
             } else if let note = currentNote, !notes.contains(where: { $0.id == note.id }), !saving {
                 externalChange = true
             }
+            pruneSidebarRecentHistory()
             try await index.reconcile(result)
             guard isCompletionValid(completionTicket, operation: "refresh.reconcile") else { return }
             try Task.checkCancellation()
@@ -2108,7 +2108,7 @@ struct AISuggestion: Identifiable, Sendable {
             self.autosaveTask?.cancel(); self.wikiQuery = nil; self.editorAction = nil
             self.scope = scope
             if scope == .trash { self.searchText = "" }
-            self.selectedID = nil; self.currentNote = nil; self.currentSource = nil; self.selectedSemanticID = nil
+            self.selectedID = nil; self.currentNote = nil; self.currentSource = nil; self.selectedSemanticID = nil; self.selectedSidebarRecentItemID = nil
             self.externalChange = false; self.errorMessage = nil; self.reading = true
             if self.searchText.isEmpty {
                 switch scope {
@@ -2268,7 +2268,7 @@ struct AISuggestion: Identifiable, Sendable {
             errorMessage = error.localizedDescription
         }
     }
-    func select(_ id: UUID?, scope targetScope: LibraryScope? = nil, block blockID: UUID? = nil) {
+    func select(_ id: UUID?, scope targetScope: LibraryScope? = nil, block blockID: UUID? = nil, previewSource: Bool = false) {
         guard canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: id)
         Task {
@@ -2304,7 +2304,17 @@ struct AISuggestion: Identifiable, Sendable {
                     if let position = sources.firstIndex(where: { $0.id == source.id }) { sources[position] = source }
                 }
                 currentSource = source; title = source.title; body = source.body; reading = true
-                generatePreview(recordSourceAccess: true); backlinks = []; outgoingLinkTargets = []
+                generatePreview(recordSourceAccess: !previewSource); backlinks = []; outgoingLinkTargets = []
+                if previewSource, let root, let repository {
+                    do {
+                        try await SourceReader.open(source, root: root, contentStore: repository.contentStore,
+                            isStillValid: { [weak self] in self?.isCompletionValid(completionTicket, operation: "select.sourceReader") == true })
+                        guard isCompletionValid(completionTicket, operation: "select.sourceReader.presented") else { return }
+                        if SourceReader.openReaderIDs.contains(source.id) { recordSidebarAccess(.source(source.id)) }
+                    } catch {
+                        if isCompletionValid(completionTicket, operation: "select.sourceReader.error") { errorMessage = error.localizedDescription }
+                    }
+                }
             } else {
                 title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0
                 editorNotice = nil; editingHint = nil; editorReadOnly = false
