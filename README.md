@@ -13,8 +13,9 @@ Requires macOS 26+, Apple's Swift 6 command-line tools and internet access for t
 # Or package a locally signed release:
 ./scripts/build.sh release
 open "dist/noema.app"
-# Run the native regression suite:
-./scripts/test.sh
+# Everyday domain feedback, then full native regression:
+./scripts/test.sh quick
+./scripts/test.sh extended
 ```
 
 Open `Examples/Demo Vault` for a tour, or choose **Create a vault** and select a parent folder. Keep personal vaults outside this repository. New vaults use editable Markdown pages. Explicit local conversion can select SQLite page storage; see [development](docs/development.md#local-sqlite-page-format). Imported originals retain their bytes, and linked originals remain read-only.
@@ -27,7 +28,7 @@ Selected page/source enrichment generates a summary and verified classification 
 
 **Settings → Intelligence → Activity History** shows local metadata for on-device and OpenAI operations, with filters, target navigation for the current open vault, reported cloud tokens and optional cost estimates. History defaults to 90-day retention; you can change retention, clear history or export up to 1,000 matching metadata records. Recording is best effort. Document text and titles are never stored in history; vault and target identifiers remain plaintext in its application-local database. No built-in model prices are assumed. See the [activity privacy contract](docs/contracts/external-ai.md#activity-history).
 
-- [Development and everyday workflow](docs/development.md): build, commands, file format and local evidence retention.
+- [Development and everyday workflow](docs/development.md): validation tiers, build timing, commands, file format and local evidence retention.
 - [Architecture](docs/architecture.md): components, concurrency, storage and session lifecycle.
 - Contracts: [storage boundary](docs/contracts/storage-boundary.md), [vault access authentication](docs/contracts/vault-access-authentication.md), [design tokens](docs/contracts/design-tokens.md), [source scanning](docs/contracts/source-scanning.md), [block editor](docs/contracts/block-editor.md).
 - [Validation](docs/validation.md): standing checks, performance expectations and unresolved acceptance.
