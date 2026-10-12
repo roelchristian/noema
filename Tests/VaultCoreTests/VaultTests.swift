@@ -301,9 +301,31 @@ func benchmarkFiveThousandEntries() async throws {
     try await index.reconcile(try await repo.scan())
     #expect(try await index.outgoingLinks(from: updatedAlpha.id) == ["gamma"])
 
-    // Locking the session invalidates the lease and rejects outgoingLinks queries.
+    // Retaining the actor must not retain read or rebuild authority across locking.
     try await sessionManager.lock()
-    await #expect(throws: VaultAccessError.self) {
-        _ = try await index.outgoingLinks(from: updatedAlpha.id)
+    var freshLease = lease
+    for reopen in [false, true] {
+        if reopen {
+            let (_, unlockedLease, _) = try await sessionManager.unlockRepository(root: folder)
+            freshLease = unlockedLease
+        }
+        await #expect(throws: VaultAccessError.self) { _ = try await index.cachedEntries() }
+        await #expect(throws: VaultAccessError.self) { _ = try await index.search("Alpha", kind: .wiki) }
+        await #expect(throws: VaultAccessError.self) { _ = try await index.backlinks(to: beta) }
+        await #expect(throws: VaultAccessError.self) { _ = try await index.outgoingLinks(from: updatedAlpha.id) }
+        await #expect(throws: VaultAccessError.self) { _ = try await index.sourcesRequiringContent(in: batch) }
+        await #expect(throws: VaultAccessError.self) { try await index.reconcile(ScanBatch()) }
     }
+    let fresh = try SQLiteSearchIndex(url: indexURL, sessionLease: freshLease,
+                                      accessGate: sessionManager.accessGate)
+    #expect(try await fresh.outgoingLinks(from: updatedAlpha.id) == ["gamma"])
+}
+
+@Test func guardedSearchIndexConstructionRejectsMissingLeaseBeforeCreatingLocalBytes() throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("search-admission-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: folder) }
+    #expect(throws: VaultAccessError.missingLease(operation: "searchIndex.open")) {
+        _ = try SQLiteSearchIndex(url: folder.appendingPathComponent("search.sqlite"), accessGate: VaultAccessGate())
+    }
+    #expect(!FileManager.default.fileExists(atPath: folder.path))
 }
