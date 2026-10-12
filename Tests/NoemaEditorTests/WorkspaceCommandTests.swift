@@ -308,7 +308,7 @@ extension VaultUIIntegrationTests {
             model.reading = false
             #expect(!model.canFormatDocument)
             model.format("**", "**")
-            #expect(model.body == "Original first body")
+            #expect(BlockDocumentCodec.markdownBody(model.body) == "Original first body")
 
             model.newPage()
             try await Task.sleep(for: .milliseconds(50))

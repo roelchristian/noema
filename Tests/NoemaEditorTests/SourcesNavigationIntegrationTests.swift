@@ -139,7 +139,8 @@ struct SourcesNavigationIntegrationTests {
         model.changeScope(.sources)
         model.select(source.id)
         await waitUntil { model.currentSource?.contentState == .notLoaded }
-        #expect(model.currentSource?.availabilityIssue == "Not verified")
+        #expect(model.currentSource?.availabilityIssue == nil)
+        #expect(model.currentSource?.contentState == .notLoaded)
         #expect(model.body.isEmpty)
         model.updateSourceLCC(metadata.sources[0], lcc: "QA")
         for _ in 0..<100 {
@@ -148,7 +149,7 @@ struct SourcesNavigationIntegrationTests {
         }
         // Wait for the index actor after the metadata write, while the UI still has a notLoaded record.
         try await Task.sleep(for: .milliseconds(30))
-        await waitUntil { model.currentSource?.contentState == .loaded && !model.preview.isEmpty }
+        await waitUntil { model.currentSource?.contentState == .loaded && model.body == source.body && !model.preview.isEmpty }
         #expect(model.errorMessage == nil)
         #expect(model.currentSource?.contentState == .loaded && model.body == source.body && !model.preview.isEmpty)
         #expect(try await repository.scanSources().sources.first?.metadata.lcc == "QA")
