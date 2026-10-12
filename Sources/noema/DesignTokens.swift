@@ -14,7 +14,8 @@ enum NoemaTypography {
     static let metadata: Font = .caption
     static let metadataEmphasis: Font = .caption.weight(.medium)
     static let caption: Font = .caption2
-    static let sidebarSection: Font = .caption.weight(.semibold)
+    static let sidebarSection: Font = .subheadline.weight(.medium)
+    static let sidebarIcon: Font = .system(size: 14, weight: .regular)
 }
 
 /// Shared spacing rhythm for application chrome, expressed in points.
@@ -62,7 +63,15 @@ enum NoemaMetrics {
     static let searchHeight: CGFloat = 30
 
     /// Horizontal framing shared by sidebar search, headers and tab groups.
-    static let sidebarInset: CGFloat = 10
+    static let sidebarInset: CGFloat = 8
+    /// Additional horizontal inset inside sidebar list rows.
+    static let sidebarRowHorizontalInset: CGFloat = 3
+    /// Sidebar icon glyph size target (14–15 pt).
+    static let sidebarIconSize: CGFloat = 14
+    /// Icon-to-label horizontal spacing in sidebar rows (7–8 pt).
+    static let sidebarIconSpacing: CGFloat = 8
+    /// Vertical separation between sidebar groups (10–14 pt).
+    static let sidebarSectionSpacing: CGFloat = 12
     /// Horizontal alignment shared by the inspector shell and panel contents.
     static let inspectorInset: CGFloat = 16
 

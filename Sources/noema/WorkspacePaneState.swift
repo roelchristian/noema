@@ -5,7 +5,7 @@ import SwiftUI
 /// User preferences are independent from the panes temporarily hidden to fit a window.
 @MainActor @Observable final class WorkspacePaneState {
     static let sidebarMinimum: CGFloat = 190
-    static let sidebarIdeal: CGFloat = 232
+    static let sidebarIdeal: CGFloat = 220
     static let sidebarMaximum: CGFloat = 320
     static let sidebarVisibilityKey = "workspace.sidebar.visible"
     static let inspectorVisibilityKey = "workspace.inspector.visible"
