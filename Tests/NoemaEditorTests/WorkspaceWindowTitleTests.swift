@@ -122,7 +122,7 @@ import VaultCore
     }
 }
 
-@Test @MainActor func workspaceWindowStateConfiguresUnifiedCompactToolbarAndMeasuresChromeHeight() {
+@Test @MainActor func workspaceWindowStateConfiguresUnifiedToolbarAndMeasuresChromeHeight() {
     let window = NSWindow(
         contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
         styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -134,12 +134,12 @@ import VaultCore
     window.toolbarStyle = .expanded
 
     WorkspaceWindowState.configureToolbarStyle(for: window)
-    #expect(window.toolbarStyle == .unifiedCompact)
+    #expect(window.toolbarStyle == .unified)
     #expect(window.titleVisibility == .visible)
 
     let chromeHeight = WorkspaceWindowState.titlebarChromeHeight(for: window)
     #expect(chromeHeight > 0)
-    #expect(chromeHeight <= 52)
+    #expect(chromeHeight <= 72)
 }
 
 @Test @MainActor func nativeWindowTitleUsesGateMetadataBeforeModelObservation() {

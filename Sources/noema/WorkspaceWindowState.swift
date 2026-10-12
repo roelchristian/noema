@@ -8,7 +8,7 @@ struct WorkspaceWindowState: NSViewRepresentable {
     let phase: VaultSessionPhase
 
     @MainActor static func configureToolbarStyle(for window: NSWindow) {
-        window.toolbarStyle = .unifiedCompact
+        window.toolbarStyle = .unified
         window.titleVisibility = .visible
     }
 

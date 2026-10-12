@@ -125,7 +125,7 @@ The hygiene checker fails on root Markdown outside `README.md`/`AGENTS.md`, trac
 
 ## Native workspace controls
 
-The compact unified window toolbar (`.unifiedCompact`) presents the active collection
+The standard unified window toolbar (`.unified`, Finder-sized icons) presents the active collection
 (`Pages`, `Sources`, `Semantic Blocks`, `Trash`) or opened document title once, alongside
 navigation, contextual collection sorting (`Pages`), document editing and lock controls,
 and global commands without a second competing title bar below it. Its contextual actions

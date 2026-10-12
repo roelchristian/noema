@@ -182,10 +182,10 @@ Run the repository's existing build and test scripts and retain relevant regress
 
 ## Native toolbar integration
 
-The main window uses `.windowToolbarStyle(.unifiedCompact(showsTitle: true))` (with
-`window.toolbarStyle = .unifiedCompact` enforced by `WorkspaceWindowState`) so collection
+The main window uses `.windowToolbarStyle(.unified(showsTitle: true))` (with
+`window.toolbarStyle = .unified` enforced by `WorkspaceWindowState`) so collection
 views (`Pages`, `Sources`, `Semantic Blocks`, `Trash`) and opened documents share a
-single compact horizontal toolbar band without redundant collection headings or empty
+single standard-height (Finder-style) horizontal toolbar band without redundant collection headings or empty
 subtitle space. The native toolbar retains SwiftUI/AppKit fonts, geometry, focus, hover,
 pressed and disabled drawing with the scene's `NoemaTheme` tint. Do not apply custom row
 fonts, hit-target frames, fixed blank spacers or `NoemaChromeButtonStyle` to native

@@ -109,7 +109,7 @@ struct SidebarChromeTests {
                     model.changeScope(scope)
                     window.contentView?.layoutSubtreeIfNeeded()
 
-                    #expect(window.toolbarStyle == .unifiedCompact)
+                    #expect(window.toolbarStyle == .unified)
                     #expect(window.titleVisibility == .visible)
                     #expect(model.windowTitle.isCollectionScope)
                     #expect(!model.windowTitle.hasSubtitle)
