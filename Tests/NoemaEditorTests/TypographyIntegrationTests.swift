@@ -1,12 +1,10 @@
 import AppKit
-import SwiftUI
 import Testing
 import VaultCore
 import NoemaBrand
 @testable import noema
 
-/// Native layout and raster validation runs normally. PNG export is opt-in and
-/// never uses a personal vault or changes the application's saved preferences.
+/// Native text layout, content preservation and typography assertions run normally.
 @Suite("UI.TYP08 editorial integration", .serialized)
 @MainActor struct TypographyIntegrationTests {
     private let prose = "A knowledge vault should make extended reading comfortable. The same native typography follows an article and its readable sources, while preserving every original byte."
@@ -24,7 +22,7 @@ import NoemaBrand
     @Test func editorNativeLayoutMatrixPreservesContentAndSelection() async throws {
         let original = document
         let serialized = BlockDocumentCodec.encode(original)
-        for (familyName, family) in families {
+        for (_, family) in families {
             for size in [10.0, 16, 32] {
                 for width in [CGFloat(420), 1040] {
                     for dark in [false, true] {
@@ -47,7 +45,6 @@ import NoemaBrand
                             #expect(captured == original)
                             #expect(BlockDocumentCodec.encode(captured) == serialized)
                         }
-                        try await capture(view, name: "editor-\(familyName)-\(Int(size))-\(Int(width))-\(dark ? "dark" : "light")", dark: dark)
                     }
                 }
             }
@@ -60,7 +57,7 @@ import NoemaBrand
         let htmlBytes = Data("<h1>Editorial reading</h1><p>\(prose)</p><h2>A second-level heading</h2><p>Body <b>bold</b> and <i>italic</i> and <code>inline code</code> and a <a href='https://example.com'>reference</a>.</p><h3>A third-level heading</h3><blockquote>A quotation uses the chosen reading family.</blockquote><ul><li>A list item with enough words to wrap naturally in a narrow reading viewport.</li><li>Another item</li></ul><pre>let knowledge = \"Keep the original\"</pre>".utf8)
         let imported = try NSAttributedString(data: htmlBytes, options: [.documentType: NSAttributedString.DocumentType.html], documentAttributes: nil)
         let originalImport = NSAttributedString(attributedString: imported)
-        for (familyName, family) in families {
+        for (_, family) in families {
             for size in [10.0, 16, 32] {
                 for width in [CGFloat(420), 1040] {
                     for dark in [false, true] {
@@ -80,7 +77,7 @@ import NoemaBrand
                             #expect(ep.lineSpacing == sp.lineSpacing)
                             #expect(ep.paragraphSpacingBefore == sp.paragraphSpacingBefore)
                         }
-                        for (kind, content) in [("markdown", sourceMarkdown),
+                        for (_, content) in [("markdown", sourceMarkdown),
                                                 ("html", SourceTextPresentation.html(imported, typography: typography, theme: theme)),
                                                 ("plain", SourceTextPresentation.plainText(prose + "\n\n" + prose, typography: typography, theme: theme))] {
                             let view = ReadingTextView(frame: NSRect(x: 0, y: 0, width: width, height: 1100))
@@ -93,9 +90,6 @@ import NoemaBrand
                             try verifyLayout(view)
                             #expect(view.selectedRange() == selected)
                             #expect(view.string == content.string)
-                            if size == 16 {
-                                try await capture(view, name: "source-\(kind)-\(familyName)-16-\(Int(width))-\(dark ? "dark" : "light")", dark: dark)
-                            }
                         }
                         #expect(imported.isEqual(to: originalImport))
                         #expect(Data(markdown.utf8) == bytes)
@@ -105,7 +99,7 @@ import NoemaBrand
         }
     }
 
-    @Test func preferencesAndIncreasedContrastFixturesUseIsolatedDefaults() async throws {
+    @Test func increasedContrastTypographyUsesIsolatedDefaults() async throws {
         let suite = "NoemaTypographyCapture-" + UUID().uuidString
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -113,26 +107,22 @@ import NoemaBrand
             defaults.set(dark ? "Unavailable UI.TYP08 Family" : "Times New Roman", forKey: EditorPreferences.fontFamilyKey)
             defaults.set(16.0, forKey: EditorPreferences.fontSizeKey)
             let theme = NoemaTheme(dark: dark, increasedContrast: true)
-            let service = ExternalAIService(accessGate: VaultAccessGate(), defaults: defaults)
-            let settings = NSHostingView(rootView: NoemaSettings(externalAIService: service).defaultAppStorage(defaults)
-                .environment(\.noemaTheme, theme).environment(\.colorScheme, dark ? .dark : .light)
-                .transaction { $0.disablesAnimations = true })
-            settings.frame = NSRect(x: 0, y: 0, width: 760, height: 1000)
-            try await capture(settings, name: "preferences-increased-contrast-static-\(dark ? "dark" : "light")", dark: dark, increased: true)
+            let typography = EditorTypography(family: defaults.string(forKey: EditorPreferences.fontFamilyKey) ?? "",
+                                              size: defaults.double(forKey: EditorPreferences.fontSizeKey))
             let view = ArticleTextView(frame: NSRect(x: 0, y: 0, width: 840, height: 1100))
-            view.theme = theme; view.typography = EditorTypography(size: 16)
+            view.theme = theme; view.typography = typography
             view.showSemanticHeadings = true
             configure(view, theme: theme)
-            view.textStorage?.setAttributedString(BlockTextStorage.render(document, theme: theme, showSemanticHeadings: true))
+            view.textStorage?.setAttributedString(BlockTextStorage.render(document, theme: theme,
+                showSemanticHeadings: true, typography: typography))
             view.updateSemanticHeadingTopInset()
-            try await capture(view, name: "editor-increased-contrast-\(dark ? "dark" : "light")", dark: dark, increased: true)
+            try verifyLayout(view)
             let backing = try #require(theme.native(.surfaceElevated).usingColorSpace(.sRGB))
             for role in [ThemeRole.textPrimary, .textMuted] {
                 let foreground = try #require(theme.nativeText(role).usingColorSpace(.sRGB))
                 #expect(rgb(foreground).contrastRatio(against: rgb(backing)) >= 7)
             }
         }
-        print("UI.TYP08 fixtures: 72 editor layouts, 108 source layouts, 2 static preference fixtures, 2 increased-contrast editor fixtures. Export: 76 PNGs when requested. OS Reduce Motion: \(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion).")
     }
 
     @Test func customFamilyWeightsSelectNearestRealUprightFace() throws {
@@ -216,48 +206,6 @@ import NoemaBrand
         manager.enumerateLineFragments(forGlyphRange: manager.glyphRange(for: container)) { rect, used, _, _, _ in
             #expect(rect.height > 0 && used.height > 0)
             #expect(used.minX >= -0.01 && used.maxX <= container.size.width + 0.01)
-        }
-    }
-
-    private func capture(_ view: NSView, name: String, dark: Bool, increased: Bool = false) async throws {
-        _ = NSApplication.shared
-        let appearanceName: NSAppearance.Name = increased ? (dark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua) : (dark ? .darkAqua : .aqua)
-        // Native layout may grow the document before export. Preserve the actual
-        // requested scroll viewport instead of turning enlarged text into a taller image.
-        let viewport = NSRect(x: 0, y: 0, width: view.frame.width,
-                              height: view is NSTextView ? 1100 : view.frame.height)
-        let window = NSWindow(contentRect: viewport, styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: appearanceName)
-        let surface: NSView
-        if let text = view as? NSTextView {
-            text.setSelectedRange(NSRange(location: 0, length: 0))
-            let scroll = NSScrollView(frame: viewport)
-            scroll.drawsBackground = true; scroll.backgroundColor = text.backgroundColor
-            scroll.hasVerticalScroller = false
-            scroll.documentView = text
-            surface = scroll
-        } else { surface = view }
-        view.appearance = window.appearance; window.contentView = surface
-        defer { window.contentView = nil; window.close() }
-        surface.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(20))
-        surface.layoutSubtreeIfNeeded(); surface.displayIfNeeded()
-        let bitmap = try #require(surface.bitmapImageRepForCachingDisplay(in: surface.bounds))
-        surface.cacheDisplay(in: surface.bounds, to: bitmap)
-        #expect(bitmap.pixelsWide >= Int(surface.bounds.width) && bitmap.pixelsHigh >= Int(surface.bounds.height))
-        var colors = Set<String>()
-        for y in stride(from: 0, to: bitmap.pixelsHigh, by: 11) {
-            for x in stride(from: 0, to: bitmap.pixelsWide, by: 11) {
-                if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) {
-                    colors.insert("\(Int(color.redComponent * 255)),\(Int(color.greenComponent * 255)),\(Int(color.blueComponent * 255))")
-                }
-            }
-        }
-        #expect(colors.count > 8, "\(name) should contain native text, not a blank raster")
-        if let path = ProcessInfo.processInfo.environment["NOEMA_TYPOGRAPHY_AFTER_CAPTURE_DIR"] {
-            let directory = URL(fileURLWithPath: path)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try #require(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent(name + ".png"))
         }
     }
 

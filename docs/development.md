@@ -134,19 +134,34 @@ My Vault/
 - **Conflict preservation:** If a page changes on disk while you are editing, Noema keeps the disk version and saves your competing draft to `Conflicts/` and local recovery storage so you can reload or save as a new page. iCloud conflict versions are copied before being marked resolved.
 - **Recoverable Trash (`Removed Pages`):** Open **Trash** from the bottom-left vault menu to restore or permanently delete trashed pages and source records in a single unified list (external linked files are never deleted). Restore checks for identity, title, or duplicate-source collisions, while **Empty Trash…** and permanent deletion verify snapshots so modified, unreadable, or conflicted items are preserved and reported. Items in `Removed Pages` expire automatically after **15 days** on vault open/refresh (undated items receive a full 15-day grace period, and any surviving legacy `.Trash` Markdown files are migrated automatically under coordinated access).
 
-## Typography capture fixtures
+## Explicit visual validation
 
-The native fixtures exercise production rendering without opening a personal vault
-or changing global font preferences. Ordinary tests write no capture files. Opt in
-with an absolute output directory inside an active local evidence run:
+Routine tests retain text layout, selection/content preservation, color contrast and
+inspector bounds assertions. Screenshot capture is excluded from the default Swift
+package test graph. The dedicated `NoemaVisualValidationTests` target is included
+only with `NOEMA_VISUAL_VALIDATION=1`; the harness scripts set that value and route
+PNG output into an active managed evidence run:
 
 ```sh
-NOEMA_TYPOGRAPHY_CAPTURE_DIR="$PWD/.local/agent-runs/<run-id>/baseline" ./scripts/test.sh --filter TypographyBaselineCaptureTests
-NOEMA_TYPOGRAPHY_AFTER_CAPTURE_DIR="$PWD/.local/agent-runs/<run-id>/after" ./scripts/test.sh --filter TypographyIntegrationTests
+validation/ui-design-tokens/capture.sh token-review baseline
+# After making the proposed visual change:
+validation/ui-design-tokens/capture.sh token-review after
+python3 validation/ui-design-tokens/select-evidence.py --run-id token-review
+validation/visual-validation/capture-typography.sh typography-review after
 ```
 
-Baseline comparison requires production sources at `b6cd5c73bdc97b49c8016ac0bd97fa28a1c743c4`
-and the copied baseline fixture. Running that fixture against newer sources is an
-after comparison. Native raster captures establish fixture appearance, not live
-VoiceOver, keyboard focus, pointer dragging, OS accessibility settings or pane
-resizing. Retain provenance and images locally according to the retention policy.
+Both phases capture the current checkout; preserve the before captures before
+changing sources. The token harness covers every applicable page/source inspector
+tab at minimum, ideal and maximum widths across both themes, light/dark modes and
+standard/increased contrast, plus workspace/native-control fixtures. Typography
+capture exercises production article/source rendering with isolated preferences.
+Successful captures are marked complete; selection can reopen a completed run.
+
+The retired UI.TYP01 generator remains recoverable from
+`2c68a2dff43f3195241bdf16491f138295a407de:Tests/NoemaEditorTests/TypographyBaselineCaptureTests.swift`.
+Its baseline production ref is `b6cd5c73bdc97b49c8016ac0bd97fa28a1c743c4`.
+Historical pre-token code is reproduced from Git history, rather than compatibility
+branches in today's harness. Native raster captures establish fixture appearance;
+live VoiceOver, focus, dragging, OS accessibility settings and pane resizing still
+require the standing device acceptance procedure. Preserve images and provenance
+according to the retention policy, and pin evidence needed for later review.
