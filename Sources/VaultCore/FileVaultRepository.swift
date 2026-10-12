@@ -351,10 +351,18 @@ public actor FileVaultRepository: VaultRepository {
 
     public func save(note: NoteRecord, title: String, body: String, tags: [String]) async throws -> NoteRecord {
         try validateAccess(operation: "save")
-        return try await save(note: note, title: title, body: body, tags: tags, preserveUpdatedAt: false)
+        return try await save(note: note, title: title, document: BlockDocumentCodec.decode(body), tags: tags, preserveUpdatedAt: false)
+    }
+
+    public func save(note: NoteRecord, title: String, document: BlockDocument, tags: [String]) async throws -> NoteRecord {
+        try await save(note: note, title: title, document: document, tags: tags, preserveUpdatedAt: false)
     }
 
     private func save(note: NoteRecord, title: String, body: String, tags: [String], preserveUpdatedAt: Bool) async throws -> NoteRecord {
+        try await save(note: note, title: title, document: note.document ?? BlockDocumentCodec.decode(body), tags: tags, preserveUpdatedAt: preserveUpdatedAt)
+    }
+
+    private func save(note: NoteRecord, title: String, document: BlockDocument, tags: [String], preserveUpdatedAt: Bool) async throws -> NoteRecord {
         try validateAccess(operation: "save")
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw VaultError.invalid("A wiki page needs a title.") }
@@ -364,12 +372,12 @@ public actor FileVaultRepository: VaultRepository {
         }
         guard !titleExists(title, in: snapshot.notes.filter { $0.id != note.id }) else { throw VaultError.duplicateTitle(title) }
         if snapshot.notes.first(where: { $0.id == note.id })?.isEditingLocked == true,
-           title != note.title || body != note.body || normalizeTags(tags) != note.tags || snapshot.notes.first(where: { $0.id == note.id })?.linkedSourceIDs != note.linkedSourceIDs || snapshot.notes.first(where: { $0.id == note.id })?.lcc != note.lcc {
+           title != note.title || document != (note.document ?? BlockDocumentCodec.decode(note.body)) || normalizeTags(tags) != note.tags || snapshot.notes.first(where: { $0.id == note.id })?.linkedSourceIDs != note.linkedSourceIDs || snapshot.notes.first(where: { $0.id == note.id })?.lcc != note.lcc {
             throw VaultError.invalid("This article is locked. Unlock it before editing.")
         }
         var updated = note
-        updated.title = title; updated.body = body; updated.tags = normalizeTags(tags)
-        updated.inlineTags = MarkdownService.analyze(body).tags
+        updated.title = title; updated.document = document; updated.tags = normalizeTags(tags)
+        updated.inlineTags = MarkdownService.analyze(BlockDocumentCodec.readable(document)).tags
         if snapshot.notes.first(where: { $0.id == note.id })?.title != title { updated.aiTitleProvenance = nil }
         if snapshot.notes.first(where: { $0.id == note.id })?.lcc != updated.lcc {
             updated.aiLCCProvenance = nil; updated.lccClassification = nil
@@ -377,7 +385,7 @@ public actor FileVaultRepository: VaultRepository {
         updated.updatedAt = preserveUpdatedAt ? note.updatedAt : timestamp()
         if updated.createdAt.isEmpty { updated.createdAt = updated.updatedAt }
         if normalized(title) != normalized(note.title), !updated.aliases.contains(note.title) { updated.aliases.append(note.title) }
-        _ = try await sqliteBlockStore.savePage(record: updated, document: BlockDocumentCodec.decode(updated.body), condition: .replace(expected: sqliteRevision(note)))
+        _ = try await sqliteBlockStore.savePage(record: updated, document: document, condition: .replace(expected: sqliteRevision(note)))
         return try await sqliteBlockStore.loadPage(pageID: note.id).record
     }
 

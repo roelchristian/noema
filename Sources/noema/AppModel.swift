@@ -266,13 +266,36 @@ struct AISuggestion: Identifiable, Sendable {
             }
         }
     }
-    var body = "" {
+    var editorDocument = BlockDocumentCodec.decode("") {
         didSet {
-            if body != oldValue {
+            if editorDocument != oldValue {
+                bodyProjection = nil
                 cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate()
                 if isSearching || searchMode == .quickOpen || scope == .semantic { invalidateSearch() }
             }
         }
+    }
+    @ObservationIgnored private var bodyProjection: String? = ""
+    /// Compatibility projection for interchange, AI and source presentation.
+    var body: String {
+        get { bodyProjection ?? BlockDocumentCodec.encode(editorDocument) }
+        set { editorDocument = BlockDocumentCodec.decode(newValue); bodyProjection = newValue }
+    }
+    var editorIdentity: EditorSession.Identity {
+        .init(pageID: currentNote?.id, vaultID: sessionState.vaultID, sessionID: sessionState.sessionID)
+    }
+    @ObservationIgnored private var editorGeneration: UUID?
+    @ObservationIgnored private var editorRevision: UInt64 = 0
+    func registerEditorSession(_ session: EditorSession) {
+        guard session.identity == editorIdentity else { return }
+        editorGeneration = session.generation; editorRevision = session.revision
+    }
+    func acceptEditorSnapshot(_ snapshot: EditorSession.DocumentSnapshot) {
+        guard canOperateOnLoadedContent, !editingLocked, snapshot.identity == editorIdentity,
+              snapshot.generation == editorGeneration, snapshot.revision > editorRevision else { return }
+        editorRevision = snapshot.revision
+        editorDocument = snapshot.document
+        edited()
     }
     @ObservationIgnored var flushEditorPublication: (() -> Void)?
     var tagInput = "" { didSet { if tagInput != oldValue { cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate() } } }
@@ -540,7 +563,8 @@ struct AISuggestion: Identifiable, Sendable {
     var editedTags: [String] { normalizeTags(tagInput.components(separatedBy: ",")) }
     var dirty: Bool {
         guard let note = currentNote else { return false }
-        return title != note.title || body != note.body || editedTags != note.tags
+        let contentChanged = note.document.map { editorDocument != $0 } ?? (body != note.body)
+        return title != note.title || contentChanged || editedTags != note.tags
     }
     var scopeTitle: String {
         switch scope { case .wiki: "Pages"; case .sources: "Sources"; case .semantic: "Semantic Blocks"; case .trash: "Trash"; case .tag(let tag): "#" + tag }
@@ -1408,7 +1432,7 @@ struct AISuggestion: Identifiable, Sendable {
         guard let currentNote, !editingLocked, !isSummarizing(target: .page(currentNote.id)) else { return }
         var document = BlockDocumentCodec.decode(body)
         guard document.removeAISummary() else { return }
-        body = BlockDocumentCodec.encode(document); aiSummaryNotice = nil; edited()
+        editorDocument = document; aiSummaryNotice = nil; edited()
     }
 
     func summarizePage() {
@@ -2415,9 +2439,9 @@ struct AISuggestion: Identifiable, Sendable {
             backlinks = []
             outgoingLinkTargets = []
         }
-        currentNote = note; title = note.title; body = note.body; tagInput = note.tags.joined(separator: ", ")
+        currentNote = note; title = note.title; editorDocument = note.document ?? BlockDocumentCodec.decode(note.body); bodyProjection = note.body; tagInput = note.tags.joined(separator: ", ")
         lccInput = note.lcc ?? ""
-        let document = BlockDocumentCodec.decode(note.body)
+        let document = editorDocument
         editorReadOnly = document.unsupportedVersion
         editorNotice = document.unsupportedVersion ? "This page uses a newer block format and is read-only. Its original content is preserved." : document.recoveredMetadata != nil ? "External Markdown changed. The earlier editor metadata was preserved for recovery; external text is shown." : nil
         externalChange = false; saveStatus = "Saved locally"; generatePreview()
@@ -2609,20 +2633,21 @@ struct AISuggestion: Identifiable, Sendable {
         saving = true; saveStatus = "Saving…"
         let trimmedLCC = lccInput.trimmingCharacters(in: .whitespacesAndNewlines)
         note.lcc = trimmedLCC.isEmpty ? nil : trimmedLCC
-        let draft = DraftRecord(note: note, title: title, body: body, tags: editedTags)
+        let capturedDocument = editorDocument
+        let draft = DraftRecord(note: note, title: title, document: capturedDocument, tags: editedTags)
         do {
-            wordCount = await Task.detached { BlockDocumentCodec.markdownBody(draft.body).split(whereSeparator: \.isWhitespace).count }.value
+            wordCount = capturedDocument.withoutAISummary.flattened.map(\.text).joined(separator: " ").split(whereSeparator: \.isWhitespace).count
             try await recovery.store(draft)
-            let saved = try await repository.save(note: note, title: draft.title, body: draft.body, tags: draft.tags)
+            let saved = try await repository.save(note: note, title: draft.title, document: capturedDocument, tags: draft.tags)
             guard generation == ticket, canOperateOnLoadedContent else { saving = false; return false }
             recordPageRename(saved.id, from: note.title, to: saved.title)
             if currentNote?.id == saved.id {
                 currentNote = saved
                 lccInput = saved.lcc ?? ""
                 if title == draft.title { title = saved.title }
-                // Canonical persistence can add codec evidence to an unchanged input.
-                // Reconcile only the captured body; later user edits retain their draft.
-                if body == draft.body { body = saved.body }
+                // Reconcile canonical revision evidence only for the captured document;
+                // edits made while saving retain their newer draft.
+                if editorDocument == draft.document { editorDocument = saved.document ?? BlockDocumentCodec.decode(saved.body) }
                 if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
                 updateTags()
             }
@@ -2850,7 +2875,7 @@ struct AISuggestion: Identifiable, Sendable {
         Task {
             if dirty, let note = currentNote, let recovery {
                 do {
-                    try await recovery.store(DraftRecord(note: note, title: title, body: body, tags: editedTags))
+                    try await recovery.store(DraftRecord(note: note, title: title, document: editorDocument, tags: editedTags))
                     let drafts = try await recovery.listing()
                     guard isCompletionValid(completionTicket, operation: "reloadDiskVersion.drafts") else { return }
                     applyRecoveryListing(drafts)
@@ -2877,7 +2902,7 @@ struct AISuggestion: Identifiable, Sendable {
             guard isCompletionValid(completionTicket, operation: "saveDraftAsNewPage.start"), let repository else { return }
             let originalID = recovered?.id ?? currentNote?.id
             do {
-                var note = try await repository.create(title: (recovered?.title ?? title) + " (recovered)", body: recovered?.body ?? body)
+                var note = try await repository.create(title: (recovered?.title ?? title) + " (recovered)", body: recovered?.contentBody ?? body)
                 note = try await repository.save(note: note, title: note.title, body: note.body, tags: recovered?.tags ?? editedTags)
                 if let originalID { try await recovery?.remove(originalID) }
                 let drafts = try await recovery?.listing() ?? RecoveryListing()

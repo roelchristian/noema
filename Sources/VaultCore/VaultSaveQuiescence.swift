@@ -530,7 +530,7 @@ public final class VaultSaveQuiescenceCoordinator: Sendable {
                     try await repository.save(
                         note: noteToSave,
                         title: draft.title,
-                        body: draft.body,
+                        body: draft.contentBody,
                         tags: draft.tags
                     )
                 }
@@ -901,7 +901,7 @@ public final class VaultSaveQuiescenceCoordinator: Sendable {
                             let saved = try await repository.save(
                                 note: baseNote,
                                 title: draft.title,
-                                body: draft.body,
+                                body: draft.contentBody,
                                 tags: draft.tags
                             )
                             state.withLock { $0.committedNotesByID[saved.id] = saved }

@@ -9,7 +9,7 @@ struct RichArticleView: NSViewRepresentable {
     @AppStorage(EditorPreferences.fontFamilyKey) var fontFamily = ""
     @AppStorage(EditorPreferences.fontSizeKey) var fontSize = EditorTypography.defaultSize
     var typography: EditorTypography { EditorTypography(family: fontFamily, size: fontSize) }
-    @Binding var text: String
+    @Binding var document: BlockDocument
     var reading: Bool
     var locked: Bool
     var action: EditorAction?
@@ -22,7 +22,7 @@ struct RichArticleView: NSViewRepresentable {
     var sessionID: UUID? = nil
     var hidesAISummary = false
     var onSessionReady: ((Coordinator?) -> Void)? = nil
-    var onSnapshot: ((EditorSession.DocumentSnapshot, String) -> Void)? = nil
+    var onSnapshot: ((EditorSession.DocumentSnapshot) -> Void)? = nil
     var onBlockLink: (URL) -> Void = { _ in }
     var onScrollOffset: (CGFloat) -> Void = { _ in }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -40,7 +40,7 @@ struct RichArticleView: NSViewRepresentable {
         view.registerForDraggedTypes([ArticleTextView.dragType])
         view.delegate = context.coordinator; context.coordinator.view = view; scroll.documentView = view
         view.updateReadingGeometry()
-        context.coordinator.load(text)
+        context.coordinator.load(document)
         context.coordinator.lastMacros = texMacros
         context.coordinator.observeScrolling(in: scroll)
         onSessionReady?(context.coordinator)
@@ -66,8 +66,8 @@ struct RichArticleView: NSViewRepresentable {
         view.pasteContent = { [weak coordinator] in coordinator?.paste($0) }
         view.insertionPointColor = theme.native(.accentPrimary)
         view.linkTextAttributes = [.foregroundColor: theme.nativeText(.accentSecondary), .underlineStyle: NSUnderlineStyle.single.rawValue]
-        if coordinator.lastText != text || coordinator.session.identity != EditorSession.Identity(pageID: noteID, vaultID: vaultID, sessionID: sessionID) {
-            coordinator.load(text); coordinator.lastMacros = texMacros; view.undoManager?.removeAllActions()
+        if coordinator.lastDocument != document || coordinator.session.identity != EditorSession.Identity(pageID: noteID, vaultID: vaultID, sessionID: sessionID) {
+            coordinator.load(document); coordinator.lastMacros = texMacros; view.undoManager?.removeAllActions()
         } else if coordinator.lastTheme != theme || coordinator.lastTypography != typography || headingsChanged || macrosChanged {
             if !view.hasMarkedText(), !view.isSettingMarkedText {
                 coordinator.refreshPresentation(); coordinator.lastMacros = texMacros
@@ -95,19 +95,16 @@ struct SummarizedArticleView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var summaryExpanded = false
     @State private var disclosure = SummaryDisclosureState()
-    private var document: BlockDocument { BlockDocumentCodec.decode(model.body) }
+    private var document: BlockDocument { model.editorDocument }
     private var summaryBusy: Bool {
         model.currentNote.map { model.isSummarizing(target: .page($0.id)) } ?? false
     }
-    var editorText: Binding<String> {
-        let pageID = model.currentNote?.id
-        let vaultID = model.sessionState.vaultID
-        let sessionID = model.sessionState.sessionID
-        return Binding(get: { model.body }, set: { text in
-            guard model.currentNote?.id == pageID,
-                  model.sessionState.vaultID == vaultID,
-                  model.sessionState.sessionID == sessionID else { return }
-            model.body = text
+    var editorDocument: Binding<BlockDocument> {
+        let identity = EditorSession.Identity(pageID: model.currentNote?.id,
+            vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID)
+        return Binding(get: { model.editorDocument }, set: { document in
+            guard model.editorIdentity == identity else { return }
+            model.editorDocument = document
         })
     }
     var body: some View {
@@ -160,11 +157,12 @@ struct SummarizedArticleView: View {
                 .background(.ultraThinMaterial)
                 Divider().scaleEffect(y: 0.5).frame(height: 0.5)
             }
-            RichArticleView(text: editorText, reading: model.reading, locked: model.editingLocked, action: model.editorAction, onBegin: model.beginEditing, onEnd: model.finishEditing, onWikiLink: model.followWikiLink, onWikiQuery: { model.wikiQuery = $0 }, noteID: model.currentNote?.id, vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID, hidesAISummary: true, onSessionReady: { coordinator in
+            RichArticleView(document: editorDocument, reading: model.reading, locked: model.editingLocked, action: model.editorAction, onBegin: model.beginEditing, onEnd: model.finishEditing, onWikiLink: model.followWikiLink, onWikiQuery: { model.wikiQuery = $0 }, noteID: model.currentNote?.id, vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID, hidesAISummary: true, onSessionReady: { coordinator in
                 if let coordinator {
+                    model.registerEditorSession(coordinator.session)
                     model.flushEditorPublication = { [weak coordinator] in coordinator?.flushPublication() }
                 } else { model.flushEditorPublication = nil }
-            }, onBlockLink: model.openBlockURL, onScrollOffset: { disclosure.scrolled(to: $0) })
+            }, onSnapshot: model.acceptEditorSnapshot, onBlockLink: model.openBlockURL, onScrollOffset: { disclosure.scrolled(to: $0) })
                 .frame(maxWidth: .infinity)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: disclosure.collapsed)

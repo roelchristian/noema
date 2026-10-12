@@ -416,7 +416,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
     private func savePageInTransaction(record: NoteRecord, document: BlockDocument, condition: BlockStoreWriteCondition) throws -> BlockStoreSnapshot {
         try record.extensions?.validateWritable(); try validateOptionalFields(record.unknownFields)
         guard canonicalVaultID != nil || record.extensions == nil else { throw VaultError.invalid("Page extensions require canonical schema 3.") }
-        var metadata = record; metadata.body = ""; metadata.contentHash = ""
+        var metadata = record; metadata.body = ""; metadata.document = nil; metadata.contentHash = ""
         if canonicalVaultID != nil { metadata.sourceIDs = nil }
         let snapshot = try persist(document, pageID: record.id, condition: condition, metadata: encoder.encode(metadata))
         if canonicalVaultID != nil { try replaceSourceLinks(pageID: record.id, sourceIDs: record.linkedSourceIDs) }
@@ -434,7 +434,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
         guard record.id == pageID else { throw VaultError.invalid("Page metadata identity does not match its record.") }
         var portableDocument = snapshot.document
         if !portableDocument.unsupportedVersion { portableDocument.originalSource = nil }
-        record.body = BlockDocumentCodec.encode(portableDocument); record.contentHash = snapshot.revision.token.base64EncodedString()
+        record.body = BlockDocumentCodec.encode(portableDocument); record.document = portableDocument; record.contentHash = snapshot.revision.token.base64EncodedString()
         record.inlineTags = MarkdownService.analyze(record.body).tags
         if sqlite3_column_int(statement, 1) == 1 {
             let cycle = digest(snapshot.revision.token) + "-" + pageID.uuidString.lowercased()
