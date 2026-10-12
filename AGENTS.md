@@ -1,5 +1,8 @@
 # Noema Agent Policy
 
+Before starting work, read `AGENTS.local.md` if it exists and follow its
+local setup-specific rules.
+
 ## Authoritative documentation
 
 - `README.md` is the human entry point.
