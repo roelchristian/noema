@@ -432,7 +432,9 @@ struct AppModelSessionIntegrationTests {
         try FileManager.default.createDirectory(at: invalidRoot, withIntermediateDirectories: true)
         let unsupportedRoot = rootA.deletingLastPathComponent().appendingPathComponent("UnsupportedVault", isDirectory: true)
         try FileManager.default.createDirectory(at: unsupportedRoot, withIntermediateDirectories: true)
-        try Data(#"{"id":"00000000-0000-0000-0000-000000000099","formatVersion":99,"createdAt":"2026-10-12T00:00:00Z"}"#.utf8)
+        var unsupportedManifest = VaultManifest(id: UUID(uuidString: "00000000-0000-0000-0000-000000000099")!)
+        unsupportedManifest.formatVersion = 99
+        try JSONEncoder().encode(unsupportedManifest)
             .write(to: unsupportedRoot.appendingPathComponent("vault.json"), options: .atomic)
         let missingRoot = rootA.deletingLastPathComponent().appendingPathComponent("MissingVault", isDirectory: true)
         let unhydratedRoot = try await makeTempVault(name: "UnhydratedVault")
