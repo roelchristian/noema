@@ -7,7 +7,6 @@ import re
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 
@@ -176,11 +175,11 @@ def cleanup(args):
 
 
 def capture(args):
-    baseline = os.environ.get('BASELINE_REF')
-    phase = args.phase or ('baseline' if baseline else 'after')
-    if (phase == 'baseline') != bool(baseline):
-        raise ValueError('baseline requires BASELINE_REF; after requires it to be unset')
-    run_id = args.run_id or time.strftime('ui-design-tokens-%Y%m%dT%H%M%S') + f'-{os.getpid()}'
+    if os.environ.get('BASELINE_REF'):
+        raise ValueError('Historical pre-token capture is retired; recover the original fixture from Git history')
+    phase = args.phase or 'after'
+    kind = getattr(args, 'kind', 'tokens')
+    run_id = args.run_id or time.strftime(f'visual-{kind}-%Y%m%dT%H%M%S') + f'-{os.getpid()}'
     run = open_run(run_id, True)
     locked = False
     try:
@@ -194,27 +193,20 @@ def capture(args):
                 os.unlink(name, dir_fd=run)
         os.mkdir(phase, dir_fd=run)
         output = REPO / '.local/agent-runs' / run_id / phase
-        env = dict(os.environ, NOEMA_TOKEN_SCREENSHOT_DIR=str(output))
-        with tempfile.TemporaryDirectory(prefix='noema-token-baseline-') as snapshot:
-            cwd = REPO
-            if baseline:
-                archive = subprocess.run(['git', 'archive', baseline], cwd=REPO, check=True, stdout=subprocess.PIPE)
-                subprocess.run(['tar', '-x', '-C', snapshot], input=archive.stdout, check=True)
-                import shutil
-                shutil.copy2(REPO / 'Tests/NoemaEditorTests/DesignTokenValidationTests.swift',
-                             Path(snapshot) / 'Tests/NoemaEditorTests/DesignTokenValidationTests.swift')
-                cwd = Path(snapshot)
-            command = ['./scripts/test.sh', '--filter', 'DesignTokenValidationTests']
-            if baseline:
-                # Current fixture preserves the 136-image matrix on historical
-                # sources without native pane state or its injected initializer.
-                command += ['-Xswiftc', '-DNOEMA_LEGACY_TOKEN_FIXTURE']
-            subprocess.run(command, cwd=cwd, env=env, check=True)
-        ref = subprocess.check_output(['git', 'rev-parse', baseline or 'HEAD'], cwd=REPO)
+        variable, suite = {
+            'tokens': ('NOEMA_TOKEN_SCREENSHOT_DIR', 'DesignTokenCaptureTests'),
+            'typography': ('NOEMA_TYPOGRAPHY_AFTER_CAPTURE_DIR', 'TypographyCaptureTests'),
+        }[kind]
+        env = dict(os.environ, NOEMA_VISUAL_VALIDATION='1', **{variable: str(output)})
+        subprocess.run(['./scripts/test.sh', '--filter', suite], cwd=REPO, env=env, check=True)
+        ref = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=REPO)
         (output / 'source-ref.txt').write_bytes(ref)
         platform = subprocess.check_output(['sw_vers']) + subprocess.check_output(['swift', '--version'])
         (output / 'platform.txt').write_bytes(platform)
-        print(f'Captured {phase}: {output}\nSelect both matrices: python3 validation/ui-design-tokens/select-evidence.py --run-id {run_id}')
+        marker(run, '.complete')
+        print(f'Captured {kind} {phase}: {output}')
+        if kind == 'tokens':
+            print(f'Select both current matrices: python3 validation/ui-design-tokens/select-evidence.py --run-id {run_id}')
     except Exception:
         if locked:
             marker(run, '.failed')
@@ -235,6 +227,7 @@ def main():
     clean.add_argument('--force', action='store_true', help='Bypass age only; completed, active and pinned rules still apply')
     clean.add_argument('--protect-active', action='store_true', help='Active runs are always protected')
     cap = actions.add_parser('capture')
+    cap.add_argument('--kind', choices=['tokens', 'typography'], default='tokens')
     cap.add_argument('run_id', nargs='?')
     cap.add_argument('phase', choices=['baseline', 'after'], nargs='?')
     args = parser.parse_args()

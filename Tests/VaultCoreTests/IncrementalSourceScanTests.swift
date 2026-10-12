@@ -307,8 +307,8 @@ struct IncrementalSourceScanTests {
         try await manager.close()
     }
 
-    @Test func sixteenSourceReadCountBenchmark() async throws {
-        guard ProcessInfo.processInfo.environment["SOURCES_SCAN_BENCHMARK"] == "1" else { return }
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["NOEMA_PERFORMANCE_TESTS"] == "1"))
+    func benchmarkSixteenSourceReadCounts() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try IncrementalSourceStoreProbe(root: root)
         let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)

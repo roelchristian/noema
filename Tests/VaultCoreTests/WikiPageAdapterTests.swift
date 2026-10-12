@@ -264,3 +264,115 @@ struct WikiPageAdapterTests {
     }
 
 }
+
+
+extension WikiPageAdapterTests {
+    @Test func markdownRoundTripPreservesUnknownMetadata() throws {
+        let id = UUID()
+        let input = Data("---\nid: \(id.uuidString)\ntitle: Pertinax\ntags: [history]\ncustom:\n  confidence: tentative\n  values: [one, two]\n---\n## Personal context\n\nMy own perspective. [[Rome|the city]] #learning\n".utf8)
+        var note = try NoteCodec.decode(input, path: "Wiki/Pertinax.md", vaultID: UUID())
+        note.title = "Pertinax in my reading"; note.updatedAt = timestamp()
+        let output = try NoteCodec.encode(note)
+        let decoded = try NoteCodec.decode(output, path: note.relativePath, vaultID: UUID())
+        #expect(decoded.id == id)
+        #expect(decoded.body == note.body)
+        #expect(decoded.originalHeader?.contains("confidence: tentative") == true)
+        #expect(decoded.originalHeader?.contains("values:") == true)
+        #expect(decoded.allTags == ["history", "learning"])
+    }
+
+    @Test func malformedTextAndFrontmatterAreRejected() throws {
+        for input in [Data([0xff, 0xfe, 0xfd]), Data("---\ntitle: [unclosed\n---\nbody".utf8), Data("---\ntitle: x\nbody".utf8), Data("---\nid: not-a-uuid\n---\nbody".utf8)] {
+            #expect(throws: (any Error).self) { try NoteCodec.decode(input, path: "Wiki/bad.md", vaultID: UUID()) }
+        }
+    }
+
+    @Test func externalMarkdownIsNotRewrittenDuringScanning() async throws {
+        let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
+        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let url = folder.appendingPathComponent("Wiki/External.md")
+        let original = Data("A page edited outside the app. #outside".utf8)
+        try original.write(to: url)
+        let scan = try await repo.scan()
+        #expect(scan.notes.count == 1)
+        #expect(try Data(contentsOf: url) == original)
+        let saved = try await repo.save(note: scan.notes[0], title: "External", body: "An updated thought", tags: ["outside"])
+        #expect(saved.id == scan.notes[0].id)
+        #expect(saved.originalHeader?.contains("id:") == true)
+    }
+
+    @Test func renameAliasesAndDuplicateTitleValidation() async throws {
+        let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
+        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let original = try await repo.create(title: "Pertinax", body: "My history notes")
+        let renamed = try await repo.save(note: original, title: "Pertinax and leadership", body: original.body, tags: ["History"])
+        #expect(renamed.id == original.id)
+        #expect(renamed.aliases == ["Pertinax"])
+        #expect(renamed.tags == ["history"])
+        let other = try await repo.create(title: "Other", body: "")
+        await #expect(throws: (any Error).self) { try await repo.save(note: other, title: "pertinax", body: "", tags: []) }
+    }
+
+    @Test func deletedPageCannotBeSilentlyRecreatedByStaleEditor() async throws {
+        let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
+        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let note = try await repo.create(title: "Deleted", body: "Original")
+        try FileManager.default.removeItem(at: folder.appendingPathComponent(note.relativePath))
+        await #expect(throws: (any Error).self) { try await repo.save(note: note, title: note.title, body: "Draft", tags: []) }
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(note.relativePath).path))
+    }
+
+    @Test func externalMovePreservesIdentityAndDuplicateIDsAreQuarantined() async throws {
+        let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
+        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let note = try await repo.create(title: "Move me", body: "Personal context")
+        let original = folder.appendingPathComponent(note.relativePath)
+        let moved = folder.appendingPathComponent("Wiki/Moved.md")
+        try FileManager.default.moveItem(at: original, to: moved)
+        let fresh = try await repo.scan().notes[0]
+        #expect(fresh.id == note.id)
+        #expect(fresh.relativePath == "Wiki/Moved.md")
+        try FileManager.default.copyItem(at: moved, to: folder.appendingPathComponent("Wiki/Duplicate.md"))
+        let duplicate = try await repo.scan()
+        #expect(duplicate.notes.isEmpty)
+        #expect(duplicate.issues.contains { $0.contains("Duplicate note ID") })
+        await #expect(throws: (any Error).self) { try await repo.save(note: fresh, title: fresh.title, body: "Do not overwrite", tags: []) }
+    }
+
+    @Test func articleLockPersistsAndRejectsEdits() async throws {
+        let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
+        let repo = try FileVaultRepository.open(root: folder, create: true)
+        var note = try await repo.create(title: "Locked", body: "Original")
+        note.editingLocked = true
+        note = try await repo.save(note: note, title: note.title, body: note.body, tags: note.tags)
+        #expect(note.isEditingLocked)
+        await #expect(throws: (any Error).self) { try await repo.save(note: note, title: "Changed", body: "Changed", tags: []) }
+        #expect(try await repo.scan().notes.first?.isEditingLocked == true)
+        note.editingLocked = false
+        note = try await repo.save(note: note, title: note.title, body: note.body, tags: note.tags)
+        #expect(!note.isEditingLocked)
+        let edited = try await repo.save(note: note, title: note.title, body: "Changed", tags: [])
+        #expect(edited.body == "Changed")
+    }
+
+    @Test func editingLockMetadataPreservesContentTimestampAndRejectsStaleWrites() async throws {
+        let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
+        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let original = try await repo.create(title: "Page", body: "Original #tag")
+        var old = original; old.updatedAt = "2020-01-01T00:00:00Z"
+        try NoteCodec.encode(old).write(to: folder.appendingPathComponent(original.relativePath), options: .atomic)
+        let note = try #require(try await repo.scan().notes.first)
+        let locked = try await repo.setEditingLock(note: note, locked: true)
+        #expect(locked.isEditingLocked)
+        #expect(locked.updatedAt == note.updatedAt)
+        #expect(locked.body == note.body && locked.tags == note.tags && locked.relativePath == note.relativePath)
+        await #expect(throws: (any Error).self) { try await repo.setEditingLock(note: note, locked: false) }
+        #expect(try await repo.scan().notes.first?.isEditingLocked == true)
+        let unlocked = try await repo.setEditingLock(note: locked, locked: false)
+        #expect(!unlocked.isEditingLocked && unlocked.updatedAt == note.updatedAt)
+        let edited = try await repo.save(note: unlocked, title: unlocked.title, body: "New content", tags: unlocked.tags)
+        let relocked = try await repo.setEditingLock(note: edited, locked: true)
+        #expect(edited.updatedAt > note.updatedAt)
+        #expect(relocked.updatedAt == edited.updatedAt && relocked.body == "New content")
+    }
+}

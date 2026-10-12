@@ -263,3 +263,15 @@ import Testing
     #expect(BlockDocumentCodec.readable(doc).contains("$$\n\\int_0^\\infty e^{-x^2} dx\n$$"))
     #expect(BlockDocumentCodec.decode(BlockDocumentCodec.encode(doc)) == doc)
 }
+
+
+@Test func linksAndTagsExcludeCode() {
+    let text = "# Heading\n\n[[Pertinax|my reading]] #history #rome/empire\n\n`[[Ignore]] #ignored`\n\n```swift\n[[Also ignore]] #code\n```\n"
+    let analysis = MarkdownService.analyze(text)
+    #expect(analysis.links == [WikiLink(target: "Pertinax", label: "my reading")])
+    #expect(analysis.tags == ["history", "rome/empire"])
+    let blocks = MarkdownService.preview(text)
+    #expect(blocks.contains { $0.style == .heading(1) })
+    #expect(blocks.flatMap(\.spans).contains { $0.wikiTarget == "Pertinax" })
+    #expect(blocks.contains { $0.style == .code })
+}

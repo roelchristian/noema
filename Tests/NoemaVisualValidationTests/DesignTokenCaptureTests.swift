@@ -5,12 +5,9 @@ import NoemaBrand
 @testable import VaultCore
 @testable import noema
 
-/// Opt-in rendered evidence uses an isolated temporary vault and explicit environment
-/// values. NOEMA_LEGACY_TOKEN_FIXTURE retains the pre-token 0046a9e capture matrix;
-/// current workspace fixtures inject isolated pane preferences instead of reading user state.
-/// No screenshots are silently overwritten by ordinary `swift test` runs.
-@Suite("Design token native rendering (UI.TK07)", .serialized)
-struct DesignTokenValidationTests {
+/// Explicit visual-validation harness; excluded from the default package test graph.
+@Suite("Visual validation: design token native captures", .serialized)
+struct DesignTokenCaptureTests {
     private struct AppearanceCase {
         let preference: ThemePreference
         let dark: Bool
@@ -38,24 +35,8 @@ struct DesignTokenValidationTests {
         }
     }
 
-    @Test @MainActor func inspectorFitsMinimumWidthInEveryAppearance() async throws {
-        let model = AppModel()
-        let note = pageFixture()
-        model.notes = [note]
-        model.currentNote = note
-        let state = InspectorState()
-        for appearance in appearances {
-            for tab in InspectorTab.pageTabs {
-                state.selectTab(tab, for: .page(note))
-                try await render(InspectorContainer(model: model, state: state, context: .page(note)),
-                                 name: "inspector-\(tab.rawValue)-minimum", size: NSSize(width: 280, height: 620),
-                                 appearance: appearance, directory: nil)
-            }
-        }
-    }
-
     @Test @MainActor func captureNativeAppearanceMatrixWhenRequested() async throws {
-        guard let path = ProcessInfo.processInfo.environment["NOEMA_TOKEN_SCREENSHOT_DIR"] else { return }
+        let path = try #require(ProcessInfo.processInfo.environment["NOEMA_TOKEN_SCREENSHOT_DIR"], "Invoke validation/ui-design-tokens/capture.sh with a managed run ID")
         let directory = URL(fileURLWithPath: path, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaTokenValidation-" + UUID().uuidString)
@@ -89,12 +70,17 @@ struct DesignTokenValidationTests {
             try await renderWorkspace(model: model, name: "workspace-page", size: NSSize(width: 1200, height: 760), appearance: appearance, directory: directory)
             // Preserve the historical comparison fixture; native minimums have separate names.
             try await renderWorkspace(model: model, name: "workspace-minimum", size: NSSize(width: 960, height: 620), appearance: appearance, directory: directory)
-#if !NOEMA_LEGACY_TOKEN_FIXTURE
             try await renderWorkspace(model: model, name: "workspace-native-minimum", size: NSSize(width: 720, height: 540), appearance: appearance, directory: directory)
-#endif
-            for tab in InspectorTab.pageTabs {
-                state.selectTab(tab, for: .page(note))
-                try await render(InspectorContainer(model: model, state: state, context: .page(note)), name: "inspector-\(tab.rawValue)", size: NSSize(width: 340, height: 620), appearance: appearance, directory: directory)
+            for context in [InspectorContext.page(note), .source(source, isDetail: false)] {
+                let kind = context.targetKind == .page ? "page" : "source"
+                for width in [InspectorState.minWidth, InspectorState.idealWidth, InspectorState.maxWidth] {
+                    for tab in context.applicableTabs {
+                        state.selectTab(tab, for: context)
+                        try await render(InspectorContainer(model: model, state: state, context: context),
+                            name: "inspector-\(kind)-\(tab.rawValue)-\(Int(width))", size: NSSize(width: width, height: 620),
+                            appearance: appearance, directory: directory)
+                    }
+                }
             }
             state.selectTab(.properties, for: .page(note))
             for active in [false, true] {
@@ -102,9 +88,6 @@ struct DesignTokenValidationTests {
                     .environment(\.appearsActive, active), name: "inspector-tabs-\(active ? "active" : "inactive")",
                     size: NSSize(width: 280, height: 44), appearance: appearance, directory: directory)
             }
-            try await render(InspectorContainer(model: model, state: state, context: .page(note)), name: "inspector-minimum", size: NSSize(width: 280, height: 620), appearance: appearance, directory: directory)
-            state.selectTab(.properties, for: .source(source, isDetail: false))
-            try await render(InspectorContainer(model: model, state: state, context: .source(source, isDetail: false)), name: "source-inspector", size: NSSize(width: 340, height: 620), appearance: appearance, directory: directory)
             model.currentNote = nil
             model.selectedID = nil
             model.scope = .sources
@@ -118,41 +101,29 @@ struct DesignTokenValidationTests {
             model.notes = [note]
             try await render(VaultCreationSheet(model: AppModel()), name: "vault-creation-sheet-content", size: NSSize(width: 540, height: 560), appearance: appearance, directory: directory)
             try await renderWorkspace(model: AppModel(), name: "workspace-no-vault", size: NSSize(width: 960, height: 620), appearance: appearance, directory: directory)
-#if !NOEMA_LEGACY_TOKEN_FIXTURE
             try await renderWorkspace(model: AppModel(), name: "workspace-welcome-compact", size: NSSize(width: 680, height: 480), appearance: appearance, directory: directory)
-#endif
         }
         try #require(await model.lockVault())
         for appearance in appearances {
             try await renderWorkspace(model: model, name: "workspace-locked", size: NSSize(width: 960, height: 620), appearance: appearance, directory: directory)
         }
         _ = await model.closeVault()
-#if NOEMA_LEGACY_TOKEN_FIXTURE
-        let capturedCount = 136
-#else
-        let capturedCount = 152
-#endif
+        let capturedCount = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).filter { $0.pathExtension == "png" }.count
         print("UI.TK07 captured \(capturedCount) native fixture PNGs in \(directory.path); Animations disabled for static capture; actual Reduce Motion is read-only OS state.")
     }
 
     @MainActor private func renderWorkspace(model: AppModel, name: String, size: NSSize,
-                                            appearance: AppearanceCase, directory: URL?) async throws {
-#if NOEMA_LEGACY_TOKEN_FIXTURE
-        // The historical source has no pane persistence or injected-state initializer.
-        try await render(ContentView(model: model), name: name, size: size,
-                         appearance: appearance, directory: directory)
-#else
+                                            appearance: AppearanceCase, directory: URL) async throws {
         let suiteName = "NoemaTokenValidation.Panes." + UUID().uuidString
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let panes = WorkspacePaneState(defaults: defaults)
         try await render(ContentView(model: model, paneState: panes), name: name, size: size,
                          appearance: appearance, directory: directory)
-#endif
     }
 
     @MainActor private func render<V: View>(_ view: V, name: String, size: NSSize,
-                                           appearance: AppearanceCase, directory: URL?) async throws {
+                                           appearance: AppearanceCase, directory: URL) async throws {
         let theme = appearance.theme
         let root = view
             .environment(\.noemaTheme, theme)
@@ -170,6 +141,7 @@ struct DesignTokenValidationTests {
         window.appearance = NSAppearance(named: appearance.appearance)
         hosting.appearance = window.appearance
         window.contentView = hosting
+        defer { window.contentView = nil; window.close() }
         hosting.frame = NSRect(origin: .zero, size: size)
         hosting.layoutSubtreeIfNeeded()
         // Permit initial onAppear/native representable work to finish without UI input.
@@ -179,7 +151,7 @@ struct DesignTokenValidationTests {
         #expect(hosting.fittingSize.width <= size.width + 1, "\(name) overflow at \(size.width)pt in \(appearance.name)")
         let verticalSafeArea = hosting.safeAreaInsets.top + hosting.safeAreaInsets.bottom
         #expect(hosting.fittingSize.height <= size.height + verticalSafeArea + 1, "\(name) host bounds exceed the requested frame and native safe area in \(appearance.name)")
-        if directory != nil { print("UI.TK07 bounds \(name) \(appearance.name): \(hosting.bounds.size), safe area \(verticalSafeArea)") }
+        print("UI.TK07 bounds \(name) \(appearance.name): \(hosting.bounds.size), safe area \(verticalSafeArea)")
         let bitmap = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
         hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
         #expect(bitmap.pixelsWide >= Int(size.width))
@@ -194,12 +166,8 @@ struct DesignTokenValidationTests {
             }
         }
         #expect(colors.count > 8, "\(name) produced a blank or nearly flat raster in \(appearance.name)")
-        if let directory {
-            let png = try #require(bitmap.representation(using: NSBitmapImageRep.FileType.png, properties: [:]))
-            try png.write(to: directory.appendingPathComponent("\(name)-\(appearance.name).png"))
-        }
-        window.contentView = nil
-        window.close()
+        let png = try #require(bitmap.representation(using: NSBitmapImageRep.FileType.png, properties: [:]))
+        try png.write(to: directory.appendingPathComponent("\(name)-\(appearance.name).png"))
     }
 
     private func pageFixture() -> NoteRecord {

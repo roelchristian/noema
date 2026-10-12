@@ -24,12 +24,12 @@ def select(run_id):
         modes = [f'{theme}-{scheme}-{contrast}' for theme in ('system', 'midnightIris')
                  for scheme in ('light', 'dark') for contrast in ('standard', 'increased')]
         selected = [f'workspace-minimum-{mode}.png' for mode in modes]
-        selected += [f'inspector-minimum-{mode}.png' for mode in (
+        selected += [f'inspector-page-properties-280-{mode}.png' for mode in (
             'system-light-standard', 'system-dark-increased',
             'midnightIris-dark-standard', 'midnightIris-light-increased')]
         selected += ['sources-native-table-system-light-standard.png', 'workspace-locked-midnightIris-dark-standard.png',
                      'workspace-no-vault-system-light-standard.png', 'vault-creation-sheet-content-midnightIris-dark-standard.png']
-        fixture = local.REPO / 'Tests/NoemaEditorTests/DesignTokenValidationTests.swift'
+        fixture = local.REPO / 'Tests/NoemaVisualValidationTests/DesignTokenCaptureTests.swift'
         manifest = {'fixture': str(fixture.relative_to(local.REPO)),
                     'fixture_sha256': hashlib.sha256(fixture.read_bytes()).hexdigest(),
                     'captures': {}, 'source_refs': {}, 'platforms': {}, 'review_pairs': selected}
@@ -37,7 +37,7 @@ def select(run_id):
         for source in ('baseline', 'after'):
             generated = run / source
             files = sorted(generated.glob('*.png'))
-            expected = 136 if source == 'baseline' else 152
+            expected = (8 * 3 + 12) * len(modes) # All page/source tabs at three widths plus workspace fixtures
             if len(files) != expected:
                 raise ValueError(f'Expected {expected} {source} captures, found {len(files)}')
             missing = set(selected) - {file.name for file in files}
