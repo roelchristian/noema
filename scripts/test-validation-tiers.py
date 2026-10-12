@@ -21,8 +21,8 @@ class ValidationTierTests(unittest.TestCase):
         self.environment = dict(os.environ)
         for key in (*GATES, "NOEMA_TEST_TIER", "NOEMA_TEST_TARGETS"):
             self.environment.pop(key, None)
-        self.environment["CLANG_MODULE_CACHE_PATH"] = str(self.root / "modules")
-        self.environment["SWIFTPM_MODULECACHE_OVERRIDE"] = str(self.root / "modules")
+        self.environment["CLANG_MODULE_CACHE_PATH"] = str(REPO / ".build/ModuleCache")
+        self.environment["SWIFTPM_MODULECACHE_OVERRIDE"] = str(REPO / ".build/ModuleCache")
 
     def graph(self, **selection):
         environment = dict(self.environment, **selection)
@@ -31,7 +31,7 @@ class ValidationTierTests(unittest.TestCase):
             "--scratch-path", str(self.root / "build"), "--cache-path", str(self.root / "cache"),
             "--config-path", str(self.root / "config"), "--security-path", str(self.root / "security"),
             "dump-package",
-        ], env=environment, capture_output=True, text=True, check=True)
+        ], env=environment, capture_output=True, text=True, check=True, timeout=60)
         package = json.loads(result.stdout)
         return package, {target["name"] for target in package["targets"] if target["type"] == "test"}
 
