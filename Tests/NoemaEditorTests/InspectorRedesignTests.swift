@@ -132,9 +132,22 @@ struct InspectorRedesignTests {
         state.toggleVisibility()
         #expect(state.isVisible)
 
+        // Section expansion preferences persist across tab switches and reset on session change
+        #expect(state.isSectionExpanded("Timestamps"))
+        #expect(state.isSectionExpanded("Status"))
+        state.setSectionExpanded(false, for: "Timestamps")
+        #expect(!state.isSectionExpanded("Timestamps"))
+        state.selectTab(.insights, for: pageContext)
+        state.selectTab(.properties, for: pageContext)
+        #expect(!state.isSectionExpanded("Timestamps"))
+        state.sectionExpansionBinding(for: "Status").wrappedValue = false
+        #expect(!state.isSectionExpanded("Status"))
+
         state.resetForSessionChange()
         #expect(state.activeTab(for: pageContext) == .properties)
         #expect(state.activeTab(for: sourceContext) == .properties)
+        #expect(state.isSectionExpanded("Timestamps"))
+        #expect(state.isSectionExpanded("Status"))
     }
 
     @Test @MainActor func inspectorContextResolutionRespectsSessionLifecycle() async throws {

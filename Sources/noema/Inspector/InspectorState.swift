@@ -19,6 +19,7 @@ import VaultCore
     }
     private(set) var selectedPageTab: InspectorTab = .properties
     private(set) var selectedSourceTab: InspectorTab = .properties
+    private(set) var collapsedSections: Set<String> = []
     let insightsCache = InsightsPresentationCache()
     let linksCache = LinksPresentationCache()
 
@@ -109,10 +110,33 @@ import VaultCore
         }
     }
 
+    /// Returns whether a disclosure section with the given identifier is currently expanded in this session.
+    func isSectionExpanded(_ id: String) -> Bool {
+        !collapsedSections.contains(id)
+    }
+
+    /// Updates the session-scoped expansion preference for a disclosure section.
+    func setSectionExpanded(_ expanded: Bool, for id: String) {
+        if expanded {
+            collapsedSections.remove(id)
+        } else {
+            collapsedSections.insert(id)
+        }
+    }
+
+    /// Returns a two-way binding for a disclosure section's expansion state in the current session.
+    func sectionExpansionBinding(for id: String) -> Binding<Bool> {
+        Binding(
+            get: { self.isSectionExpanded(id) },
+            set: { self.setSectionExpanded($0, for: id) }
+        )
+    }
+
     /// Resets transient selection state when a vault is locked, closed, or switched.
     func resetForSessionChange() {
         selectedPageTab = .properties
         selectedSourceTab = .properties
+        collapsedSections.removeAll()
         insightsCache.invalidate()
         linksCache.invalidate()
     }
