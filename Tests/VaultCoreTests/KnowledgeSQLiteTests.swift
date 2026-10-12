@@ -91,6 +91,6 @@ private func knowledgeSQL(_ url: URL, _ sql: String) throws {
     try knowledgeSQL(url, "UPDATE vault_state SET required_capabilities='[\"canonicalMetadataV1\"]'")
     #expect(throws: VaultError.self) { try VaultStorageProvider.plaintext.makeKnowledgeStagingStore(url: url, vaultID: vaultID, createIfMissing: false) }
     var declaration = VaultCanonicalStorageDeclaration(); declaration.schemaVersion = 4; declaration.requiredCapabilities = SQLiteBlockStore.knowledgeRequiredCapabilities
-    #expect(declaration.isSupported)
+    #expect(!declaration.isSupported)
     declaration.requiredCapabilities.reverse(); #expect(!declaration.isSupported)
 }

@@ -563,7 +563,8 @@ extension SourceAdapterTests {
 
     @Test func urlSourceFailureRetainsArchivedOriginalAndSummary() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
-        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let manager = VaultSessionManager()
+        let (_, _, repo) = try await manager.openRepository(root: folder, create: true)
         let bytes = Data("<html><body>Captured knowledge</body></html>".utf8)
         let source = try await repo.importURLSource("https://example.com/article", fetch: { _ in WebSourceFetch(data: bytes, filename: "page.html") })
         let renamed = try await repo.renameSource(source, title: "Captured knowledge", summary: "Saved AI summary")

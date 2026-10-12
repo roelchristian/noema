@@ -24,12 +24,6 @@
     "reason": "Selected external/cloud originals or OS-owned NSFileVersion bytes; never canonical vault bytes."
   },
   {
-    "path": "Sources/VaultCore/FileVaultRepository.swift",
-    "statement": "try contentStore.write(Self.coordinatedRead(version.url), at: \"Conflicts/cloud-\\(UUID().uuidString).md\", condition: .createOnly)",
-    "count": 1,
-    "reason": "Selected external/cloud originals or OS-owned NSFileVersion bytes; never canonical vault bytes."
-  },
-  {
     "path": "Sources/VaultCore/RecoveryStore.swift",
     "statement": "try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)",
     "count": 1,
@@ -238,5 +232,11 @@
     "statement": "try Data().write(to: target, options: .withoutOverwriting)",
     "count": 1,
     "reason": "SQLiteBlockStore reserves a new explicit external backup destination without overwriting; rejects canonical database and admitted vault paths. SQLite backup API owns the snapshot transfer and journals. Failed backup files are retained as unacknowledged output."
+  },
+  {
+    "path": "Sources/VaultCore/NativeVaultArchive.swift",
+    "statement": "try validate(); try FileManager.default.moveItem(at: staging, to: destination)",
+    "count": 1,
+    "reason": "Native archive restore owns whole-root create-only publication, immediately revalidating the destination-bound operation lease. Verified staging is never merged into or substituted for an occupied vault; failed staging remains preservation data."
   }
 ]

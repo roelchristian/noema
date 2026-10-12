@@ -44,7 +44,7 @@ struct CanonicalRepositoryTests {
         let removed = try #require(try await repository.trashItems().first)
         try await repository.permanentlyDelete(removed)
         #expect(try await repository.trashItems().isEmpty)
-        #expect(try await repository.sqliteBlockStore!.tombstone(id: source.id, kind: .source) != nil)
+        #expect(try await repository.sqliteBlockStore.tombstone(id: source.id, kind: .source) != nil)
         #expect(try FileVaultRepository.readSourceOriginal(source, root: root, contentStore: repository.contentStore) == Data("Preserve bytes".utf8))
     }
 

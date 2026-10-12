@@ -30,11 +30,12 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
     public static let knowledgeSchemaVersion = 4
     public static let knowledgeRequiredCapabilities = ["canonicalKnowledgeV1", "canonicalMetadataV1"]
     private let canonicalVaultID: UUID?
+    private let operationValidation: (@Sendable () throws -> Void)?
 
     /// Disposable page-store tests have no admitted session; no production caller uses this route.
     /// Callers must separately establish a safe local staging target.
     init(unguardedTestingURL url: URL, createIfMissing: Bool = true) throws {
-        canonicalVaultID = nil
+        canonicalVaultID = nil; operationValidation = nil
         sessionLease = nil; accessGate = nil
         databaseURL = url.standardizedFileURL.resolvingSymlinksInPath()
         connection = try BlockSQLiteConnection(url: url, createIfMissing: createIfMissing)
@@ -50,6 +51,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
         try SQLiteVaultLocality.requireLocalRoot(sessionLease.root)
         let root = sessionLease.root.standardizedFileURL.resolvingSymlinksInPath().path + "/"
         guard url.standardizedFileURL.resolvingSymlinksInPath().path.hasPrefix(root), sessionLease.vaultID == canonicalVaultID else { throw VaultError.invalid("Canonical database identity/root mismatch.") }
+        operationValidation = nil
         self.canonicalVaultID = canonicalVaultID; self.sessionLease = sessionLease; self.accessGate = accessGate
         databaseURL = url.standardizedFileURL.resolvingSymlinksInPath()
         connection = try BlockSQLiteConnection(url: url, createIfMissing: createIfMissing)
@@ -57,12 +59,16 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
     }
     /// Only explicit staging/test construction may initialize expanded authority.
     init(canonicalStagingURL url: URL, vaultID: UUID,
-         requiredCapabilities: [String] = ["canonicalMetadataV1"], schemaVersion: Int = 3, createIfMissing: Bool = true) throws {
+         requiredCapabilities: [String] = ["canonicalMetadataV1"], schemaVersion: Int = 3, createIfMissing: Bool = true,
+         validating operation: (@Sendable () throws -> Void)? = nil) throws {
+        try operation?()
+        operationValidation = operation
         try Self.validateCanonicalDeclaration(schemaVersion: schemaVersion, capabilities: requiredCapabilities)
         canonicalVaultID = vaultID; sessionLease = nil; accessGate = nil
         databaseURL = url.standardizedFileURL.resolvingSymlinksInPath()
         connection = try BlockSQLiteConnection(url: url, createIfMissing: createIfMissing)
-        try Self.prepare(connection, initializeIfNeeded: createIfMissing, canonicalVaultID: vaultID, requiredCapabilities: requiredCapabilities, expectedSchemaVersion: schemaVersion)
+        try Self.prepare(connection, initializeIfNeeded: createIfMissing, canonicalVaultID: vaultID, requiredCapabilities: requiredCapabilities, expectedSchemaVersion: schemaVersion, validating: operation)
+        try operation?()
     }
     private static func validateCanonicalDeclaration(schemaVersion: Int, capabilities: [String]) throws {
         let expected: [String]
@@ -74,10 +80,13 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
         }
         guard capabilities == expected else { throw VaultError.invalid("Unsupported canonical capabilities.") }
     }
-    private static func prepare(_ connection: BlockSQLiteConnection, initializeIfNeeded: Bool, canonicalVaultID: UUID? = nil, requiredCapabilities: [String] = [], expectedSchemaVersion: Int = 3) throws {
+    private static func prepare(_ connection: BlockSQLiteConnection, initializeIfNeeded: Bool, canonicalVaultID: UUID? = nil, requiredCapabilities: [String] = [], expectedSchemaVersion: Int = 3, validating operation: (@Sendable () throws -> Void)? = nil) throws {
+        try operation?()
         guard let db = connection.pointer else { throw VaultError.storage("Block database closed.") }
         func exec(_ sql: String) throws {
+            try operation?()
             guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw VaultError.storage(String(cString: sqlite3_errmsg(db))) }
+            try operation?()
         }
         sqlite3_busy_timeout(db, 5000)
         try exec("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")
@@ -174,16 +183,17 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
             guard sqlite3_prepare_v2(db, "SELECT key,version,descriptor FROM \(table) ORDER BY key", -1, &registry, nil) == SQLITE_OK, let registry else { throw VaultError.invalid("Knowledge registry missing.") }
             defer { sqlite3_finalize(registry) }
             var stored: [String] = []
-            while true { let status = sqlite3_step(registry); if status == SQLITE_DONE { break }; guard status == SQLITE_ROW, sqlite3_column_int(registry, 1) == 1, let key = sqlite3_column_text(registry, 0) else { throw VaultError.invalid("Unsupported required knowledge registry.") }; try validateRegistryDescriptor(registry, column: 2); stored.append(String(cString: key)) }
-            guard stored == keys else { throw VaultError.invalid("Unsupported required knowledge registry.") }
+            while true { let status = sqlite3_step(registry); if status == SQLITE_DONE { break }; guard status == SQLITE_ROW, sqlite3_column_int(registry, 1) == 1, let key = sqlite3_column_text(registry, 0) else { throw VaultError.invalid("Unsupported required knowledge registry.") }; let storedKey = String(cString: key); guard !storedKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw VaultError.invalid("Empty knowledge registry key.") }; try validateRegistryDescriptor(registry, column: 2, expectedKey: storedKey); stored.append(storedKey) }
+            guard Set(keys).isSubset(of: Set(stored)) else { throw VaultError.invalid("Unsupported required knowledge registry.") }
         }
 
     }
-    private static func validateRegistryDescriptor(_ statement: OpaquePointer, column: Int32) throws {
+    private static func validateRegistryDescriptor(_ statement: OpaquePointer, column: Int32, expectedKey: String? = nil) throws {
         guard let bytes = sqlite3_column_blob(statement, column) else { throw VaultError.invalid("Missing registry descriptor.") }
         let data = Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, column)))
         guard data.count <= 262_144, let fields = try? JSONDecoder().decode([String: JSONValue].self, from: data) else { throw VaultError.invalid("Malformed registry descriptor.") }
         try validateOptionalFields(fields)
+        if let key = fields["key"], let expectedKey, key != .string(expectedKey) { throw VaultError.invalid("Registry descriptor identity mismatch.") }
         if let metadata = fields["metadata"] {
             do {
                 let payload = try JSONDecoder().decode(PersistencePayload.self, from: JSONEncoder().encode(metadata))
@@ -220,6 +230,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
     CREATE TABLE semantic_annotations(id TEXT PRIMARY KEY, revision BLOB NOT NULL, location_kind TEXT NOT NULL CHECK(location_kind IN ('wholeBlock','inline','entity','object')), captured_page TEXT, captured_block TEXT, live_page TEXT, live_block TEXT, owner_entity TEXT REFERENCES knowledge_entities(id) ON DELETE RESTRICT, owner_object TEXT REFERENCES semantic_objects(id) ON DELETE RESTRICT, referent_entity TEXT REFERENCES knowledge_entities(id) ON DELETE RESTRICT, referent_object TEXT REFERENCES semantic_objects(id) ON DELETE RESTRICT, payload BLOB NOT NULL, FOREIGN KEY(live_page,live_block) REFERENCES blocks(page_id,id) DEFERRABLE INITIALLY DEFERRED, CHECK((location_kind IN ('wholeBlock','inline') AND captured_page IS NOT NULL AND captured_block IS NOT NULL AND owner_entity IS NULL AND owner_object IS NULL) OR (location_kind='entity' AND owner_entity IS NOT NULL AND captured_page IS NULL AND captured_block IS NULL AND owner_object IS NULL) OR (location_kind='object' AND owner_object IS NOT NULL AND captured_page IS NULL AND captured_block IS NULL AND owner_entity IS NULL)), CHECK(referent_entity IS NULL OR referent_object IS NULL));
     """
     private func validate(_ operation: String) throws {
+        try operationValidation?()
         if let accessGate, let sessionLease {
             try accessGate.validate(lease: sessionLease, targetRoot: sessionLease.root, targetVaultID: sessionLease.vaultID, operation: operation)
         }
@@ -781,10 +792,66 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
         guard sqlite3_step(foreignKeys) == SQLITE_DONE else { throw VaultError.invalid("Canonical database relationship integrity check failed.") }
     }
 
+    /// Decode every canonical record from one snapshot. Query/UI limits never
+    /// bound archive acceptance; structurally valid SQL can hold invalid payloads.
+    public func validateCanonicalLogicalIntegrity(validating operation: (@Sendable () throws -> Void)? = nil) throws {
+        try requireCanonical()
+        try readTransaction {
+            try operation?()
+            try validateIntegrity()
+            func eachIdentity(_ table: String, _ body: (UUID) throws -> Void) throws {
+                let query = try statement("SELECT id FROM \(table) ORDER BY id")
+                defer { sqlite3_finalize(query) }
+                while true {
+                    try Task.checkCancellation(); try validate("blockStore.logicalIntegrity"); try operation?()
+                    let status = sqlite3_step(query)
+                    if status == SQLITE_DONE { break }
+                    guard status == SQLITE_ROW, let id = UUID(uuidString: text(query, 0)) else { throw VaultError.invalid("Invalid canonical identity in \(table).") }
+                    try body(id)
+                }
+            }
+            try eachIdentity("pages") { id in
+                let document = try loadDocument(pageID: id)
+                let metadata = try statement("SELECT metadata FROM pages WHERE id=?", [.text(id.uuidString)])
+                defer { sqlite3_finalize(metadata) }
+                guard sqlite3_step(metadata) == SQLITE_ROW else { throw failure() }
+                // BlockStore's document-only pages are valid; when repository
+                // metadata is present it must satisfy its own payload contract.
+                if sqlite3_column_type(metadata, 0) != SQLITE_NULL {
+                    let record = try loadPageInTransaction(pageID: id).record
+                    try record.extensions?.validateWritable(); try validateOptionalFields(record.unknownFields)
+                }
+                try document.document.validateWritablePayloads()
+                _ = try sourceLinks(pageID: id)
+            }
+            try eachIdentity("sources") { _ = try sourceInTransaction(id: $0) }
+            try eachIdentity("conflicts") { _ = try conflictInTransaction(id: $0) }
+            let extensions = try statement("SELECT extensions FROM vault_state WHERE singleton=1")
+            defer { sqlite3_finalize(extensions) }
+            guard sqlite3_step(extensions) == SQLITE_ROW else { throw VaultError.invalid("Canonical vault state missing.") }
+            try validateOptionalFields(decoder.decode([String: JSONValue].self, from: blob(extensions, 0)))
+            if try isSemanticSchema() {
+                try Self.validateKnowledgeCapabilities(try db, expected: Self.semanticRequiredCapabilities)
+                try Self.validateSemanticRegistry(try db)
+                try eachIdentity("knowledge_entities") { _ = try entityInTransaction(id: $0) }
+                try eachIdentity("knowledge_relations") { _ = try relationInTransaction(id: $0) }
+                try eachIdentity("semantic_objects") { _ = try objectInTransaction(id: $0) }
+                for snapshot in try annotationRows() {
+                    try validate("blockStore.logicalIntegrity"); try operation?()
+                    let annotation = snapshot.annotation
+                    let owner = try (annotation.anchorDisposition == .resolved ? annotation.location.pageID : nil).map { try loadDocument(pageID: $0) }
+                    try validateAnnotationEvidence(annotation, document: owner?.document, pageRevision: owner?.revision)
+                }
+            }
+            try operation?()
+        }
+    }
+
     public func checkpoint() throws {
         try validate("blockStore.checkpoint")
         let statement = try statement("PRAGMA wal_checkpoint(TRUNCATE)"); defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW, sqlite3_column_int(statement, 0) == 0 else { throw failure() }
+        try validate("blockStore.checkpoint")
     }
     /// An explicit portable snapshot; copying an open database/WAL is unsupported.
     /// A new destination outside the canonical vault is reserved without overwriting.

@@ -16,7 +16,7 @@ struct VaultUIIntegrationTests {
         return model
     }
 
-    @Test @MainActor func sqliteMigrationReopensInAppModelAndPersistsBlockEdits() async throws {
+    @Test @MainActor func schemaFiveReopensInAppModelAndPersistsBlockEdits() async throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaSQLiteUI-" + UUID().uuidString).resolvingSymlinksInPath()
         let folder = base.appendingPathComponent("Vault", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -28,8 +28,7 @@ struct VaultUIIntegrationTests {
         let note = try await repository.create(title: "Stars", body: BlockDocumentCodec.encode(BlockDocument(blocks: [block])))
         let source = try await repository.importSource(data: Data("source text".utf8), filename: "stars.txt", title: "Source", originURL: nil)
         let referenced = try await repository.setSourceReference(note: note, sourceID: source.id, linked: true)
-        _ = try await SQLiteVaultMigration.convert(root: folder,
-            sessionLease: #require(repository.sessionLease), accessGate: #require(repository.accessGate))
+        try await repository.shutdownPageStorage()
         let model = try await openRichArticleFixtureVault(at: folder)
         #expect(model.notes.count == 1)
         #expect(model.notes.first?.id == referenced.id)

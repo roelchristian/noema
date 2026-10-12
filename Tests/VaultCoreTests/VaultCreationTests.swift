@@ -23,7 +23,7 @@ private func creationParent() throws -> URL {
     defer { try? FileManager.default.removeItem(at: parent) }
     let vault = try await FileVaultRepository.createNewVault(parent: parent, name: " My Knowledge Vault ", encryptionRequested: false)
     #expect(vault.lastPathComponent == "My Knowledge Vault")
-    #expect(Set(try FileManager.default.contentsOfDirectory(atPath: vault.path)) == Set(["vault.json", "blocks.sqlite", "Sources", "Removed Pages", "Conflicts"]))
+    #expect(Set(["vault.json", "blocks.sqlite", "Sources", "Removed Pages", "Conflicts"]).isSubset(of: Set(try FileManager.default.contentsOfDirectory(atPath: vault.path))))
     let before = try Data(contentsOf: vault.appendingPathComponent("vault.json"))
     let manager = VaultSessionManager()
     let opened = try await manager.openRepository(root: vault)

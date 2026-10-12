@@ -353,7 +353,9 @@ public extension PlaintextVaultContentStore {
     private func ensurePublicationDirectory(_ path: String) throws {
         do { try createDirectory(at: path) }
         catch VaultContentStoreError.alreadyExists {
-            guard case .directory = try snapshot(at: path) else { throw VaultContentStoreError.unsupportedItem(path) }
+            let directory = try checked(path)
+            try rejectConflicts(directory)
+            guard try directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { throw VaultContentStoreError.unsupportedItem(path) }
         }
     }
 
