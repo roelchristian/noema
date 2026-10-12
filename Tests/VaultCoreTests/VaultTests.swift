@@ -38,7 +38,7 @@ private func temporaryFolder() throws -> URL {
     try await recovery.store(DraftRecord(note: note, title: note.title, body: "My unsaved edit", tags: []))
     await #expect(throws: (any Error).self) { try await repo.save(note: note, title: note.title, body: "My unsaved edit", tags: []) }
     #expect(try await repo.scan().notes.first?.body == external.body)
-    #expect(try await recovery.drafts().first?.body == "My unsaved edit")
+    #expect(canonicalTestReadableBody(try await recovery.drafts().first?.body) == "My unsaved edit")
     await #expect(throws: (any Error).self) { try await repo.trash(note: note) }
     let fresh = try #require(try await repo.scan().notes.first)
     try await repo.trash(note: fresh)
@@ -83,7 +83,7 @@ private func temporaryFolder() throws -> URL {
     _ = try await repo.save(note: note, title: note.title, body: "Competing revision", tags: [])
     await #expect(throws: (any Error).self) { try await repo.save(note: note, title: note.title, body: "Recover me", tags: []) }
     let reopened = try RecoveryStore(unguardedTestingDirectory: journalURL)
-    #expect(try await reopened.drafts().first?.body == "Recover me")
+    #expect(canonicalTestReadableBody(try await reopened.drafts().first?.body) == "Recover me")
     try await reopened.remove(note.id)
     #expect(try await reopened.drafts().isEmpty)
 }
@@ -167,17 +167,17 @@ func benchmarkFiveThousandEntries() async throws {
     let page = try await repo.create(title: "Facts", body: "Generated article", source: source)
     #expect(page.title == "Facts 2")
     #expect(page.linkedSourceIDs == [source.id])
-    #expect(page.body == "Generated article")
+    #expect(canonicalTestReadableBody(page.body) == "Generated article")
     let reopened = try await repo.scan()
     #expect(reopened.notes.first(where: { $0.id == page.id })?.linkedSourceIDs == [source.id])
-    #expect(reopened.notes.first(where: { $0.id == existing.id })?.body == "Existing page")
+    #expect(canonicalTestReadableBody(reopened.notes.first(where: { $0.id == existing.id })?.body) == "Existing page")
     #expect(try Data(contentsOf: folder.appendingPathComponent("Sources/\(source.id.uuidString.lowercased())/\(source.metadata.storedFilename)")) == bytes)
     try await repo.deleteSource(source)
     await #expect(throws: VaultError.self) { try await repo.create(title: "Rejected", body: "Draft", source: source) }
     #expect(try await repo.scan().notes.count == 2)
 }
 
-@Test func cloudSourceDownloadQueuesAllowsPageLinkingAndCompletes() async throws {
+@Test func cloudSourceDownloadPublishesBeforePageLinking() async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
     let root = folder.appendingPathComponent("Vault")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -192,17 +192,17 @@ func benchmarkFiveThousandEntries() async throws {
     #expect(pendingLinked.metadata.isLinked)
     #expect(try await repo.scan().sources.contains(where: { $0.id == pendingLinked.id }))
 
-    // User can link the queued source to a wiki page while it is still downloading
-    let linkedNote = try await repo.setSourceReference(note: note, sourceID: pendingLinked.id, linked: true)
-    #expect(linkedNote.linkedSourceIDs == [pendingLinked.id])
+    // Canonical relationships require a published source identity.
+    await #expect(throws: VaultError.self) { try await repo.setSourceReference(note: note, sourceID: pendingLinked.id, linked: true) }
 
     // Download completes and materializes the file locally
     let linkedBytes = Data("Downloaded OneDrive linked content".utf8)
     try linkedBytes.write(to: linkedFile)
     let completedLinked = try await repo.completeSourceDownload(id: pendingLinked.id, at: linkedFile, data: linkedBytes, shouldImport: false)
     #expect(completedLinked.id == pendingLinked.id)
-    #expect(completedLinked.body == "Downloaded OneDrive linked content")
+    #expect(canonicalTestReadableBody(completedLinked.body) == "Downloaded OneDrive linked content")
     #expect(completedLinked.metadata.sha256 == digest(linkedBytes))
+    let linkedNote = try await repo.setSourceReference(note: note, sourceID: completedLinked.id, linked: true)
     let scannedAfterLink = try await repo.scan()
     #expect(scannedAfterLink.notes.first(where: { $0.id == note.id })?.linkedSourceIDs == [completedLinked.id])
     #expect(scannedAfterLink.sources.first(where: { $0.id == completedLinked.id })?.availabilityIssue == nil)
@@ -216,14 +216,13 @@ func benchmarkFiveThousandEntries() async throws {
     // Incomplete import is not written to disk before download finishes
     #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("Sources/\(pendingImport.id.uuidString.lowercased())").path))
 
-    let bothLinkedNote = try await repo.setSourceReference(note: linkedNote, sourceID: pendingImport.id, linked: true)
-    #expect(Set(bothLinkedNote.linkedSourceIDs) == Set([completedLinked.id, pendingImport.id]))
+    await #expect(throws: VaultError.self) { try await repo.setSourceReference(note: linkedNote, sourceID: pendingImport.id, linked: true) }
 
     let importedBytes = Data("# Downloaded Markdown".utf8)
     try importedBytes.write(to: importedFile)
     let completedImport = try await repo.completeSourceDownload(id: pendingImport.id, at: importedFile, data: importedBytes, shouldImport: true)
     #expect(completedImport.id == pendingImport.id)
-    #expect(completedImport.body == "# Downloaded Markdown")
+    #expect(canonicalTestReadableBody(completedImport.body) == "# Downloaded Markdown")
     #expect(FileVaultRepository.checkSourceAvailability(completedImport, root: root, contentStore: repo.contentStore) == "Available")
 }
 
@@ -238,7 +237,7 @@ func benchmarkFiveThousandEntries() async throws {
     let imported = try await repo.importSource(data: importedBytes, filename: "original.txt", title: "Imported", originURL: nil)
     let page = try await repo.create(title: "Page", body: "A page")
     try await repo.trash(note: page)
-    try await repo.deleteSource(linked); try await repo.deleteSource(imported)
+    try await repo.deleteSource(repo.loadSource(id: linked.id)); try await repo.deleteSource(imported)
     let items = try await repo.trashItems()
     #expect(items.count == 3)
     #expect(try await repo.scan().sources.isEmpty)
@@ -247,7 +246,7 @@ func benchmarkFiveThousandEntries() async throws {
     #expect(try await repo.scan().sources.count == 2)
     #expect(try await repo.trashItems().isEmpty)
     #expect(try Data(contentsOf: folder.appendingPathComponent("Sources/" + imported.id.uuidString.lowercased() + "/original.txt")) == importedBytes)
-    try await repo.deleteSource(linked)
+    try await repo.deleteSource(repo.loadSource(id: linked.id))
     #expect(await repo.emptyTrashItems(try await repo.trashItems()).isEmpty)
     #expect(try Data(contentsOf: external) == linkedBytes)
 }
@@ -399,7 +398,7 @@ func unavailableManifestAndPermissionFailureRemainDistinctWithoutInitialization(
 }
 
 @Test(arguments: [#"{"formatVersion":"1","id":"bad"}"#, #"{"formatVersion":1}"#, "{damaged"])
-func damagedManifestRejectionPreservesBytesAndCanRetryAfterRepair(input: String) throws {
+func damagedManifestRejectionPreservesBytesAndCanRetryAfterRepair(input: String) async throws {
     let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
     let url = root.appendingPathComponent("vault.json"), bytes = Data(input.utf8)
     try bytes.write(to: url)
@@ -409,7 +408,9 @@ func damagedManifestRejectionPreservesBytesAndCanRetryAfterRepair(input: String)
     #expect(try Data(contentsOf: url) == bytes)
     #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["vault.json"])
     // Repair is explicit test action, never an automatic repository downgrade.
-    let id = UUID()
-    try JSONEncoder().encode(VaultManifest(id: id)).write(to: url)
-    #expect(throws: VaultError.self) { try FileVaultRepository.open(root: root) }
+    try FileManager.default.removeItem(at: url)
+    let repaired = try await canonicalSchema5TestRepository(root: root, create: true)
+    #expect(repaired.manifest.formatVersion == 2)
+    #expect(try await repaired.scan().notes.isEmpty)
 }
+

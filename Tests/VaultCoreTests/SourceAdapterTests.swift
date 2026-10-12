@@ -98,17 +98,18 @@ struct SourceAdapterTests {
         try await repo.deleteSource(loaded)
         let deleted = try #require(try await repo.trashItems().first)
         try await repo.permanentlyDelete(deleted)
-        #expect(store.state.withLock { $0.operations.contains("delete " + deleted.id) })
-        // Corruption remains on disk and blocks scan, availability, reader and deletion.
+        #expect(try store.base.read(at: path + "/original.txt") == original)
+        // Corruption retains identity and original bytes, but cannot provide plaintext.
         let other = try await repo.importSource(data: original, filename: "Article.txt", title: "Again", originURL: nil)
         let otherPath = "Sources/" + other.id.uuidString.lowercased() + "/original.txt"
         try store.base.write(Data("Corrupted".utf8), at: otherPath, condition: .replace(expected: original))
         let corrupt = try await repo.scan()
-        #expect(corrupt.sources.isEmpty)
+        #expect(corrupt.sources.first?.id == other.id && corrupt.sources.first?.body.isEmpty == true && corrupt.sources.first?.contentState == .unavailable)
         #expect(corrupt.issues.contains { $0.contains("checksum") })
         #expect(FileVaultRepository.checkSourceAvailability(other, root: root, contentStore: store).contains("checksum"))
         #expect(throws: (any Error).self) { try FileVaultRepository.readSourceOriginal(other, root: root, contentStore: store) }
-        await #expect(throws: (any Error).self) { try await repo.deleteSource(other) }
+        try await repo.deleteSource(other)
+        #expect(try store.base.read(at: otherPath) == Data("Corrupted".utf8))
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(path + "/metadata.json").path))
         #expect(store.state.withLock { $0.operations.contains("read " + path + "/original.txt") })
     }
@@ -129,8 +130,8 @@ struct SourceAdapterTests {
         let fresh = try #require(try await reopened.scan().sources.first)
         #expect(fresh.body == "Updated external bytes")
         #expect(fresh.metadata.linkedBookmark == linked.metadata.linkedBookmark)
-        let renamed = try await repo.renameSource(fresh, title: "Linked rename")
-        try await repo.deleteSource(renamed)
+        await #expect(throws: VaultError.self) { try await repo.renameSource(fresh, title: "Linked rename") }
+        try await repo.deleteSource(fresh)
         let trash = try #require(try await repo.trashItems().first)
         try await repo.permanentlyDelete(trash)
         #expect(try Data(contentsOf: external) == Data("Updated external bytes".utf8))
@@ -237,7 +238,7 @@ extension SourceAdapterTests {
         #expect(try await repo.scan().sources.count == 1)
         try Data("changed externally".utf8).write(to: url)
         let result = try await repo.scan()
-        #expect(result.sources.isEmpty)
+        #expect(result.sources.first?.id == source.id && result.sources.first?.body.isEmpty == true && result.sources.first?.contentState == .unavailable)
         #expect(result.issues.contains { $0.contains("checksum") })
     }
 
@@ -345,14 +346,14 @@ extension SourceAdapterTests {
         let bytes = Data("External original".utf8); try bytes.write(to: external)
         let linked = try await repository.linkSources(at: external, maximumFiles: 5)[0]
         let kept = try await repository.importSource(data: Data("Keep".utf8), filename: "keep.txt", title: "Keep", originURL: nil)
-        try await repository.deleteSource(linked)
+        try await repository.deleteSource(repository.loadSource(id: linked.id))
         #expect(try Data(contentsOf: external) == bytes)
         let scan = try await repository.scan()
         #expect(scan.sources.map(\.id) == [kept.id])
         await #expect(throws: (any Error).self) { try await repository.renameSource(linked, title: "Do not recreate") }
     }
 
-    @Test func deletingImportedSourceDeletesOriginalAndRejectsStaleOrMutatedFiles() async throws {
+    @Test func trashingImportedSourceRetainsOriginalAndRejectsStaleMetadata() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
         let repository = try await canonicalSchema5TestRepository(root: folder, create: true)
         let source = try await repository.importSource(data: Data("Original".utf8), filename: "original.txt", title: "Original", originURL: nil)
@@ -360,11 +361,14 @@ extension SourceAdapterTests {
         await #expect(throws: VaultError.self) { try await repository.deleteSource(source) }
         let original = folder.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/original.txt")
         try Data("Changed".utf8).write(to: original)
-        await #expect(throws: VaultError.self) { try await repository.deleteSource(renamed) }
-        #expect(FileManager.default.fileExists(atPath: original.path))
-        try Data("Original".utf8).write(to: original)
         try await repository.deleteSource(renamed)
-        #expect(!FileManager.default.fileExists(atPath: original.path))
+        #expect(try Data(contentsOf: original) == Data("Changed".utf8))
+        let trash = try #require(try await repository.trashItems().first)
+        try await repository.restore(trash)
+        let restored = try await repository.loadSource(id: renamed.id)
+        #expect(restored.contentState == .unavailable && restored.body.isEmpty)
+        try await repository.deleteSource(restored)
+        #expect(FileManager.default.fileExists(atPath: original.path))
         #expect(try await repository.scan().sources.isEmpty)
     }
 
@@ -425,7 +429,7 @@ extension SourceAdapterTests {
         try bytes.write(to: file)
         // Replacing the deleted file invalidates the old security bookmark; relinking restores access.
         #expect(FileVaultRepository.checkSourceAvailability(source, root: root, contentStore: repository.contentStore).contains("stale"))
-        try await repository.deleteSource(source)
+        try await repository.deleteSource(repository.loadSource(id: source.id))
         let relinked = try await repository.linkSources(at: file, maximumFiles: 1)[0]
         #expect(FileVaultRepository.checkSourceAvailability(relinked, root: root, contentStore: repository.contentStore) == "Available")
         #expect(try await repository.scan().sources.first(where: { $0.id == relinked.id })?.availabilityIssue == nil)

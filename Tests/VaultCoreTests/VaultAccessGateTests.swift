@@ -132,7 +132,7 @@ struct VaultAccessGateTests {
 
         // Fresh generation 2 repository succeeds.
         let updatedPage = try await repoGen2.save(note: page, title: page.title, body: "Body v2", tags: [])
-        #expect(updatedPage.body == "Body v2")
+        #expect(canonicalTestReadableBody(updatedPage.body) == "Body v2")
 
         // Switch from Vault A (generation 2) to Vault B (generation 3).
         try await manager.close()
@@ -240,7 +240,7 @@ struct VaultAccessGateTests {
         )
         let finalScan = try await finalRepo.scan()
         #expect(finalScan.notes.count == 1)
-        #expect(finalScan.notes.first?.body == "Original")
+        #expect(canonicalTestReadableBody(finalScan.notes.first?.body) == "Original")
         #expect(finalScan.sources.isEmpty)
     }
 

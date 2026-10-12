@@ -21,3 +21,8 @@ func canonicalTestNoteBytes(root: URL, id: UUID) async throws -> Data {
     try await repo.sqliteBlockStore.close()
     return bytes
 }
+
+/// Compare user-visible page content while retaining canonical codec metadata in storage.
+func canonicalTestReadableBody(_ body: String?) -> String? {
+    body.map { BlockDocumentCodec.markdownBody($0) }
+}

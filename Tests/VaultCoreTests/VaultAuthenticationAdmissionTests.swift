@@ -324,7 +324,7 @@ struct VaultAuthenticationAdmissionTests {
         let root = try await f.manager.createVault(parent: f.base, name: "Protected New",
             encryptionRequested: false, accessAuthenticationRequested: true)
         let manifest = try FileVaultRepository.inspectManifest(at: root)
-        #expect(manifest.formatVersion == 1)
+        #expect(manifest.formatVersion == 2)
         #expect(f.manager.accessAuthenticationRequired(for: manifest.id))
         #expect(await f.auth.purposes.isEmpty)
         let before = try Data(contentsOf: root.appendingPathComponent("vault.json"))

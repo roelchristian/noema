@@ -35,7 +35,7 @@ struct RecoveryStoreIsolationTests {
         }
 
         let restored = try await repository.create(title: "Recovered", body: drafts[0].body)
-        #expect(restored.body == "Only unsaved copy 0")
+        #expect(canonicalTestReadableBody(restored.body) == "Only unsaved copy 0")
         try await recovery.remove(drafts[0].id)
         #expect(try await recovery.listing().drafts.count == 2)
         #expect(try Data(contentsOf: corrupt) == original)
@@ -96,7 +96,7 @@ struct RecoveryStoreIsolationTests {
         #expect(try Data(contentsOf: directory.appendingPathComponent(note.id.uuidString + ".json")) == original)
         try await recovery.store(DraftRecord(note: note, title: note.title, body: "New unsaved work", tags: []))
         let listing = try await recovery.listing()
-        #expect(listing.drafts.first?.body == "New unsaved work")
+        #expect(canonicalTestReadableBody(listing.drafts.first?.body) == "New unsaved work")
         #expect(listing.damagedEntries.count == 1)
         let preserved = try #require(listing.damagedEntries.first)
         #expect(preserved.fileName.contains(".damaged-"))
@@ -162,11 +162,9 @@ struct RecoveryStoreIsolationTests {
             do {
                 _ = try await candidate.save(note: draft.note, title: draft.title, body: draft.body, tags: draft.tags)
                 Issue.record("Expected a stale recovery conflict")
-            } catch VaultError.conflict(let path) {
-                let preserved = try NoteCodec.decode(Data(contentsOf: URL(fileURLWithPath: path)),
-                    path: note.relativePath, vaultID: candidate.manifest.id)
-                #expect(preserved.id == note.id)
-                #expect(preserved.body == draft.body)
+            } catch VaultError.conflict(let message) {
+                #expect(!message.isEmpty)
+                #expect(try await recovery.drafts().first?.body == draft.body)
             }
             #expect(try await candidate.scan().notes.first?.body == external.body)
             #expect(try Data(contentsOf: journalURL) == journalBytes)

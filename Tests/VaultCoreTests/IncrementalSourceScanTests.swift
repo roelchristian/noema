@@ -135,12 +135,12 @@ struct IncrementalSourceScanTests {
         _ = try await repo.scan()
         try store.base.write(Data("Corrupt".utf8), at: original, condition: .replace(expected: bytes))
         let corrupt = try await repo.scan()
-        #expect(corrupt.sources.isEmpty)
+        #expect(corrupt.sources.first?.id == source.id && corrupt.sources.first?.contentState == .unavailable && corrupt.sources.first?.body.isEmpty == true)
         #expect(corrupt.issues.contains { $0.contains("checksum") })
         #expect(await repo.cachedSourceCount == 0)
         #expect(FileVaultRepository.checkSourceAvailability(source, root: root, contentStore: store).contains("checksum"))
         try store.base.delete(at: original, expected: .file(Data("Corrupt".utf8)))
-        #expect(try await repo.scan().sources.isEmpty)
+        #expect(try await repo.scan().sources.first?.contentState == .unavailable)
         #expect(await repo.cachedSourceCount == 0)
     }
 
@@ -263,7 +263,7 @@ struct IncrementalSourceScanTests {
         #expect(reused.sourceVerification[source.id] == .reusedPreviouslyVerified)
         #expect(try await repo.scanSources().sourceVerification[source.id] == .notVerified)
         let verified = try await repo.scan(sourceLoading: .verifyOriginals)
-        #expect(verified.sources.isEmpty)
+        #expect(verified.sources.first?.id == source.id && verified.sources.first?.contentState == .unavailable && verified.sources.first?.body.isEmpty == true)
         #expect(verified.issues.contains { $0.contains("checksum") })
         #expect(await repo.cachedSourceCount == 0)
     }

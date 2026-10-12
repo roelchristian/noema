@@ -231,7 +231,7 @@ extension WikiPageAdapterTests {
         note = try await repo.save(note: note, title: note.title, body: note.body, tags: note.tags)
         #expect(!note.isEditingLocked)
         let edited = try await repo.save(note: note, title: note.title, body: "Changed", tags: [])
-        #expect(edited.body == "Changed")
+        #expect(canonicalTestReadableBody(edited.body) == "Changed")
     }
 
     @Test func editingLockMetadataPreservesContentTimestampAndRejectsStaleWrites() async throws {
@@ -251,6 +251,6 @@ extension WikiPageAdapterTests {
         let edited = try await repo.save(note: unlocked, title: unlocked.title, body: "New content", tags: unlocked.tags)
         let relocked = try await repo.setEditingLock(note: edited, locked: true)
         #expect(edited.updatedAt >= note.updatedAt)
-        #expect(relocked.updatedAt == edited.updatedAt && relocked.body == "New content")
+        #expect(canonicalTestReadableBody(relocked.updatedAt == edited.updatedAt && relocked.body) == "New content")
     }
 }
