@@ -319,7 +319,7 @@ func gatewayCancelledMetadataActionsNeverDispatch(action: ExternalAIAction) asyn
 }
 
 @Test func gatewayComposesAllArtifactsInOneInferenceAndRejectsArtifactSubstitution() async throws {
-    let output = #"{"title":"Computer Science","summary":"A concise summary.","classification":{"code":"QA76","level":"schedule","rationale":"Computer science subject"},"body":"# Computer Science\n\nA source-backed article."}"#
+    let output  = ##"{"title":"Computer Science","summary":"A concise summary.","classification":{"code":"QA76","level":"schedule","rationale":"Computer science subject"},"body":"# Computer Science\n\nA source-backed article."}"##
     let body = try JSONSerialization.data(withJSONObject: ["object": "response", "status": "completed", "output": [
         ["type": "message", "role": "assistant", "status": "completed", "content": [["type": "output_text", "text": output]]]]])
     let mock = GatewayMockTransport(body: body)
