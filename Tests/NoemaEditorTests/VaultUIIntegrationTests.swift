@@ -95,8 +95,8 @@ struct VaultUIIntegrationTests {
         let model = try await openRichArticleFixtureVault(at: folder)
         model.notes = [note, newer]
         model.currentNote = note; model.title = note.title; model.body = note.body
-        let order = model.allPagesByUpdated.map(\.id)
-        let recentOrder = model.recentPages.map(\.id)
+        let order = model.notes.sorted { (LibraryRow.date($0.updatedAt) ?? .distantPast) > (LibraryRow.date($1.updatedAt) ?? .distantPast) }.map(\.id)
+        let recentOrder = model.recentItemIDs
         for _ in 0..<20 { model.toggleEditingLock(note.id) }
         #expect(model.editingLockOperations.contains(note.id))
         #expect(model.currentNote?.isEditingLocked == initiallyLocked)
@@ -107,8 +107,8 @@ struct VaultUIIntegrationTests {
         #expect(model.editingLockOperations.isEmpty)
         #expect(model.currentNote?.isEditingLocked == !initiallyLocked)
         #expect(model.currentNote?.updatedAt == note.updatedAt)
-        #expect(model.allPagesByUpdated.map(\.id) == order)
-        #expect(model.recentPages.map(\.id) == recentOrder)
+        #expect(model.notes.sorted { (LibraryRow.date($0.updatedAt) ?? .distantPast) > (LibraryRow.date($1.updatedAt) ?? .distantPast) }.map(\.id) == order)
+        #expect(model.recentItemIDs == recentOrder)
         #expect(try await repo.scan().notes.first(where: { $0.id == note.id })?.isEditingLocked == !initiallyLocked)
         _ = await model.closeVault()
     }
