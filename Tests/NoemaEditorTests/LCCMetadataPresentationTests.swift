@@ -13,7 +13,7 @@ struct LCCMetadataPresentationTests {
         let metadata = LCCMetadataPresentation(classification: classification,
             legacyCode: "Q", legacyProvenance: nil)
         #expect(metadata.code == "QA76")
-        #expect(metadata.caption == "Computer science")
+        #expect(metadata.caption == "Computer science: general works")
         #expect(metadata.detail.contains("OpenAI · configured-model"))
         #expect(!metadata.detail.contains("Untrusted"))
     }
