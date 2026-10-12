@@ -1605,8 +1605,12 @@ struct AISuggestion: Identifiable, Sendable {
     }
 
     private func closeSessionChecked(expectedSession: VaultSession? = nil) async throws {
+        let retiringRepository = repository
         try await sessionManager.close(expectedSession: expectedSession)
         try requireLifecycleState(.closed, action: "close")
+        // Retire only after the central transition commits: a cancelled close
+        // must leave the still-open session's connection usable.
+        try await retiringRepository?.shutdownPageStorage()
     }
 
     func open(_ url: URL, create: Bool) async {
@@ -1795,6 +1799,7 @@ struct AISuggestion: Identifiable, Sendable {
             )
             // Quiescence succeeded and session is now .locked. Tear down UI & vault resources.
             try requireLifecycleState(.locked, action: "lock", session: lockingSession)
+            try await repository.shutdownPageStorage()
             let observed = sessionManager.accessGate.currentState
             lockedVaultURL = currentRoot
             if persistSecurityScopedBookmark, lockedVaultBookmark == nil {
