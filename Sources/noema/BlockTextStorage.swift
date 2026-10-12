@@ -16,11 +16,12 @@ extension NSAttributedString.Key {
 @MainActor enum BlockTextStorage {
     /// Stable ID lookup and UTF-16 prefix sums. Typing updates one length in
     /// O(log n), without rescanning attributed-string block markers.
-    final class RangeIndex {
+    @MainActor final class RangeIndex {
         private var ids: [UUID] = []
         private var positions: [UUID: Int] = [:]
         private var lengths: [Int] = []
         private var sums: [Int] = [0]
+        private var numbers: [Int] = []
         init(_ storage: NSAttributedString) { rebuild(storage) }
         var count: Int { ids.count }
         func rebuild(_ storage: NSAttributedString) {
@@ -28,6 +29,14 @@ extension NSAttributedString.Key {
             ids = values.map(\.0); lengths = values.map { $0.1.length }
             positions = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($0.element, $0.offset) })
             sums = Array(repeating: 0, count: ids.count + 1)
+            var numberByDepth: [Int: Int] = [:]
+            numbers = values.map { _, range in
+                let depth = storage.attribute(.blockDepth, at: range.location, effectiveRange: nil) as? Int ?? 0
+                let kind = storage.attribute(.blockKind, at: range.location, effectiveRange: nil) as? String
+                numberByDepth[depth] = kind == BlockKind.numbered.rawValue ? (numberByDepth[depth] ?? 0) + 1 : 0
+                for nested in numberByDepth.keys where nested > depth { numberByDepth[nested] = nil }
+                return numberByDepth[depth] ?? 0
+            }
             for (offset, length) in lengths.enumerated() { add(length, at: offset) }
         }
         private func add(_ delta: Int, at index: Int) {
@@ -39,18 +48,26 @@ extension NSAttributedString.Key {
             while cursor > 0 { result += sums[cursor]; cursor -= cursor & -cursor }
             return result
         }
+        func number(for id: UUID) -> Int {
+            positions[id].map { numbers[$0] } ?? 0
+        }
         func range(for id: UUID) -> NSRange? {
             guard let index = positions[id] else { return nil }
             return NSRange(location: prefix(index), length: lengths[index])
         }
         func block(at location: Int) -> (UUID, NSRange)? {
             guard location >= 0, location < prefix(ids.count) else { return nil }
-            var low = 0, high = ids.count
-            while low < high {
-                let middle = (low + high) / 2
-                if prefix(middle + 1) <= location { low = middle + 1 } else { high = middle }
+            // Fenwick binary lifting finds the containing prefix in O(log n).
+            var offset = 0, consumed = 0, step = 1
+            while step < sums.count { step <<= 1 }
+            while step > 0 {
+                let candidate = offset + step
+                if candidate < sums.count, consumed + sums[candidate] <= location {
+                    offset = candidate; consumed += sums[candidate]
+                }
+                step >>= 1
             }
-            return (ids[low], NSRange(location: prefix(low), length: lengths[low]))
+            return (ids[offset], NSRange(location: consumed, length: lengths[offset]))
         }
         func applyLocalEdit(blockID: UUID, delta: Int) {
             guard let index = positions[blockID], lengths[index] + delta > 0 else { return }
@@ -72,6 +89,18 @@ extension NSAttributedString.Key {
                 location += lengths[index]
             }
             return result
+        }
+        /// Include the next content block: its boundary spacing depends on the
+        /// edited predecessor even when empty Markdown separators intervene.
+        func rhythmAffectedRange(for id: UUID, storage: NSAttributedString) -> NSRange? {
+            guard let position = positions[id], let start = range(for: id) else { return nil }
+            var end = NSMaxRange(start)
+            for offset in (position + 1)..<ids.count {
+                let next = NSRange(location: end, length: lengths[offset])
+                end = NSMaxRange(next)
+                if !BlockTextStorage.isEmptySeparator(storage, range: next) { break }
+            }
+            return NSRange(location: start.location, length: end - start.location)
         }
         func previousRole(before id: UUID, storage: NSAttributedString) -> EditorTypography.Role? {
             guard let index = positions[id], index > 0 else { return nil }
@@ -191,10 +220,26 @@ extension NSAttributedString.Key {
         let end = suffix > 0 ? index.range(for: before[before.count - suffix].block.id)?.location ?? storage.length : storage.length
         let replacement = renderVisible(Array(after[prefix..<(after.count - suffix)]), theme: theme, typography: typography)
         storage.replaceCharacters(in: NSRange(location: start, length: max(0, end - start)), with: replacement)
-        index.rebuild(storage)
-        // The next block's spacing depends on the changed predecessor.
-        let tail = index.block(at: min(start + replacement.length, max(0, storage.length - 1)))?.1
-        let affected = NSRange(location: start, length: max(replacement.length, (tail.map(NSMaxRange) ?? start) - start))
+        // Local block-content and metadata changes keep the prefix index. A
+        // structural change (including numbering/depth) rebuilds it once.
+        let sameStructure = before.count == after.count && zip(before, after).allSatisfy { lhs, rhs in
+            lhs.block.id == rhs.block.id && lhs.block.kind == rhs.block.kind && lhs.depth == rhs.depth && lhs.number == rhs.number
+        }
+        if sameStructure {
+            let oldLengths = before[prefix..<(before.count - suffix)].map { index.range(for: $0.block.id)?.length ?? 0 }
+            let newLengths = ranges(replacement).map { $0.1.length }
+            for (offset, value) in after[prefix..<(after.count - suffix)].enumerated() {
+                index.applyLocalEdit(blockID: value.block.id, delta: newLengths[offset] - oldLengths[offset])
+            }
+        } else { index.rebuild(storage) }
+        // A following separator has no role of its own; include the next
+        // content block so changing a heading cannot leave stale body spacing.
+        let tail = index.block(at: min(start + max(0, replacement.length - 1), max(0, storage.length - 1)))
+        let tailRange = tail.flatMap { id, range in
+            replacement.length > 0 || isEmptySeparator(storage, range: range)
+                ? index.rhythmAffectedRange(for: id, storage: storage) : range
+        }
+        let affected = NSRange(location: start, length: max(replacement.length, (tailRange.map(NSMaxRange) ?? start) - start))
         updateParagraphRhythm(storage, in: affected, index: index, typography: typography)
         if showSemanticHeadings { updateSemanticHeadingSpacing(storage, in: affected, index: index, typography: typography) }
         return affected

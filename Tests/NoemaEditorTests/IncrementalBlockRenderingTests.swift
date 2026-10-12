@@ -61,4 +61,56 @@ import VaultCore
         #expect(index.ordered.map(\.1) == BlockTextStorage.ranges(storage).map(\.1))
         #expect(storage.isEqual(to: BlockTextStorage.render(inserted, theme: NoemaTheme())))
     }
+    @Test func indexedNumberingAndIntersectionStayLocal() throws {
+        let first = EditorBlock(kind: .numbered, runs: [RichRun("One")], children: [EditorBlock(kind: .numbered, runs: [RichRun("Child")])])
+        let second = EditorBlock(kind: .numbered, runs: [RichRun("Two")])
+        let reset = EditorBlock(runs: [RichRun("Reset")])
+        let restarted = EditorBlock(kind: .numbered, runs: [RichRun("Restarted")])
+        let document = BlockDocument(blocks: [first, second, reset, restarted])
+        let storage = BlockTextStorage.render(document, theme: NoemaTheme())
+        let index = BlockTextStorage.RangeIndex(storage)
+        #expect(index.number(for: first.id) == 1)
+        #expect(index.number(for: first.children[0].id) == 1)
+        #expect(index.number(for: second.id) == 2)
+        #expect(index.number(for: restarted.id) == 1)
+        let range = try #require(index.range(for: second.id))
+        #expect(index.intersecting(range).map(\.0) == [second.id])
+        #expect(index.intersecting(NSRange(location: range.location + 1, length: 0)).map(\.0) == [second.id])
+        for location in 0..<storage.length {
+            let found = try #require(index.block(at: location))
+            #expect(NSLocationInRange(location, found.1))
+        }
+    }
+
+    @Test func headingTransformationUpdatesBodyBeyondEmptySeparators() throws {
+        let before = BlockDocumentCodec.decode("# Heading\n\n\nBody\n\nTail")
+        let storage = NSMutableAttributedString(attributedString: BlockTextStorage.render(before, theme: NoemaTheme()))
+        let index = BlockTextStorage.RangeIndex(storage)
+        let heading = try #require(before.blocks.first)
+        var after = before
+        after.update(heading.id) { $0.kind = .paragraph }
+        BlockTextStorage.apply(document: after, previous: before, to: storage, index: index, theme: NoemaTheme())
+        let full = BlockTextStorage.render(after, theme: NoemaTheme())
+        #expect(storage.isEqual(to: full))
+    }
+
+    @Test func nativeSeparatorEditUpdatesNextContentRhythm() throws {
+        let before = BlockDocumentCodec.decode("# Heading\n\nBody")
+        let storage = NSMutableAttributedString(attributedString: BlockTextStorage.render(before, theme: NoemaTheme()))
+        let index = BlockTextStorage.RangeIndex(storage)
+        let separator = try #require(before.blocks.first(where: { $0.text.isEmpty }))
+        let range = try #require(index.range(for: separator.id))
+        storage.replaceCharacters(in: NSRange(location: range.location, length: 0), with: "Filled")
+        index.applyLocalEdit(blockID: separator.id, delta: 6)
+        var after = before
+        after.update(separator.id) { $0.runs = [RichRun("Filled")] }
+        let affected = try #require(index.rhythmAffectedRange(for: separator.id, storage: storage))
+        BlockTextStorage.updateParagraphRhythm(storage, in: affected, index: index)
+        let full = BlockTextStorage.render(after, theme: NoemaTheme())
+        for (_, blockRange) in index.ordered {
+            #expect((storage.attribute(.paragraphStyle, at: blockRange.location, effectiveRange: nil) as? NSParagraphStyle)
+                == (full.attribute(.paragraphStyle, at: blockRange.location, effectiveRange: nil) as? NSParagraphStyle))
+        }
+    }
+
 }
