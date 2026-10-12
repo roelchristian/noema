@@ -9,9 +9,11 @@ import VaultCore
     private var sourceID: UUID
     private var scopedURL: URL?
     private let previewSnapshot: SourcePreviewSnapshot?
+    private let originalRevision: String
 
-    private init(id: UUID, window: NSWindow, scopedURL: URL?, previewSnapshot: SourcePreviewSnapshot?) {
+    private init(id: UUID, window: NSWindow, scopedURL: URL?, previewSnapshot: SourcePreviewSnapshot?, originalRevision: String) {
         sourceID = id; self.scopedURL = scopedURL; self.previewSnapshot = previewSnapshot
+        self.originalRevision = originalRevision
         super.init(window: window)
         window.delegate = self
     }
@@ -23,6 +25,9 @@ import VaultCore
         contentStore: any VaultContentStore,
         isStillValid: (@MainActor @Sendable () -> Bool)? = nil
     ) async throws {
+        var scoped: URL?
+        var snapshot: SourcePreviewSnapshot?
+        do {
         if let isStillValid, !isStillValid() { return }
         if let gated = contentStore as? GatedVaultContentStore {
             let normalizedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
@@ -37,9 +42,7 @@ import VaultCore
             }
             try gated.validateAccess(operation: "SourceReader.open")
         }
-        if let existing = readers[source.id] { existing.showWindow(nil); existing.window?.makeKeyAndOrderFront(nil); return }
         let url: URL
-        var scoped: URL?
         if let bookmark = source.metadata.linkedBookmark {
             var stale = false
             url = try URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], bookmarkDataIsStale: &stale)
@@ -51,8 +54,6 @@ import VaultCore
             url = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased()).appendingPathComponent(source.metadata.storedFilename)
             if root.startAccessingSecurityScopedResource() { scoped = root }
         }
-        var snapshot: SourcePreviewSnapshot?
-        do {
             let data = try await Task.detached {
                 if let gated = contentStore as? GatedVaultContentStore {
                     try gated.validateAccess(operation: "SourceReader.read")
@@ -72,6 +73,16 @@ import VaultCore
             }
             if let gated = contentStore as? GatedVaultContentStore {
                 try gated.validateAccess(operation: "SourceReader.presentContent")
+            }
+            let revision = source.metadata.isLinked ? digest(data) : source.metadata.sha256
+            if let existing = readers[source.id] {
+                if existing.originalRevision == revision {
+                    scoped?.stopAccessingSecurityScopedResource()
+                    existing.window?.title = source.title
+                    existing.showWindow(nil); existing.window?.makeKeyAndOrderFront(nil)
+                    return
+                }
+                existing.window?.close()
             }
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.title = source.title; window.isReleasedWhenClosed = false
@@ -113,9 +124,22 @@ import VaultCore
                 preview.previewItem = (snapshot?.url ?? url) as NSURL
                 window.contentView = preview
             }
-            let controller = SourceReader(id: source.id, window: window, scopedURL: scoped, previewSnapshot: snapshot)
+            let controller = SourceReader(id: source.id, window: window, scopedURL: scoped, previewSnapshot: snapshot, originalRevision: revision)
             readers[source.id] = controller; window.center(); controller.showWindow(nil); window.makeKeyAndOrderFront(nil)
-        } catch { snapshot?.remove(); scoped?.stopAccessingSecurityScopedResource(); throw error }
+        } catch { close(id: source.id); snapshot?.remove(); scoped?.stopAccessingSecurityScopedResource(); throw error }
+    }
+
+    /// Reuse scan evidence so refresh never rereads originals just to invalidate previews.
+    static func reconcile(_ batch: ScanBatch) {
+        let sources = Dictionary(batch.sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for reader in Array(readers.values) {
+            guard let source = sources[reader.sourceID], source.contentState != .unavailable else {
+                reader.window?.close(); continue
+            }
+            if let revision = batch.sourceOriginalRevisions[reader.sourceID], revision != reader.originalRevision {
+                reader.window?.close()
+            } else { reader.window?.title = source.title }
+        }
     }
 
     static func updateTitle(id: UUID, title: String) { readers[id]?.window?.title = title }

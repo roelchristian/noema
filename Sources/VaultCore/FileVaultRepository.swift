@@ -1,4 +1,24 @@
 import Foundation
+import Synchronization
+
+private final class SourceDownloadAuthority: Sendable {
+    let target: URL
+    private enum State { case pending, completing, cancelled }
+    private let state = Mutex(State.pending)
+    init(target: URL) { self.target = target }
+    func beginCompletion() throws {
+        try state.withLock {
+            guard $0 == .pending else { throw VaultError.invalid("Source download is no longer active.") }
+            $0 = .completing
+        }
+    }
+    func validate() throws {
+        try state.withLock {
+            guard $0 == .completing else { throw VaultError.invalid("Source download was cancelled.") }
+        }
+    }
+    func cancel() { state.withLock { $0 = .cancelled } }
+}
 
 public protocol VaultRepository: Sendable {
     func scan(progress: (@Sendable (ScanBatch) -> Void)?) async throws -> ScanBatch
@@ -34,6 +54,7 @@ public actor FileVaultRepository: VaultRepository {
     let sourceCache = SourceSnapshotCache()
     private var cacheInvalidatorID: UUID?
     var downloadingSources: [UUID: SourceRecord] = [:]
+    private var sourceDownloadTargets: [UUID: SourceDownloadAuthority] = [:]
     private let fm = FileManager.default
     let encoder: JSONEncoder = {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; return encoder
@@ -477,7 +498,7 @@ public actor FileVaultRepository: VaultRepository {
         return issue ?? "Available"
     }
 
-    private func publishSource(id: UUID = UUID(), capturedAt: String? = nil, data: Data, filename: String, title: String, originURL: String?, isURLSource: Bool) async throws -> SourceRecord {
+    private func publishSource(id: UUID = UUID(), capturedAt: String? = nil, data: Data, filename: String, title: String, originURL: String?, isURLSource: Bool, validating publication: (@Sendable () throws -> Void)? = nil) async throws -> SourceRecord {
         try validateAccess(operation: "publishSource")
         guard data.count <= Self.maximumImportBytes else { throw VaultError.invalid("Files larger than 2 MB must be linked instead of imported.") }
         try await rejectDuplicateSource(checksum: digest(data), excludingID: id)
@@ -489,7 +510,7 @@ public actor FileVaultRepository: VaultRepository {
         }
         var metadata = SourceMetadata(id: id, title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent : title, capturedAt: capturedAt ?? timestamp(), originalFilename: URL(fileURLWithPath: filename).lastPathComponent, originURL: originURL?.isEmpty == true ? nil : originURL, sha256: digest(data), fileSize: data.count, storedFilename: "original.\(storedExtension)")
         metadata.isURLSource = isURLSource ? true : nil
-        try await canonicalPublish(metadata: metadata, original: data)
+        try await canonicalPublish(metadata: metadata, original: data, validating: publication)
         return SourceRecord(metadata: metadata, body: body)
     }
 
@@ -628,6 +649,7 @@ public actor FileVaultRepository: VaultRepository {
         )
         let source = SourceRecord(metadata: metadata, body: "", availabilityIssue: "Downloading from iCloud", contentState: .unavailable)
         downloadingSources[id] = source
+        sourceDownloadTargets[id] = SourceDownloadAuthority(target: targetURL.standardizedFileURL)
         return source
     }
 
@@ -637,7 +659,12 @@ public actor FileVaultRepository: VaultRepository {
             throw VaultError.invalid("Source download is no longer active.")
         }
         let targetURL = Self.logicalCloudURL(url)
-        defer { downloadingSources.removeValue(forKey: id) }
+        guard let authority = sourceDownloadTargets[id], authority.target == targetURL.standardizedFileURL,
+              shouldImport == !pending.metadata.isLinked else {
+            throw VaultError.invalid("Source download completion does not match its file or ownership.")
+        }
+        try authority.beginCompletion()
+        defer { cancelSourceDownload(id: id) }
         if shouldImport {
             return try await publishSource(
                 id: id,
@@ -646,7 +673,8 @@ public actor FileVaultRepository: VaultRepository {
                 filename: targetURL.lastPathComponent,
                 title: pending.title,
                 originURL: nil,
-                isURLSource: false
+                isURLSource: false,
+                validating: { try authority.validate() }
             )
         }
         try await rejectDuplicateSource(checksum: digest(data), linkedURL: targetURL, excludingID: id)
@@ -663,19 +691,22 @@ public actor FileVaultRepository: VaultRepository {
             linkedBookmark: bookmark,
             storedFilename: pending.metadata.storedFilename
         )
-        try await canonicalPublish(metadata: metadata)
+        try await canonicalPublish(metadata: metadata, validating: { try authority.validate() })
         let current = try await canonicalSourceMetadata(id: metadata.id)
         return SourceRecord(metadata: current.metadata, body: body)
     }
 
     public func cancelSourceDownload(id: UUID) {
         downloadingSources.removeValue(forKey: id)
+        sourceDownloadTargets.removeValue(forKey: id)?.cancel()
     }
 
     @discardableResult
     public func cancelAllSourceDownloads() -> [UUID] {
         let ids = Array(downloadingSources.keys)
         downloadingSources.removeAll()
+        for authority in sourceDownloadTargets.values { authority.cancel() }
+        sourceDownloadTargets.removeAll()
         return ids
     }
 
@@ -711,6 +742,9 @@ public actor FileVaultRepository: VaultRepository {
         let url = root.appendingPathComponent(pending).standardizedFileURL
         guard fm.fileExists(atPath: url.path) else { return false }
         let snapshot = try contentStore.snapshot(at: pending)
+        guard case .directory(let files) = snapshot, files.isEmpty else {
+            throw VaultError.storage("Interrupted import staging retained for recovery: " + pending)
+        }
         try contentStore.delete(at: pending, expected: snapshot)
         return true
     }
@@ -800,7 +834,10 @@ public actor FileVaultRepository: VaultRepository {
     public func deleteSource(_ source: SourceRecord) async throws {
         try validateAccess(operation: "deleteSource")
         sourceCache.remove(source.id)
-        if downloadingSources.removeValue(forKey: source.id) != nil { return }
+        if downloadingSources[source.id] != nil {
+            cancelSourceDownload(id: source.id)
+            return
+        }
         let current = try await canonicalSourceMetadata(id: source.id)
         guard current.metadata == source.metadata else { throw VaultError.conflict("Source changed.") }
         _ = try await sqliteBlockStore.setSourceTrashed(id: source.id, expected: current.revision, trashed: true)

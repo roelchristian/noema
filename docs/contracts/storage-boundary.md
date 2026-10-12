@@ -94,6 +94,32 @@ live relationships restrict purge. Imported descriptors cannot change under an
 existing UUID. Conflict disposition checks conflict/target revisions atomically
 and never discards unique preserved payload implicitly.
 
+Pending downloads have no canonical row or managed original. Completion must match
+the prepared logical file URL and import/link ownership. Download cancellation revokes its
+single-completion authority, rechecked around receipt verification and before SQL
+COMMIT; a rejected commit retains any already published original and receipt.
+URL availability checks never replace captured bytes. Interrupted-import cleanup removes only an exactly
+snapshotted empty directory; nonempty or unexpected staging reports a preservation
+error through quiescence. Failed publication retains unreferenced originals and
+receipts for recovery.
+
+Source listing enumerates canonical SQLite identities. Metadata-only discovery
+checks imported change tokens without reading original bodies; linked originals
+remain uncached and are read only by content consumers. Full scans retain the
+session cache for unchanged imported originals and supply transient original-byte
+fingerprints to reader reconciliation, including binary linked originals. Refresh
+closes removed, unavailable or changed previews without extra original reads;
+explicitly reopening a preview revalidates its original before reusing the window.
+Preview snapshots remain disposable, separately owned copies rather than authority.
+
+Manual source metadata changes compare the supplied metadata with the current
+canonical row and commit against its captured source revision. Explicit and
+automatic AI publication use a `SourceSummarySnapshot` with its original bytes,
+change token and canonical revision; a metadata change and reversal still rejects
+the older result. Automatic source processing publishes title, summary and any
+previously unset LCC together, with on-device provenance, while retaining existing
+classification. Provider preference changes never regenerate stored artifacts.
+
 Manifest requires explicit schemaVersion=5, blocks.sqlite, localOnly=true and the
 complete capability set. Missing, contradictory, malformed or unknown required
 features and UUID disagreement reject before writable access. Preservation

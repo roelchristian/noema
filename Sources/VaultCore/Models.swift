@@ -173,6 +173,8 @@ public struct ScanBatch: Sendable {
     public var sourceVerification: [UUID: SourceScanVerification] = [:]
     /// Extracted-content revisions permit index reconciliation without hashing cached bodies again.
     public var sourceContentRevisions: [UUID: String] = [:]
+    /// Verified original-byte fingerprints for invalidating open previews, including binary linked files.
+    public var sourceOriginalRevisions: [UUID: String] = [:]
     public init() {}
 }
 public struct WikiLink: Codable, Sendable, Equatable {

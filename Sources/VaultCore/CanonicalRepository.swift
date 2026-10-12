@@ -8,7 +8,9 @@ extension FileVaultRepository {
         return (try snapshot.source.sourceMetadata(), snapshot.revision)
     }
 
-    func canonicalPublish(metadata: SourceMetadata, original: Data? = nil) async throws {
+    func canonicalPublish(metadata: SourceMetadata, original: Data? = nil,
+                          validating publication: (@Sendable () throws -> Void)? = nil) async throws {
+        try publication?()
         let operationID = UUID()
         let receipt: CanonicalSourceByteReceipt
         if let original {
@@ -19,7 +21,8 @@ extension FileVaultRepository {
             receipt = try contentStore.verifyCanonicalOriginal(metadata: metadata, vaultID: manifest.id, operationID: operationID)
         }
         _ = try await sqliteBlockStore.publishSourceAndPage(source: CanonicalSource(metadata: metadata),
-            condition: .createOnly, operationID: operationID, expectedVaultRevision: try await sqliteBlockStore.canonicalVaultRevision(), byteReceipt: receipt)
+            condition: .createOnly, operationID: operationID, expectedVaultRevision: try await sqliteBlockStore.canonicalVaultRevision(), byteReceipt: receipt,
+            validating: publication)
     }
 
     func canonicalUpdateSource(metadata: SourceMetadata, expected: BlockStoreRevision,
@@ -69,11 +72,15 @@ extension FileVaultRepository {
                     if !reusable { sourceCache.remove(id) }
                     if loading == .metadataOnly {
                         batch.sourceVerification[id] = .notVerified
-                        if reusable, let cached { batch.sourceContentRevisions[id] = cached.contentRevision }
+                        if reusable, let cached {
+                            batch.sourceContentRevisions[id] = cached.contentRevision
+                            batch.sourceOriginalRevisions[id] = metadata.sha256
+                        }
                     } else if loading == .complete, reusable, let cached {
                         try validateAccess(operation: "canonicalScanSources.cached")
                         source = cached.record
                         batch.sourceContentRevisions[id] = cached.contentRevision
+                        batch.sourceOriginalRevisions[id] = metadata.sha256
                         batch.sourceVerification[id] = .reusedPreviouslyVerified
                     } else {
                         let bytes = try Self.readSourceOriginal(source, root: root, contentStore: contentStore)
@@ -88,6 +95,7 @@ extension FileVaultRepository {
                                 record: source, contentRevision: revision), id: id)
                         }
                         batch.sourceContentRevisions[id] = revision
+                        batch.sourceOriginalRevisions[id] = metadata.isLinked ? digest(bytes) : metadata.sha256
                         batch.sourceVerification[id] = metadata.isLinked ? .linkedContentRead : .verifiedThisScan
                     }
                 } catch let error as VaultAccessError { throw error }

@@ -382,6 +382,13 @@ struct AIProviderIntegrationTests {
         let stored = try await f.repository.loadSource(id: selected.id)
         #expect(stored.title == "Native Fixture Title")
         #expect(stored.metadata.aiSummary == "Native fixture summary")
+        #expect(stored.metadata.aiTitleProvenance?.provider == "On-device")
+        #expect(stored.metadata.aiSummaryProvenance?.model == "Apple Intelligence")
+        #expect(stored.metadata.aiTitleProvenance?.generationID == stored.metadata.aiSummaryProvenance?.generationID)
+        #expect(stored.metadata.aiLCCProvenance?.sourceRevision == stored.metadata.sha256)
+        let reopened = try await openCanonicalAppFixture(root: f.root)
+        #expect(try await reopened.loadSource(id: stored.id).metadata == stored.metadata)
+        #expect(try FileVaultRepository.readSourceOriginal(stored, root: f.root, contentStore: reopened.contentStore) == Data("Selected source content".utf8))
         f.model.newPage()
         try await waitUntil { f.model.currentNote?.id != f.note.id }
         f.model.body = "New page content for automatic naming"; f.model.edited()
@@ -390,6 +397,16 @@ struct AIProviderIntegrationTests {
         #expect(await probe.count("pageTitle") == 2)
         #expect(await probe.count("cloud") == 0)
         #expect(f.model.aiProviderPreferences.settings.defaultProvider == .openAI)
+        let calls = await probe.total
+        f.model.aiProviderPreferences.setDefaultProvider(.onDevice)
+        f.model.aiProviderPreferences.setOverride(.specific(.openAI), for: .suggestTitle)
+        #expect(try await f.repository.loadSource(id: stored.id).metadata == stored.metadata)
+        #expect(await f.model.closeVault())
+        await f.model.open(f.root, create: false)
+        try await waitUntil { f.model.sources.contains { $0.id == stored.id } }
+        #expect(try await f.repository.loadSource(id: stored.id).metadata == stored.metadata)
+        #expect(f.model.sources.first { $0.id == stored.id }?.metadata == stored.metadata)
+        #expect(await probe.total == calls)
     }
 
     @Test @MainActor func automaticNamingPreservesExistingAndPendingManualClassifications() async throws {
@@ -424,6 +441,24 @@ struct AIProviderIntegrationTests {
         let stored = try await f.repository.loadSource(id: delayedSource.id)
         #expect(stored.title == "Second source")
         #expect(stored.metadata.aiSummary == nil)
+    }
+
+    @Test @MainActor func automaticSourceProcessingRejectsMetadataChangedBackToItsPreviousValue() async throws {
+        let f = try await fixture(); defer { f.cleanup() }
+        let selected = try await source(f)
+        let probe = ProviderProbe(holdTitle: true); mock(f.model, probe: probe)
+        f.model.enqueueSourceTitle(selected)
+        try await waitUntil { await probe.count("pageTitle") == 1 }
+        let corrected = try await f.repository.updateSourceLCC(selected, lcc: "DG299")
+        let restored = try await f.repository.updateSourceLCC(corrected, lcc: nil)
+        #expect(restored.metadata == selected.metadata)
+        await f.model.refresh()
+        try await probe.releaseTitle()
+        try await waitUntil { !f.model.generatingSourceTitles.contains(selected.id) }
+        #expect(try await f.repository.loadSource(id: selected.id).metadata == selected.metadata)
+        let reopened = try await openCanonicalAppFixture(root: f.root)
+        #expect(try await reopened.loadSource(id: selected.id).metadata == selected.metadata)
+        #expect(try FileVaultRepository.readSourceOriginal(selected, root: f.root, contentStore: reopened.contentStore) == Data("Selected source content".utf8))
     }
 
     @Test @MainActor func cancelledNativePageWorkerCannotPublishAfterIgnoringCancellation() async throws {

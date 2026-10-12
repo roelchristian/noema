@@ -718,6 +718,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
                 guard let byteReceipt, let vaultID = self.canonicalVaultID else { throw VaultError.invalid("Verified source receipt required.") }
                 try byteReceipt.validate(source: source, vaultID: vaultID, operationID: operationID)
             } else if source.original != nil { throw VaultError.invalid("Unavailable identity cannot invent original bytes.") }
+            try publication?()
         }
         return try transaction(validating: validateBytes) {
             try validateBytes()
