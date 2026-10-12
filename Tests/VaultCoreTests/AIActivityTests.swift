@@ -15,6 +15,44 @@ import Testing
         let pointer = try #require(db); defer { sqlite3_close(pointer) }
         #expect(sqlite3_exec(pointer,sql,nil,nil,nil) == SQLITE_OK)
     }
+    private func scalar(_ url: URL, _ sql: String) throws -> Int {
+        var db: OpaquePointer?
+        #expect(sqlite3_open(url.path, &db) == SQLITE_OK)
+        let db = try #require(db); defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        #expect(sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK)
+        let statement = try #require(statement); defer { sqlite3_finalize(statement) }
+        #expect(sqlite3_step(statement) == SQLITE_ROW)
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+    /// Frozen v1 schema: migration tests must not derive their fixture from v2.
+    private func createV1Database(_ url: URL) throws {
+        try sql(url, """
+        CREATE TABLE activity (
+          id TEXT PRIMARY KEY, started_at REAL NOT NULL, finished_at REAL, vault_id TEXT,
+          target_type TEXT CHECK(target_type IN ('page','source')), target_id TEXT,
+          action TEXT NOT NULL CHECK(action IN ('summarizePage','summarizeSource','suggestTitle','classifyLCC','processSource','createPageFromSource','createPageFromTopic','validateConnection')),
+          execution_mode TEXT NOT NULL CHECK(execution_mode IN ('automatic','userInvoked')),
+          provider TEXT NOT NULL CHECK(provider IN ('onDevice','openAI')), model_id TEXT CHECK(length(model_id)<=128),
+          status TEXT NOT NULL CHECK(status IN ('running','completed','failed','cancelled','interrupted')),
+          failure_code TEXT CHECK(failure_code IN ('cancelled','interrupted','unavailable','authorization','consent','network','invalidResponse','publication','unknown')),
+          duration_ms INTEGER CHECK(duration_ms>=0), input_tokens INTEGER CHECK(input_tokens BETWEEN 0 AND 1000000000),
+          output_tokens INTEGER CHECK(output_tokens BETWEEN 0 AND 1000000000), cached_input_tokens INTEGER CHECK(cached_input_tokens BETWEEN 0 AND input_tokens),
+          estimated_cost_usd REAL CHECK(estimated_cost_usd BETWEEN 0 AND 1000000), request_count INTEGER NOT NULL CHECK(request_count BETWEEN 0 AND 1000000),
+          content_size_bytes INTEGER CHECK(content_size_bytes BETWEEN 0 AND 1000000000),
+          outcome TEXT NOT NULL CHECK(outcome IN ('published','suggested','rejected','notApplicable')),
+          CHECK((target_type IS NULL AND target_id IS NULL) OR (target_type IS NOT NULL AND target_id IS NOT NULL))
+        );
+        CREATE INDEX activity_time ON activity(started_at DESC,id DESC);
+        CREATE INDEX activity_vault ON activity(vault_id,started_at DESC);
+        CREATE INDEX activity_target ON activity(target_type,target_id,started_at DESC);
+        CREATE INDEX activity_provider ON activity(provider,started_at DESC);
+        CREATE INDEX activity_status ON activity(status,started_at DESC);
+        CREATE TABLE activity_settings (key TEXT PRIMARY KEY,value INTEGER);
+        INSERT INTO activity_settings VALUES('retention_days',NULL);
+        PRAGMA user_version=1;
+        """)
+    }
     @Test func concurrentDispatchAndExactlyOnceFinalization() async throws {
         let url = try database(); defer { try? FileManager.default.removeItem(at:url.deletingLastPathComponent()) }
         let store = try SQLiteAIActivityStore(url:url)
@@ -89,10 +127,58 @@ import Testing
         #expect(try await reopened.retentionDays() == 30)
         do { try await reopened.setRetentionDays(0); Issue.record("Invalid retention accepted") } catch {}
     }
-    @Test func rejectsFutureSchema() throws {
+    @Test func v1MigrationPreservesMetadataSettingsAndIndexesAndAcceptsComposition() async throws {
+        let url = try database(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try createV1Database(url)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let start = now.addingTimeInterval(-100 * 86400), finish = start.addingTimeInterval(3)
+        let id = UUID(), vault = UUID(), target = UUID(), running = UUID()
+        try sql(url, """
+        INSERT INTO activity VALUES('\(id.uuidString)',\(start.timeIntervalSince1970),\(finish.timeIntervalSince1970),'\(vault.uuidString)','page','\(target.uuidString)','createPageFromTopic','userInvoked','openAI','test-model','completed',NULL,3000,100,20,10,0.01,2,999,'published');
+        INSERT INTO activity(id,started_at,action,execution_mode,provider,status,request_count,outcome) VALUES('\(running.uuidString)',\(now.timeIntervalSince1970),'summarizeSource','automatic','onDevice','running',0,'notApplicable');
+        """)
+        var store: SQLiteAIActivityStore? = try SQLiteAIActivityStore(url: url, now: now)
+        let migrated = try #require(try await store?.query(.init()).first { $0.id == id })
+        #expect(migrated == AIActivityRecord(id: id, startedAt: start, finishedAt: finish,
+            vaultID: vault, target: .init(type: .page, id: target), action: .createPageFromTopic,
+            executionMode: .userInvoked, provider: .openAI, modelID: "test-model", status: .completed,
+            durationMilliseconds: 3000, usage: .init(inputTokens: 100, outputTokens: 20, cachedInputTokens: 10),
+            estimatedCostUSD: 0.01, requestCount: 2, contentSizeBytes: 999, outcome: .published))
+        #expect(try await store?.retentionDays() == nil)
+        #expect(try await store?.query(.init()).first { $0.id == running }?.status == .interrupted)
+        let composed = AIActivityRecord(startedAt: now, action: .composePage, executionMode: .userInvoked, provider: .openAI)
+        try await store?.insert(composed)
+        // Migration only reconciles during opening; a newly inserted operation stays running.
+        #expect(try await store?.query(.init(action: .composePage)).first?.status == .running)
+        try await store?.finish(composed.id, at: now, status: .completed, outcome: .published, failureCode: nil)
+        #expect(try scalar(url, "PRAGMA user_version") == 2)
+        #expect(try scalar(url, "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('activity_time','activity_vault','activity_target','activity_provider','activity_status')") == 5)
+        try await store?.setRetentionDays(30)
+        store = nil
+        let reopened = try SQLiteAIActivityStore(url: url, now: now)
+        #expect(try await reopened.retentionDays() == 30)
+        #expect(try await reopened.query(.init(action: .composePage)).first?.id == composed.id)
+        #expect(try await reopened.query(.init()).allSatisfy { $0.id != id })
+    }
+    @Test func failedV1MigrationRollsBackOriginalTableAndVersion() throws {
+        let url = try database(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try createV1Database(url)
+        try sql(url, """
+        PRAGMA ignore_check_constraints=ON;
+        INSERT INTO activity(id,started_at,action,execution_mode,provider,status,request_count,outcome) VALUES('\(UUID().uuidString)',2000000000,'invalidAction','automatic','onDevice','completed',0,'notApplicable');
+        PRAGMA ignore_check_constraints=OFF;
+        """)
+        #expect(throws: AIActivityStoreError.unavailable) { try SQLiteAIActivityStore(url: url) }
+        #expect(try scalar(url, "PRAGMA user_version") == 1)
+        #expect(try scalar(url, "SELECT COUNT(*) FROM activity WHERE action='invalidAction'") == 1)
+        #expect(try scalar(url, "SELECT COUNT(*) FROM sqlite_master WHERE name='activity_previous'") == 0)
+        #expect(try scalar(url, "SELECT COUNT(*) FROM sqlite_master WHERE name='activity_time'") == 1)
+    }
+    @Test(arguments: [3, 99, -1]) func rejectsUnsupportedSchema(version: Int) throws {
         let url = try database(); defer { try? FileManager.default.removeItem(at:url.deletingLastPathComponent()) }
-        try sql(url,"PRAGMA user_version=99")
+        try sql(url,"PRAGMA user_version=\(version)")
         #expect(throws:AIActivityStoreError.unsupportedSchema) { try SQLiteAIActivityStore(url:url) }
+        #expect(try scalar(url, "PRAGMA user_version") == version)
     }
     @Test func metadataValidationAndExportExcludePayloads() async throws {
         let url = try database(); defer { try? FileManager.default.removeItem(at:url.deletingLastPathComponent()) }

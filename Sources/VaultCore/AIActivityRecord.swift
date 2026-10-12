@@ -3,7 +3,7 @@ import Foundation
 /// Activity metadata has no field for document text, titles, credentials, errors or HTTP bodies.
 public enum AIActivityAction: String, Codable, CaseIterable, Hashable, Sendable {
     case summarizePage, summarizeSource, suggestTitle, classifyLCC, processSource
-    case createPageFromSource, createPageFromTopic, validateConnection
+    case createPageFromSource, createPageFromTopic, composePage, validateConnection
 }
 public enum AIActivityProvider: String, Codable, CaseIterable, Hashable, Sendable { case onDevice, openAI }
 public enum AIActivityExecutionMode: String, Codable, CaseIterable, Hashable, Sendable { case automatic, userInvoked }

@@ -22,6 +22,23 @@ public actor SQLiteAIActivityStore: AIActivityStore {
     }
     private let connection: AIActivityConnection
     private static let columns = "id,started_at,finished_at,vault_id,target_type,target_id,action,execution_mode,provider,model_id,status,failure_code,duration_ms,input_tokens,output_tokens,cached_input_tokens,estimated_cost_usd,request_count,content_size_bytes,outcome"
+    private static let activitySchema = """
+    (
+      id TEXT PRIMARY KEY, started_at REAL NOT NULL, finished_at REAL, vault_id TEXT,
+      target_type TEXT CHECK(target_type IN ('page','source')), target_id TEXT,
+      action TEXT NOT NULL CHECK(action IN ('summarizePage','summarizeSource','suggestTitle','classifyLCC','processSource','createPageFromSource','createPageFromTopic','composePage','validateConnection')),
+      execution_mode TEXT NOT NULL CHECK(execution_mode IN ('automatic','userInvoked')),
+      provider TEXT NOT NULL CHECK(provider IN ('onDevice','openAI')), model_id TEXT CHECK(length(model_id)<=128),
+      status TEXT NOT NULL CHECK(status IN ('running','completed','failed','cancelled','interrupted')),
+      failure_code TEXT CHECK(failure_code IN ('cancelled','interrupted','unavailable','authorization','consent','network','invalidResponse','publication','unknown')),
+      duration_ms INTEGER CHECK(duration_ms>=0), input_tokens INTEGER CHECK(input_tokens BETWEEN 0 AND 1000000000),
+      output_tokens INTEGER CHECK(output_tokens BETWEEN 0 AND 1000000000), cached_input_tokens INTEGER CHECK(cached_input_tokens BETWEEN 0 AND input_tokens),
+      estimated_cost_usd REAL CHECK(estimated_cost_usd BETWEEN 0 AND 1000000), request_count INTEGER NOT NULL CHECK(request_count BETWEEN 0 AND 1000000),
+      content_size_bytes INTEGER CHECK(content_size_bytes BETWEEN 0 AND 1000000000),
+      outcome TEXT NOT NULL CHECK(outcome IN ('published','suggested','rejected','notApplicable')),
+      CHECK((target_type IS NULL AND target_id IS NULL) OR (target_type IS NOT NULL AND target_id IS NOT NULL))
+    )
+    """
     public init(url: URL = SQLiteAIActivityStore.defaultURL, now: Date = Date(), retentionDays: Int? = 90) throws {
         guard retentionDays == nil || (1...3650).contains(retentionDays!) else { throw AIActivityStoreError.invalidRetention }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -34,33 +51,29 @@ public actor SQLiteAIActivityStore: AIActivityStore {
         let version = sqlite3_column_int(versionStatement, 0)
         sqlite3_finalize(versionStatement)
         guard result == SQLITE_ROW else { throw AIActivityStoreError.unavailable }
-        guard version <= 1 else { throw AIActivityStoreError.unsupportedSchema }
+        guard (0...2).contains(version) else { throw AIActivityStoreError.unsupportedSchema }
+        // SQLite cannot extend a CHECK constraint in place. Rebuild inside the same
+        // transaction, copy every metadata column, then recreate indexes after the old
+        // table (and its indexes) is dropped. Fresh version-zero databases copy no rows.
+        let migration = version < 2 ? """
+        ALTER TABLE activity RENAME TO activity_previous;
+        CREATE TABLE activity \(Self.activitySchema);
+        INSERT INTO activity(\(Self.columns)) SELECT \(Self.columns) FROM activity_previous;
+        DROP TABLE activity_previous;
+        """ : ""
         let sql = """
         PRAGMA journal_mode=WAL;
         PRAGMA synchronous=NORMAL;
         BEGIN IMMEDIATE;
-        CREATE TABLE IF NOT EXISTS activity (
-          id TEXT PRIMARY KEY, started_at REAL NOT NULL, finished_at REAL, vault_id TEXT,
-          target_type TEXT CHECK(target_type IN ('page','source')), target_id TEXT,
-          action TEXT NOT NULL CHECK(action IN ('summarizePage','summarizeSource','suggestTitle','classifyLCC','processSource','createPageFromSource','createPageFromTopic','validateConnection')),
-          execution_mode TEXT NOT NULL CHECK(execution_mode IN ('automatic','userInvoked')),
-          provider TEXT NOT NULL CHECK(provider IN ('onDevice','openAI')), model_id TEXT CHECK(length(model_id)<=128),
-          status TEXT NOT NULL CHECK(status IN ('running','completed','failed','cancelled','interrupted')),
-          failure_code TEXT CHECK(failure_code IN ('cancelled','interrupted','unavailable','authorization','consent','network','invalidResponse','publication','unknown')),
-          duration_ms INTEGER CHECK(duration_ms>=0), input_tokens INTEGER CHECK(input_tokens BETWEEN 0 AND 1000000000),
-          output_tokens INTEGER CHECK(output_tokens BETWEEN 0 AND 1000000000), cached_input_tokens INTEGER CHECK(cached_input_tokens BETWEEN 0 AND input_tokens),
-          estimated_cost_usd REAL CHECK(estimated_cost_usd BETWEEN 0 AND 1000000), request_count INTEGER NOT NULL CHECK(request_count BETWEEN 0 AND 1000000),
-          content_size_bytes INTEGER CHECK(content_size_bytes BETWEEN 0 AND 1000000000),
-          outcome TEXT NOT NULL CHECK(outcome IN ('published','suggested','rejected','notApplicable')),
-          CHECK((target_type IS NULL AND target_id IS NULL) OR (target_type IS NOT NULL AND target_id IS NOT NULL))
-        );
+        CREATE TABLE IF NOT EXISTS activity \(Self.activitySchema);
+        \(migration)
         CREATE INDEX IF NOT EXISTS activity_time ON activity(started_at DESC,id DESC);
         CREATE INDEX IF NOT EXISTS activity_vault ON activity(vault_id,started_at DESC);
         CREATE INDEX IF NOT EXISTS activity_target ON activity(target_type,target_id,started_at DESC);
         CREATE INDEX IF NOT EXISTS activity_provider ON activity(provider,started_at DESC);
         CREATE INDEX IF NOT EXISTS activity_status ON activity(status,started_at DESC);
         CREATE TABLE IF NOT EXISTS activity_settings (key TEXT PRIMARY KEY,value INTEGER);
-        PRAGMA user_version=1;
+        PRAGMA user_version=2;
         COMMIT;
         """
         guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { sqlite3_exec(db, "ROLLBACK", nil, nil, nil); throw AIActivityStoreError.unavailable }
