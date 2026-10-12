@@ -38,20 +38,6 @@ struct PropertiesPanel: View {
                         isExpanded: sectionBinding("Classification & Identity")
                     ) {
                         pageLCCRow(note)
-                        propertyRow("Location") {
-                            Button(note.relativePath) {
-                                if let root = model.root {
-                                    NSWorkspace.shared.activateFileViewerSelecting([root.appendingPathComponent(note.relativePath)])
-                                }
-                            }
-                            .buttonStyle(.link)
-                            .font(NoemaTypography.interface)
-                            .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .help(note.relativePath)
-                        }
-                        InspectorProperty("Kind", "Markdown")
                         if !note.aliases.isEmpty {
                             aliasesRow(note.aliases)
                         }
