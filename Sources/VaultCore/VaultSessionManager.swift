@@ -752,6 +752,7 @@ public actor VaultSessionManager {
                 pendingState: pendingState,
                 cancelPreCommitSaves: cancelPreCommitSaves
             )
+            try await repository.checkpointPageStorage()
             try await teardown(session, report)
             reportBox.withLock { $0 = report }
         }

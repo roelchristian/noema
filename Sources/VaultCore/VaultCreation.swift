@@ -2,7 +2,7 @@ import Foundation
 
 /// Creation intent is transient; it is never an encryption claim in the manifest.
 public enum VaultCreation {
-    public static let encryptionUnavailable = "Encrypted vault creation is unavailable. Encryption, recovery-key setup, and protected indexing must be implemented and tested before it can be enabled."
+    public static let encryptionUnavailable = "Encrypted vault creation is unavailable. Encryption must protect the canonical database, WAL/SHM, temporary data, recovery artifacts, recovery keys, and indexes before it can be enabled."
 
     public static func validatedName(_ name: String) throws -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)

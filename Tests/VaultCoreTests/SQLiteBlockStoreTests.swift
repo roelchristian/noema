@@ -273,3 +273,43 @@ private final class BlockPublicationValidation: @unchecked Sendable {
     #expect(throws: (any Error).self) { try SQLiteBlockStore(unguardedTestingURL: url, createIfMissing: false) }
     #expect(try Data(contentsOf: url).isEmpty)
 }
+
+@Test func sqliteWALBackupIncludesAcknowledgedRevisionAndRejectsOverwrite() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("blocks.sqlite"), backupURL = root.appendingPathComponent("backup.sqlite"), page = UUID()
+    let store = try SQLiteBlockStore(unguardedTestingURL: url)
+    let document = BlockDocument(blocks: [EditorBlock(runs: [RichRun("durable in WAL")])])
+    let saved = try await store.save(document, pageID: page, condition: .createOnly)
+    #expect(FileManager.default.fileExists(atPath: url.path + "-wal"))
+    try await store.backup(to: backupURL)
+    await #expect(throws: (any Error).self) { try await store.backup(to: backupURL) }
+    await #expect(throws: VaultError.self) { try await store.backup(to: url) }
+    let backup = try SQLiteBlockStore(unguardedTestingURL: backupURL, createIfMissing: false)
+    #expect(try await backup.load(pageID: page) == saved)
+    try await backup.close()
+    try await store.checkpoint()
+    try await store.close()
+    try await store.close()
+    await #expect(throws: VaultError.self) { _ = try await store.load(pageID: page) }
+    let reopened = try SQLiteBlockStore(unguardedTestingURL: url, createIfMissing: false)
+    #expect(try await reopened.load(pageID: page) == saved)
+    try await reopened.close()
+}
+
+@Test func sqliteCancelledPublicationPreservesLastAcknowledgedRevision() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SQLiteBlockStore(unguardedTestingURL: root.appendingPathComponent("blocks.sqlite")), page = UUID()
+    let document = BlockDocument(blocks: [EditorBlock(runs: [RichRun("acknowledged")])])
+    let saved = try await store.save(document, pageID: page, condition: .createOnly)
+    let cancelled = Task {
+        withUnsafeCurrentTask { $0?.cancel() }
+        return try await store.save(BlockDocument(blocks: []), pageID: page, condition: .replace(expected: saved.revision))
+    }
+    do { _ = try await cancelled.value; Issue.record("Cancelled save committed") } catch is CancellationError {} catch { Issue.record("Unexpected cancellation error: \(error)") }
+    #expect(try await store.load(pageID: page) == saved)
+    try await store.close()
+}
