@@ -1,7 +1,6 @@
 import Foundation
 
-/// One content authority selected for a vault. This declaration does not enable a
-/// new on-disk format; production currently supports Markdown format 1 only.
+/// One page-content authority selected for a vault by its versioned manifest.
 public enum BlockStorageMode: String, Codable, Sendable {
     case markdown
     case sqliteBlocks
@@ -36,12 +35,12 @@ public enum BlockStoreWriteCondition: Equatable, Sendable {
 /// client, and rejects unsupported document versions rather than rewriting them.
 /// Invalid/no-op editor commands never reach this seam. No multi-call transaction
 /// is implied; repository-level compound changes require adapter-owned atomicity.
-/// There is deliberately no runtime implementation or editor routing change yet.
+/// Actor-owned implementations serialize revision checks with their writes.
 public protocol BlockStore: Sendable {
     var mode: BlockStorageMode { get }
-    func load(pageID: UUID) throws -> BlockStoreSnapshot
+    func load(pageID: UUID) async throws -> BlockStoreSnapshot
     @discardableResult
     func save(_ document: BlockDocument, pageID: UUID,
-              condition: BlockStoreWriteCondition) throws -> BlockStoreSnapshot
-    func delete(pageID: UUID, expected: BlockStoreRevision) throws
+              condition: BlockStoreWriteCondition) async throws -> BlockStoreSnapshot
+    func delete(pageID: UUID, expected: BlockStoreRevision) async throws
 }

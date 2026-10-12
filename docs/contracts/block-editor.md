@@ -2,13 +2,14 @@
 
 ## Storage decision and implementation gate (EDT.BLK01)
 
-**Status: proposed for approval before canonical storage implementation.** This
-contract selects the future format and migration rules; it does not claim human
-approval or enable SQLite vaults. Production still supports only plaintext
-Markdown vault format 1. The new `BlockStore` declaration has no implementation or
-runtime consumer. Its review and the author/reviewer procedure in
+**Status: implemented for explicit local page conversion (EDT.BLK09–11).**
+Markdown format 1 remains supported. Format 2 selects an actor-owned
+`SQLiteBlockStore` through repository construction. The page-only implementation
+below replaces the earlier proposed combined page/source database contract;
+source originals and source metadata retain their existing adapter-owned layout.
+The storage review procedure in
 [storage-boundary.md](storage-boundary.md#required-author-and-reviewer-disposition)
-must be completed before changing canonical storage, construction or I/O ownership.
+continues to apply to changed construction and canonical I/O.
 
 ### Permanent layer separation
 
@@ -16,25 +17,23 @@ must be completed before changing canonical storage, construction or I/O ownersh
 | --- | --- |
 | Interactive session | `EditorSession` owns the active value document, vault/page/session identity, revision, selection, changed IDs and mutation history. `BlockEditorCoordinator` bridges native composition, text storage and undo to that session; it does not own a second editable document. AppKit presentation is never an independent content authority. Invalid or ineffective `BlockMutation` commands leave the complete document unchanged and produce no undo, dirty notification or serialization. |
 | Canonical domain document | `BlockDocument`, `EditorBlock`, rich runs and `BlockMutation` stay in `VaultCore`. Ordered children, stable UUIDs, source spellings and metadata are content; caret/layout/undo are session state. Storage must not replace this domain foundation with SQL rows exposed to the editor. |
-| Persistence adapter | AppKit-independent [BlockStore](../../Sources/VaultCore/BlockStore.swift) loads a document snapshot and performs create-only or revision-checked save/delete by page UUID. One mode is selected per vault. Revisions are opaque, scoped to vault/page/mode and checked inside the commit window. Synchronous operations run off the main actor; no transaction across protocol calls is implied. |
+| Persistence adapter | AppKit-independent [BlockStore](../../Sources/VaultCore/BlockStore.swift) loads a document snapshot and performs create-only or revision-checked save/delete by page UUID. One mode is selected per vault. Revisions are opaque, scoped to vault/page/mode and checked inside the commit window. Asynchronous protocol operations execute on the owning store actor; no transaction across protocol calls is implied. |
 | Export | `BlockDocumentCodec` produces readable Markdown and its lossless envelope. Markdown, HTML and other exports are projections of a committed snapshot or an explicitly selected draft. Export never becomes an autosave channel or silently changes vault mode. |
 
 Page title, aliases, timestamps, lock state, classifications and source relationships
-remain repository-owned metadata. Saving a document preserves them. Future compound
-metadata/document updates require a repository operation committed atomically by the
-selected adapter; sequential `BlockStore` calls do not establish that guarantee.
+remain repository-owned metadata. Saving a document preserves them. Compound metadata/document updates use `SQLiteBlockStore.savePage` in one
+transaction; sequential `BlockStore` calls do not establish that guarantee.
 
 ### One authority per vault
 
 | Mode | Manifest and authoritative content | Compatibility |
 | --- | --- | --- |
 | `markdown` | Existing `vault.json` format 1 (`formatVersion`, `id`); an absent storage discriminator means `markdown` only for v1. Wiki frontmatter plus Markdown, including the checksummed `noema:document` envelope, is the single page authority. Existing Sources and Removed Pages layouts remain authoritative. | Existing local/iCloud Markdown vaults open unchanged. Opening and no-op editing never migrate or rewrite them. The current `FileVaultRepository` / `VaultContentStore` route remains in use. |
-| `sqliteBlocks` | Future `vault.json` format 2 explicitly declares `storage.mode = "sqliteBlocks"`, `storage.schemaVersion = 1`, `storage.database = "vault.sqlite"`, and `storage.localOnly = true`, alongside the vault UUID. `vault.sqlite` is the sole authority for page metadata, ordered block documents, source metadata/relationships, tombstones/trash and conflict records. | Opt-in local vault only; format 1 clients reject it. Wiki Markdown files are exports, never fallback content. Unknown vault format, mode or required schema version fails closed without rewriting. |
+| `sqliteBlocks` | `vault.json` format 2 declares `storageMode: "sqliteBlocks"` alongside the vault UUID. The fixed `blocks.sqlite` database is the sole authority for page metadata, ordered block records and page trash state. Sources retain existing original/metadata files. | Explicit local conversion only; format 1 clients reject it. Preserved Wiki files are migration backups, never fallback live pages. Unknown format/mode/schema rejects writable open. |
 
 The v2 manifest is a routing/identity contract, not a second page-content store.
-Only the fixed contained database path is permitted. Future SQLite schema version
-is also stored in the database; disagreement with the manifest rejects writable
-open. A missing/damaged DB never authorizes importing an old Wiki directory as
+Only the fixed contained database path is permitted. SQLite schema version is stored in `PRAGMA user_version`; future schema versions
+reject writable open. A missing/damaged DB never authorizes importing an old Wiki directory as
 canonical fallback. There is no mirrored Markdown write, background two-way sync,
 or mixed per-page mode. Future explicit `markdown` manifests must declare their
 supported vault format; do not add fields to existing v1 manifests on open.
@@ -42,8 +41,10 @@ supported vault format; do not add fields to existing v1 manifests on open.
 SQLite transactions commit a complete page document and its revision together;
 revisions are not exported text hashes. The adapter must retain stable IDs, order,
 parentage, inline styles, original Markdown spellings, recovered envelope payloads
-and metadata. A normalized schema may add indexes, but one lossless document payload
-remains authoritative per page; reconstructed SQL views must not compete with it.
+and metadata. Page metadata and document properties are compact JSON blobs; blocks retain
+parent UUID, sibling order, kind, rich runs, semantic/extension metadata and timestamps
+in individual rows. These rows reconstruct the single canonical `BlockDocument`.
+Ordinary updates compare rows and write only affected blocks.
 Search/embeddings remain derived and rebuildable, distinct from this canonical DB.
 
 ### Local-only SQLite and byte ownership
@@ -53,28 +54,26 @@ volumes and locations whose local status cannot be established. Storage selectio
 must validate the root before opening the DB and revalidate on reopen; a bookmark
 or `localOnly` flag alone is insufficient. It must not put SQLite/WAL/SHM into
 iCloud Drive, Dropbox or another file synchronizer, and cannot claim synchronization
-by copying a live database. A local save means local commit, not transport delivery.
+by copying a live database. Known provider roots and nonlocal/unknown volumes are
+rejected; arbitrary third-party synchronization folders cannot be identified from
+filesystem attributes alone and must be excluded by the caller. A local save means
+local commit, not transport delivery.
 Offline closed-vault backup/transfer uses a consistent SQLite backup snapshot and
 all owned source blobs, never a database-only copy while WAL may contain commits.
 
 Imported source originals remain immutable checksum-validated blobs at the existing
 contained `Sources/<UUID>/` locations, accessed through `VaultContentStore`.
-In SQLite mode the source metadata/summary/reference records move to the DB;
-legacy source JSON is migration input or backup, never a parallel writable authority.
-The DB references originals by UUID, relative path and checksum; extracted text is
-derived. Publication stages and validates a create-only blob before committing its
-DB reference. Failure leaves a recoverable unreferenced blob; it must not delete
-the only preserved original. Cross-file/DB publication is not a SQLite transaction.
-Trash retains referenced blobs; permanent deletion needs the existing snapshot,
-retention and explicit-review protections. Linked originals stay externally owned,
-read-only and bookmark-scoped; unavailable/deleted sources keep their UUID references.
+Source metadata and summaries remain in existing `metadata.json` files; page-level
+source UUID relationships belong to page metadata in SQLite. Existing source
+publication, checksum, trash and bookmark rules remain unchanged. Linked originals
+stay externally owned and read-only; unavailable sources retain UUID references.
 
-The future canonical SQLite connection belongs to a vault-bound actor/adapter
-selected by `VaultStorageProvider`, never to editor/AppModel/export code.
+The canonical SQLite connection belongs to `SQLiteBlockStore`, selected by
+`FileVaultRepository` from the admitted manifest, never to editor/AppModel/export code.
 `VaultContentStore` continues to own manifest and blob bytes, staging and backup
 publication; it cannot emulate SQLite commits by reading/replacing live DB bytes.
 DB/WAL/SHM access needs a narrowly owned, reviewed canonical SQLite boundary and
-guard changes before implementation. Existing app-local search/activity SQLite
+the reviewed guard exception inventory. Existing app-local search/activity SQLite
 exceptions grant no permission for this canonical database. Containment, symlink,
 security scope and stale/conflict safeguards remain mandatory.
 
@@ -109,51 +108,39 @@ and warn when a selected lossy format cannot represent unknown types/metadata.
 
 ### Explicit migration and rollback specification
 
-1. Obtain contract approval and implement/review storage selection, local-root checks,
-   gates, schema negotiation, backup and crash recovery before offering migration.
-   Quiesce and close writes, resolve conflicts or stop, preserve recovery drafts,
-   and capture checksum-verified source-vault snapshots through existing boundaries.
-   A preflight snapshot is not a publication authority after asynchronous work:
-   revalidate captured source revisions, root capability and session identity before
-   committing or selecting the destination. External changes stop migration without
-   overwriting either version; retry starts from fresh observations.
-2. Create an independent local destination vault with a new vault UUID and preserved
-   page/block/source UUIDs. The original v1 vault stays untouched and authoritative
-   for its own identity. Keep an explicit complete v1 backup, including source blobs,
-   Removed Pages, conflicts, manifests and unsupported/recovered payloads. Inventory
-   app-local recovery journals separately from the portable source root, retaining
-   decoded drafts and opaque damaged/mismatched bytes with their original vault/page
-   relationships. A new destination vault identity must not silently relabel old
-   journals. Never infer that recovery drafts or damaged content are disposable
-   migration evidence; if their safe mapping is unresolved, stop migration.
-3. Build the destination in sibling staging. Import documents and metadata in DB
-   transactions; copy/import originals with checksum verification, preserve linked
-   bookmarks and unavailable references, unknown frontmatter and retained trash.
-   Refuse migration if opaque unsupported content cannot be preserved losslessly.
-4. Validate counts, UUID uniqueness, document equality, source relationships, original
-   checksums, metadata/trash preservation, SQLite integrity and export/reimport fidelity.
-   Close/checkpoint the database and ensure no required data remains only in WAL.
-   Write the final v2 manifest in staging after validation, then publish the entire
-   initialized destination by a create-only same-parent move. Manifest and DB are
-   published as one staged vault, never by toggling the live source manifest first.
-5. Open/verify the published destination and switch the application session only after
-   success. Interrupted staging/publication leaves the original unchanged and never
-   selects a partial destination. Preserve failed staging diagnostics under the
-   approved lifecycle policy; do not delete source data or preserved recovery drafts.
-   Staging containing unique recoverable content is preservation data, not disposable
-   agent evidence: the local evidence cleanup policy does not authorize its deletion.
-   If publication succeeds but destination verification/open fails, retain both the
-   published destination and the original, and keep the source session selected or
-   return to it through the established authorized admission route.
-6. Rollback reopens the untouched original; later SQLite edits require explicit export
-   or reverse migration into another independent Markdown vault. Never replay them
-   silently into the backup. Repeated migration refuses occupied destinations.
+1. Quiesce and close repository/editor writes before explicit conversion. Production
+   conversion requires the admitted gate/lease, validates a local nonsymlink root,
+   and rejects unsupported manifest/block envelope versions. Revalidate captured
+   original revisions and session/root capability immediately before cutover;
+   external changes stop conversion without overwriting either version.
+2. Preserve the vault UUID and all page/block/source identities. Read canonical
+   inputs through the selected adapter and create a complete verified v1 backup
+   under `.noema-migrations/<run>/backup`, including source originals, metadata,
+   trash, conflicts and the original manifest. App-local recovery journals retain
+   their original vault/page identity and bytes, including damaged peers; this
+   same-identity conversion never relabels or deletes them.
+3. Build a single-file SQLite database inside the retained run directory. Import
+   through `NoteCodec` and `BlockDocumentCodec`, then verify page counts, metadata
+   and exact document reconstruction. Recheck the complete original inventory and
+   bytes before publication; verification failure prevents cutover.
+4. Close the database, publish it at the fixed `blocks.sqlite` path through an
+   expected-snapshot move, then conditionally replace the original manifest with
+   format 2. The manifest changes last and alone selects page authority; original
+   Markdown files remain byte-for-byte preserved.
+5. An interrupted conversion keeps format 1 usable. Matching interrupted database
+   publication is identified by its retained receipt and preserved within that run
+   before retry. Unrelated occupied databases are never overwritten or discarded.
+   Successful repeated conversion validates the existing selected database. Failed
+   staging with recoverable content is preservation data; agent evidence cleanup
+   never authorizes deleting it.
+6. Reopen only after conversion returns. Pre-conversion backup is preservation
+   data. Later SQLite edits require an explicit export/reverse conversion; never
+   silently replay them into the original backup.
 
-Approval requires reviewer disposition plus acceptance for legacy Markdown identity
-and bytes, unknown blocks/metadata, conflicts and stale writes, inaccessible sources,
-local-root rejection, interrupted migration/commit, backup restoration and lock/switch
-interleavings. Device, accessibility, crash/power-loss and two-Mac transport acceptance
-remain standing gaps in [validation](../validation.md); service tests do not close them.
+Author/reviewer storage disposition and automated acceptance remain required.
+Device, accessibility, process-crash/power-loss and two-Mac transport acceptance
+remain standing gaps in [validation](../validation.md); injected service failures
+do not close them.
 
 ## Recovery authority and current guarantees
 
@@ -185,7 +172,7 @@ these before introducing additional writers or migration replay.
 
 The editor retains a single native AppKit text system and the `AppModel.body` / repository / recovery path.
 
-Canonical pages remain frontmatter plus Markdown in vault format 1. On an editor mutation, the body gains a trailing HTML comment (`noema:document`) containing base64-encoded JSON. The envelope has its own version (1), a SHA-256 of the readable Markdown, and a complete block tree: stable UUIDs, string-backed structure kinds, rich runs, independent semantic designation, optional status/language/icon/extension metadata, timestamps, and children. Array order is position. No sidecar or index becomes canonical, and coordinated writes/conflicts/recovery operate on the complete body atomically.
+In vault format 1, canonical pages remain frontmatter plus Markdown. On an editor mutation, the body gains a trailing HTML comment (`noema:document`) containing base64-encoded JSON. The envelope has its own version (1), a SHA-256 of the readable Markdown, and a complete block tree: stable UUIDs, string-backed structure kinds, rich runs, independent semantic designation, optional status/language/icon/extension metadata, timestamps, and children. Array order is position. No sidecar or index becomes canonical, and coordinated writes/conflicts/recovery operate on the complete body atomically.
 
 Opening plain Markdown does not rewrite it. Untouched imported block spellings survive saves, including unsupported tables, HTML, and images. Legacy `noema:block` markers import their IDs/tags. Changed blocks produce readable Markdown plus the lossless JSON envelope. Standard Markdown readers ignore the comment and retain a useful textual document, though callout/toggle semantics, underline/highlight, and statuses require noema for full presentation. Returning to the previous application is possible by retaining the file and editing the readable body; old versions do not understand the new metadata.
 

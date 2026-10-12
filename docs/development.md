@@ -133,6 +133,21 @@ My Vault/
 - **Source metadata:** `id`, `title`, `capturedAt`, `originalFilename`, optional `originURL`, optional `lcc`, `sha256`, `storedFilename`, and optional `aiSummary`, `fileSize`, `linkedBookmark`, `isURLSource`, and `webAvailabilityIssue`. Imported originals are stored byte-for-byte via staged `.import-<uuid>` directories and published only once both original and metadata exist.
 - **App-local storage:** `AppModel` places `search.sqlite` (and SQLite-managed `search.sqlite-wal` / `search.sqlite-shm` while present) and `Drafts/<note UUID>.json` under `<Application Support URL>/KnowledgeVault/<vault UUID>/`, outside the synced vault. The base is the runtime URL returned by Foundation for the user's Application Support directory; a sandboxed app can resolve it inside its app container. An unsandboxed example is `~/Library/Application Support/KnowledgeVault/<vault UUID>/`. Tests can substitute the base with `localStorageRoot`. Keep `Drafts` if you have unsaved recovery work; the search index is rebuildable. These files remain plaintext when the vault is locked.
 
+## Local SQLite page format
+
+`SQLiteVaultMigration.convert(root:)` is an explicit local operation for a quiescent,
+closed Markdown vault. It verifies a full pre-conversion backup and imported block
+records in staging, publishes `blocks.sqlite`, then conditionally changes `vault.json`
+to format 2 with `storageMode: sqliteBlocks`. Original Markdown pages remain intact;
+format 2 scans use the database as the sole page authority. Source originals and
+metadata continue through the existing content adapter. Reopen after conversion.
+Conversion rejects future block envelopes, symlinks, nonlocal volumes and known
+cloud-provider roots. Arbitrary third-party sync folders cannot be identified by
+filesystem attributes alone; callers must choose an independently local vault.
+A failed manifest cutover preserves format 1 authority. A later retry preserves a
+published database only when its retained publication receipt matches the manifest
+and database digest; unrelated occupied databases are rejected.
+
 ## iCloud, conflicts, and Trash
 
 - **Coordinated sync:** Noema uses security-scoped folder bookmarks, `NSFileCoordinator`, and a file presenter to observe external changes. **Saved locally** confirms a local write on this Mac, not completion of an iCloud upload. Use **Refresh from Files** if external edits have not yet appeared.

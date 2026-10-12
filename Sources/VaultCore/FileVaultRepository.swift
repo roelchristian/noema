@@ -31,6 +31,7 @@ public actor FileVaultRepository: VaultRepository {
     public nonisolated let contentStore: any VaultContentStore
     public nonisolated let sessionLease: VaultSessionLease?
     public nonisolated let accessGate: VaultAccessGate?
+    let sqliteBlockStore: SQLiteBlockStore?
     private var cache: [String: (Date?, Int?, NoteRecord)] = [:]
     private let sourceCache = SourceSnapshotCache()
     private var cacheInvalidatorID: UUID?
@@ -96,14 +97,14 @@ public actor FileVaultRepository: VaultRepository {
         catch {
             throw VaultError.invalid("The vault manifest is damaged or has malformed format declarations. Its original bytes have been preserved.")
         }
-        guard manifest.formatVersion == 1 else {
+        guard manifest.isSupported else {
             throw VaultError.invalid("This vault uses an unsupported format version.")
         }
         // v1 has no required storage schema. A declaration must not silently select
         // a future authority merely because Codable ignores unknown fields.
         let declaration = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         if let storage = declaration?["storage"] {
-            guard let storage = storage as? [String: Any],
+            guard manifest.formatVersion == 1, let storage = storage as? [String: Any],
                   storage["mode"] as? String == "markdown",
                   storage["schemaVersion"] == nil,
                   storage["database"] == nil,
@@ -211,10 +212,23 @@ public actor FileVaultRepository: VaultRepository {
                 throw VaultContentStoreError.unsupportedItem(name)
             }
         }
+        let blocks: SQLiteBlockStore?
+        if manifest.storageMode == .sqliteBlocks {
+            try SQLiteVaultMigration.requireLocalRoot(accessRoot)
+            let database = root.appendingPathComponent(VaultManifest.sqliteDatabasePath)
+            guard fm.fileExists(atPath: database.path), database.resolvingSymlinksInPath() == database else {
+                throw VaultError.invalid("The SQLite page database is missing or unsafe.")
+            }
+            guard let sessionLease, let accessGate else {
+                throw VaultAccessError.missingLease(operation: "blockStore.open")
+            }
+            blocks = try SQLiteBlockStore(url: database, sessionLease: sessionLease, accessGate: accessGate, createIfMissing: false)
+        } else { blocks = nil }
         return FileVaultRepository(
             root: root,
             manifest: manifest,
             contentStore: store,
+            sqliteBlockStore: blocks,
             sessionLease: sessionLease,
             accessGate: accessGate
         )
@@ -224,12 +238,14 @@ public actor FileVaultRepository: VaultRepository {
         root: URL,
         manifest: VaultManifest,
         contentStore: any VaultContentStore,
+        sqliteBlockStore: SQLiteBlockStore? = nil,
         sessionLease: VaultSessionLease? = nil,
         accessGate: VaultAccessGate? = nil
     ) {
         self.root = root
         self.manifest = manifest
         self.contentStore = contentStore
+        self.sqliteBlockStore = sqliteBlockStore
         self.sessionLease = sessionLease
         self.accessGate = accessGate
         let gate = (contentStore as? GatedVaultContentStore)?.gate ?? accessGate
@@ -262,14 +278,22 @@ public actor FileVaultRepository: VaultRepository {
         }
     }
 
-    public func scan(progress: (@Sendable (ScanBatch) -> Void)? = nil) throws -> ScanBatch {
-        try scan(sourceLoading: .complete, progress: progress)
+    public func scan(progress: (@Sendable (ScanBatch) -> Void)? = nil) async throws -> ScanBatch {
+        try await scan(sourceLoading: .complete, progress: progress)
     }
 
-    public func scan(sourceLoading: SourceLoadingPolicy, progress: (@Sendable (ScanBatch) -> Void)? = nil) throws -> ScanBatch {
+    public func scan(sourceLoading: SourceLoadingPolicy, progress: (@Sendable (ScanBatch) -> Void)? = nil) async throws -> ScanBatch {
         defer { if Task.isCancelled { sourceCache.clear() } }
         try Task.checkCancellation()
         try validateAccess(operation: "scan")
+        if let sqliteBlockStore {
+            var batch = try scanSources(loading: sourceLoading)
+            batch.notes = try await sqliteBlockStore.allPages()
+            batch.notes.sort { $0.updatedAt > $1.updatedAt }
+            try validateAccess(operation: "scan.complete")
+            progress?(batch)
+            return batch
+        }
         var result = ScanBatch(), chunk = ScanBatch()
         var seenIDs: Set<UUID> = [], seenPaths: Set<String> = []
         var duplicateIDs: Set<UUID> = []
@@ -280,7 +304,8 @@ public actor FileVaultRepository: VaultRepository {
         }) else {
             throw VaultError.storage("The Wiki directory cannot be read.")
         }
-        for case let url as URL in enumerator {
+        while let item = enumerator.nextObject() {
+            guard let url = item as? URL else { continue }
             try validateAccess(operation: "scan")
             if url.lastPathComponent.hasPrefix(".") { enumerator.skipDescendants(); continue }
             guard url.pathExtension.lowercased() == "md" else { continue }
@@ -465,25 +490,25 @@ public actor FileVaultRepository: VaultRepository {
         return source
     }
 
-    public func create(title: String = "Untitled", body: String = "") throws -> NoteRecord {
-        try createPage(title: title, body: body, source: nil, lcc: nil)
+    public func create(title: String = "Untitled", body: String = "") async throws -> NoteRecord {
+        try await createPage(title: title, body: body, source: nil, lcc: nil)
     }
 
-    public func create(title: String = "Untitled", body: String = "", lcc: String?) throws -> NoteRecord {
-        try createPage(title: title, body: body, source: nil, lcc: lcc)
+    public func create(title: String = "Untitled", body: String = "", lcc: String?) async throws -> NoteRecord {
+        try await createPage(title: title, body: body, source: nil, lcc: lcc)
     }
 
-    public func create(title: String, body: String, source: SourceRecord) throws -> NoteRecord {
-        try createPage(title: title, body: body, source: source, lcc: nil)
+    public func create(title: String, body: String, source: SourceRecord) async throws -> NoteRecord {
+        try await createPage(title: title, body: body, source: source, lcc: nil)
     }
 
-    public func create(title: String, body: String, source: SourceRecord, lcc: String?) throws -> NoteRecord {
-        try createPage(title: title, body: body, source: source, lcc: lcc)
+    public func create(title: String, body: String, source: SourceRecord, lcc: String?) async throws -> NoteRecord {
+        try await createPage(title: title, body: body, source: source, lcc: lcc)
     }
 
-    private func createPage(title: String, body: String, source: SourceRecord?, lcc: String?) throws -> NoteRecord {
+    private func createPage(title: String, body: String, source: SourceRecord?, lcc: String?) async throws -> NoteRecord {
         try validateAccess(operation: "create")
-        let snapshot = try scan()
+        let snapshot = try await scan()
         if let source {
             guard let current = snapshot.sources.first(where: { $0.id == source.id }),
                   current.metadata.sha256 == source.metadata.sha256,
@@ -503,30 +528,36 @@ public actor FileVaultRepository: VaultRepository {
         let normalizedLCC = lcc?.trimmingCharacters(in: .whitespacesAndNewlines)
         note.lcc = (normalizedLCC?.isEmpty == false ? normalizedLCC : nil) ?? source?.metadata.lcc
         note.relativePath = availablePath(title: actualTitle)
+        if let sqliteBlockStore {
+            note.relativePath = "sqlite/" + note.id.uuidString.lowercased()
+            note.inlineTags = MarkdownService.analyze(note.body).tags
+            _ = try await sqliteBlockStore.savePage(record: note, document: BlockDocumentCodec.decode(note.body), condition: .createOnly)
+            return try await sqliteBlockStore.loadPage(pageID: note.id).record
+        }
         let data = try NoteCodec.encode(note)
         do { try contentStore.write(data, at: note.relativePath, condition: .createOnly) }
         catch VaultContentStoreError.alreadyExists { throw VaultError.storage("A file appeared at this path. Please try again.") }
         return try NoteCodec.decode(data, path: note.relativePath, vaultID: manifest.id)
     }
 
-    public func setEditingLock(note: NoteRecord, locked: Bool) throws -> NoteRecord {
+    public func setEditingLock(note: NoteRecord, locked: Bool) async throws -> NoteRecord {
         try validateAccess(operation: "setEditingLock")
         var updated = note
         updated.editingLocked = locked
-        return try save(note: updated, title: note.title, body: note.body, tags: note.tags, preserveUpdatedAt: true)
+        return try await save(note: updated, title: note.title, body: note.body, tags: note.tags, preserveUpdatedAt: true)
     }
 
-    public func save(note: NoteRecord, title: String, body: String, tags: [String]) throws -> NoteRecord {
+    public func save(note: NoteRecord, title: String, body: String, tags: [String]) async throws -> NoteRecord {
         try validateAccess(operation: "save")
-        return try save(note: note, title: title, body: body, tags: tags, preserveUpdatedAt: false)
+        return try await save(note: note, title: title, body: body, tags: tags, preserveUpdatedAt: false)
     }
 
-    private func save(note: NoteRecord, title: String, body: String, tags: [String], preserveUpdatedAt: Bool) throws -> NoteRecord {
+    private func save(note: NoteRecord, title: String, body: String, tags: [String], preserveUpdatedAt: Bool) async throws -> NoteRecord {
         try validateAccess(operation: "save")
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw VaultError.invalid("A wiki page needs a title.") }
-        let snapshot = try scan()
-        if fm.fileExists(atPath: root.appendingPathComponent(note.relativePath).path), !snapshot.notes.contains(where: { $0.id == note.id }) {
+        let snapshot = try await scan()
+        if (sqliteBlockStore != nil || fm.fileExists(atPath: root.appendingPathComponent(note.relativePath).path)), !snapshot.notes.contains(where: { $0.id == note.id }) {
             throw VaultError.invalid("This page is invalid or has a duplicate ID. Inspect the vault notices before saving. Your local draft is preserved.")
         }
         guard !titleExists(title, in: snapshot.notes.filter { $0.id != note.id }) else { throw VaultError.duplicateTitle(title) }
@@ -536,6 +567,7 @@ public actor FileVaultRepository: VaultRepository {
         }
         var updated = note
         updated.title = title; updated.body = body; updated.tags = normalizeTags(tags)
+        updated.inlineTags = MarkdownService.analyze(body).tags
         if snapshot.notes.first(where: { $0.id == note.id })?.title != title { updated.aiTitleProvenance = nil }
         if snapshot.notes.first(where: { $0.id == note.id })?.lcc != updated.lcc {
             updated.aiLCCProvenance = nil; updated.lccClassification = nil
@@ -543,6 +575,10 @@ public actor FileVaultRepository: VaultRepository {
         updated.updatedAt = preserveUpdatedAt ? note.updatedAt : timestamp()
         if updated.createdAt.isEmpty { updated.createdAt = updated.updatedAt }
         if normalized(title) != normalized(note.title), !updated.aliases.contains(note.title) { updated.aliases.append(note.title) }
+        if let sqliteBlockStore {
+            _ = try await sqliteBlockStore.savePage(record: updated, document: BlockDocumentCodec.decode(updated.body), condition: .replace(expected: sqliteRevision(note)))
+            return try await sqliteBlockStore.loadPage(pageID: note.id).record
+        }
         let data = try NoteCodec.encode(updated)
         let url = try checkedWikiURL(note.relativePath)
         do {
@@ -564,6 +600,13 @@ public actor FileVaultRepository: VaultRepository {
         return try NoteCodec.decode(data, path: note.relativePath, vaultID: manifest.id)
     }
 
+    func sqliteRevision(_ note: NoteRecord) throws -> BlockStoreRevision {
+        guard let token = Data(base64Encoded: note.contentHash), !token.isEmpty else {
+            throw VaultContentStoreError.stale(note.relativePath)
+        }
+        return BlockStoreRevision(token: token)
+    }
+
     private func preservePageConflict(_ data: Data, note: NoteRecord, at url: URL) throws {
         var failure: Error?, coordinationError: NSError?
         NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
@@ -583,21 +626,25 @@ public actor FileVaultRepository: VaultRepository {
         if let failure { throw failure }; if let coordinationError { throw coordinationError }
     }
 
-    public func setSourceReference(note: NoteRecord, sourceID: UUID, linked: Bool) throws -> NoteRecord {
+    public func setSourceReference(note: NoteRecord, sourceID: UUID, linked: Bool) async throws -> NoteRecord {
         try validateAccess(operation: "setSourceReference")
         guard !note.isEditingLocked else { throw VaultError.invalid("Unlock this article before editing its sources.") }
-        if linked, !((try scan()).sources.contains { $0.id == sourceID }) {
+        if linked, !((try await scan()).sources.contains { $0.id == sourceID }) {
             throw VaultError.invalid("This source is unavailable. Refresh before adding it.")
         }
         var updated = note
         var ids = Set(note.linkedSourceIDs)
         if linked { ids.insert(sourceID) } else { ids.remove(sourceID) }
         updated.sourceIDs = ids.sorted { $0.uuidString < $1.uuidString }
-        return try save(note: updated, title: note.title, body: note.body, tags: note.tags)
+        return try await save(note: updated, title: note.title, body: note.body, tags: note.tags)
     }
 
-    public func trash(note: NoteRecord) throws {
+    public func trash(note: NoteRecord) async throws {
         try validateAccess(operation: "trash")
+        if let sqliteBlockStore {
+            _ = try await sqliteBlockStore.setTrashed(pageID: note.id, expected: sqliteRevision(note), trashed: true)
+            return
+        }
         _ = try checkedWikiURL(note.relativePath)
         try ensureTrashDirectory()
         let destination = root.appendingPathComponent("\(Self.trashDirectoryName)/trash-\(Int(Date().timeIntervalSince1970))-\(note.id.uuidString)-\(UUID().uuidString).md")
@@ -606,8 +653,12 @@ public actor FileVaultRepository: VaultRepository {
         cache.removeValue(forKey: note.relativePath)
     }
 
-    public func trashedPages() throws -> [TrashedPage] {
+    public func trashedPages() async throws -> [TrashedPage] {
         try validateAccess(operation: "trashedPages")
+        var databasePages: [TrashedPage] = []
+        if let sqliteBlockStore {
+            databasePages = try await sqliteBlockStore.allTrashedPages().map { TrashedPage(note: $0) }
+        }
         let directory = root.appendingPathComponent(Self.trashDirectoryName)
         try ensureTrashDirectory()
         var files = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
@@ -625,7 +676,7 @@ public actor FileVaultRepository: VaultRepository {
                 }
             }
         }
-        return try files.map { url in
+        let filePages = try files.map { url in
                 let path = url.deletingLastPathComponent().lastPathComponent + "/" + url.lastPathComponent
                 var data: Data?
                 do {
@@ -644,7 +695,8 @@ public actor FileVaultRepository: VaultRepository {
                     note.contentHash = data.map(digest) ?? ""
                     return TrashedPage(note: note, readIssue: error.localizedDescription)
                 }
-            }.sorted { $0.note.title.localizedStandardCompare($1.note.title) == .orderedAscending }
+            }
+        return (databasePages + filePages).sorted { $0.note.title.localizedStandardCompare($1.note.title) == .orderedAscending }
     }
     private func migrateTrashedFile(_ url: URL) throws -> URL {
         let path = Self.legacyTrashDirectoryName + "/" + url.lastPathComponent
@@ -657,24 +709,43 @@ public actor FileVaultRepository: VaultRepository {
                               expected: .file(contentStore.read(at: path)))
         return destination
     }
-    public func restore(_ page: TrashedPage) throws {
+    public func restore(_ page: TrashedPage) async throws {
         try validateAccess(operation: "restore")
         guard page.canRestore else { throw VaultError.invalid("Repair this page's file before restoring it.") }
-        let snapshot = try scan()
+        let snapshot = try await scan()
         guard !snapshot.notes.contains(where: { $0.id == page.note.id }),
               !snapshot.issues.contains(where: { $0.contains("Duplicate note ID") }) else {
             throw VaultError.invalid("A page with this identity already exists. Resolve the duplicate before restoring.")
         }
         guard !titleExists(page.note.title, in: snapshot.notes) else { throw VaultError.duplicateTitle(page.note.title) }
+        if let sqliteBlockStore {
+            if page.id.hasPrefix("sqlite/") {
+                _ = try await sqliteBlockStore.setTrashed(pageID: page.note.id, expected: sqliteRevision(page.note), trashed: false)
+            } else {
+                _ = try checkedTrashURL(page.id)
+                let preserved = try checkedPageSnapshot(page.id, hash: page.note.contentHash,
+                    message: "This trashed page changed. Refresh Trash before restoring.")
+                var note = page.note
+                note.relativePath = "sqlite/" + note.id.uuidString.lowercased()
+                _ = try await sqliteBlockStore.savePage(record: note, document: BlockDocumentCodec.decode(note.body), condition: .createOnly)
+                // Publish first; a failed cleanup retains the original preservation copy.
+                try contentStore.delete(at: page.id, expected: preserved)
+            }
+            return
+        }
         _ = try checkedTrashURL(page.id)
         let path = availablePath(title: page.note.title)
         _ = try checkedWikiURL(path)
         try movePage(from: page.id, to: path, hash: page.note.contentHash,
                      staleMessage: "This trashed page changed. Refresh Trash before restoring.")
     }
-    public func permanentlyDelete(_ page: TrashedPage) throws {
+    public func permanentlyDelete(_ page: TrashedPage) async throws {
         try validateAccess(operation: "permanentlyDelete")
         guard page.canPermanentlyDelete else { throw VaultError.invalid("This trashed page could not be read. Refresh Trash before deleting it.") }
+        if let sqliteBlockStore, page.id.hasPrefix("sqlite/") {
+            _ = try await sqliteBlockStore.delete(pageID: page.note.id, expected: sqliteRevision(page.note))
+            return
+        }
         _ = try checkedTrashURL(page.id)
         let message = "This trashed page changed. Refresh Trash before deleting."
         do {
@@ -699,11 +770,11 @@ public actor FileVaultRepository: VaultRepository {
         }
     }
 
-    public func emptyTrash(_ pages: [TrashedPage]) -> [String] {
+    public func emptyTrash(_ pages: [TrashedPage]) async -> [String] {
         // Delete only the confirmed snapshot; keep changed/conflicted files and report partial failures.
         var failures: [String] = []
         for page in pages {
-            do { try permanentlyDelete(page) }
+            do { try await permanentlyDelete(page) }
             catch { failures.append("\(page.note.title): \(error.localizedDescription)") }
         }
         return failures
@@ -1298,9 +1369,9 @@ extension FileVaultRepository {
               url.pathExtension == "source", url.resolvingSymlinksInPath() == url else { throw VaultError.invalid("Invalid source trash path.") }
         return url
     }
-    public func trashItems() throws -> [TrashedItem] {
+    public func trashItems() async throws -> [TrashedItem] {
         try validateAccess(operation: "trashItems")
-        var items = try trashedPages().map(TrashedItem.page)
+        var items = try await trashedPages().map(TrashedItem.page)
         for url in try fm.contentsOfDirectory(at: root.appendingPathComponent(Self.trashDirectoryName), includingPropertiesForKeys: nil) where url.pathExtension == "source" {
             let path = Self.trashDirectoryName + "/" + url.lastPathComponent
             var hash = ""
@@ -1322,10 +1393,10 @@ extension FileVaultRepository {
         }
         return items.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
-    public func restore(_ item: TrashedItem) throws {
+    public func restore(_ item: TrashedItem) async throws {
         try validateAccess(operation: "restore")
         switch item {
-        case .page(let page): try restore(page)
+        case .page(let page): try await restore(page)
         case .source(let entry):
             guard entry.readIssue == nil, let source = entry.source else { throw VaultError.invalid("Repair this source before restoring it.") }
             sourceCache.remove(source.id)
@@ -1335,25 +1406,25 @@ extension FileVaultRepository {
             try contentStore.move(from: entry.id, to: "Sources/" + source.id.uuidString.lowercased(), expected: checkedSourceSnapshot(entry.id, hash: entry.contentHash))
         }
     }
-    public func permanentlyDelete(_ item: TrashedItem) throws {
+    public func permanentlyDelete(_ item: TrashedItem) async throws {
         try validateAccess(operation: "permanentlyDelete")
         switch item {
-        case .page(let page): try permanentlyDelete(page)
+        case .page(let page): try await permanentlyDelete(page)
         case .source(let source):
             guard !source.contentHash.isEmpty else { throw VaultError.invalid("Unreadable source cannot be deleted.") }
             try contentStore.delete(at: source.id, expected: checkedSourceSnapshot(source.id, hash: source.contentHash))
         }
     }
-    public func emptyTrashItems(_ items: [TrashedItem]) -> [String] {
+    public func emptyTrashItems(_ items: [TrashedItem]) async -> [String] {
         var failures: [String] = []
         for item in items {
-            do { try permanentlyDelete(item) } catch { failures.append("\(item.title): \(error.localizedDescription)") }
+            do { try await permanentlyDelete(item) } catch { failures.append("\(item.title): \(error.localizedDescription)") }
         }
         return failures
     }
-    public func expireTrash(now: Date = Date()) throws -> [String] {
+    public func expireTrash(now: Date = Date()) async throws -> [String] {
         try validateAccess(operation: "expireTrash")
-        let items = try trashItems()
+        let items = try await trashItems()
         let ledger = root.appendingPathComponent("Trash Retention.json")
         guard ledger.resolvingSymlinksInPath() == ledger else { throw VaultError.invalid("Unsafe trash retention file.") }
         guard (NSFileVersion.unresolvedConflictVersionsOfItem(at: ledger) ?? []).isEmpty else {
@@ -1378,7 +1449,7 @@ extension FileVaultRepository {
         var failures: [String] = []
         for item in expired {
             guard item.readIssue == nil else { failures.append("\(item.title): repair this item before automatic deletion."); continue }
-            do { try permanentlyDelete(item) } catch { failures.append("\(item.title): \(error.localizedDescription)") }
+            do { try await permanentlyDelete(item) } catch { failures.append("\(item.title): \(error.localizedDescription)") }
         }
         return failures
     }

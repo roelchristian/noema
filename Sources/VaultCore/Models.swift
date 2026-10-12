@@ -3,9 +3,22 @@ import CryptoKit
 
 public enum EntryKind: String, Codable, Sendable { case wiki, source }
 public struct VaultManifest: Codable, Sendable {
+    public static let sqliteDatabasePath = "blocks.sqlite"
     public var formatVersion: Int = 1
     public var id: UUID
+    public var storageMode: BlockStorageMode = .markdown
+    public var isSupported: Bool {
+        (formatVersion == 1 && storageMode == .markdown) ||
+        (formatVersion == 2 && storageMode == .sqliteBlocks)
+    }
     public init(id: UUID = UUID()) { self.id = id }
+    private enum CodingKeys: String, CodingKey { case formatVersion, id, storageMode }
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        formatVersion = try values.decode(Int.self, forKey: .formatVersion)
+        id = try values.decode(UUID.self, forKey: .id)
+        storageMode = try values.decodeIfPresent(BlockStorageMode.self, forKey: .storageMode) ?? .markdown
+    }
 }
 public struct NoteRecord: Codable, Identifiable, Sendable, Equatable {
     public var id: UUID
