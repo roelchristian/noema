@@ -36,6 +36,32 @@ struct CanonicalRepositoryTests {
         #expect(try Data(contentsOf: root.appendingPathComponent(path)) == forgedBytes)
     }
 
+    @Test func freshlyLinkedSourceCanRenameAndDeleteWithoutReload() async throws {
+        let (root, repository) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let external = root.appendingPathComponent("external-name.txt")
+        let bytes = Data("Linked original remains externally owned".utf8)
+        try bytes.write(to: external)
+        let linked = try #require(try await repository.linkSources(at: external, maximumFiles: 1).first)
+        #expect(linked.metadata.isLinked)
+        #expect(linked.metadata.originalFilename == "external-name.txt")
+        let renamed = try await repository.renameSource(linked, title: "Fresh linked title")
+        #expect(renamed.id == linked.id)
+        #expect(renamed.title == "Fresh linked title")
+        await #expect(throws: VaultError.self) {
+            _ = try await repository.renameSource(linked, title: "Stale linked title")
+        }
+        try await repository.deleteSource(renamed)
+        #expect(try await repository.scanSources().sources.isEmpty)
+        #expect(try Data(contentsOf: external) == bytes)
+        let trashed = try #require(try await repository.trashItems().first)
+        try await repository.restore(trashed)
+        let restored = try await repository.loadSource(id: linked.id)
+        #expect(restored.title == "Fresh linked title")
+        #expect(restored.metadata.isLinked)
+        #expect(try Data(contentsOf: external) == bytes)
+    }
+
     @Test func canonicalTrashPurgeLeavesTombstoneAndOriginal() async throws {
         let (root, repository) = try await fixture()
         defer { try? FileManager.default.removeItem(at: root) }
