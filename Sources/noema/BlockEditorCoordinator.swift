@@ -123,6 +123,7 @@ extension RichArticleView {
             }
         }
         func publish() {
+            guard parent.text == lastText else { return }
             session.selection = view?.selectedRange() ?? session.selection
             let snapshot = session.snapshot()
             guard session.accepts(snapshot) else { return }
@@ -131,7 +132,7 @@ extension RichArticleView {
                 do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
                 guard !Task.isCancelled else { return }
                 let source = await Task.detached(priority: .userInitiated) { BlockDocumentCodec.encode(snapshot.document) }.value
-                guard !Task.isCancelled, let self,
+                guard !Task.isCancelled, let self, self.parent.text == self.lastText,
                       self.parent.noteID == snapshot.identity.pageID,
                       self.parent.vaultID == snapshot.identity.vaultID,
                       self.parent.sessionID == snapshot.identity.sessionID,
@@ -144,6 +145,7 @@ extension RichArticleView {
         /// Explicit save/navigation boundary; ordinary typing never enters this path.
         func flushPublication() {
             publicationTask?.cancel()
+            guard parent.text == lastText else { return }
             // A navigation/save boundary must preserve the currently visible
             // marked text even before AppKit ends the composition transaction.
             if deferredComposition || view?.hasMarkedText() == true || pendingSingleBlock != nil { capture() }
