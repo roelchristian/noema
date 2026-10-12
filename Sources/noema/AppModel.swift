@@ -116,7 +116,59 @@ struct AISuggestion: Identifiable, Sendable {
 }
 
 @MainActor @Observable final class AppModel {
+    var showSettings = false
+    var selectedSettingsCategory: SettingsCategory = .defaultCategory
+    var showCustomTeXCommandsModal = false
+    var showAIActivityHistory = false
     var showVaultCreation = false
+
+    var canInteractWithWorkspace: Bool { !showSettings }
+
+    var canFormatDocument: Bool {
+        canInteractWithWorkspace && isVaultAvailable && currentNote != nil && !reading && !editingLocked
+    }
+
+    var canOpenSettings: Bool {
+        if showSettings { return true }
+        return !busy
+            && !isLifecycleActionInProgress
+            && !workspaceCommandPending
+            && [.closed, .open, .locked].contains(sessionPhase)
+            && !isChoosingVault
+            && !isChoosingSource
+            && !showVaultCreation
+            && !showTopicPage
+            && !showURLSource
+            && !showPasteSource
+            && !showRecovery
+            && !showIssues
+            && cloudSummaryConfirmation == nil
+            && pendingAISuggestion == nil
+            && ambiguousMatches.isEmpty
+            && unresolvedTarget == nil
+    }
+
+    func openSettings(category: SettingsCategory? = nil) {
+        guard canOpenSettings else { return }
+        if let category {
+            selectedSettingsCategory = category
+        } else if !showSettings {
+            selectedSettingsCategory = .defaultCategory
+        }
+        showSettings = true
+    }
+
+    func dismissSettings(force: Bool = false) {
+        guard force || !isVaultAuthenticationPending else { return }
+        showCustomTeXCommandsModal = false
+        showAIActivityHistory = false
+        showSettings = false
+        if let url = pendingBlockURL, isVaultAvailable, !busy {
+            pendingBlockURL = nil
+            openBlockURL(url)
+        }
+    }
+
     var root: URL?
     var vaultName = "Noema"
     var notes: [NoteRecord] = [] {
@@ -413,6 +465,7 @@ struct AISuggestion: Identifiable, Sendable {
         if nextState != latestState {
             return
         }
+        let previousPhase = sessionState.phase
         sessionState = nextState
         vaultAccessAuthenticationRequired = nextState.vaultID.map { sessionManager.accessAuthenticationRequired(for: $0) } ?? false
         switch nextState {
@@ -427,6 +480,7 @@ struct AISuggestion: Identifiable, Sendable {
             } else {
                 busy = false
             }
+            dismissSettings(force: true)
 
         case .opening(let targetRoot, _):
             lockedVaultURL = nil
@@ -455,6 +509,9 @@ struct AISuggestion: Identifiable, Sendable {
                 clearSessionUIState()
             } else {
                 busy = false
+            }
+            if previousPhase != .locked {
+                dismissSettings(force: true)
             }
 
         case .unlocking(_, let lockedRoot, let name, _):
@@ -557,6 +614,7 @@ struct AISuggestion: Identifiable, Sendable {
     }
 
     func openSidebarRecentItem(_ id: RecentItemID) {
+        guard canInteractWithWorkspace else { return }
         switch id {
         case .page(let pageID): select(pageID, scope: .wiki)
         case .source(let sourceID): select(sourceID, scope: .sources, previewSource: true)
@@ -776,7 +834,7 @@ struct AISuggestion: Identifiable, Sendable {
     }
 
     func requestPageSummary(id: UUID, provider: AIProvider? = nil) {
-        guard canOperateOnLoadedContent, !hasPendingCloudSummary, pendingAISuggestion == nil, explicitTitleTask == nil, !isSummarizing(target: .page(id)) else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent, !hasPendingCloudSummary, pendingAISuggestion == nil, explicitTitleTask == nil, !isSummarizing(target: .page(id)) else { return }
         if preferredAIProvider(for: .summarizePage, temporaryOverride: provider) == .onDevice {
             guard currentNote?.id == id else {
                 aiProviderNotice = "Open this page before generating an on-device summary."
@@ -788,7 +846,7 @@ struct AISuggestion: Identifiable, Sendable {
     }
 
     func requestSourceSummary(_ source: SourceRecord, provider: AIProvider? = nil) {
-        guard canOperateOnLoadedContent, !hasPendingCloudSummary, pendingAISuggestion == nil, explicitTitleTask == nil, !isSummarizing(target: .source(source.id)) else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent, !hasPendingCloudSummary, pendingAISuggestion == nil, explicitTitleTask == nil, !isSummarizing(target: .source(source.id)) else { return }
         if preferredAIProvider(for: .summarizeSource, temporaryOverride: provider) == .onDevice {
             guard admitsNativeAction(.summarizeSource, provider: provider) else { return }
             generateSourceSummary(source)
@@ -1809,6 +1867,7 @@ struct AISuggestion: Identifiable, Sendable {
             releaseActiveVaultResources()
             clearSessionUIState()
             sessionState = observed
+            dismissSettings(force: true)
             return true
         } catch {
             presentLifecycleFailure(error)
@@ -1956,6 +2015,7 @@ struct AISuggestion: Identifiable, Sendable {
                 UserDefaults.standard.removeObject(forKey: "vaultBookmark")
             }
             clearSessionUIState()
+            dismissSettings(force: true)
             errorMessage = nil
             return true
         } catch {
@@ -2109,7 +2169,7 @@ struct AISuggestion: Identifiable, Sendable {
     }
 
     func changeScope(_ scope: LibraryScope) {
-        guard canOperateOnLoadedContent else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent else { return }
         // Revoke immediately, including while an asynchronous save delays applying the scope.
         cancelCloudSummary()
         let completionTicket = issueCompletionTicket(kind: .lifecycle)
@@ -2278,7 +2338,7 @@ struct AISuggestion: Identifiable, Sendable {
         }
     }
     func select(_ id: UUID?, scope targetScope: LibraryScope? = nil, block blockID: UUID? = nil, previewSource: Bool = false) {
-        guard canOperateOnLoadedContent else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: id)
         Task {
             await waitForSave()
@@ -2368,7 +2428,7 @@ struct AISuggestion: Identifiable, Sendable {
         externalChange = false; saveStatus = "Saved locally"; generatePreview()
     }
     func setPageLCC(_ value: String) {
-        guard canOperateOnLoadedContent, !editingLocked, let note = currentNote else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent, !editingLocked, let note = currentNote else { return }
         lccInput = value
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedValue = trimmed.isEmpty ? nil : trimmed
@@ -2408,11 +2468,11 @@ struct AISuggestion: Identifiable, Sendable {
         } catch { if generation == ticket, canOperateOnLoadedContent { errorMessage = error.localizedDescription } }
     }
     func refreshPageLCC(provider: AIProvider? = nil) {
-        guard let note = currentNote, !editingLocked, !externalChange else { return }
+        guard canInteractWithWorkspace, let note = currentNote, !editingLocked, !externalChange else { return }
         requestAISuggestion(target: .page(note.id), action: .classifyLCC, provider: provider)
     }
     func updateSourceLCC(_ source: SourceRecord, lcc: String) {
-        guard canOperateOnLoadedContent, !downloadingSources.contains(source.id) else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent, !downloadingSources.contains(source.id) else { return }
         cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate()
         let trimmed = lcc.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedValue = trimmed.isEmpty ? nil : trimmed
@@ -2441,12 +2501,13 @@ struct AISuggestion: Identifiable, Sendable {
         }
     }
     func refreshSourceLCC(_ source: SourceRecord, provider: AIProvider? = nil) {
+        guard canInteractWithWorkspace else { return }
         requestAISuggestion(target: .source(source.id), action: .classifyLCC, provider: provider)
     }
     func openBlockURL(_ url: URL) {
         guard url.scheme == "noema", url.host == "page", let noteID = UUID(uuidString: url.lastPathComponent),
               let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "block" })?.value, let blockID = UUID(uuidString: value) else { return }
-        guard isVaultAvailable, !busy else { pendingBlockURL = url; return }
+        guard isVaultAvailable, !busy, canInteractWithWorkspace else { pendingBlockURL = url; return }
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: noteID)
         Task {
             await waitForSave()
@@ -2462,7 +2523,7 @@ struct AISuggestion: Identifiable, Sendable {
     }
     var editingLocked: Bool { currentNote?.isEditingLocked == true || editorReadOnly }
     func beginEditing() {
-        guard canOperateOnLoadedContent, currentNote != nil else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent, currentNote != nil else { return }
         guard !editingLocked else {
             editingHint = editorReadOnly ? "This article is read-only." : "Article locked. Unlock it to edit."
             return
@@ -2472,7 +2533,7 @@ struct AISuggestion: Identifiable, Sendable {
     func finishEditing() { guard canOperateOnLoadedContent else { return }; flushEditorPublication?(); wikiQuery = nil; editorAction = nil; savePage(); reading = true }
     var updatingSourceReferences = false
     func setSourceReference(pageID: UUID, sourceID: UUID, linked: Bool) {
-        guard canOperateOnLoadedContent, !updatingSourceReferences else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent, !updatingSourceReferences else { return }
         updatingSourceReferences = true
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: pageID)
         let ticket = completionTicket.token
@@ -2494,7 +2555,8 @@ struct AISuggestion: Identifiable, Sendable {
         }
     }
     func toggleEditingLock(_ id: UUID? = nil) {
-        guard canOperateOnLoadedContent,
+        guard canInteractWithWorkspace,
+              canOperateOnLoadedContent,
               let targetID = id ?? currentNote?.id,
               notes.contains(where: { $0.id == targetID }),
               !editingLockOperations.contains(targetID) else { return }
@@ -2657,11 +2719,12 @@ struct AISuggestion: Identifiable, Sendable {
         }
     }
     func suggestPageTitle(provider: AIProvider? = nil) {
-        guard let note = currentNote, !editingLocked, !externalChange else { return }
+        guard canInteractWithWorkspace, let note = currentNote, !editingLocked, !externalChange else { return }
         requestAISuggestion(target: .page(note.id), action: .suggestTitle, provider: provider)
     }
 
     func suggestSourceTitle(_ source: SourceRecord) {
+        guard canInteractWithWorkspace else { return }
         requestAISuggestion(target: .source(source.id), action: .suggestTitle)
     }
 
@@ -2706,7 +2769,7 @@ struct AISuggestion: Identifiable, Sendable {
     }
 
     func newPage(template: Bool = false, named name: String = "Untitled") {
-        guard canOperateOnLoadedContent else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .pageMutation)
         Task {
             if !(await finishCurrentPage()) { return }
@@ -2726,7 +2789,7 @@ struct AISuggestion: Identifiable, Sendable {
     }
     func trashCurrent() { trashPage(currentNote?.id) }
     func trashPage(_ id: UUID?) {
-        guard canOperateOnLoadedContent, let id else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent, let id else { return }
         let completionTicket = issueCompletionTicket(kind: .trashMutation, targetID: id)
         Task {
             if currentNote?.id == id, !(await saveCurrent()) { return }
@@ -2752,7 +2815,7 @@ struct AISuggestion: Identifiable, Sendable {
         performTrashOperation(pages, restoring: false)
     }
     private func performTrashOperation(_ pages: [TrashedItem], restoring: Bool) {
-        guard canOperateOnLoadedContent, !trashOperationInProgress, !pages.isEmpty, let repository else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent, !trashOperationInProgress, !pages.isEmpty, let repository else { return }
         trashOperationInProgress = true; errorMessage = nil
         let completionTicket = issueCompletionTicket(kind: .trashMutation)
         let ticket = completionTicket.token
@@ -2854,19 +2917,19 @@ struct AISuggestion: Identifiable, Sendable {
         outgoingLinkTargets = outgoingTargets ?? []
     }
     func followWikiLink(_ target: String) {
-        guard canOperateOnLoadedContent else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent else { return }
         let key = normalized(target)
         let matches = notes.filter { normalized($0.title) == key || $0.aliases.contains(where: { normalized($0) == key }) }
         if matches.count == 1 { select(matches[0].id) }
         else if matches.isEmpty { unresolvedTarget = target }
         else { ambiguousMatches = matches }
     }
-    func suggestLink(_ title: String) { guard canOperateOnLoadedContent, !reading, !editingLocked else { return }; editorAction = EditorAction(operation: .wikiLink(title)); wikiQuery = nil }
-    func format(_ prefix: String, _ suffix: String) { guard canOperateOnLoadedContent, !reading, !editingLocked else { return }; editorAction = EditorAction(operation: .wrap(prefix, suffix)) }
+    func suggestLink(_ title: String) { guard canInteractWithWorkspace, canOperateOnLoadedContent, !reading, !editingLocked else { return }; editorAction = EditorAction(operation: .wikiLink(title)); wikiQuery = nil }
+    func format(_ prefix: String, _ suffix: String) { guard canInteractWithWorkspace, canOperateOnLoadedContent, !reading, !editingLocked else { return }; editorAction = EditorAction(operation: .wrap(prefix, suffix)) }
     func importFiles() { addSource() }
     func linkSources() { addSource() }
     func addSource() {
-        guard canOperateOnLoadedContent, !isChoosingSource else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent, !isChoosingSource else { return }
         isChoosingSource = true
         let completionTicket = issueCompletionTicket(kind: .sourceLoading)
         let panel = NSOpenPanel()
@@ -3047,7 +3110,7 @@ struct AISuggestion: Identifiable, Sendable {
         return sourceAvailability[id] ?? sources.first(where: { $0.id == id })?.availabilityIssue ?? "Available"
     }
     func checkSourceAvailability(_ requested: [SourceRecord]) {
-        guard canOperateOnLoadedContent, let repository, let root else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent, let repository, let root else { return }
         for source in requested where !checkingSourceAvailability.contains(source.id) && !downloadingSources.contains(source.id) {
             checkingSourceAvailability.insert(source.id); sourceAvailabilityQueue.append(source)
         }
@@ -3112,7 +3175,7 @@ struct AISuggestion: Identifiable, Sendable {
         }.value
     }
     func createPageFromSource(_ source: SourceRecord, provider: AIProvider? = nil) {
-        guard canOperateOnLoadedContent, !downloadingSources.contains(source.id), !hasPendingCloudSummary,
+        guard canInteractWithWorkspace, canOperateOnLoadedContent, !downloadingSources.contains(source.id), !hasPendingCloudSummary,
               !generatingTopicPage, aiPageDraft == nil, aiPageSubmission == nil else { return }
         aiPageSourceID = source.id
         aiPageProviderOverride = provider
@@ -3227,8 +3290,8 @@ struct AISuggestion: Identifiable, Sendable {
         }
     }
     func renameSource(_ source: SourceRecord, title: String) {
+        guard canInteractWithWorkspace, canOperateOnLoadedContent else { return }
         cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate()
-        guard canOperateOnLoadedContent else { return }
         sourceNamingOverrides.insert(source.id); generatingSourceTitles.remove(source.id)
         let completionTicket = issueCompletionTicket(kind: .sourceLoading, targetID: source.id)
         Task {
@@ -3242,7 +3305,7 @@ struct AISuggestion: Identifiable, Sendable {
         }
     }
     func deleteSource(_ source: SourceRecord) {
-        guard canOperateOnLoadedContent else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent else { return }
         sourceNamingOverrides.insert(source.id); generatingSourceTitles.remove(source.id)
         downloadingSources.remove(source.id)
         sourceDownloadQueue.removeAll { $0.source.id == source.id }
@@ -3258,7 +3321,7 @@ struct AISuggestion: Identifiable, Sendable {
         }
     }
     func openSource(_ id: UUID?) {
-        guard canOperateOnLoadedContent else { return }
+        guard canInteractWithWorkspace, canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .sourceLoading, targetID: id)
         Task {
             await waitForSave()

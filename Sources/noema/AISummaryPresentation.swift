@@ -131,7 +131,9 @@ struct AISummaryOptionsCommands: View {
         if presentation.canCancel {
             Button("Cancel Summary") { model.cancelSummary(target: target) }
         }
-        SettingsLink { Text("Intelligence Settings…") }
+        Button("Intelligence Settings…") {
+            model.openSettings(category: .intelligence)
+        }
     }
 }
 
@@ -181,7 +183,9 @@ struct AISummaryProviderNotice: View {
         if let notice = model.aiProviderNotice {
             HStack(spacing: NoemaSpacing.sm) {
                 Label(notice, systemImage: "info.circle").font(NoemaTypography.metadata)
-                SettingsLink { Text("Intelligence Settings…") }
+                Button("Intelligence Settings…") {
+                    model.openSettings(category: .intelligence)
+                }
                 Button("Dismiss") { model.aiProviderNotice = nil }
                     .accessibilityLabel("Dismiss AI provider notice")
             }
