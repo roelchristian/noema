@@ -102,6 +102,8 @@ public struct EditorBlock: Identifiable, Codable, Equatable, Sendable {
 }
 
 public struct BlockDocument: Codable, Equatable, Sendable {
+    // Process-local evidence is intentionally excluded from the durable document envelope.
+    var annotationMutationEvidence: AnnotationMutationEvidence?
     public var extensions: PersistencePayload?
     public var unknownFields: [String: JSONValue] = [:]
     public var blocks: [EditorBlock]

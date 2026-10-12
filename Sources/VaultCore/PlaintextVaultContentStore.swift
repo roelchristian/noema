@@ -1,4 +1,6 @@
 import Foundation
+import Darwin
+import CryptoKit
 
 /// Filesystem adapter; it neither encodes content nor owns repository conflict-copy policy.
 /// Root access is scoped for each operation (the app may also retain a longer-lived scope).
@@ -30,6 +32,43 @@ public struct PlaintextVaultContentStore: VaultContentStore {
                         guard !FileManager.default.fileExists(atPath: url.path) else { throw VaultContentStoreError.alreadyExists(path) }
                         try self.rejectConflicts(url)
                         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+                        return true
+                    }
+                }
+            }
+        }
+    }
+
+    /// Local filesystem durability: F_FULLFSYNC for regular payloads, fsync for
+    /// directory entries. Unsupported filesystems fail closed; this is not proof
+    /// of arbitrary device power-loss behavior or cloud delivery.
+    func synchronizePublicationRoot() throws {
+        try withScope {
+            let fd = open(root.path, O_RDONLY | O_NOFOLLOW)
+            guard fd >= 0 else { throw VaultError.storage("Cannot open publication root.") }
+            defer { close(fd) }
+            guard fsync(fd) == 0 else { throw VaultError.storage("Publication root fsync failed.") }
+        }
+    }
+    public func synchronize(at path: String) throws {
+        try withScope {
+            let url = try checked(path)
+            let _: Bool = try coordinated { coordinator, error, access in
+                coordinator.coordinate(writingItemAt: url, options: [], error: error) { url in
+                    access {
+                        let url = try self.checked(url)
+                        try self.rejectConflicts(url)
+                        let fd = open(url.path, O_RDONLY | O_NOFOLLOW)
+                        guard fd >= 0 else { throw VaultError.storage("Cannot open publication for synchronization: \(errno)") }
+                        defer { close(fd) }
+                        var info = stat()
+                        guard fstat(fd, &info) == 0 else { throw VaultError.storage("Cannot inspect publication descriptor.") }
+                        let kind = info.st_mode & S_IFMT
+                        guard kind == S_IFREG || kind == S_IFDIR else { throw VaultContentStoreError.unsupportedItem(path) }
+                        guard fsync(fd) == 0 else { throw VaultError.storage("Publication fsync failed: \(errno)") }
+                        if kind == S_IFREG {
+                            guard fcntl(fd, F_FULLFSYNC) == 0 else { throw VaultError.storage("Publication full sync unsupported or failed: \(errno)") }
+                        }
                         return true
                     }
                 }
@@ -234,5 +273,110 @@ public struct PlaintextVaultContentStore: VaultContentStore {
             throw VaultContentStoreError.coordination(domain: error.domain, code: error.code, message: error.localizedDescription)
         }
         throw VaultContentStoreError.coordination(domain: NSCocoaErrorDomain, code: NSFileReadUnknownError, message: "File coordination did not grant access.")
+    }
+}
+
+
+/// Evidence can only be minted by the byte adapter after actual scoped/durable I/O.
+/// The closure rechecks retained evidence and the original at SQL execution/COMMIT.
+public struct CanonicalSourceByteReceipt: Sendable {
+    public let sourceID: UUID
+    public let vaultID: UUID
+    public let operationID: UUID
+    public let original: CanonicalSourceOriginal
+    private let check: @Sendable () throws -> Void
+    fileprivate init(sourceID: UUID, vaultID: UUID, operationID: UUID,
+                     original: CanonicalSourceOriginal, check: @escaping @Sendable () throws -> Void) {
+        self.sourceID = sourceID; self.vaultID = vaultID; self.operationID = operationID
+        self.original = original; self.check = check
+    }
+    public func validating(_ validation: @escaping @Sendable () throws -> Void) -> CanonicalSourceByteReceipt {
+        .init(sourceID: sourceID, vaultID: vaultID, operationID: operationID, original: original) {
+            try validation(); try self.check(); try validation()
+        }
+    }
+    func validate(source: CanonicalSource, vaultID: UUID, operationID: UUID) throws {
+        guard self.sourceID == source.id, self.vaultID == vaultID,
+              self.operationID == operationID, source.original == original else {
+            throw VaultError.invalid("Source byte receipt identity/descriptor mismatch.")
+        }
+        try check()
+    }
+}
+
+public extension PlaintextVaultContentStore {
+    func publishCanonicalOriginal(_ data: Data, metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        guard !metadata.isLinked else { throw VaultError.invalid("Linked originals are externally owned.") }
+        try validateOriginal(data, metadata: metadata)
+        let sourceDirectory = "Sources/" + metadata.id.uuidString.lowercased()
+        try ensurePublicationDirectory("Sources")
+        try createDirectory(at: sourceDirectory)
+        try synchronize(at: "Sources")
+        let path = sourceDirectory + "/" + metadata.storedFilename
+        // The occupied identity/path is never overwritten, including after failure.
+        try write(data, at: path, condition: .createOnly)
+        return try verifyCanonicalOriginal(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+
+    func verifyCanonicalOriginal(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        guard !metadata.isLinked else { throw VaultError.invalid("Imported original required.") }
+        let source = try CanonicalSource(metadata: metadata)
+        guard let original = source.original, let path = original.blobPath else { throw VaultError.invalid("Original descriptor missing.") }
+        try validateOriginal(read(at: path), metadata: metadata)
+        try synchronize(at: path)
+        try synchronize(at: "Sources/" + metadata.id.uuidString.lowercased())
+        try synchronize(at: "Sources")
+        return try retainedReceipt(source: source, vaultID: vaultID, operationID: operationID) {
+            try self.validateOriginal(self.read(at: path), metadata: metadata)
+        }
+    }
+
+    func verifyCanonicalLinked(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        guard let bookmark = metadata.linkedBookmark, !bookmark.isEmpty else { throw VaultError.invalid("Linked original bookmark required.") }
+        let source = try CanonicalSource(metadata: metadata)
+        // Read through the existing scoped, coordinated, read-only external adapter.
+        try validateOriginal(FileVaultRepository.readLinkedSource(bookmark), metadata: metadata)
+        return try retainedReceipt(source: source, vaultID: vaultID, operationID: operationID) {
+            try self.validateOriginal(FileVaultRepository.readLinkedSource(bookmark), metadata: metadata)
+        }
+    }
+
+    private func validateOriginal(_ data: Data, metadata: SourceMetadata) throws {
+        guard !metadata.storedFilename.isEmpty, metadata.storedFilename != ".", metadata.storedFilename != "..",
+              !metadata.storedFilename.contains("/"), !metadata.storedFilename.hasPrefix("."),
+              metadata.fileSize == data.count,
+              SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == metadata.sha256 else {
+            throw VaultError.invalid("Original identity, checksum or byte size failed verification.")
+        }
+    }
+
+    private func ensurePublicationDirectory(_ path: String) throws {
+        do { try createDirectory(at: path) }
+        catch VaultContentStoreError.alreadyExists {
+            guard case .directory = try snapshot(at: path) else { throw VaultContentStoreError.unsupportedItem(path) }
+        }
+    }
+
+    private func retainedReceipt(source: CanonicalSource, vaultID: UUID, operationID: UUID,
+                                 verify: @escaping @Sendable () throws -> Void) throws -> CanonicalSourceByteReceipt {
+        guard let original = source.original else { throw VaultError.invalid("Missing source original.") }
+        try ensurePublicationDirectory("Source Publications")
+        let path = "Source Publications/" + operationID.uuidString.lowercased() + ".json"
+        var object: [String: Any] = ["version": 1, "sourceID": source.id.uuidString, "vaultID": vaultID.uuidString,
+                                   "operationID": operationID.uuidString, "ownership": source.ownership.rawValue,
+                                   "checksum": original.checksum, "size": original.size]
+        object["blobPath"] = original.blobPath
+        object["linkedBookmark"] = original.linkedBookmark?.base64EncodedString()
+        let evidence = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        try write(evidence, at: path, condition: .createOnly)
+        try synchronize(at: path)
+        try synchronize(at: "Source Publications")
+        // Flush the root entry created for this recoverable evidence directory.
+        try synchronizePublicationRoot()
+        try verify()
+        return .init(sourceID: source.id, vaultID: vaultID, operationID: operationID, original: original) {
+            guard try self.read(at: path) == evidence else { throw VaultError.invalid("Source publication evidence changed.") }
+            try verify()
+        }
     }
 }

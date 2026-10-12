@@ -6,6 +6,10 @@ import Foundation
 /// Calls are synchronous so repository actors can own compound domain operations;
 /// callers must keep filesystem work off the main actor. No multi-call transaction is implied.
 public protocol VaultContentStore: Sendable {
+    func synchronize(at path: String) throws
+    func publishCanonicalOriginal(_ data: Data, metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt
+    func verifyCanonicalOriginal(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt
+    func verifyCanonicalLinked(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt
     func createDirectory(at path: String) throws
     func read(at path: String) throws -> Data
     /// Optional coordinated change evidence for a currently accessible, readable original.
@@ -59,6 +63,10 @@ public enum VaultContentStoreError: Error, Sendable, Equatable, LocalizedError {
 /// Providers without reliable change evidence conservatively return nil and reload originals.
 public extension VaultContentStore {
     func changeToken(at path: String) throws -> VaultContentChangeToken? { nil }
+    func synchronize(at path: String) throws { throw VaultContentStoreError.unsupportedItem(path) }
+    func publishCanonicalOriginal(_ data: Data, metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt { throw VaultContentStoreError.unsupportedItem("Canonical original publication") }
+    func verifyCanonicalOriginal(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt { throw VaultContentStoreError.unsupportedItem("Canonical original verification") }
+    func verifyCanonicalLinked(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt { throw VaultContentStoreError.unsupportedItem("Canonical linked verification") }
 }
 
 public struct VaultContentChangeToken: Sendable, Equatable {

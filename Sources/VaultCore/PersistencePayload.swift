@@ -221,6 +221,7 @@ extension BlockDocument {
     /// Bare replacements cannot safely infer anchor survival. Keep original evidence.
     public func preparingAnnotationsForPersistence(comparedTo previous: BlockDocument) -> BlockDocument {
         guard case .array(let records) = extensions?.properties["annotations"] else { return self }
+        if let proof = annotationMutationEvidence, proof.before == previous.annotationEvidenceDigest(), proof.after == annotationEvidenceDigest() { return self }
         var copy = self
         copy.extensions?.properties["annotations"] = .array(records.map { value in
             guard case .object(var fields) = value,
@@ -371,5 +372,148 @@ extension BlockDocument {
         try c.encode(unsupportedVersion, forKey: .init("unsupportedVersion"))
         try c.encodeIfPresent(originalSource, forKey: .init("originalSource"))
         try encodeUnknownFields(unknownFields, known: Self.persistenceKeys, into: &c)
+    }
+}
+
+struct AnnotationMutationEvidence: Equatable, Sendable {
+    var before: String
+    var after: String
+}
+
+extension BlockDocument {
+    public static func == (lhs: BlockDocument, rhs: BlockDocument) -> Bool {
+        lhs.extensions == rhs.extensions && lhs.unknownFields == rhs.unknownFields && lhs.blocks == rhs.blocks
+            && lhs.trailingNewline == rhs.trailingNewline && lhs.recoveredMetadata == rhs.recoveredMetadata
+            && lhs.unsupportedVersion == rhs.unsupportedVersion && lhs.originalSource == rhs.originalSource
+    }
+    func annotationEvidenceDigest() -> String {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return (try? encoder.encode(self)).map(digest) ?? "invalid"
+    }
+    mutating func recordAnnotationMutation(from previous: BlockDocument) {
+        let baseline = previous.annotationMutationEvidence.flatMap { $0.after == previous.annotationEvidenceDigest() ? $0.before : nil }
+        annotationMutationEvidence = .init(before: baseline ?? previous.annotationEvidenceDigest(), after: annotationEvidenceDigest())
+    }
+    private func annotationFields(_ annotation: InlineAnnotation, preserving original: JSONValue) -> JSONValue {
+        guard case .object(var fields) = original,
+              let encoded = try? JSONEncoder().encode(annotation),
+              case .object(let changed) = try? JSONDecoder().decode(JSONValue.self, from: encoded) else { return original }
+        for key in ["id", "blockID", "target", "disposition", "modifiedAt", "payload", "targetEntity"] {
+            if let value = changed[key] {
+                if key == "target", case .object(let updates) = value, case .object(var old) = fields[key] {
+                    old.merge(updates) { _, new in new }; fields[key] = .object(old)
+                } else { fields[key] = value }
+            } else { fields.removeValue(forKey: key) }
+        }
+        return .object(fields)
+    }
+    private func verified(_ annotation: InlineAnnotation, in previous: BlockDocument) -> Bool {
+        guard let owner = previous.block(annotation.blockID), annotation.target.version == 1,
+              annotation.target.end >= annotation.target.start else { return false }
+        let range = NSRange(location: annotation.target.start, length: annotation.target.end - annotation.target.start)
+        return InlineAnnotationTarget.validRange(range, in: owner.text)
+            && (owner.text as NSString).substring(with: range) == annotation.target.quote
+            && annotation.target.digest == InlineAnnotationTarget.evidence(quote: annotation.target.quote, revision: annotation.expectedRevision)
+    }
+    private func retarget(_ annotation: inout InlineAnnotation, blockID: UUID, start: Int, end: Int) {
+        guard let owner = block(blockID), let target = try? InlineAnnotationTarget(text: owner.text, range: NSRange(location: start, length: end - start), revision: annotation.expectedRevision) else {
+            annotation.disposition = .stale; return
+        }
+        var updatedTarget = target
+        updatedTarget.startAffinity = annotation.target.startAffinity; updatedTarget.endAffinity = annotation.target.endAffinity
+        annotation.blockID = blockID; annotation.target = updatedTarget; annotation.modifiedAt = Date()
+    }
+    mutating func transformAnnotations(for command: BlockMutation, owner: UUID, cursor: BlockCursor, previous: BlockDocument) {
+        guard case .array(let records) = extensions?.properties["annotations"] else { return }
+        var transformed: [JSONValue] = []
+        var duplicateIDs: [UUID: UUID] = [:]
+        if case .duplicate = command, let source = previous.block(owner), let copy = block(cursor.id) {
+            func pair(_ source: EditorBlock, _ copy: EditorBlock) {
+                duplicateIDs[source.id] = copy.id
+                for (a, b) in zip(source.children, copy.children) { pair(a, b) }
+            }
+            pair(source, copy)
+        }
+        for value in records {
+            guard var annotation = try? JSONDecoder().decode(InlineAnnotation.self, from: JSONEncoder().encode(value)) else { transformed.append(value); continue }
+            if let copiedBlock = duplicateIDs[annotation.blockID] {
+                transformed.append(value)
+                let originalID = annotation.id, originalBlock = annotation.blockID
+                annotation.id = UUID(); annotation.blockID = copiedBlock
+                annotation.createdAt = Date(); annotation.modifiedAt = annotation.createdAt
+                var payload = annotation.payload ?? .init()
+                payload.properties["copiedFromAnnotationID"] = .string(originalID.uuidString)
+                payload.properties["copiedFromBlockID"] = .string(originalBlock.uuidString)
+                // No designation currently grants semantic-target copying authority.
+                if let target = annotation.targetEntity, let bytes = try? JSONEncoder().encode(target), let value = try? JSONDecoder().decode(JSONValue.self, from: bytes) { payload.properties["copiedTargetEntity"] = value }
+                annotation.targetEntity = nil; annotation.payload = payload
+                var copy = annotationFields(annotation, preserving: value)
+                if case .object(var fields) = copy, let data = try? JSONEncoder().encode(annotation.createdAt), let created = try? JSONDecoder().decode(JSONValue.self, from: data) { fields["createdAt"] = created; copy = .object(fields) }
+                transformed.append(copy); continue
+            }
+            guard annotation.disposition == .resolved else { transformed.append(value); continue }
+            guard verified(annotation, in: previous) else { annotation.disposition = .stale; transformed.append(annotationFields(annotation, preserving: value)); continue }
+            switch command {
+            case .split(let requested) where annotation.blockID == owner && cursor.id != owner:
+                let offset = min(max(requested, 0), previous.block(owner)!.utf16Count)
+                if annotation.target.start >= offset && (annotation.target.start != annotation.target.end || annotation.target.startAffinity == .after) {
+                    retarget(&annotation, blockID: cursor.id, start: annotation.target.start - offset, end: annotation.target.end - offset)
+                } else if annotation.target.end <= offset {
+                    retarget(&annotation, blockID: owner, start: annotation.target.start, end: annotation.target.end)
+                } else { annotation.disposition = .stale }
+            case .mergeBackward where cursor.id != owner && annotation.blockID == owner:
+                retarget(&annotation, blockID: cursor.id, start: annotation.target.start + cursor.offset, end: annotation.target.end + cursor.offset)
+            default:
+                if block(annotation.blockID) == nil { annotation.disposition = .deleted }
+                else if previous.block(annotation.blockID)?.text != block(annotation.blockID)?.text {
+                    // Only a merge extends the survivor while preserving its original prefix.
+                    if case .mergeBackward = command, annotation.blockID == cursor.id {
+                        retarget(&annotation, blockID: cursor.id, start: annotation.target.start, end: annotation.target.end)
+                    } else { annotation.disposition = .stale }
+                }
+            }
+            transformed.append(annotationFields(annotation, preserving: value))
+        }
+        extensions?.properties["annotations"] = .array(transformed)
+        recordAnnotationMutation(from: previous)
+    }
+
+    /// Exact revision-checked text editing; offsets address concatenated UTF-16 text
+    /// and must be extended-grapheme boundaries. Replacement intersections stale.
+    public mutating func replaceText(in blockID: UUID, range: NSRange, with replacement: String, expectedRevision: BlockStoreRevision) throws {
+        guard !unsupportedVersion, let owner = block(blockID), InlineAnnotationTarget.validRange(range, in: owner.text) else { throw PersistencePayloadError.invalidAnnotation }
+        try validateWritablePayloads()
+        let previous = self
+        let values: [JSONValue]
+        if case .array(let records) = extensions?.properties["annotations"] { values = records } else { values = [] }
+        for value in values {
+            let annotation = try JSONDecoder().decode(InlineAnnotation.self, from: JSONEncoder().encode(value))
+            if annotation.disposition == .resolved, annotation.expectedRevision != expectedRevision.token { throw PersistencePayloadError.invalidAnnotation }
+        }
+        let suffixStart = range.location + range.length
+        let inserted = replacement.isEmpty ? [] : [RichRun(replacement)]
+        update(blockID) { block in
+            block.runs = owner.slicing(NSRange(location: 0, length: range.location)) + inserted + owner.slicing(NSRange(location: suffixStart, length: owner.utf16Count - suffixStart))
+        }
+        let delta = replacement.utf16.count - range.length
+        let transformedValues = try values.map { value in
+            var annotation = try JSONDecoder().decode(InlineAnnotation.self, from: JSONEncoder().encode(value))
+            guard annotation.blockID == blockID, annotation.disposition == .resolved else { return value }
+            var start = annotation.target.start, end = annotation.target.end
+            if range.length == 0 {
+                if range.location < start || (range.location == start && annotation.target.startAffinity == .after) { start += delta }
+                if range.location < end || (range.location == end && annotation.target.endAffinity == .after) { end += delta }
+                if start > end { end = start }
+                retarget(&annotation, blockID: blockID, start: start, end: end)
+            } else if suffixStart <= start {
+                retarget(&annotation, blockID: blockID, start: start + delta, end: end + delta)
+            } else if range.location >= end {
+                retarget(&annotation, blockID: blockID, start: start, end: end)
+            } else { annotation.disposition = .stale }
+            return annotationFields(annotation, preserving: value)
+        }
+        extensions?.properties["annotations"] = .array(transformedValues)
+        originalSource = nil
+        recordAnnotationMutation(from: previous)
     }
 }

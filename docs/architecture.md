@@ -31,10 +31,10 @@ schema, manifest, migration or creation default changes occur in STOR.01.
 
 STOR02A adds an internal explicit schema-3 staging foundation and bounded
 versioned JSON preservation in the existing domain/store. Its compound source/page
-API currently admits unavailable source identities only. Production expanded
-admission stays closed until receipt-backed imported/linked publication and all
-metadata lifecycle paths are integrated; existing format 1/2 behavior and creation
-defaults remain unchanged. See the [current foundation and remaining gates](contracts/storage-boundary.md#explicit-staging-foundation-stor02a).
+API admits receipt-verified imported and linked sources in explicitly initialized
+canonical repositories. Schema-2-to-3 authority-changing migration and final
+acceptance remain incomplete; existing format 1/2 behavior and creation defaults
+remain unchanged. See the [current foundation and remaining gates](contracts/storage-boundary.md#canonical-persistence-implementation-stor02a).
 
 ## Where things live
 

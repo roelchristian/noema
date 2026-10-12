@@ -49,7 +49,7 @@ public enum SQLiteVaultMigration {
         guard manifest.isSupported else { throw VaultError.invalid("This vault uses an unsupported format version.") }
         if manifest.storageMode == .sqliteBlocks {
             try requirePublishedDatabase(root: root)
-            let database = try storageProvider.makeBlockStore(url: root.appendingPathComponent(VaultManifest.sqliteDatabasePath), sessionLease: sessionLease, accessGate: accessGate, createIfMissing: false)
+            let database = try storageProvider.makeBlockStore(url: root.appendingPathComponent(VaultManifest.sqliteDatabasePath), sessionLease: sessionLease, accessGate: accessGate, createIfMissing: false, manifest: manifest)
             let count = try await database.allPages().count
             try await database.close()
             return SQLiteVaultMigrationResult(manifest: manifest, importedPageCount: count, backupPath: nil)

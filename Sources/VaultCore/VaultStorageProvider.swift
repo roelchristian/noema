@@ -14,7 +14,15 @@ public struct VaultStorageProvider: Sendable {
     /// Actor construction remains in the same policy as byte-store selection.
     /// An existing page-only vault must never infer expanded authority from tables.
     func makeBlockStore(url: URL, sessionLease: VaultSessionLease?, accessGate: VaultAccessGate?,
-                        createIfMissing: Bool = true) throws -> SQLiteBlockStore {
+                        createIfMissing: Bool = true, manifest: VaultManifest? = nil) throws -> SQLiteBlockStore {
+        if let manifest, manifest.canonicalStorage {
+            guard manifest.isSupported, let declaration = manifest.storage,
+                  let sessionLease, let accessGate else { throw VaultError.invalid("Canonical admission requires matching session authority.") }
+            try SQLiteVaultMigration.requireLocalRoot(url.deletingLastPathComponent())
+            return try SQLiteBlockStore(url: url, sessionLease: sessionLease, accessGate: accessGate,
+                canonicalVaultID: manifest.id, requiredCapabilities: declaration.requiredCapabilities,
+                createIfMissing: createIfMissing)
+        }
         if let sessionLease, let accessGate {
             return try SQLiteBlockStore(url: url, sessionLease: sessionLease,
                                         accessGate: accessGate, createIfMissing: createIfMissing)

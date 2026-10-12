@@ -424,6 +424,69 @@ public actor SQLiteBlockStore: BlockStore {
             return try persist(document, pageID: pageID, condition: .replace(expected: expected), metadata: nil)
         }
     }
+    /// Capturing preservation data never grants it authority over a live target.
+    public func preserveConflict(_ conflict: CanonicalConflict,
+                                 expectedVaultRevision: BlockStoreRevision,
+                                 validating publication: (@Sendable () throws -> Void)? = nil) throws -> CanonicalConflictSnapshot {
+        try requireCanonical()
+        guard conflict.payloadVersion == 1, !conflict.preservedPayload.isEmpty,
+              conflict.preservedPayload.count <= 1_048_576 else {
+            throw VaultError.invalid("Unsupported or oversized conflict payload.")
+        }
+        return try transaction(validating: publication) {
+            guard try vaultRevision() == expectedVaultRevision else { throw VaultError.conflict("Canonical collection changed.") }
+            let revision = BlockStoreRevision(token: Data(UUID().uuidString.utf8))
+            try run("INSERT INTO conflicts(id,target_id,target_kind,base_revision,payload_version,preserved_payload,created_at,disposition,revision) VALUES(?,?,?,?,?,?,?,?,?)",
+                    [.text(conflict.id.uuidString), .text(conflict.targetID.uuidString), .text(conflict.targetKind.rawValue),
+                     conflict.baseRevision.map { .blob($0.token) } ?? .null, .integer(Int64(conflict.payloadVersion)),
+                     .blob(conflict.preservedPayload), .real(Date().timeIntervalSince1970), .text("pending"), .blob(revision.token)])
+            _ = try advanceVaultRevision()
+            return try conflictInTransaction(id: conflict.id)
+        }
+    }
+    public func conflictSnapshot(id: UUID) throws -> CanonicalConflictSnapshot {
+        try requireCanonical()
+        return try readTransaction { try conflictInTransaction(id: id) }
+    }
+    private func conflictInTransaction(id: UUID) throws -> CanonicalConflictSnapshot {
+        let statement = try statement("SELECT target_id,target_kind,base_revision,payload_version,preserved_payload,created_at,disposition,revision FROM conflicts WHERE id=?", [.text(id.uuidString)])
+        defer { sqlite3_finalize(statement) }
+        let status = sqlite3_step(statement)
+        if status == SQLITE_DONE { throw VaultError.unavailable("Canonical conflict missing.") }
+        guard status == SQLITE_ROW, let targetID = UUID(uuidString: text(statement, 0)),
+              let kind = CanonicalEntityKind(rawValue: text(statement, 1)),
+              let disposition = CanonicalConflictDisposition(rawValue: text(statement, 6)),
+              sqlite3_column_int(statement, 3) == 1 else { throw VaultError.invalid("Unsupported conflict record.") }
+        let payload = blob(statement, 4)
+        guard !payload.isEmpty, payload.count <= 1_048_576 else { throw VaultError.invalid("Invalid conflict preservation payload.") }
+        let conflict = CanonicalConflict(id: id, targetID: targetID, targetKind: kind,
+            baseRevision: sqlite3_column_type(statement, 2) == SQLITE_NULL ? nil : .init(token: blob(statement, 2)),
+            preservedPayload: payload)
+        return .init(conflict: conflict, createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5)),
+                     disposition: disposition, revision: .init(token: blob(statement, 7)))
+    }
+    /// Target and disposition share one revision-checked transaction. Retention
+    /// never removes unique bytes, and unavailable targets can remain retained.
+    public func disposeConflict(id: UUID, expected: BlockStoreRevision,
+                                disposition: CanonicalConflictDisposition,
+                                page: CanonicalPagePublication? = nil,
+                                validating publication: (@Sendable () throws -> Void)? = nil) throws -> CanonicalConflictSnapshot {
+        try requireCanonical()
+        guard disposition != .pending else { throw VaultError.invalid("Choose a conflict disposition.") }
+        return try transaction(validating: publication) {
+            let current = try conflictInTransaction(id: id)
+            guard current.revision == expected else { throw VaultError.conflict("Conflict revision changed.") }
+            if disposition == .pagePublished {
+                guard let page, current.conflict.targetKind == .page,
+                      page.record.id == current.conflict.targetID,
+                      case .replace = page.condition else { throw VaultError.invalid("Conflict publication requires its captured page target revision.") }
+                _ = try savePageInTransaction(record: page.record, document: page.document, condition: page.condition)
+            } else if page != nil { throw VaultError.invalid("Retaining a conflict cannot publish a page.") }
+            let revision = BlockStoreRevision(token: Data(UUID().uuidString.utf8))
+            try run("UPDATE conflicts SET disposition=?,revision=? WHERE id=?", [.text(disposition.rawValue), .blob(revision.token), .text(id.uuidString)])
+            return try conflictInTransaction(id: id)
+        }
+    }
     private func requireCanonical() throws {
         guard canonicalVaultID != nil else { throw VaultError.invalid("Canonical metadata requires explicitly admitted schema 3.") }
     }
@@ -446,26 +509,49 @@ public actor SQLiteBlockStore: BlockStore {
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_DONE else { throw VaultError.conflict("Deleted canonical identities cannot be reused.") }
     }
+    /// Explicit staging migration preserves the old page revision/lifecycle; live
+    /// admitted stores cannot invoke this authority-changing import.
+    func importPreservedPage(record: NoteRecord, document: BlockDocument, revision: BlockStoreRevision,
+                             trashed: Bool, trashedAt: Date?) throws {
+        try requireCanonical()
+        guard sessionLease == nil else { throw VaultError.invalid("Preserved import requires explicit staging.") }
+        try transaction {
+            _ = try savePageInTransaction(record: record, document: document, condition: .createOnly)
+            try run("UPDATE pages SET revision=?,trashed=?,trashed_at=? WHERE id=?", [.blob(revision.token), .integer(trashed ? 1 : 0), trashedAt.map { .real($0.timeIntervalSince1970) } ?? .null, .text(record.id.uuidString)])
+        }
+    }
+    public func trashedAt(pageID: UUID) throws -> Date? {
+        try readTransaction {
+            let query = try statement("SELECT trashed_at FROM pages WHERE id=? AND trashed=1", [.text(pageID.uuidString)])
+            defer { sqlite3_finalize(query) }
+            let status = sqlite3_step(query)
+            guard status == SQLITE_ROW else { if status == SQLITE_DONE { return nil }; throw failure() }
+            return sqlite3_column_type(query, 0) == SQLITE_NULL ? nil : Date(timeIntervalSince1970: sqlite3_column_double(query, 0))
+        }
+    }
     public func sourceSnapshot(id: UUID) throws -> CanonicalSourceSnapshot {
         try requireCanonical()
         return try readTransaction { try sourceInTransaction(id: id) }
     }
     private func sourceInTransaction(id: UUID) throws -> CanonicalSourceSnapshot {
-        let statement = try statement("SELECT revision,ownership,payload_version,required_features,metadata,trashed,trashed_at FROM sources WHERE id=?", [.text(id.uuidString)])
+        let statement = try statement("SELECT revision,ownership,payload_version,required_features,metadata,trashed,trashed_at,blob_path,checksum,byte_size,linked_reference FROM sources WHERE id=?", [.text(id.uuidString)])
         defer { sqlite3_finalize(statement) }
         let status = sqlite3_step(statement)
         if status == SQLITE_DONE { throw VaultError.unavailable("Canonical source identity missing.") }
         guard status == SQLITE_ROW, let ownership = CanonicalSourceOwnership(rawValue: text(statement, 1)) else { throw failure() }
-        let source = CanonicalSource(id: id, ownership: ownership, metadata: blob(statement, 4), payloadVersion: Int(sqlite3_column_int(statement, 2)), requiredFeatures: try decoder.decode([String].self, from: blob(statement, 3)))
+        var source = CanonicalSource(id: id, ownership: ownership, metadata: blob(statement, 4), payloadVersion: Int(sqlite3_column_int(statement, 2)), requiredFeatures: try decoder.decode([String].self, from: blob(statement, 3)))
+        if ownership != .unavailable {
+            guard sqlite3_column_type(statement, 8) != SQLITE_NULL, sqlite3_column_type(statement, 9) != SQLITE_NULL else { throw VaultError.invalid("Missing canonical original descriptor.") }
+            source.original = .init(blobPath: sqlite3_column_type(statement, 7) == SQLITE_NULL ? nil : text(statement, 7),
+                                    checksum: text(statement, 8), size: Int(sqlite3_column_int64(statement, 9)),
+                                    linkedBookmark: sqlite3_column_type(statement, 10) == SQLITE_NULL ? nil : blob(statement, 10))
+        }
         try source.validateWritable()
         return .init(source: source, revision: .init(token: blob(statement, 0)), trashed: sqlite3_column_int(statement, 5) == 1,
                      trashedAt: sqlite3_column_type(statement, 6) == SQLITE_NULL ? nil : Date(timeIntervalSince1970: sqlite3_column_double(statement, 6)))
     }
     private func persistSource(_ source: CanonicalSource, condition: BlockStoreWriteCondition) throws -> BlockStoreRevision {
         try source.validateWritable()
-        // Missing immutable-byte flush/rename or scoped linked-access evidence must
-        // never be represented by a caller-provided checksum as successful receipt.
-        guard source.ownership == .unavailable else { throw VaultError.invalid("Imported and linked publication requires verified durability/access receipts; this foundation accepts unavailable identities only.") }
         switch condition {
         case .createOnly:
             try rejectTombstoned(source.id, kind: .source)
@@ -473,7 +559,7 @@ public actor SQLiteBlockStore: BlockStore {
             guard sqlite3_step(statement) == SQLITE_DONE else { throw VaultError.conflict("Canonical source already exists.") }
         case .replace(let expected):
             let existing = try sourceInTransaction(id: source.id)
-            guard existing.revision == expected, existing.source.ownership == source.ownership else { throw VaultError.conflict("Canonical source revision or ownership changed.") }
+            guard existing.revision == expected, existing.source.ownership == source.ownership, existing.source.original == source.original else { throw VaultError.conflict("Canonical source revision or ownership changed.") }
         }
         let revision = BlockStoreRevision(token: Data(UUID().uuidString.utf8))
         switch condition {
@@ -482,7 +568,22 @@ public actor SQLiteBlockStore: BlockStore {
         case .replace:
             try run("UPDATE sources SET revision=?,payload_version=?,required_features=?,metadata=? WHERE id=?", [.blob(revision.token), .integer(Int64(source.payloadVersion)), .blob(try encoder.encode(source.requiredFeatures)), .blob(source.metadata), .text(source.id.uuidString)])
         }
+        try run("UPDATE sources SET blob_path=?,checksum=?,byte_size=?,linked_reference=? WHERE id=?", [source.original?.blobPath.map { .text($0) } ?? .null, source.original.map { .text($0.checksum) } ?? .null, source.original.map { .integer(Int64($0.size)) } ?? .null, source.original?.linkedBookmark.map { .blob($0) } ?? .null, .text(source.id.uuidString)])
         return revision
+    }
+    public func sourceSnapshots(includeTrashed: Bool = false) throws -> [CanonicalSourceSnapshot] {
+        try requireCanonical()
+        return try readTransaction {
+            let query = try statement(includeTrashed ? "SELECT id FROM sources ORDER BY id" : "SELECT id FROM sources WHERE trashed=0 ORDER BY id")
+            defer { sqlite3_finalize(query) }
+            var result: [CanonicalSourceSnapshot] = []
+            while true {
+                let status = sqlite3_step(query); if status == SQLITE_DONE { break }
+                guard status == SQLITE_ROW, let id = UUID(uuidString: text(query, 0)) else { throw failure() }
+                result.append(try sourceInTransaction(id: id))
+            }
+            return result
+        }
     }
     private func replaceSourceLinks(pageID: UUID, sourceIDs: [UUID]) throws {
         guard Set(sourceIDs).count == sourceIDs.count else { throw VaultError.invalid("Duplicate source relationship.") }
@@ -521,9 +622,18 @@ public actor SQLiteBlockStore: BlockStore {
     public func publishSourceAndPage(source: CanonicalSource, condition: BlockStoreWriteCondition,
                                      page: CanonicalPagePublication? = nil, operationID: UUID,
                                      expectedVaultRevision: BlockStoreRevision,
+                                     byteReceipt: CanonicalSourceByteReceipt? = nil,
                                      validating publication: (@Sendable () throws -> Void)? = nil) throws -> CanonicalPublicationOutcome {
         try requireCanonical()
-        return try transaction(validating: publication) {
+        let validateBytes: @Sendable () throws -> Void = {
+            try publication?()
+            if source.ownership != .unavailable {
+                guard let byteReceipt, let vaultID = self.canonicalVaultID else { throw VaultError.invalid("Verified source receipt required.") }
+                try byteReceipt.validate(source: source, vaultID: vaultID, operationID: operationID)
+            } else if source.original != nil { throw VaultError.invalid("Unavailable identity cannot invent original bytes.") }
+        }
+        return try transaction(validating: validateBytes) {
+            try validateBytes()
             guard try operationInTransaction(id: operationID) == nil else { throw VaultError.conflict("Operation already committed; inspect its outcome.") }
             guard try vaultRevision() == expectedVaultRevision else { throw VaultError.conflict("Canonical collection changed.") }
             let sourceRevision = try persistSource(source, condition: condition)
@@ -564,7 +674,7 @@ public actor SQLiteBlockStore: BlockStore {
             case .source:
                 let current = try sourceInTransaction(id: id)
                 guard current.revision == expected else { throw VaultError.conflict("Source revision changed.") }
-                guard current.trashed, current.source.ownership == .unavailable else { throw VaultError.invalid("Only a trashed unavailable source can be purged without a preservation receipt.") }
+                guard current.trashed else { throw VaultError.invalid("Only a trashed source can be purged; original bytes remain preserved.") }
             }
             try run("INSERT INTO tombstones(entity_id,entity_kind,last_revision,deleted_at,disposition) VALUES(?,?,?,?,?)", [.text(id.uuidString), .text(kind.rawValue), .blob(expected.token), .real(Date().timeIntervalSince1970), .text("purged")])
             try run(kind == .page ? "DELETE FROM pages WHERE id=?" : "DELETE FROM sources WHERE id=?", [.text(id.uuidString)])
