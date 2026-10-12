@@ -16,7 +16,10 @@ import VaultCore
         }
         guard let target = record.target, let model else { return "No document target" }
         switch target.type {
-        case .page: return model.notes.first { $0.id == target.id }?.title ?? "Unavailable page"
+        case .page:
+            if let page = model.notes.first(where: { $0.id == target.id }) { return page.title }
+            if record.action == .composePage, record.outcome == .suggested || record.status == .running { return "Page creation draft" }
+            return "Unavailable page"
         case .source: return model.sources.first { $0.id == target.id }?.title ?? "Unavailable source"
         }
     }
