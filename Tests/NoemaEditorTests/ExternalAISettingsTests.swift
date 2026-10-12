@@ -97,8 +97,8 @@ struct ExternalAISettingsTests {
         #expect(loaded.reasoningEffort == .low)
     }
 
-    @Test @MainActor
-    func debugModeIsTransientAndEndsWithTheVaultSession() throws {
+    @Test(arguments: ["locking", "close", "switch", "reopen"]) @MainActor
+    func debugModeIsTransientAndEndsWithTheVaultSession(transition: String) throws {
         let domain = "noema-external-ai-debug-\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
@@ -120,7 +120,13 @@ struct ExternalAISettingsTests {
         service.setDebugMode(false)
         #expect(!service.debugModeEnabled)
         service.setDebugMode(true)
-        gate.updateState(.closed)
+        switch transition {
+        case "locking": gate.updateState(.locking(session))
+        case "close": gate.updateState(.closed)
+        case "switch": gate.updateState(.open(VaultSession(vaultID: UUID(), root: URL(fileURLWithPath: "/tmp/debug-settings-other"), generation: 2)))
+        default: gate.updateState(.open(VaultSession(vaultID: session.vaultID, root: session.root, generation: 2)))
+        }
+        #expect(service.canEnableDebugMode == (transition == "switch" || transition == "reopen"))
         #expect(!service.debugModeEnabled)
         #expect(service.debugReport == nil)
     }

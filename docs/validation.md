@@ -194,6 +194,27 @@ reader closing and availability; this does not sign off interrupted cleanup conf
 | Partial deletion / TrashAdapterTests `partialFilesystemDeletionReportsFailureAndPreservesRemainingRecoverableOriginal` | Empty Trash reports injected failure after metadata deletion; surviving original remains exact on reopen. Damaged record cannot restore; retention preserves bytes and metadata needs repair. |
 | Recovery / [WikiPageAdapterTests](../Tests/VaultCoreTests/WikiPageAdapterTests.swift): `racePreservesCanonicalAndRecoveryDraft(deleted:)`, VaultSaveQuiescenceTests | External canonical edits/deletions remain; conflicts and reopened journals retain exact draft identity/body. Durable saves finish, cancelled pre-commit work preserves canonical bytes and recovery content. |
 
+## Sensitive-data persistence acceptance (D04)
+
+The [classified surface inventory and lifecycle policy](contracts/storage-boundary.md)
+accounts for canonical content, preservation copies, app-local derivatives, transient
+presentation, diagnostics, preferences, exported metadata and external ownership.
+Plaintext v1 remains supported; this acceptance does not establish encryption.
+
+| Boundary | Automated evidence and disposition |
+| --- | --- |
+| Search actor admission and retained references | [VaultTests](../Tests/VaultCoreTests/VaultTests.swift) checks construction without a required lease before local bytes are created and rejects stale actor access after lock and reopening. SQLite owns WAL/SHM; existing plaintext files remain. |
+| Recovery, staging, trash and previews | [RecoveryStoreIsolationTests](../Tests/VaultCoreTests/RecoveryStoreIsolationTests.swift), [SourceAdapterTests](../Tests/VaultCoreTests/SourceAdapterTests.swift), [TrashAdapterTests](../Tests/VaultCoreTests/TrashAdapterTests.swift), and [SourcePreviewDirectoryTests](../Tests/VaultCoreTests/SourcePreviewDirectoryTests.swift) cover damaged/foreign entries, preservation on injected failure and owned preview cleanup. [VaultCleanupFailureTests](../Tests/VaultCoreTests/VaultCleanupFailureTests.swift) and [VaultSaveQuiescenceTests](../Tests/VaultCoreTests/VaultSaveQuiescenceTests.swift) retain failed/unknown import staging across lock and reopening; only tracked cancellation permits disposal. Unique drafts and conflicted copies must remain recoverable. |
+| AI persistence and disclosure | [ExternalAIAdversarialTests](../Tests/ExternalAITests/ExternalAIAdversarialTests.swift), [AIActivityPrivacyTests](../Tests/NoemaEditorTests/AIActivityPrivacyTests.swift), and [AIActivityTests](../Tests/VaultCoreTests/AIActivityTests.swift) enforce request/publication authority, metadata-only history and separate retention. Already transmitted content remains externally owned. |
+| Presentation and diagnostics | [ExternalAISettingsTests](../Tests/NoemaEditorTests/ExternalAISettingsTests.swift) and [LifecycleReconstructionRaceTests](../Tests/NoemaEditorTests/LifecycleReconstructionRaceTests.swift) cover session invalidation. Text, HTML and Quick Look readers revalidate authority after caller predicates and the final asynchronous snapshot step before presentation. Debug reports are bounded, opt-in and session-only. |
+
+E-series must protect every classified plaintext copy, including SQLite/WAL/SHM,
+preservation drafts, retained activity identities, staging and previews, before claiming
+encrypted-vault confidentiality. Ordinary deletion and Swift object release do not
+prove secure erasure. Standing native authentication, accessibility, provider/iCloud
+and process-crash durability checks above remain pending; deterministic failure
+injection does not close those acceptance gaps. PRs record actual command outcomes.
+
 ## Current product baselines
 
 - Vault format v1 preserves Markdown, unknown frontmatter, stable persisted UUIDs,

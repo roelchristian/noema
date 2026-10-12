@@ -49,7 +49,7 @@ final class ExternalAIService {
         if let consentObservation { accessGate.removeSessionInvalidator(consentObservation) }
     }
 
-    var canEnableDebugMode: Bool { _ = debugRefresh; return accessGate.currentLease != nil }
+    var canEnableDebugMode: Bool { _ = debugRefresh; return accessGate.currentState.phase == .open }
     var debugModeEnabled: Bool { _ = debugRefresh; return debugDiagnostics.isEnabled }
     var debugReport: String? { _ = debugRefresh; return debugDiagnostics.report }
 

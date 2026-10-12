@@ -79,7 +79,7 @@ struct RecoveryStoreIsolationTests {
         #expect(try Data(contentsOf: corrupt) == original)
     }
 
-    @Test func savingSamePagePreservesDamagedBytesInVisibleSeparateEntry() async throws {
+    @Test(arguments: [false, true]) func savingSamePagePreservesDamagedBytesInVisibleSeparateEntry(identityMismatch: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("recovery-collision-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -87,8 +87,13 @@ struct RecoveryStoreIsolationTests {
         let note = try await repository.create(title: "Page", body: "Original")
         let directory = root.appendingPathComponent("Drafts")
         let recovery = try RecoveryStore(unguardedTestingDirectory: directory)
-        let original = Data("{truncated unsaved work".utf8)
+        var foreignDraft = DraftRecord(note: note, title: "Other page", body: "Only foreign unsaved copy", tags: [])
+        foreignDraft.note.id = UUID()
+        let original = identityMismatch ? try JSONEncoder().encode(foreignDraft) : Data("{truncated unsaved work".utf8)
         try original.write(to: directory.appendingPathComponent(note.id.uuidString + ".json"))
+        // Both damaged JSON and a valid draft for a different page are preservation data.
+        await #expect(throws: VaultError.self) { try await recovery.remove(note.id) }
+        #expect(try Data(contentsOf: directory.appendingPathComponent(note.id.uuidString + ".json")) == original)
         try await recovery.store(DraftRecord(note: note, title: note.title, body: "New unsaved work", tags: []))
         let listing = try await recovery.listing()
         #expect(listing.drafts.first?.body == "New unsaved work")

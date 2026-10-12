@@ -70,6 +70,9 @@ import VaultCore
                 scoped?.stopAccessingSecurityScopedResource()
                 return
             }
+            if let gated = contentStore as? GatedVaultContentStore {
+                try gated.validateAccess(operation: "SourceReader.presentContent")
+            }
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.title = source.title; window.isReleasedWhenClosed = false
             let ext = url.pathExtension.lowercased()
@@ -101,6 +104,11 @@ import VaultCore
                         scoped?.stopAccessingSecurityScopedResource()
                         return
                     }
+                }
+                // Snapshot creation suspends; validate the owning lease again after it
+                // and the optional caller predicate, including direct reader entry points.
+                if let gated = contentStore as? GatedVaultContentStore {
+                    try gated.validateAccess(operation: "SourceReader.presentPreview")
                 }
                 preview.previewItem = (snapshot?.url ?? url) as NSURL
                 window.contentView = preview

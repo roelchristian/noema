@@ -34,7 +34,10 @@ public actor SQLiteSearchIndex: SearchIndex {
         sessionLease: VaultSessionLease? = nil,
         accessGate: VaultAccessGate? = nil
     ) throws {
-        if let accessGate, let sessionLease {
+        if let accessGate {
+            guard let sessionLease else {
+                throw VaultAccessError.missingLease(operation: "searchIndex.open")
+            }
             try accessGate.validate(
                 lease: sessionLease,
                 targetRoot: sessionLease.root,

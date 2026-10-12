@@ -998,22 +998,6 @@ public actor FileVaultRepository: VaultRepository {
         return true
     }
 
-    @discardableResult
-    public func cleanupAllInterruptedImportStaging() throws -> [String] {
-        try validateAccess(operation: "cleanupAllInterruptedImportStaging")
-        let sourcesDir = root.appendingPathComponent("Sources")
-        guard fm.fileExists(atPath: sourcesDir.path) else { return [] }
-        let entries = try fm.contentsOfDirectory(at: sourcesDir, includingPropertiesForKeys: nil, options: [])
-        var cleaned: [String] = []
-        for entry in entries where entry.lastPathComponent.hasPrefix(".import-") {
-            let relativePath = "Sources/" + entry.lastPathComponent
-            let snapshot = try contentStore.snapshot(at: relativePath)
-            try contentStore.delete(at: relativePath, expected: snapshot)
-            cleaned.append(relativePath)
-        }
-        return cleaned.sorted()
-    }
-
     public func linkSources(at url: URL, maximumFiles: Int) throws -> [SourceRecord] {
         try validateAccess(operation: "linkSources")
         let access = url.startAccessingSecurityScopedResource()
