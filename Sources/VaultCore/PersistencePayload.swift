@@ -117,6 +117,7 @@ public enum AnnotationDisposition: String, Codable, Sendable { case resolved, st
 public enum AnnotationAffinity: String, Codable, Sendable { case before, after }
 public struct InlineAnnotationTarget: Codable, Equatable, Sendable {
     public var version = 1
+    public var unknownFields: [String: JSONValue] = [:]
     public var start: Int
     public var end: Int
     public var startAffinity: AnnotationAffinity = .after
@@ -421,6 +422,7 @@ extension BlockDocument {
         }
         var updatedTarget = target
         updatedTarget.startAffinity = annotation.target.startAffinity; updatedTarget.endAffinity = annotation.target.endAffinity
+        updatedTarget.unknownFields = annotation.target.unknownFields
         annotation.blockID = blockID; annotation.target = updatedTarget; annotation.modifiedAt = Date()
     }
     mutating func transformAnnotations(for command: BlockMutation, owner: UUID, cursor: BlockCursor, previous: BlockDocument) {
@@ -481,8 +483,17 @@ extension BlockDocument {
     /// Exact revision-checked text editing; offsets address concatenated UTF-16 text
     /// and must be extended-grapheme boundaries. Replacement intersections stale.
     public mutating func replaceText(in blockID: UUID, range: NSRange, with replacement: String, expectedRevision: BlockStoreRevision) throws {
+        try replaceText(in: blockID, range: range, with: replacement.isEmpty ? [] : [RichRun(replacement)], expectedRevision: expectedRevision)
+    }
+
+    /// Rich text and semantic anchors publish together; a failed validation leaves
+    /// both unchanged. Formatting runs remain content, never semantic records.
+    public mutating func replaceText(in blockID: UUID, range: NSRange, with replacementRuns: [RichRun], expectedRevision: BlockStoreRevision) throws {
         guard !unsupportedVersion, let owner = block(blockID), InlineAnnotationTarget.validRange(range, in: owner.text) else { throw PersistencePayloadError.invalidAnnotation }
         try validateWritablePayloads()
+        let replacementDocument = BlockDocument(blocks: [EditorBlock(runs: replacementRuns)])
+        try replacementDocument.validateWritablePayloads()
+        let replacement = replacementRuns.map(\.text).joined()
         let previous = self
         let values: [JSONValue]
         if case .array(let records) = extensions?.properties["annotations"] { values = records } else { values = [] }
@@ -491,7 +502,7 @@ extension BlockDocument {
             if annotation.disposition == .resolved, annotation.expectedRevision != expectedRevision.token { throw PersistencePayloadError.invalidAnnotation }
         }
         let suffixStart = range.location + range.length
-        let inserted = replacement.isEmpty ? [] : [RichRun(replacement)]
+        let inserted = replacementRuns
         update(blockID) { block in
             block.runs = owner.slicing(NSRange(location: 0, length: range.location)) + inserted + owner.slicing(NSRange(location: suffixStart, length: owner.utf16Count - suffixStart))
         }
@@ -515,5 +526,27 @@ extension BlockDocument {
         extensions?.properties["annotations"] = .array(transformedValues)
         originalSource = nil
         recordAnnotationMutation(from: previous)
+    }
+}
+
+extension InlineAnnotationTarget {
+    private static let keys: Set<String> = ["version", "start", "end", "startAffinity", "endAffinity", "quote", "prefix", "suffix", "digest"]
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: PersistenceCodingKey.self)
+        version = try c.decode(Int.self, forKey: .init("version"))
+        start = try c.decode(Int.self, forKey: .init("start")); end = try c.decode(Int.self, forKey: .init("end"))
+        startAffinity = try c.decode(AnnotationAffinity.self, forKey: .init("startAffinity"))
+        endAffinity = try c.decode(AnnotationAffinity.self, forKey: .init("endAffinity"))
+        quote = try c.decode(String.self, forKey: .init("quote")); prefix = try c.decode(String.self, forKey: .init("prefix"))
+        suffix = try c.decode(String.self, forKey: .init("suffix")); digest = try c.decode(String.self, forKey: .init("digest"))
+        unknownFields = try decodeUnknownFields(c, known: Self.keys)
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: PersistenceCodingKey.self)
+        try c.encode(version, forKey: .init("version")); try c.encode(start, forKey: .init("start")); try c.encode(end, forKey: .init("end"))
+        try c.encode(startAffinity, forKey: .init("startAffinity")); try c.encode(endAffinity, forKey: .init("endAffinity"))
+        try c.encode(quote, forKey: .init("quote")); try c.encode(prefix, forKey: .init("prefix"))
+        try c.encode(suffix, forKey: .init("suffix")); try c.encode(digest, forKey: .init("digest"))
+        try encodeUnknownFields(unknownFields, known: Self.keys, into: &c)
     }
 }

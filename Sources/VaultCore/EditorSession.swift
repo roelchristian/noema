@@ -82,12 +82,38 @@ import Foundation
         return cursor
     }
     public func replaceText(_ id: UUID, range: NSRange, runs: [RichRun], selection: NSRange) {
-        guard let block = document.block(id), range.location >= 0, range.length >= 0, NSMaxRange(range) <= block.utf16Count else { return }
-        updateRuns(id, runs: block.slicing(NSRange(location: 0, length: range.location)) + runs + block.slicing(NSRange(location: NSMaxRange(range), length: block.utf16Count - NSMaxRange(range))), selection: selection, name: "Replace text")
+        let revisions: Set<Data>
+        if case .array(let values) = document.extensions?.properties["annotations"] {
+            revisions = Set(values.compactMap { value in
+                guard let bytes = try? JSONEncoder().encode(value), let annotation = try? JSONDecoder().decode(InlineAnnotation.self, from: bytes), annotation.disposition == .resolved else { return nil }
+                return annotation.expectedRevision
+            })
+        } else { revisions = [] }
+        guard revisions.count <= 1 else { return }
+        try? replaceText(id, range: range, runs: runs, selection: selection, expectedRevision: .init(token: revisions.first ?? Data()))
+    }
+    /// Exact editor input carries store-issued revision evidence independently of
+    /// the local session counter. Work on a value so failures cannot publish text.
+    public func replaceText(_ id: UUID, range: NSRange, runs: [RichRun], selection: NSRange, expectedRevision: BlockStoreRevision) throws {
+        var value = document
+        try value.replaceText(in: id, range: range, with: runs, expectedRevision: expectedRevision)
+        replaceDocument(value, selection: selection, name: "Replace text")
     }
     public func restore(_ snapshot: DocumentSnapshot, name: String) {
         guard snapshot.identity == identity, snapshot.generation == generation else { return }
-        replaceDocument(snapshot.document, selection: snapshot.selection, name: name)
+        var restored = snapshot.document
+        restored.annotationMutationEvidence = .init(before: document.annotationEvidenceDigest(), after: restored.annotationEvidenceDigest())
+        replaceDocument(restored, selection: snapshot.selection, name: name)
+        selection = snapshot.selection
+    }
+    /// Undo after a canonical save rebases resolved evidence to the current page
+    /// token; the next store save still allocates a fresh canonical revision.
+    public func restore(_ snapshot: DocumentSnapshot, name: String, expectedRevision: BlockStoreRevision) throws {
+        guard snapshot.identity == identity, snapshot.generation == generation else { return }
+        var restored = snapshot.document.advancingAnnotationRevision(to: expectedRevision)
+        try restored.validateWritablePayloads()
+        restored.annotationMutationEvidence = .init(before: document.annotationEvidenceDigest(), after: restored.annotationEvidenceDigest())
+        replaceDocument(restored, selection: snapshot.selection, name: name)
         selection = snapshot.selection
     }
     private func record(_ name: String, ids: Set<UUID>, selection: NSRange) {

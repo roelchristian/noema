@@ -15,7 +15,7 @@ private final class BlockSQLiteConnection: @unchecked Sendable {
     deinit { if let pointer { sqlite3_close_v2(pointer) } }
 }
 
-public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
+public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
     public nonisolated let mode = BlockStorageMode.sqliteBlocks
     public nonisolated let sessionLease: VaultSessionLease?
     public nonisolated let accessGate: VaultAccessGate?
@@ -25,6 +25,8 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
     private let decoder = JSONDecoder()
     public static let schemaVersion = 2
     public static let expandedSchemaVersion = 3
+    public static let semanticSchemaVersion = 5
+    public static let semanticRequiredCapabilities = ["canonicalKnowledgeV1", "canonicalMetadataV1", "semanticAnnotationsV1"]
     public static let knowledgeSchemaVersion = 4
     public static let knowledgeRequiredCapabilities = ["canonicalKnowledgeV1", "canonicalMetadataV1"]
     private let canonicalVaultID: UUID?
@@ -54,6 +56,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
     init(url: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate,
                 canonicalVaultID: UUID, requiredCapabilities: [String] = ["canonicalMetadataV1"], schemaVersion: Int = 3,
                 createIfMissing: Bool = false) throws {
+        try Self.validateCanonicalDeclaration(schemaVersion: schemaVersion, capabilities: requiredCapabilities)
         try accessGate.validate(lease: sessionLease, targetRoot: sessionLease.root, targetVaultID: canonicalVaultID, operation: "blockStore.openCanonical")
         try SQLiteVaultMigration.requireLocalRoot(sessionLease.root)
         let root = sessionLease.root.standardizedFileURL.resolvingSymlinksInPath().path + "/"
@@ -66,10 +69,21 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
     /// Only explicit staging/test construction may initialize expanded authority.
     init(canonicalStagingURL url: URL, vaultID: UUID,
          requiredCapabilities: [String] = ["canonicalMetadataV1"], schemaVersion: Int = 3, createIfMissing: Bool = true) throws {
+        try Self.validateCanonicalDeclaration(schemaVersion: schemaVersion, capabilities: requiredCapabilities)
         canonicalVaultID = vaultID; sessionLease = nil; accessGate = nil
         databaseURL = url.standardizedFileURL.resolvingSymlinksInPath()
         connection = try BlockSQLiteConnection(url: url, createIfMissing: createIfMissing)
         try Self.prepare(connection, initializeIfNeeded: createIfMissing, canonicalVaultID: vaultID, requiredCapabilities: requiredCapabilities, expectedSchemaVersion: schemaVersion)
+    }
+    private static func validateCanonicalDeclaration(schemaVersion: Int, capabilities: [String]) throws {
+        let expected: [String]
+        switch schemaVersion {
+        case 3: expected = ["canonicalMetadataV1"]
+        case knowledgeSchemaVersion: expected = knowledgeRequiredCapabilities
+        case semanticSchemaVersion: expected = semanticRequiredCapabilities
+        default: throw VaultError.invalid("Unsupported canonical schema declaration.")
+        }
+        guard capabilities == expected else { throw VaultError.invalid("Unsupported canonical capabilities.") }
     }
     private static func prepare(_ connection: BlockSQLiteConnection, initializeIfNeeded: Bool, canonicalVaultID: UUID? = nil, requiredCapabilities: [String] = [], expectedSchemaVersion: Int = 3) throws {
         guard let db = connection.pointer else { throw VaultError.storage("Block database closed.") }
@@ -87,7 +101,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
         }
         var version = try readVersion()
         if canonicalVaultID != nil {
-            guard (expectedSchemaVersion == 3 && requiredCapabilities == ["canonicalMetadataV1"]) || (expectedSchemaVersion == 4 && requiredCapabilities == knowledgeRequiredCapabilities) else { throw VaultError.invalid("Unsupported canonical schema/capability declaration.") }
+            guard (expectedSchemaVersion == 3 && requiredCapabilities == ["canonicalMetadataV1"]) || (expectedSchemaVersion == 4 && requiredCapabilities == knowledgeRequiredCapabilities) || (expectedSchemaVersion == 5 && requiredCapabilities == semanticRequiredCapabilities) else { throw VaultError.invalid("Unsupported canonical schema/capability declaration.") }
             guard version == 0 || version == expectedSchemaVersion else { throw VaultError.invalid("Canonical authority transition required; existing authority is never upgraded on open.") }
         }
         if canonicalVaultID != nil, version == 0 {
@@ -106,7 +120,8 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
                   sqlite3_column_text(state, 0).map({ String(cString: $0) }) == canonicalVaultID.uuidString,
                   sqlite3_column_text(state, 1).map({ String(cString: $0) }) == "canonicalMetadataV1",
                   sqlite3_column_int(state, 2) == 1 else { throw VaultError.invalid("Canonical identity/capability/payload mismatch.") }
-            if expectedSchemaVersion == 4 { try validateKnowledgeCapabilities(db, expected: requiredCapabilities) }
+            if expectedSchemaVersion >= 4 { try validateKnowledgeCapabilities(db, expected: requiredCapabilities) }
+            if expectedSchemaVersion == 5 { try validateSemanticRegistry(db) }
         }
         try exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=1000; PRAGMA temp_store=MEMORY;")
         if version == 0 {
@@ -145,9 +160,13 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
                     sqlite3_bind_text(insert, 1, canonicalVaultID.uuidString, -1, transient)
                     sqlite3_bind_text(insert, 2, UUID().uuidString, -1, transient)
                     guard sqlite3_step(insert) == SQLITE_DONE else { throw VaultError.storage("Cannot initialize canonical identity.") }
-                    if expectedSchemaVersion == 4 {
+                    if expectedSchemaVersion >= 4 {
                         try exec(knowledgeSchema)
                         try exec("ALTER TABLE vault_state ADD COLUMN required_capabilities BLOB NOT NULL DEFAULT '[\"canonicalKnowledgeV1\",\"canonicalMetadataV1\"]'")
+                    }
+                    if expectedSchemaVersion == 5 {
+                        try exec(semanticSchema)
+                        try exec("UPDATE vault_state SET required_capabilities='[\"canonicalKnowledgeV1\",\"canonicalMetadataV1\",\"semanticAnnotationsV1\"]'")
                     }
                     try exec("PRAGMA user_version=\(expectedSchemaVersion); COMMIT")
                 } catch { try? exec("ROLLBACK"); throw error }
@@ -178,13 +197,35 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
         guard let capabilities = try? JSONDecoder().decode([String].self, from: data), capabilities == expected else { throw VaultError.invalid("Knowledge capability mismatch.") }
         for (table, keys) in [("knowledge_entity_types", ["concept", "person", "place"]), ("knowledge_relation_types", ["relatedTo"])] {
             var registry: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "SELECT key,version FROM \(table) ORDER BY key", -1, &registry, nil) == SQLITE_OK, let registry else { throw VaultError.invalid("Knowledge registry missing.") }
+            guard sqlite3_prepare_v2(db, "SELECT key,version,descriptor FROM \(table) ORDER BY key", -1, &registry, nil) == SQLITE_OK, let registry else { throw VaultError.invalid("Knowledge registry missing.") }
             defer { sqlite3_finalize(registry) }
             var stored: [String] = []
-            while true { let status = sqlite3_step(registry); if status == SQLITE_DONE { break }; guard status == SQLITE_ROW, sqlite3_column_int(registry, 1) == 1, let key = sqlite3_column_text(registry, 0) else { throw VaultError.invalid("Unsupported required knowledge registry.") }; stored.append(String(cString: key)) }
+            while true { let status = sqlite3_step(registry); if status == SQLITE_DONE { break }; guard status == SQLITE_ROW, sqlite3_column_int(registry, 1) == 1, let key = sqlite3_column_text(registry, 0) else { throw VaultError.invalid("Unsupported required knowledge registry.") }; try validateRegistryDescriptor(registry, column: 2); stored.append(String(cString: key)) }
             guard stored == keys else { throw VaultError.invalid("Unsupported required knowledge registry.") }
         }
 
+    }
+    private static func validateRegistryDescriptor(_ statement: OpaquePointer, column: Int32) throws {
+        guard let bytes = sqlite3_column_blob(statement, column) else { throw VaultError.invalid("Missing registry descriptor.") }
+        let data = Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, column)))
+        guard data.count <= 262_144, let fields = try? JSONDecoder().decode([String: JSONValue].self, from: data) else { throw VaultError.invalid("Malformed registry descriptor.") }
+        try validateOptionalFields(fields)
+        if let metadata = fields["metadata"] {
+            do {
+                let payload = try JSONDecoder().decode(PersistencePayload.self, from: JSONEncoder().encode(metadata))
+                try payload.validateWritable()
+            } catch { throw VaultError.invalid("Unsupported registry metadata payload.") }
+        }
+        for key in ["version", "payloadVersion"] { if let version = fields[key], version != .number(1) { throw VaultError.invalid("Unsupported registry payload version.") } }
+        if let required = fields["requiredFeatures"], required != .array([]) { throw VaultError.invalid("Unsupported registry required features.") }
+    }
+    private static func validateSemanticRegistry(_ db: OpaquePointer) throws {
+        var q: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT key,version,descriptor FROM semantic_object_types ORDER BY key", -1, &q, nil) == SQLITE_OK, let q else { throw VaultError.invalid("Semantic registry missing.") }
+        defer { sqlite3_finalize(q) }
+        var keys: [String] = []
+        while true { let step = sqlite3_step(q); if step == SQLITE_DONE { break }; guard step == SQLITE_ROW, sqlite3_column_int(q, 1) == 1, let key = sqlite3_column_text(q, 0) else { throw VaultError.invalid("Unsupported semantic registry.") }; try validateRegistryDescriptor(q, column: 2); keys.append(String(cString: key)) }
+        guard keys == ["definition", "question"] else { throw VaultError.invalid("Unsupported semantic registry.") }
     }
     private static let knowledgeSchema = """
     CREATE TABLE knowledge_entity_types(key TEXT PRIMARY KEY, version INTEGER NOT NULL, descriptor BLOB NOT NULL);
@@ -195,6 +236,14 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
     CREATE TABLE knowledge_entity_aliases(id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES knowledge_entities(id) ON DELETE RESTRICT, payload BLOB NOT NULL);
     CREATE TABLE knowledge_relations(id TEXT PRIMARY KEY, predicate TEXT NOT NULL REFERENCES knowledge_relation_types(key), source_id TEXT NOT NULL REFERENCES knowledge_entities(id) ON DELETE RESTRICT, target_id TEXT NOT NULL REFERENCES knowledge_entities(id) ON DELETE RESTRICT, revision BLOB NOT NULL, lifecycle TEXT NOT NULL CHECK(lifecycle IN ('live','tombstoned')), payload BLOB NOT NULL);
     CREATE TABLE knowledge_operations(operation_id TEXT PRIMARY KEY, result_kind TEXT NOT NULL, result_payload BLOB NOT NULL, record_revision BLOB NOT NULL, vault_revision BLOB NOT NULL);
+    """
+    private static let semanticSchema = """
+    CREATE TABLE semantic_object_types(key TEXT PRIMARY KEY, version INTEGER NOT NULL, descriptor BLOB NOT NULL);
+    INSERT INTO semantic_object_types VALUES('question',1,'{}'),('definition',1,'{}');
+    CREATE TABLE semantic_objects(id TEXT PRIMARY KEY, type_key TEXT NOT NULL REFERENCES semantic_object_types(key), revision BLOB NOT NULL, lifecycle TEXT NOT NULL CHECK(lifecycle IN ('live','tombstoned')), payload BLOB NOT NULL);
+    CREATE TABLE semantic_object_entities(object_id TEXT NOT NULL REFERENCES semantic_objects(id) ON DELETE RESTRICT, entity_id TEXT NOT NULL REFERENCES knowledge_entities(id) ON DELETE RESTRICT, designation TEXT NOT NULL CHECK(designation IN ('relatedTo','subject')), PRIMARY KEY(object_id,entity_id,designation));
+    CREATE UNIQUE INDEX semantic_single_subject ON semantic_object_entities(object_id) WHERE designation='subject';
+    CREATE TABLE semantic_annotations(id TEXT PRIMARY KEY, revision BLOB NOT NULL, location_kind TEXT NOT NULL CHECK(location_kind IN ('wholeBlock','inline','entity','object')), captured_page TEXT, captured_block TEXT, live_page TEXT, live_block TEXT, owner_entity TEXT REFERENCES knowledge_entities(id) ON DELETE RESTRICT, owner_object TEXT REFERENCES semantic_objects(id) ON DELETE RESTRICT, referent_entity TEXT REFERENCES knowledge_entities(id) ON DELETE RESTRICT, referent_object TEXT REFERENCES semantic_objects(id) ON DELETE RESTRICT, payload BLOB NOT NULL, FOREIGN KEY(live_page,live_block) REFERENCES blocks(page_id,id) DEFERRABLE INITIALLY DEFERRED, CHECK((location_kind IN ('wholeBlock','inline') AND captured_page IS NOT NULL AND captured_block IS NOT NULL AND owner_entity IS NULL AND owner_object IS NULL) OR (location_kind='entity' AND owner_entity IS NOT NULL AND captured_page IS NULL AND captured_block IS NULL AND owner_object IS NULL) OR (location_kind='object' AND owner_object IS NOT NULL AND captured_page IS NULL AND captured_block IS NULL AND owner_entity IS NULL)), CHECK(referent_entity IS NULL OR referent_object IS NULL));
     """
     private func validate(_ operation: String) throws {
         if let accessGate, let sessionLease {
@@ -322,6 +371,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
         }
         document.blocks = try tree("")
         guard seen.count == count, BlockDocumentCodec.valid(document) else { throw VaultError.invalid("Invalid or orphaned block tree.") }
+        if try isSemanticSchema() { document = try projectingSemanticAnnotations(document, pageID: pageID) }
         if canonicalVaultID != nil { try document.validateWritablePayloads() }
         try validate("blockStore.load")
         return .init(pageID: pageID, document: document, revision: revision)
@@ -329,7 +379,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
     @discardableResult public func save(_ document: BlockDocument, pageID: UUID, condition: BlockStoreWriteCondition) throws -> BlockStoreSnapshot {
         try transaction { try persist(document, pageID: pageID, condition: condition, metadata: nil) }
     }
-    private func persist(_ document: BlockDocument, pageID: UUID, condition: BlockStoreWriteCondition, metadata: Data?) throws -> BlockStoreSnapshot {
+    private func persist(_ document: BlockDocument, pageID: UUID, condition: BlockStoreWriteCondition, metadata: Data?, semanticProjection: Bool = true) throws -> BlockStoreSnapshot {
         guard !document.unsupportedVersion, BlockDocumentCodec.valid(document) else { throw VaultError.invalid("Unsupported or invalid block document.") }
         let current: BlockStoreSnapshot?
         switch condition {
@@ -356,6 +406,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
         let revision = BlockStoreRevision(token: Data(UUID().uuidString.utf8))
         if canonicalVaultID != nil { document = document.advancingAnnotationRevision(to: revision) }
         var properties = document; properties.blocks = []
+        if try isSemanticSchema() { properties.extensions?.properties.removeValue(forKey: "annotations") }
         if current == nil {
             try run("INSERT INTO pages(id,revision,metadata,properties) VALUES(?,?,?,?)", [.text(pageID.uuidString), .blob(revision.token), metadata.map(Value.blob) ?? .null, .blob(try encoder.encode(properties))])
         } else {
@@ -370,7 +421,8 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
             ON CONFLICT(page_id,id) DO UPDATE SET parent_id=excluded.parent_id,sibling_order=excluded.sibling_order,kind=excluded.kind,runs=excluded.runs,semantic=excluded.semantic,created_at=excluded.created_at,modified_at=excluded.modified_at,extensions=excluded.extensions
             """, [.text(pageID.uuidString), .text(id.uuidString), row.parent.map { .text($0.uuidString) } ?? .null, .integer(Int64(row.order)), .text(block.kind.rawValue), .blob(try encoder.encode(block.runs)), .blob(try encoder.encode(block.metadata)), .real(block.createdAt.timeIntervalSinceReferenceDate), .real(block.modifiedAt.timeIntervalSinceReferenceDate), .blob(try encoder.encode(Extensions(block)))])
         }
-        if canonicalVaultID != nil, current == nil { _ = try advanceVaultRevision() }
+        if semanticProjection, try isSemanticSchema() { try persistSemanticProjection(document, pageID: pageID, pageRevision: revision, previousRevision: current?.revision) }
+        if canonicalVaultID != nil { let semantic = try isSemanticSchema(); if current == nil || (semanticProjection && semantic) { _ = try advanceVaultRevision() } }
         return .init(pageID: pageID, document: document, revision: revision)
     }
     public func savePage(record: NoteRecord, document: BlockDocument, condition: BlockStoreWriteCondition, validating publication: (@Sendable () throws -> Void)? = nil) throws -> BlockStoreSnapshot {
@@ -444,9 +496,24 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
             if canonicalVaultID != nil {
                 document = document.advancingAnnotationRevision(to: revision)
                 var properties = document; properties.blocks = []
+        if try isSemanticSchema() { properties.extensions?.properties.removeValue(forKey: "annotations") }
                 try run("UPDATE pages SET properties=? WHERE id=?", [.blob(try encoder.encode(properties)), .text(pageID.uuidString)])
             }
             try run("UPDATE pages SET trashed=?,trashed_at=?,revision=? WHERE id=?", [.integer(trashed ? 1 : 0), trashed ? .real(Date().timeIntervalSince1970) : .null, .blob(revision.token), .text(pageID.uuidString)])
+            if try isSemanticSchema() {
+                for snapshot in try annotationRows(pageID: pageID) where snapshot.annotation.anchorDisposition == .resolved {
+                    var annotation = snapshot.annotation
+                    try validateAnnotationEvidence(annotation, document: current.document, pageRevision: current.revision)
+                    annotation.expectedRevision = revision.token
+                    if case .inline(let page, let block, var target) = annotation.location {
+                        target.digest = InlineAnnotationTarget.evidence(quote: target.quote, revision: revision.token)
+                        annotation.location = .inline(pageID: page, blockID: block, target: target)
+                    }
+                    _ = try persistAnnotation(annotation, document: current.document, expected: snapshot.revision)
+                }
+                _ = try advanceVaultRevision()
+                return try loadDocument(pageID: pageID)
+            }
             return .init(pageID: pageID, document: document, revision: revision)
         }
     }
@@ -701,6 +768,9 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
             case .page:
                 let current = try loadDocument(pageID: id)
                 guard current.revision == expected else { throw VaultError.conflict("Page revision changed.") }
+                if try isSemanticSchema(), !(try annotationRows(pageID: id)).isEmpty {
+                    throw VaultError.invalid("Semantic page purge requires independent annotation preservation.")
+                }
                 if case .array(let records) = current.document.extensions?.properties["annotations"], !records.isEmpty {
                     throw VaultError.invalid("Annotated page purge requires an explicit preservation operation.")
                 }
@@ -766,7 +836,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
         try validate("knowledge.read")
         guard canonicalVaultID != nil else { throw KnowledgeStoreError.transitionRequired }
         let query = try statement("PRAGMA user_version"); defer { sqlite3_finalize(query) }
-        guard sqlite3_step(query) == SQLITE_ROW, sqlite3_column_int(query, 0) == Self.knowledgeSchemaVersion else { throw KnowledgeStoreError.transitionRequired }
+        guard sqlite3_step(query) == SQLITE_ROW, [Self.knowledgeSchemaVersion, Self.semanticSchemaVersion].contains(Int(sqlite3_column_int(query, 0))) else { throw KnowledgeStoreError.transitionRequired }
     }
     private func checkedKnowledgeRevision(_ expected: BlockStoreRevision) throws {
         guard try vaultRevision() == expected else { throw KnowledgeStoreError.staleRevision }
@@ -970,5 +1040,269 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
         guard let pointer = connection.pointer else { return }
         guard sqlite3_close(pointer) == SQLITE_OK else { throw failure() }
         connection.pointer = nil
+    }
+}
+
+extension SQLiteBlockStore {
+    private func isSemanticSchema() throws -> Bool {
+        let q = try statement("PRAGMA user_version"); defer { sqlite3_finalize(q) }
+        guard sqlite3_step(q) == SQLITE_ROW else { throw failure() }; return sqlite3_column_int(q, 0) == 5
+    }
+    private func requireSemantic() throws {
+        try validate("semantic.access")
+        guard try isSemanticSchema() else { throw KnowledgeStoreError.transitionRequired }
+        try requireKnowledge()
+    }
+    private func objectInTransaction(id: UUID) throws -> SemanticObjectSnapshot {
+        let q = try statement("SELECT revision,type_key,lifecycle,payload FROM semantic_objects WHERE id=?", [.text(id.uuidString)]); defer { sqlite3_finalize(q) }
+        let status = sqlite3_step(q)
+        if status == SQLITE_DONE { throw KnowledgeStoreError.notFound(id) }
+        guard status == SQLITE_ROW else { throw failure() }
+        var object = try decoder.decode(SemanticObject.self, from: knowledgeRecordData(blob(q, 3), fields: ["id":id.uuidString,"typeKey":text(q,1),"lifecycle":text(q,2)]))
+        let links = try statement("SELECT entity_id,designation FROM semantic_object_entities WHERE object_id=? ORDER BY entity_id", [.text(id.uuidString)]); defer { sqlite3_finalize(links) }
+        guard object.relatedEntityIDs.isEmpty, object.subjectEntityID == nil else { throw VaultError.invalid("Object payload duplicates relational memberships.") }; object.relatedEntityIDs = []; object.subjectEntityID = nil
+        while sqlite3_step(links) == SQLITE_ROW { guard let id = UUID(uuidString: text(links,0)) else { throw failure() }; if text(links,1) == "subject" { object.subjectEntityID=id } else { object.relatedEntityIDs.append(id) } }
+        try object.validateWritable(); return .init(object: object, revision: .init(token: blob(q,0)))
+    }
+    private func persistObject(_ object: SemanticObject, expected: BlockStoreRevision?) throws -> SemanticObjectSnapshot {
+        try object.validateWritable()
+        let current: SemanticObjectSnapshot?
+        do { current = try objectInTransaction(id: object.id) }
+        catch KnowledgeStoreError.notFound(let missingID) where missingID == object.id { current = nil }
+        if let expected { guard current?.revision == expected else { throw KnowledgeStoreError.staleRevision } }
+        else { guard current == nil else { throw KnowledgeStoreError.identityConflict(object.id) } }
+        if let current { guard current.object.typeKey == object.typeKey else { throw KnowledgeStoreError.identityConflict(object.id) } }
+        for id in object.relatedEntityIDs + [object.subjectEntityID].compactMap({ $0 }) { _ = try entityInTransaction(id:id) }
+        var stored = object; stored.relatedEntityIDs = []; stored.subjectEntityID = nil
+        let revision = BlockStoreRevision(token: Data(UUID().uuidString.utf8))
+        let payload = try knowledgeRecordPayload(stored, omitting: ["id", "typeKey", "lifecycle"])
+        if current == nil {
+            try run("INSERT INTO semantic_objects(id,type_key,revision,lifecycle,payload) VALUES(?,?,?,?,?)", [.text(object.id.uuidString), .text(object.typeKey), .blob(revision.token), .text(object.lifecycle.rawValue), .blob(payload)])
+        } else {
+            try run("UPDATE semantic_objects SET revision=?,lifecycle=?,payload=? WHERE id=?", [.blob(revision.token), .text(object.lifecycle.rawValue), .blob(payload), .text(object.id.uuidString)])
+        }
+        try run("DELETE FROM semantic_object_entities WHERE object_id=?", [.text(object.id.uuidString)])
+        for id in object.relatedEntityIDs { try run("INSERT INTO semantic_object_entities VALUES(?,?,'relatedTo')", [.text(object.id.uuidString),.text(id.uuidString)]) }
+        if let id=object.subjectEntityID { try run("INSERT INTO semantic_object_entities VALUES(?,?,'subject')", [.text(object.id.uuidString),.text(id.uuidString)]) }
+        return .init(object:object,revision:revision)
+    }
+    public func loadObject(id: UUID) throws -> SemanticObjectSnapshot { try requireSemantic(); return try readTransaction { try objectInTransaction(id:id) } }
+    public func createObject(_ object: SemanticObject, expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<SemanticObjectSnapshot> {
+        try requireSemantic(); return try transaction {
+            try checkedKnowledgeRevision(expectedVaultRevision); try checkKnowledgeOperation(operationID)
+            guard object.lifecycle == .live else { throw KnowledgeStoreError.tombstoned(object.id) }
+            let s=try persistObject(object,expected:nil); let v=try recordKnowledgeOperation(s.object, revision:s.revision,kind:"semanticObject",operationID:operationID)
+            return .init(value:s,vaultRevision:v,operationID:operationID)
+        }
+    }
+    public func updateObject(id: UUID, patch: SemanticObjectPatch, expected: BlockStoreRevision, expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<SemanticObjectSnapshot> {
+        try requireSemantic(); return try transaction {
+            try checkedKnowledgeRevision(expectedVaultRevision); try checkKnowledgeOperation(operationID)
+            let old=try objectInTransaction(id:id); guard old.object.lifecycle == .live else { throw KnowledgeStoreError.tombstoned(id) }
+            var value=try patch.applying(to:old.object); value.modifiedAt=Date()
+            let s=try persistObject(value,expected:expected); let v=try recordKnowledgeOperation(s.object,revision:s.revision,kind:"semanticObject",operationID:operationID)
+            return .init(value:s,vaultRevision:v,operationID:operationID)
+        }
+    }
+    public func transitionObject(id: UUID, to lifecycle: KnowledgeLifecycle, expected: BlockStoreRevision, expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<SemanticObjectSnapshot> {
+        try requireSemantic(); return try transaction {
+            try checkedKnowledgeRevision(expectedVaultRevision); try checkKnowledgeOperation(operationID)
+            var value=try objectInTransaction(id:id).object; value.lifecycle=lifecycle; value.modifiedAt=Date()
+            let s=try persistObject(value,expected:expected); let v=try recordKnowledgeOperation(s.object,revision:s.revision,kind:"semanticObject",operationID:operationID)
+            return .init(value:s,vaultRevision:v,operationID:operationID)
+        }
+    }
+    private func annotationRows(pageID: UUID? = nil) throws -> [SemanticAnnotationSnapshot] {
+        let q = try statement("SELECT id,revision,location_kind,captured_page,captured_block,live_page,live_block,owner_entity,owner_object,referent_entity,referent_object,payload FROM semantic_annotations" + (pageID == nil ? "" : " WHERE captured_page=?") + " ORDER BY id", pageID.map { [.text($0.uuidString)] } ?? [])
+        defer { sqlite3_finalize(q) }
+        var result: [SemanticAnnotationSnapshot] = []
+        while true {
+            let step = sqlite3_step(q); if step == SQLITE_DONE { break }; guard step == SQLITE_ROW else { throw failure() }
+            var value = try decoder.decode(SemanticAnnotation.self, from: blob(q,11))
+            let kind: String; switch value.location { case .wholeBlock: kind="wholeBlock"; case .inline: kind="inline"; case .entity: kind="entity"; case .object: kind="object" }
+            guard value.id.uuidString == text(q,0), kind == text(q,2), (value.location.pageID?.uuidString ?? "") == text(q,3), (value.location.blockID?.uuidString ?? "") == text(q,4) else { throw VaultError.invalid("Semantic relational identity mismatch.") }
+            switch value.location {
+            case .entity(let id): guard text(q,7) == id.uuidString, text(q,8).isEmpty else { throw PersistencePayloadError.invalidAnnotation }
+            case .object(let id): guard text(q,8) == id.uuidString, text(q,7).isEmpty else { throw PersistencePayloadError.invalidAnnotation }
+            default:
+                if value.anchorDisposition == .resolved { guard text(q,5) == text(q,3), text(q,6) == text(q,4) else { throw PersistencePayloadError.invalidAnnotation } }
+                else { guard text(q,5).isEmpty, text(q,6).isEmpty else { throw PersistencePayloadError.invalidAnnotation } }
+            }
+            if value.referent.disposition == .unresolved { guard text(q,9).isEmpty, text(q,10).isEmpty else { throw PersistencePayloadError.invalidAnnotation } }
+            else if ["question","definition"].contains(value.referent.identity.kind) {
+                guard text(q,10) == value.referent.identity.id.uuidString, text(q,9).isEmpty else { throw PersistencePayloadError.invalidAnnotation }
+                let object = try objectInTransaction(id:value.referent.identity.id).object
+                guard object.typeKey == value.referent.identity.kind else { throw PersistencePayloadError.invalidAnnotation }
+                value.referent.disposition = object.lifecycle == .live ? .live : .tombstoned
+            } else {
+                guard text(q,9) == value.referent.identity.id.uuidString, text(q,10).isEmpty else { throw PersistencePayloadError.invalidAnnotation }
+                let entity = try entityInTransaction(id:value.referent.identity.id).entity
+                guard entity.typeKey == value.referent.identity.kind else { throw PersistencePayloadError.invalidAnnotation }
+                value.referent.disposition = entity.lifecycle == .live ? .live : .tombstoned
+            }
+            result.append(.init(annotation:value, revision:.init(token:blob(q,1))))
+        }
+        return result
+    }
+    private func annotationInTransaction(id: UUID) throws -> SemanticAnnotationSnapshot? {
+        try annotationRows().first { $0.annotation.id == id }
+    }
+    private func validateAnnotationEvidence(_ a: SemanticAnnotation, document: BlockDocument?, pageRevision: BlockStoreRevision? = nil) throws {
+        try a.payload?.validateWritable(); try a.referent.payload?.validateWritable(); try validateOptionalFields(a.unknownFields)
+        guard !a.designation.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { throw PersistencePayloadError.invalidAnnotation }
+        if case .inline(_, _, let target) = a.location {
+            guard target.version == 1, target.start >= 0, target.end >= target.start, target.prefix.count <= 64, target.suffix.count <= 64 else { throw PersistencePayloadError.invalidAnnotation }
+            try validateOptionalFields(target.unknownFields)
+        }
+        if a.anchorDisposition == .resolved, a.location.pageID != nil {
+            guard let document, let id=a.location.blockID, let block=document.block(id) else { throw PersistencePayloadError.invalidAnnotation }
+            if let pageRevision { guard a.expectedRevision == pageRevision.token else { throw KnowledgeStoreError.staleRevision } }
+            if case .inline(_,_,let target)=a.location {
+                guard target.version == 1, target.end >= target.start, target.prefix.count <= 64, target.suffix.count <= 64, InlineAnnotationTarget.validRange(NSRange(location:target.start,length:target.end-target.start),in:block.text), (block.text as NSString).substring(with:NSRange(location:target.start,length:target.end-target.start)) == target.quote, target.digest == InlineAnnotationTarget.evidence(quote:target.quote,revision:a.expectedRevision) else { throw PersistencePayloadError.invalidAnnotation }
+            }
+        }
+    }
+    @discardableResult private func persistAnnotation(_ annotation: SemanticAnnotation, document: BlockDocument? = nil, expected: BlockStoreRevision? = nil, allowExisting: Bool = false) throws -> SemanticAnnotationSnapshot {
+        var a=annotation; try validateAnnotationEvidence(a, document:document)
+        let old=try annotationInTransaction(id:a.id)
+        if let old {
+            guard allowExisting || expected == old.revision else { throw KnowledgeStoreError.identityConflict(a.id) }
+            guard old.annotation.location.pageID == a.location.pageID else { throw KnowledgeStoreError.identityConflict(a.id) }
+            if old.annotation.location.pageID == nil { guard old.annotation.location == a.location else { throw KnowledgeStoreError.identityConflict(a.id) } }
+        } else if expected != nil { throw KnowledgeStoreError.staleRevision }
+        var ownerEntity:Value = .null, ownerObject:Value = .null, referentEntity:Value = .null, referentObject:Value = .null
+        switch a.location {
+        case .entity(let id): _ = try entityInTransaction(id:id); ownerEntity = .text(id.uuidString)
+        case .object(let id): _ = try objectInTransaction(id:id); ownerObject = .text(id.uuidString)
+        default: break
+        }
+        if a.referent.disposition != .unresolved {
+            if ["question","definition"].contains(a.referent.identity.kind) { let o=try objectInTransaction(id:a.referent.identity.id).object; guard o.typeKey == a.referent.identity.kind else { throw KnowledgeStoreError.missingReference(o.id) }; referentObject = .text(o.id.uuidString); a.referent.disposition = o.lifecycle == .live ? .live : .tombstoned }
+            else { let e=try entityInTransaction(id:a.referent.identity.id).entity; guard e.typeKey == a.referent.identity.kind else { throw KnowledgeStoreError.missingReference(e.id) }; referentEntity = .text(e.id.uuidString); a.referent.disposition = e.lifecycle == .live ? .live : .tombstoned }
+        }
+        let kind:String; switch a.location { case .wholeBlock:kind="wholeBlock";case .inline:kind="inline";case .entity:kind="entity";case .object:kind="object" }
+        let live=a.anchorDisposition == .resolved, revision=BlockStoreRevision(token:Data(UUID().uuidString.utf8))
+        let values:[Value]=[.blob(revision.token),.text(kind),a.location.pageID.map{.text($0.uuidString)} ?? .null,a.location.blockID.map{.text($0.uuidString)} ?? .null,live ? (a.location.pageID.map{.text($0.uuidString)} ?? .null) : .null,live ? (a.location.blockID.map{.text($0.uuidString)} ?? .null) : .null,ownerEntity,ownerObject,referentEntity,referentObject,.blob(try encoder.encode(a)),.text(a.id.uuidString)]
+        if old == nil { try run("INSERT INTO semantic_annotations(revision,location_kind,captured_page,captured_block,live_page,live_block,owner_entity,owner_object,referent_entity,referent_object,payload,id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",values) }
+        else { try run("UPDATE semantic_annotations SET revision=?,location_kind=?,captured_page=?,captured_block=?,live_page=?,live_block=?,owner_entity=?,owner_object=?,referent_entity=?,referent_object=?,payload=? WHERE id=?",values) }
+        return .init(annotation:a, revision:revision)
+    }
+    private func projectingSemanticAnnotations(_ document: BlockDocument, pageID: UUID) throws -> BlockDocument {
+        var d=document; var values:[JSONValue]=[]
+        for s in try annotationRows(pageID:pageID) { let a=s.annotation; guard case .inline(let p,let b,let target)=a.location else { continue }; var inline=InlineAnnotation(id:a.id,pageID:p,blockID:b,designation:a.designation,expectedRevision:a.expectedRevision,target:target,disposition:a.anchorDisposition); inline.targetEntity=a.referent.identity; inline.payload=a.payload; inline.createdAt=a.createdAt; inline.modifiedAt=a.modifiedAt; var raw=try decoder.decode(JSONValue.self,from:encoder.encode(inline)); if case .object(var fields)=raw { fields.merge(a.unknownFields){old,_ in old}; raw = .object(fields) }; values.append(raw) }
+        if !values.isEmpty { if d.extensions == nil { d.extensions = .init() }; d.extensions?.properties["annotations"] = .array(values) }
+        return d
+    }
+    private func persistSemanticProjection(_ document: BlockDocument, pageID: UUID, pageRevision: BlockStoreRevision, previousRevision: BlockStoreRevision?) throws {
+        var incoming:Set<UUID>=[]
+        if case .array(let values)=document.extensions?.properties["annotations"] { for raw in values { let i=try decoder.decode(InlineAnnotation.self,from:encoder.encode(raw)); incoming.insert(i.id); let ref=SemanticReferent(identity:i.targetEntity ?? .init(kind:"legacy",id:i.id),disposition: i.targetEntity.map { ["person","place","concept","question","definition"].contains($0.kind) ? .live : .unresolved } ?? .unresolved); var a=SemanticAnnotation(id:i.id,location:.inline(pageID:pageID,blockID:i.blockID,target:i.target),referent:ref,designation:i.designation,anchorDisposition:i.disposition,expectedRevision:i.expectedRevision,payload:i.payload,createdAt:i.createdAt,modifiedAt:i.modifiedAt); if case .object(let fields)=raw { a.unknownFields=fields.filter{ !["id","pageID","blockID","designation","targetEntity","payload","createdAt","modifiedAt","expectedRevision","target","disposition"].contains($0.key) } }; if let old = try annotationInTransaction(id:a.id) { guard old.annotation.location.pageID == pageID else { throw KnowledgeStoreError.identityConflict(a.id) }; if old.annotation.referent.identity == a.referent.identity { a.referent = old.annotation.referent }; a.locationUnknownFields = old.annotation.locationUnknownFields }; try persistAnnotation(a,document:document,allowExisting:true) } }
+        for old in try annotationRows(pageID:pageID) where !incoming.contains(old.annotation.id) { var a=old.annotation; if case .wholeBlock = a.location, a.anchorDisposition == .resolved, let blockID=a.location.blockID, document.block(blockID) != nil { guard a.expectedRevision == (previousRevision?.token ?? Data()) else { throw KnowledgeStoreError.staleRevision }; a.expectedRevision=pageRevision.token }; if case .inline=a.location { a.anchorDisposition = .deleted }; if let b=a.location.blockID, document.block(b) == nil { a.anchorDisposition = .deleted }; try persistAnnotation(a,document:document,allowExisting:true) }
+    }
+    public func loadSemanticPage(pageID: UUID) throws -> SemanticPageSnapshot { try requireSemantic(); return try readTransaction { .init(snapshot:try load(pageID:pageID),annotations:try annotationRows(pageID:pageID)) } }
+    public func saveSemanticPage(_ incoming: SemanticPageEdit, condition: BlockStoreWriteCondition, expectedObjectRevisions: [UUID:BlockStoreRevision], expectedEntityRevisions: [UUID:BlockStoreRevision], expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<SemanticPageSnapshot> {
+        try requireSemantic(); return try transaction {
+            try checkedKnowledgeRevision(expectedVaultRevision); try checkKnowledgeOperation(operationID)
+            let existing=try annotationRows(pageID:incoming.pageID)
+            let old: BlockStoreSnapshot?
+            switch condition { case .createOnly: old=nil; case .replace(let expected): let value=try loadDocument(pageID:incoming.pageID); guard value.revision == expected else { throw KnowledgeStoreError.staleRevision }; old=value }
+            let edit: SemanticPageEdit
+            if let old { edit=incoming.preparingAnnotationsForPersistence(comparedTo:.init(snapshot:old,annotations:existing)) } else { edit=incoming }
+            for (id,rev) in expectedEntityRevisions { guard try entityInTransaction(id:id).revision == rev else { throw KnowledgeStoreError.staleRevision } }
+            for (id,rev) in expectedObjectRevisions { guard try objectInTransaction(id:id).revision == rev else { throw KnowledgeStoreError.staleRevision } }
+            for item in existing { guard edit.expectedAnnotationRevisions[item.annotation.id] == item.revision else { throw KnowledgeStoreError.staleRevision } }
+            guard Set(edit.annotations.map(\.id)).count == edit.annotations.count, Set(edit.objects.map(\.id)).count == edit.objects.count else { throw PersistencePayloadError.invalidAnnotation }
+            for object in edit.objects {
+                for id in object.relatedEntityIDs + [object.subjectEntityID].compactMap({$0}) { guard expectedEntityRevisions[id] != nil else { throw KnowledgeStoreError.staleRevision } }
+                if let prior = try? objectInTransaction(id:object.id), prior.object.lifecycle != .live { throw KnowledgeStoreError.tombstoned(object.id) }
+                _ = try persistObject(object,expected:expectedObjectRevisions[object.id])
+            }
+            for annotation in edit.annotations {
+                guard annotation.location.pageID == edit.pageID else { throw PersistencePayloadError.invalidAnnotation }
+                try validateAnnotationEvidence(annotation,document:edit.document,pageRevision:old?.revision)
+                if annotation.referent.disposition != .unresolved { let id=annotation.referent.identity.id
+                    if ["question","definition"].contains(annotation.referent.identity.kind) { guard expectedObjectRevisions[id] != nil || edit.objects.contains(where:{$0.id == id}) else { throw KnowledgeStoreError.staleRevision } }
+                    else { guard expectedEntityRevisions[id] != nil else { throw KnowledgeStoreError.staleRevision } }
+                }
+            }
+            var content=edit.document; content.extensions?.properties.removeValue(forKey:"annotations")
+            let snapshot=try persist(content,pageID:edit.pageID,condition:condition,metadata:nil,semanticProjection:false)
+            for var annotation in edit.annotations {
+                if annotation.anchorDisposition == .resolved { annotation.expectedRevision=snapshot.revision.token; if case .inline(let page,let block,var target)=annotation.location { target.digest=InlineAnnotationTarget.evidence(quote:target.quote,revision:annotation.expectedRevision); annotation.location = .inline(pageID:page,blockID:block,target:target) } }
+                _ = try persistAnnotation(annotation,document:snapshot.document,expected:edit.expectedAnnotationRevisions[annotation.id])
+            }
+            for prior in existing where !edit.annotations.contains(where:{$0.id == prior.annotation.id}) { var annotation=prior.annotation; annotation.anchorDisposition = .deleted; _ = try persistAnnotation(annotation,document:snapshot.document,expected:prior.revision) }
+            let result=SemanticPageSnapshot(snapshot:try loadDocument(pageID:edit.pageID),annotations:try annotationRows(pageID:edit.pageID))
+            let vault=try recordKnowledgeOperation(edit.pageID,revision:result.snapshot.revision,kind:"semanticPage",operationID:operationID)
+            return .init(value:result,vaultRevision:vault,operationID:operationID)
+        }
+    }
+    private func checkAnnotationOwner(_ location: SemanticLocation, expected: BlockStoreRevision) throws {
+        switch location {
+        case .entity(let id): let owner=try entityInTransaction(id:id); guard owner.revision == expected else { throw KnowledgeStoreError.staleRevision }; guard owner.entity.lifecycle == .live else { throw KnowledgeStoreError.tombstoned(id) }
+        case .object(let id): let owner=try objectInTransaction(id:id); guard owner.revision == expected else { throw KnowledgeStoreError.staleRevision }; guard owner.object.lifecycle == .live else { throw KnowledgeStoreError.tombstoned(id) }
+        default: throw VaultError.invalid("Content annotations require compound page save.")
+        }
+    }
+    public func saveAnnotation(_ annotation: SemanticAnnotation, condition: BlockStoreWriteCondition, expectedOwnerRevision: BlockStoreRevision, expectedReferentRevision: BlockStoreRevision?, expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<SemanticAnnotationSnapshot> {
+        try requireSemantic(); return try transaction {
+            try checkedKnowledgeRevision(expectedVaultRevision); try checkKnowledgeOperation(operationID); try checkAnnotationOwner(annotation.location,expected:expectedOwnerRevision)
+            if annotation.referent.disposition != .unresolved {
+                let id=annotation.referent.identity.id
+                let revision = try ["question","definition"].contains(annotation.referent.identity.kind) ? objectInTransaction(id:id).revision : entityInTransaction(id:id).revision
+                guard revision == expectedReferentRevision else { throw KnowledgeStoreError.staleRevision }
+            }
+            let expected: BlockStoreRevision?; switch condition { case .createOnly: expected=nil; case .replace(let revision): expected=revision }
+            let result=try persistAnnotation(annotation,expected:expected)
+            let vault=try recordKnowledgeOperation(result.annotation,revision:result.revision,kind:"semanticAnnotation",operationID:operationID)
+            return .init(value:result,vaultRevision:vault,operationID:operationID)
+        }
+    }
+    public func transitionAnnotation(id: UUID, to disposition: AnnotationDisposition, expected: BlockStoreRevision, expectedOwnerRevision: BlockStoreRevision, expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<SemanticAnnotationSnapshot> {
+        try requireSemantic(); return try transaction {
+            try checkedKnowledgeRevision(expectedVaultRevision); try checkKnowledgeOperation(operationID)
+            guard let old=try annotationInTransaction(id:id) else { throw KnowledgeStoreError.notFound(id) }
+            try checkAnnotationOwner(old.annotation.location,expected:expectedOwnerRevision)
+            var annotation=old.annotation; annotation.anchorDisposition=disposition; annotation.modifiedAt=Date()
+            let result=try persistAnnotation(annotation,expected:expected)
+            let vault=try recordKnowledgeOperation(result.annotation,revision:result.revision,kind:"semanticAnnotation",operationID:operationID)
+            return .init(value:result,vaultRevision:vault,operationID:operationID)
+        }
+    }
+    public func occurrences(entityID: UUID) throws -> [SemanticAnnotationSnapshot] {
+        try requireSemantic(); return try readTransaction { _ = try entityInTransaction(id:entityID); return Array(try annotationRows().filter { $0.annotation.referent.identity.id == entityID && ["person","place","concept"].contains($0.annotation.referent.identity.kind) }.prefix(1000)) }
+    }
+    public func annotations(pageID: UUID, blockID: UUID? = nil) throws -> [SemanticAnnotationSnapshot] {
+        try requireSemantic(); return try readTransaction { Array(try annotationRows(pageID:pageID).filter { blockID == nil || $0.annotation.location.blockID == blockID }.prefix(1000)) }
+    }
+    public func objects(pageID: UUID) throws -> [SemanticObjectSnapshot] {
+        try requireSemantic(); return try readTransaction {
+            let ids=Set(try annotationRows(pageID:pageID).filter { $0.annotation.referent.disposition != .unresolved && ["question","definition"].contains($0.annotation.referent.identity.kind) }.map { $0.annotation.referent.identity.id })
+            return try ids.sorted { $0.uuidString < $1.uuidString }.prefix(1000).map { try objectInTransaction(id:$0) }
+        }
+    }
+    public func questions(entityID: UUID, association: SemanticQuestionAssociation) throws -> [SemanticObjectSnapshot] {
+        try requireSemantic(); return try readTransaction {
+            _ = try entityInTransaction(id:entityID)
+            var ids=Set<UUID>()
+            switch association {
+            case .explicit:
+                let query=try statement("SELECT DISTINCT object_id FROM semantic_object_entities WHERE entity_id=? ORDER BY object_id LIMIT 10000",[.text(entityID.uuidString)]); defer { sqlite3_finalize(query) }
+                while true { let step=sqlite3_step(query); if step == SQLITE_DONE { break }; guard step == SQLITE_ROW, let id=UUID(uuidString:text(query,0)) else { throw failure() }; ids.insert(id) }
+            case .derivedOccurrences:
+                let annotations=try annotationRows(); let blocks=Set(annotations.filter { $0.annotation.referent.identity.id == entityID && $0.annotation.anchorDisposition == .resolved }.compactMap { a -> String? in guard let page=a.annotation.location.pageID,let block=a.annotation.location.blockID else { return nil }; return page.uuidString+block.uuidString })
+                for value in annotations where value.annotation.referent.identity.kind == "question" && value.annotation.referent.disposition != .unresolved && value.annotation.anchorDisposition == .resolved { if let page=value.annotation.location.pageID,let block=value.annotation.location.blockID,blocks.contains(page.uuidString+block.uuidString) { ids.insert(value.annotation.referent.identity.id) } }
+            }
+            return Array(try ids.sorted { $0.uuidString < $1.uuidString }.map { try objectInTransaction(id:$0) }.filter { $0.object.typeKey == "question" }.prefix(1000))
+        }
+    }
+    public func annotationsNeedingReview() throws -> [SemanticAnnotationSnapshot] {
+        try requireSemantic(); return try readTransaction { Array(try annotationRows().filter { $0.annotation.anchorDisposition != .resolved || $0.annotation.referent.disposition != .live }.prefix(1000)) }
+    }
+    public func committedSemanticAnnotationOperation(id: UUID) throws -> KnowledgeMutationResult<SemanticAnnotationSnapshot>? {
+        try requireSemantic(); return try readTransaction {
+            let q=try statement("SELECT result_payload,record_revision,vault_revision FROM knowledge_operations WHERE operation_id=? AND result_kind='semanticAnnotation'",[.text(id.uuidString)]); defer { sqlite3_finalize(q) }
+            let step=sqlite3_step(q); if step == SQLITE_DONE { return nil }; guard step == SQLITE_ROW else { throw failure() }
+            return .init(value:.init(annotation:try decoder.decode(SemanticAnnotation.self,from:blob(q,0)),revision:.init(token:blob(q,1))),vaultRevision:.init(token:blob(q,2)),operationID:id)
+        }
     }
 }

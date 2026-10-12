@@ -230,6 +230,44 @@ with an independent architectural approval required before implementation.
 | KNOW03 editing/publication | Verify UTF-16/grapheme boundaries for surrogate pairs, combining marks and joined emoji; exercise edge affinity, split/merge, move/style, replacement, delete, undo/redo and duplication; failed compound edits leave content/anchors at one revision. |
 | KNOW03 import/query/preservation | Reopen the Napoleonic Wars scenario; rename retains occurrences; duplicate content/annotations receive new identities with permitted canonical targets; collisions never overwrite identities; explicit relationships stay distinguishable from derived co-occurrence; purge never cascades unique preservation data. |
 
+### Implemented semantic ownership and review handoff (KNOW03)
+
+Fresh schema-5 staging and admission require manifest/database agreement on
+`canonicalKnowledgeV1`, `canonicalMetadataV1` and `semanticAnnotationsV1`.
+`VaultStorageProvider` selects the admitted root and lease; `SQLiteBlockStore`
+continues to own the sole canonical connection, statements and transactions.
+Unknown schema/capability declarations reject before connection construction;
+unsupported required registry descriptors, including nested metadata payloads,
+reject before writable schema preparation. Schema-3 creation defaults remain
+unchanged, and opening schema 4 never upgrades its authority to schema 5.
+
+| Semantic record | Authoritative owner and preservation |
+| --- | --- |
+| `semantic_object_types` | Actor-owned versioned Question/Definition registry; bounded optional descriptor JSON is retained and unknown required metadata denies admission. |
+| `semantic_objects`, `semantic_object_entities` | Independent object UUID/revision/lifecycle and designated entity links; entity identities are retained across content duplication. |
+| `semantic_annotations` | Independent annotation UUID/revision, typed location/referent, captured page/block identity and bounded payload; live same-page/block FKs are cleared for stale/deleted anchors while captured evidence survives. |
+
+Compound semantic page writes compare page, annotation, affected object, referent
+entity and vault revisions in one transaction. Entity/object annotation writes
+also compare owner/referent revisions. Plain saves and Trash/restore rebase
+resolved annotation evidence with the page revision; annotated page purge rejects
+without independent preservation. Public queries are bounded, while integrity and
+preservation scans cover the complete annotation authority. Document annotation
+extensions are projections of canonical rows after persistence, not a second
+writable catalogue. Exact structural edits and duplication preserve independent
+object/annotation identities and keep unresolved/tombstoned referents explicit.
+
+Independent KNOW03 review accepts these storage routes, revision checks, payload
+admission and preservation rules for the implemented fresh schema-5 scope; no new
+I/O exception or byte owner is authorized. See
+[semantic boundary tests](../../Tests/VaultCoreTests/SemanticBoundaryTests.swift),
+[lifecycle tests](../../Tests/VaultCoreTests/SemanticLifecycleTests.swift) and
+[admission tests](../../Tests/VaultCoreTests/SemanticAdmissionTests.swift).
+Future changes must repeat the separate author/reviewer procedure above, tracing
+public APIs through lease/root checks and pre-COMMIT validation. Automatic
+schema-4-to-5 conversion and production-default migration remain unimplemented;
+this acceptance does not widen STOR02B, archive, device or crash-durability gates.
+
 These are implementation gates, not evidence that KNOW01 executed runtime tests.
 Production schema-2-to-3 conversion, device/accessibility, filesystem/process/power-loss
 and transport acceptance remain standing gaps. Knowledge backup/archive and future
