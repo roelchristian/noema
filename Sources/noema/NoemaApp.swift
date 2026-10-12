@@ -104,6 +104,7 @@ import VaultCore
         .windowResizability(.contentSize)
         Settings {
             NoemaSettings(externalAIService: model.externalAIService, aiProviderPreferences: model.aiProviderPreferences, model: model)
+                .background(SettingsWindowState(phase: model.sessionPhase))
                 .systemNoemaTheme()
         }
     }
