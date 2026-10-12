@@ -96,6 +96,16 @@ struct ContentView: View {
         showAllSearchResults = false
         selectedSemanticFilter = nil
     }
+    private var sidebarColumnVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: { panePresentation.sidebar ? .all : .detailOnly },
+            set: { visibility in
+                let shown = visibility != .detailOnly
+                guard shown != panePresentation.sidebar else { return }
+                if shown { paneState.revealSidebar() } else { paneState.toggleSidebar(presented: true) }
+            }
+        )
+    }
     private var workspacePresentation: some View {
         Group {
             if model.isLocked {
@@ -105,26 +115,41 @@ struct ContentView: View {
             } else {
                 GeometryReader { geometry in
                     let presentation = paneState.presentation(width: geometry.size.width, mainMinimum: workspaceMinimum, inspectorAvailable: inspectorContext.isInspectable)
-                    HSplitView {
-                        if presentation.sidebar {
-                            sidebar.frame(minWidth: WorkspacePaneState.sidebarMinimum, idealWidth: paneState.sidebarWidth, maxWidth: WorkspacePaneState.sidebarMaximum, maxHeight: .infinity)
+                    // The native sidebar column runs the full window height; the window toolbar
+                    // and title then belong to the main (detail) panel only.
+                    NavigationSplitView(columnVisibility: sidebarColumnVisibility) {
+                        sidebar
+                            .navigationSplitViewColumnWidth(min: WorkspacePaneState.sidebarMinimum, ideal: paneState.sidebarWidth, max: WorkspacePaneState.sidebarMaximum)
+                            // Restores the saved width and remembers divider drags on the outer split.
+                            .background(WorkspaceSplitViewPersistence(
+                                state: paneState,
+                                presentation: WorkspacePanePresentation(sidebar: presentation.sidebar, inspector: false),
+                                mainMinimum: workspaceMinimum
+                            ))
+                    } detail: {
+                        HSplitView {
+                            mainWorkspace
+                                .frame(minWidth: workspaceMinimum, maxHeight: .infinity)
+                                .transaction { $0.animation = nil }
+                                .background(WorkspaceSplitViewPersistence(
+                                    state: paneState,
+                                    presentation: WorkspacePanePresentation(sidebar: false, inspector: presentation.inspector),
+                                    mainMinimum: workspaceMinimum
+                                ))
+                            if presentation.inspector {
+                                InspectorContainer(
+                                    model: model,
+                                    state: inspectorState,
+                                    context: inspectorContext,
+                                    onCloseSourceSelection: { model.setLibrarySourceSelection(nil) }
+                                )
+                                .transaction { $0.animation = nil }
+                            }
                         }
-                        mainWorkspace
-                            .frame(minWidth: workspaceMinimum, maxHeight: .infinity)
-                            .transaction { $0.animation = nil }
-                            .background(WorkspaceSplitViewPersistence(state: paneState, presentation: presentation, mainMinimum: workspaceMinimum))
-                        if presentation.inspector {
-                            InspectorContainer(
-                                model: model,
-                                state: inspectorState,
-                                context: inspectorContext,
-                                onCloseSourceSelection: { model.setLibrarySourceSelection(nil) }
-                            )
-                            .transaction { $0.animation = nil }
-                        }
+                        .transaction { $0.animation = nil }
                     }
+                    .navigationSplitViewStyle(.balanced)
                     .frame(width: geometry.size.width, height: geometry.size.height)
-                    .transaction { $0.animation = nil }
                 }
                 // Measure the available container, not the split's aggregate pane minimum.
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { workspaceWidth = $0 }
@@ -137,7 +162,6 @@ struct ContentView: View {
         .navigationTitle(model.windowTitle.title)
         .navigationSubtitle(model.windowTitle.hasSubtitle ? model.windowTitle.subtitle : "")
         .focusedSceneValue(\.workspacePaneActions, paneActions)
-        .toolbar(removing: .sidebarToggle)
         .toolbar { workspaceToolbar }
         .safeAreaInset(edge: .bottom, spacing: 0) { AISummaryProviderNotice(model: model) }
     }
@@ -977,15 +1001,6 @@ struct ContentView: View {
     // The scene supplies NoemaTheme tint; custom chrome tokens stay in pane content.
     @ToolbarContentBuilder private var workspaceToolbar: some ToolbarContent {
         if model.isVaultAvailable {
-            ToolbarItem(placement: .navigation) {
-                Button(action: toggleSidebarPane) {
-                    Label(panePresentation.sidebar ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left")
-                }
-                .disabled(!paneActions.canToggleSidebar)
-                .help(panePresentation.sidebar ? "Hide Sidebar (⌃⌘S)" : "Show Sidebar (⌃⌘S)")
-                .accessibilityLabel(panePresentation.sidebar ? "Hide Sidebar" : "Show Sidebar")
-                .accessibilityValue(panePresentation.sidebar ? "Shown" : "Hidden")
-            }
             ToolbarItem(placement: .navigation) {
                 Button { model.performWorkspaceCommand(.returnToLibrary) } label: {
                     Label("Return to Library", systemImage: "chevron.backward")
