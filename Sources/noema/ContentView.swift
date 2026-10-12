@@ -558,7 +558,7 @@ struct ContentView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .layoutPriority(1)
-            Spacer(minLength: NoemaSpacing.xs)
+            Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight, alignment: .leading)
         .contentShape(Rectangle())
@@ -574,7 +574,7 @@ struct ContentView: View {
     private func sidebarRecentRow(_ item: SidebarRecentItem) -> some View {
         let note = item.pageID.flatMap { id in model.notes.first { $0.id == id } }
         let active = sidebarSelection == .recent(item.id)
-        return HStack(spacing: NoemaSpacing.xs) {
+        return HStack(spacing: 2) {
             sidebarRowLabel(item.title, symbol: item.symbol)
             if let note {
                 SidebarEditingLockControl(locked: note.isEditingLocked,
@@ -1032,6 +1032,7 @@ struct ContentView: View {
                     .accessibilityLabel("Sort Pages")
                     .accessibilityValue(pageSortOrder.rawValue)
                 }
+                ToolbarSpacer(.fixed, placement: .primaryAction)
             }
             ToolbarItem(id: "workspace.add", placement: .primaryAction) {
                 Menu {
@@ -1053,6 +1054,7 @@ struct ContentView: View {
                 .accessibilityLabel("Add Page or Source")
             }
             if let note = model.currentNote {
+                ToolbarSpacer(.fixed, placement: .primaryAction)
                 ToolbarItem(id: "document.edit", placement: .primaryAction) {
                     Button {
                         if model.reading { model.beginEditing() } else { model.finishEditing() }
@@ -1088,62 +1090,66 @@ struct ContentView: View {
                 }
             }
             ToolbarSpacer(.fixed, placement: .primaryAction)
-            ToolbarItem(id: "workspace.more", placement: .primaryAction) {
-                Menu {
-                    if let note = model.currentNote {
-                        Button {
-                            pageName = model.title
-                            renamingPageID = note.id
-                        } label: { Label("Rename Page…", systemImage: "pencil") }
-                        .disabled(model.editingLocked || model.externalChange)
-                        AISummaryMenuCommands(model: model, target: .page(note.id))
-                        Divider()
-                        Button(role: .destructive) {
-                            trashPageID = note.id
-                            showTrashConfirmation = true
-                        } label: { Label("Move Page to Trash…", systemImage: "trash") }
-                        .disabled(!Self.canTrashPage(note, model: model))
-                        Divider()
-                    } else if let source = model.currentSource {
-                        Button {
-                            sourceName = source.title
-                            renamingSource = source
-                        } label: { Label("Rename Source…", systemImage: "pencil") }
-                        AISummaryMenuCommands(model: model, target: .source(source.id))
-                        if source.metadata.storedFilename.hasSuffix(".md") {
-                            Picker("Source View", selection: $sourceOriginal) {
-                                Text("Read").tag(false)
-                                Text("Original").tag(true)
-                            }
-                        }
-                        Divider()
-                        Button(role: .destructive) { deletingSource = source } label: {
-                            Label("Delete Source…", systemImage: "trash")
-                        }
-                        Divider()
-                    } else if model.scope == .sources {
-                        Button("Check Availability of All Sources") { model.checkSourceAvailability(model.sources) }
-                            .disabled(model.sources.isEmpty || !model.checkingSourceAvailability.isEmpty)
-                        Divider()
-                    }
-                    workspaceCommandButton("Open Another Vault…", .openVault)
-                    workspaceCommandButton("Reveal Vault in Finder", .revealVault)
-                    workspaceCommandButton("Refresh from Files", .refresh)
-                    workspaceCommandButton("Trash", .showTrash)
-                    workspaceCommandButton("Vault Notices (\(model.issues.count))", .notices)
-                    workspaceCommandButton("Recover Drafts (\(model.recoveredDrafts.count))" + (model.damagedRecoveryEntries.isEmpty ? "" : " · \(model.damagedRecoveryEntries.count) damaged"), .recovery)
-                    Divider()
-                    workspaceCommandButton("Lock Vault", .lock)
-                    workspaceCommandButton("Close Vault", .close)
-                } label: {
-                    Label("Document and Vault Options", systemImage: "ellipsis")
-                }
-                .menuIndicator(.hidden)
-                .help("Document and vault options")
-                .accessibilityLabel("Document and Vault Options")
-            }
-            ToolbarItem(id: "workspace.inspector", placement: .primaryAction) { inspectorToolbarToggle }
+            trailingWorkspaceToolbar
         }
+    }
+    @ToolbarContentBuilder private var trailingWorkspaceToolbar: some ToolbarContent {
+        ToolbarItem(id: "workspace.more", placement: .primaryAction) {
+            Menu {
+                if let note = model.currentNote {
+                    Button {
+                        pageName = model.title
+                        renamingPageID = note.id
+                    } label: { Label("Rename Page…", systemImage: "pencil") }
+                    .disabled(model.editingLocked || model.externalChange)
+                    AISummaryMenuCommands(model: model, target: .page(note.id))
+                    Divider()
+                    Button(role: .destructive) {
+                        trashPageID = note.id
+                        showTrashConfirmation = true
+                    } label: { Label("Move Page to Trash…", systemImage: "trash") }
+                    .disabled(!Self.canTrashPage(note, model: model))
+                    Divider()
+                } else if let source = model.currentSource {
+                    Button {
+                        sourceName = source.title
+                        renamingSource = source
+                    } label: { Label("Rename Source…", systemImage: "pencil") }
+                    AISummaryMenuCommands(model: model, target: .source(source.id))
+                    if source.metadata.storedFilename.hasSuffix(".md") {
+                        Picker("Source View", selection: $sourceOriginal) {
+                            Text("Read").tag(false)
+                            Text("Original").tag(true)
+                        }
+                    }
+                    Divider()
+                    Button(role: .destructive) { deletingSource = source } label: {
+                        Label("Delete Source…", systemImage: "trash")
+                    }
+                    Divider()
+                } else if model.scope == .sources {
+                    Button("Check Availability of All Sources") { model.checkSourceAvailability(model.sources) }
+                        .disabled(model.sources.isEmpty || !model.checkingSourceAvailability.isEmpty)
+                    Divider()
+                }
+                workspaceCommandButton("Open Another Vault…", .openVault)
+                workspaceCommandButton("Reveal Vault in Finder", .revealVault)
+                workspaceCommandButton("Refresh from Files", .refresh)
+                workspaceCommandButton("Trash", .showTrash)
+                workspaceCommandButton("Vault Notices (\(model.issues.count))", .notices)
+                workspaceCommandButton("Recover Drafts (\(model.recoveredDrafts.count))" + (model.damagedRecoveryEntries.isEmpty ? "" : " · \(model.damagedRecoveryEntries.count) damaged"), .recovery)
+                Divider()
+                workspaceCommandButton("Lock Vault", .lock)
+                workspaceCommandButton("Close Vault", .close)
+            } label: {
+                Label("Document and Vault Options", systemImage: "ellipsis")
+            }
+            .menuIndicator(.hidden)
+            .help("Document and vault options")
+            .accessibilityLabel("Document and Vault Options")
+        }
+        ToolbarSpacer(.fixed, placement: .primaryAction)
+        ToolbarItem(id: "workspace.inspector", placement: .primaryAction) { inspectorToolbarToggle }
     }
     private var pageFooter: some View {
         VStack(alignment: .leading, spacing: NoemaSpacing.md) {
@@ -1389,6 +1395,9 @@ private struct SidebarEditingLockControl: View {
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @FocusState private var focused: Bool
     private var actionTitle: String { locked ? "Unlock Editing" : "Lock Editing" }
+    private var isVisible: Bool {
+        NoemaChromePresentation.lockActionVisible(locked: locked, revealed: visible, pending: pending, focused: focused, voiceOver: voiceOver)
+    }
     var body: some View {
         Button(action: toggle) {
             Image(systemName: locked ? "lock.fill" : "lock.open")
@@ -1396,9 +1405,9 @@ private struct SidebarEditingLockControl: View {
                 .noemaChromeForeground(.textSecondary)
                 .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace, options: .speed(3)))
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: locked)
-                .opacity(NoemaChromePresentation.lockActionVisible(locked: locked, revealed: visible, pending: pending, focused: focused, voiceOver: voiceOver) ? 1 : 0)
-                .frame(width: NoemaMetrics.iconWidth)
-                .frame(minWidth: NoemaMetrics.toolbarControlHeight, minHeight: NoemaMetrics.compactRowHeight)
+                .opacity(isVisible ? 1 : 0)
+                .frame(width: isVisible ? NoemaMetrics.iconWidth : 0)
+                .frame(minWidth: isVisible ? 20 : 0, minHeight: NoemaMetrics.compactRowHeight)
                 .contentShape(Rectangle())
         }
         .buttonStyle(NoemaChromeButtonStyle(selected: selected, drawsSelection: false, focused: focused))
