@@ -19,34 +19,42 @@ import NoemaBrand
     }
     private let families = [("system", ""), ("serif", "Times New Roman"), ("missing", "Unavailable UI.TYP08 Family")]
 
+    // Eight representatives retain size/family/appearance boundaries and both
+    // reading measures; the complete Cartesian matrices remain opt-in.
+    private var layoutCases: [(family: String, size: Double, width: CGFloat, dark: Bool)] {
+        [
+            ("", 16, 420, false), ("", 16, 1040, true),
+            ("", 10, 420, true), ("", 32, 1040, false),
+            ("Times New Roman", 16, 420, false), ("Times New Roman", 32, 1040, true),
+            ("Unavailable UI.TYP08 Family", 10, 420, false),
+            ("Unavailable UI.TYP08 Family", 32, 1040, true)
+        ]
+    }
+
     @Test func editorNativeLayoutMatrixPreservesContentAndSelection() async throws {
         let original = document
         let serialized = BlockDocumentCodec.encode(original)
-        for (_, family) in families {
-            for size in [10.0, 16, 32] {
-                for width in [CGFloat(420), 1040] {
-                    for dark in [false, true] {
-                        let typography = EditorTypography(family: family, size: size)
-                        let theme = NoemaTheme(dark: dark)
-                        let view = ArticleTextView(frame: NSRect(x: 0, y: 0, width: width, height: 1100))
-                        view.theme = theme; view.typography = typography
-                        view.isEditable = false; view.isSelectable = true
-                        configure(view, theme: theme)
-                        for headings in [false, true] {
-                            view.showSemanticHeadings = headings
-                            view.textStorage?.setAttributedString(BlockTextStorage.render(original, theme: theme,
-                                showSemanticHeadings: headings, typography: typography))
-                            view.updateSemanticHeadingTopInset()
-                            let selection = NSRange(location: 22, length: 17)
-                            view.setSelectedRange(selection)
-                            try verifyLayout(view)
-                            #expect(view.selectedRange() == selection)
-                            let captured = BlockTextStorage.capture(try #require(view.textStorage), previous: original)
-                            #expect(captured == original)
-                            #expect(BlockDocumentCodec.encode(captured) == serialized)
-                        }
-                    }
-                }
+        for fixture in layoutCases {
+            let family = fixture.family, size = fixture.size
+            let width = fixture.width, dark = fixture.dark
+            let typography = EditorTypography(family: family, size: size)
+            let theme = NoemaTheme(dark: dark)
+            let view = ArticleTextView(frame: NSRect(x: 0, y: 0, width: width, height: 1100))
+            view.theme = theme; view.typography = typography
+            view.isEditable = false; view.isSelectable = true
+            configure(view, theme: theme)
+            for headings in [false, true] {
+                view.showSemanticHeadings = headings
+                view.textStorage?.setAttributedString(BlockTextStorage.render(original, theme: theme,
+                    showSemanticHeadings: headings, typography: typography))
+                view.updateSemanticHeadingTopInset()
+                let selection = NSRange(location: 22, length: 17)
+                view.setSelectedRange(selection)
+                try verifyLayout(view)
+                #expect(view.selectedRange() == selection)
+                let captured = BlockTextStorage.capture(try #require(view.textStorage), previous: original)
+                #expect(captured == original)
+                #expect(BlockDocumentCodec.encode(captured) == serialized)
             }
         }
     }
@@ -57,45 +65,41 @@ import NoemaBrand
         let htmlBytes = Data("<h1>Editorial reading</h1><p>\(prose)</p><h2>A second-level heading</h2><p>Body <b>bold</b> and <i>italic</i> and <code>inline code</code> and a <a href='https://example.com'>reference</a>.</p><h3>A third-level heading</h3><blockquote>A quotation uses the chosen reading family.</blockquote><ul><li>A list item with enough words to wrap naturally in a narrow reading viewport.</li><li>Another item</li></ul><pre>let knowledge = \"Keep the original\"</pre>".utf8)
         let imported = try NSAttributedString(data: htmlBytes, options: [.documentType: NSAttributedString.DocumentType.html], documentAttributes: nil)
         let originalImport = NSAttributedString(attributedString: imported)
-        for (_, family) in families {
-            for size in [10.0, 16, 32] {
-                for width in [CGFloat(420), 1040] {
-                    for dark in [false, true] {
-                        let typography = EditorTypography(family: family, size: size)
-                        let theme = NoemaTheme(dark: dark)
-                        let editor = BlockTextStorage.render(document, theme: theme, typography: typography)
-                        let sourceMarkdown = SourceTextPresentation.markdown(blocks, typography: typography, theme: theme)
-                        // Identical prose roles share native font and rhythm, even
-                        // though source/import structure remains consumer-owned.
-                        for text in ["Editorial reading", "A second-level heading", "A third-level heading", prose] {
-                            let e = (editor.string as NSString).range(of: text)
-                            let s = (sourceMarkdown.string as NSString).range(of: text)
-                            #expect(e.location != NSNotFound && s.location != NSNotFound)
-                            #expect(editor.attribute(.font, at: e.location, effectiveRange: nil) as? NSFont == sourceMarkdown.attribute(.font, at: s.location, effectiveRange: nil) as? NSFont)
-                            let ep = try #require(editor.attribute(.paragraphStyle, at: e.location, effectiveRange: nil) as? NSParagraphStyle)
-                            let sp = try #require(sourceMarkdown.attribute(.paragraphStyle, at: s.location, effectiveRange: nil) as? NSParagraphStyle)
-                            #expect(ep.lineSpacing == sp.lineSpacing)
-                            #expect(ep.paragraphSpacingBefore == sp.paragraphSpacingBefore)
-                        }
-                        for (_, content) in [("markdown", sourceMarkdown),
-                                                ("html", SourceTextPresentation.html(imported, typography: typography, theme: theme)),
-                                                ("plain", SourceTextPresentation.plainText(prose + "\n\n" + prose, typography: typography, theme: theme))] {
-                            let view = ReadingTextView(frame: NSRect(x: 0, y: 0, width: width, height: 1100))
-                            view.isEditable = false; view.isSelectable = true
-                            configure(view, theme: theme)
-                            view.replacePresentation(content, typography: typography)
-                            let selected = NSRange(location: 10, length: 19)
-                            view.setSelectedRange(selected)
-                            view.replacePresentation(content, typography: typography)
-                            try verifyLayout(view)
-                            #expect(view.selectedRange() == selected)
-                            #expect(view.string == content.string)
-                        }
-                        #expect(imported.isEqual(to: originalImport))
-                        #expect(Data(markdown.utf8) == bytes)
-                    }
-                }
+        for fixture in layoutCases {
+            let family = fixture.family, size = fixture.size
+            let width = fixture.width, dark = fixture.dark
+            let typography = EditorTypography(family: family, size: size)
+            let theme = NoemaTheme(dark: dark)
+            let editor = BlockTextStorage.render(document, theme: theme, typography: typography)
+            let sourceMarkdown = SourceTextPresentation.markdown(blocks, typography: typography, theme: theme)
+            // Identical prose roles share native font and rhythm, even
+            // though source/import structure remains consumer-owned.
+            for text in ["Editorial reading", "A second-level heading", "A third-level heading", prose] {
+                let e = (editor.string as NSString).range(of: text)
+                let s = (sourceMarkdown.string as NSString).range(of: text)
+                #expect(e.location != NSNotFound && s.location != NSNotFound)
+                #expect(editor.attribute(.font, at: e.location, effectiveRange: nil) as? NSFont == sourceMarkdown.attribute(.font, at: s.location, effectiveRange: nil) as? NSFont)
+                let ep = try #require(editor.attribute(.paragraphStyle, at: e.location, effectiveRange: nil) as? NSParagraphStyle)
+                let sp = try #require(sourceMarkdown.attribute(.paragraphStyle, at: s.location, effectiveRange: nil) as? NSParagraphStyle)
+                #expect(ep.lineSpacing == sp.lineSpacing)
+                #expect(ep.paragraphSpacingBefore == sp.paragraphSpacingBefore)
             }
+            for (_, content) in [("markdown", sourceMarkdown),
+                                    ("html", SourceTextPresentation.html(imported, typography: typography, theme: theme)),
+                                    ("plain", SourceTextPresentation.plainText(prose + "\n\n" + prose, typography: typography, theme: theme))] {
+                let view = ReadingTextView(frame: NSRect(x: 0, y: 0, width: width, height: 1100))
+                view.isEditable = false; view.isSelectable = true
+                configure(view, theme: theme)
+                view.replacePresentation(content, typography: typography)
+                let selected = NSRange(location: 10, length: 19)
+                view.setSelectedRange(selected)
+                view.replacePresentation(content, typography: typography)
+                try verifyLayout(view)
+                #expect(view.selectedRange() == selected)
+                #expect(view.string == content.string)
+            }
+            #expect(imported.isEqual(to: originalImport))
+            #expect(Data(markdown.utf8) == bytes)
         }
     }
 

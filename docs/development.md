@@ -6,7 +6,10 @@ Requires macOS 26+ and Apple's Swift 6 command-line tools. The standing referenc
 ./scripts/run.sh
 ./scripts/build.sh debug
 ./scripts/build.sh release
-./scripts/test.sh --skip-update
+./scripts/test.sh quick --skip-update
+./scripts/test.sh standard --targets VaultCoreTests,NativeAuthenticationTests --skip-update
+./scripts/test.sh extended --skip-update
+./scripts/compile.sh
 python3 scripts/check-storage-boundary.py --selftest
 python3 scripts/check-repository-hygiene.py --selftest
 codesign --verify --deep --strict dist/noema.app
@@ -17,6 +20,85 @@ Run commands at the repository root. The build packages and locally signs a sand
 External AI keys in these ad-hoc builds use the local login Keychain, with access restricted to the creating app. After rebuilding, an inaccessible saved key can be removed in OpenAI connection settings and saved again for the new build. Noema suppresses login-Keychain password dialogs for credential operations; if the Keychain is locked, unlock it separately in Keychain Access. A certificate-signed distribution requires provisioned app identity entitlements for the data-protection Keychain; changing signing modes does not migrate credentials. See the [credential contract](contracts/external-ai.md#authorization-lifecycle-contract).
 
 To inspect an OpenAI validation failure, open **Settings → Intelligence → OpenAI connection**, enable **OpenAI debug mode** while a vault is unlocked, retry the action, then expand **Latest rejected OpenAI response**. The raw bounded response can include private content. Debugging lasts only for the current vault session; disabling it or ending that session clears the response. It is never saved to logs or history.
+
+## Validation tiers and test discipline
+
+`quick` selects domain test targets before SwiftPM builds its graph and excludes the
+app/editor and specialised workloads. `standard --targets TargetA,TargetB` requires
+an explicit affected-target list; include editor tests for UI changes and relevant
+security/preservation tests when those boundaries change. `extended` runs every
+retained functional target and is required before merging significant integration
+work. Legacy flag-only `test.sh` calls retain full functional coverage. A SwiftPM
+`--filter` narrows execution within the chosen graph; it does not isolate compilation.
+
+Use `scripts/performance.sh` for opt-in benchmarks, the visual harnesses below for
+full appearance matrices/captures, and `scripts/validate-fixtures.sh` for sample-vault
+validation. `scripts/compile.sh` runs Swift compilation without icon generation,
+app packaging or signing. Inspect each script's help before choosing specialised
+SwiftPM flags. Native accessibility and crash-durability acceptance remain device checks.
+
+Each added test must demonstrate a distinct regression risk, boundary condition or
+contract. Extend an existing happy path when it already covers that risk. Reductions
+need evidence of equivalent retained assertions; moving an exhaustive matrix into
+specialised validation is different from deleting coverage. Protect transactional
+integrity, revision conflicts, source-byte preservation, migration rollback, recovery
+drafts, authentication, AI submission consent and stale-result rejection. Markdown
+tests remain required while Markdown storage and migration obligations are supported.
+
+## Test inventory and timing
+
+`python3 scripts/test-inventory.py` reports physical source files, lines, Swift Testing
+and XCTest declarations, parameterized declarations, known literal-array case counts
+and unresolved dynamic collections per test directory. `--json` includes declaration
+names/locations for before/after comparison. Counts include opt-in directories, not
+just the active graph. Literal arrays with two argument collections count their
+Cartesian product; `allCases`, dynamic arrays and loops require runtime logs. Neither
+declaration counts nor known static cases imply tests actually executed or passed.
+
+Capture inventory before a reduction in managed evidence, then repeat after it.
+Run `python3 scripts/test-test-inventory.py` when changing the scanner. Check selected
+SwiftPM graphs and verify every retained functional source remains in Extended;
+moving workloads must conserve protected regression assertions. Run
+`python3 scripts/test-validation-tiers.py` after manifest or runner changes; it
+checks target selection, legacy harness routing and build-reuse guards. Review
+runtime matrix cases as well as declaration counts; do not impose a numerical
+test cap. Describe each new test's distinct risk and chosen tier in the PR.
+
+Measure clean, incremental, warm and execution-only samples separately. Use the
+same Mac/toolchain, dependency resolution, tier, flags and scratch build path for a
+comparison; record the exact edit and retain failures. A clean build uses a fresh
+scratch path without deleting existing caches or user data. Establish that graph,
+then change one relevant source file for the incremental build. A comment-only edit
+measures invalidation, not a semantic change; identify which was used. Repeat the
+identical command without edits for warm end-to-end feedback. `--skip-build` gives
+execution-only timing after a successful matching wrapper build using the same tier,
+targets and specialised gates. Direct `swift` builds do not establish the wrapper's
+graph stamp; first rerun the matching normal wrapper. Take at least three samples
+per phase and compare medians; include filesystem-cache/dependency limitations.
+
+```sh
+python3 scripts/benchmark-validation.py --run-id test-clean-01 --phase clean -- \
+  ./scripts/test.sh quick --scratch-path .local/agent-runs/test-clean-01/build --skip-update
+# Preserve the shared scratch build while collecting dependent samples:
+touch .local/agent-runs/test-clean-01/.pinned
+# After a single recorded source-file edit, reuse that scratch path:
+python3 scripts/benchmark-validation.py --run-id test-incremental-01 --phase incremental \
+  --change 'Sources/VaultCore/<file>.swift: describe exact edit' -- \
+  ./scripts/test.sh quick --scratch-path .local/agent-runs/test-clean-01/build --skip-update
+python3 scripts/benchmark-validation.py --run-id test-warm-01 --phase warm -- \
+  ./scripts/test.sh quick --scratch-path .local/agent-runs/test-clean-01/build --skip-update
+python3 scripts/benchmark-validation.py --run-id test-execution-01 --phase execution -- \
+  ./scripts/test.sh quick --scratch-path .local/agent-runs/test-clean-01/build --skip-build
+```
+
+The recorder saves command, source revision/status, toolchain, inventory, elapsed
+wall time, exit code and full command output under a fresh managed run. Its timeout
+defaults to 300 seconds; increase explicitly for full builds. Pin any shared scratch
+run needed across samples so age-based cleanup cannot remove it. The recorder labels
+phases; the operator must satisfy each phase's cache/edit preconditions. No speedup
+or suite-reduction percentage is established until comparable successful samples
+are collected. The proposed 50% faster Quick feedback and 25–35% reduction remain
+provisional goals, and coverage takes priority over a numerical target.
 
 ## Repository retention
 
