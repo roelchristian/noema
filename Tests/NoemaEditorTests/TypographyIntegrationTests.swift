@@ -17,6 +17,8 @@ import NoemaBrand
         value.blocks.append(EditorBlock(runs: [RichRun("An idea remains ordinary readable prose.\nContinuation shares its baseline rhythm.")], metadata: metadata))
         return value
     }
+    private let families = [("system", ""), ("serif", "Times New Roman"), ("missing", "Unavailable UI.TYP08 Family")]
+
     // Eight representatives retain size/family/appearance boundaries and both
     // reading measures; the complete Cartesian matrices remain opt-in.
     private var layoutCases: [(family: String, size: Double, width: CGFloat, dark: Bool)] {
