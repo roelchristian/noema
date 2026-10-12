@@ -113,4 +113,19 @@ import VaultCore
         }
     }
 
+    @Test func mathematicalPresentationCacheTracksMacroChanges() throws {
+        let suite = "noema.edt04.math.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let first = try #require(TeXMacro(name: "value", body: "a"))
+        let second = try #require(TeXMacro(name: "value", body: "b"))
+        TeXMacroStore.save([first], to: defaults)
+        let initial = BlockTextStorage.renderedMath("\\value", display: true, defaults: defaults)
+        #expect(initial == TeXMath.render("\\value", display: true, macros: [first]))
+        TeXMacroStore.save([second], to: defaults)
+        let changed = BlockTextStorage.renderedMath("\\value", display: true, defaults: defaults)
+        #expect(changed == TeXMath.render("\\value", display: true, macros: [second]))
+        #expect(changed != initial)
+    }
+
 }

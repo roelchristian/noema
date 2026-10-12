@@ -115,11 +115,20 @@ extension NSAttributedString.Key {
     }
     private static var metadataCache: [(BlockMetadata, Data)] = []
     private static var mathCache: [String: String] = [:]
-    static func renderedMath(_ raw: String, display: Bool) -> String {
-        let macros = TeXMacroStore.load()
-        let key = String(display) + raw + "\u{0}" + macros.map(\.newcommandString).joined(separator: "\u{0}")
+    private static var cachedMacroSource = ""
+    private static var cachedMacros: [TeXMacro] = []
+    static func renderedMath(_ raw: String, display: Bool, defaults: UserDefaults = .standard) -> String {
+        // Reading one preferences string is cheap; decode macros only when it
+        // changes. Its bytes also version every mathematical presentation.
+        let source = defaults.string(forKey: TeXMacroStore.defaultsKey) ?? ""
+        if source != cachedMacroSource {
+            cachedMacroSource = source
+            cachedMacros = TeXMacroStore.load(from: defaults)
+            mathCache.removeAll(keepingCapacity: true)
+        }
+        let key = String(display) + raw + "\u{0}" + source
         if let rendered = mathCache[key] { return rendered }
-        let rendered = TeXMath.render(raw, display: display, macros: macros)
+        let rendered = TeXMath.render(raw, display: display, macros: cachedMacros)
         if mathCache.count >= 256 { mathCache.removeAll(keepingCapacity: true) }
         mathCache[key] = rendered
         return rendered
