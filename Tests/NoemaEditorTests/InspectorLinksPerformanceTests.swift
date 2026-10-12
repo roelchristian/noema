@@ -132,7 +132,8 @@ struct InspectorLinksPerformanceTests {
         #expect(!cache.hasCachedLookup)
     }
 
-    @Test func benchmarkActualLinksPresentationPathWithFiveThousandPages() {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["NOEMA_PERFORMANCE_TESTS"] == "1"))
+    func benchmarkActualLinksPresentationPathWithFiveThousandPages() {
         let notes = (0..<5_000).map { index in
             note(title: "Research Page \(index)", aliases: ["Legacy Topic \(index)", "Citation \(index)"], body: "A body that the resolver never reads.")
         }

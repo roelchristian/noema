@@ -182,6 +182,9 @@ private func temporaryFolder() throws -> URL {
     #expect(try await index.search("Pertinax", kind: .source, tag: nil).count == 1)
     #expect(try await index.backlinks(to: renamed) == [related.id])
     #expect(try await index.cachedEntries().notes.count == 2)
+    let reopened = try SQLiteSearchIndex(url: folder.appendingPathComponent("Local/index.sqlite"))
+    #expect(try await reopened.cachedEntries().notes.count == 2)
+    #expect(try await reopened.search("Pertinax", kind: .wiki, tag: "history").count == 2)
     // Treat punctuation as literal user text, never arbitrary FTS query syntax.
     _ = try await index.search("\" OR )", kind: .wiki, tag: nil)
     let rebuilt = try SQLiteSearchIndex(url: folder.appendingPathComponent("Rebuilt/index.sqlite"))
@@ -209,8 +212,8 @@ private func temporaryFolder() throws -> URL {
     #expect(try await reopened.drafts().isEmpty)
 }
 
-@Test func benchmarkFiveThousandEntries() async throws {
-    guard ProcessInfo.processInfo.environment["VAULT_BENCHMARK"] == "1" else { return }
+@Test(.enabled(if: ProcessInfo.processInfo.environment["NOEMA_PERFORMANCE_TESTS"] == "1"))
+func benchmarkFiveThousandEntries() async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
     let repo = try FileVaultRepository.open(root: folder, create: true)
     for i in 0..<5000 {

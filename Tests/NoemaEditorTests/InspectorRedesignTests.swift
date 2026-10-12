@@ -413,7 +413,8 @@ struct InspectorRedesignTests {
         #expect(cache.currentCachedNoteID == nil)
     }
 
-    @Test @MainActor func benchmarkTabSwitchingAgainstLegacyStackedDecode() {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["NOEMA_PERFORMANCE_TESTS"] == "1"))
+    @MainActor func benchmarkTabSwitchingWithCachedInsights() {
         var blocks: [EditorBlock] = []
         for i in 0..<240 {
             var meta = BlockMetadata()
@@ -427,16 +428,7 @@ struct InspectorRedesignTests {
         let context = InspectorContext.page(note)
         let clock = ContinuousClock()
 
-        // Legacy behavior: every inspector evaluation decoded BlockDocument unconditionally
-        let legacyDuration = clock.measure {
-            for _ in 0..<200 {
-                let decoded = BlockDocumentCodec.decode(richBody)
-                #expect(decoded.aiSummary != nil)
-                #expect(!decoded.semanticGroups.isEmpty)
-            }
-        }
-
-        // New tabbed behavior: 200 tab switches across Links, References, Tags, Properties, and Insights
+        // 200 tab switches across Links, References, Tags, Properties, and Insights.
         let state = InspectorState()
         let tabs = InspectorTab.pageTabs
         let tabbedDuration = clock.measure {
@@ -451,7 +443,7 @@ struct InspectorRedesignTests {
         }
 
         #expect(state.insightsCache.decodeCount == 1)
-        print("INSPECTOR_BENCHMARK 200 passes (240 blocks): legacy unconditional decode=\(legacyDuration), tabbed inspector with cached Insights=\(tabbedDuration), insights decodes=\(state.insightsCache.decodeCount)")
+        print("INSPECTOR_BENCHMARK 200 passes (240 blocks): tabbed inspector with cached Insights=\(tabbedDuration), insights decodes=\(state.insightsCache.decodeCount)")
     }
 
     @Test @MainActor func inspectorContainerRendersAllTabsInLightAndDarkAppearancesAcrossWidthBounds() throws {

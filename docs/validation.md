@@ -218,11 +218,13 @@ reader closing and availability; this does not sign off interrupted cleanup conf
 ## Performance expectations
 
 ```sh
-VAULT_BENCHMARK=1 ./scripts/test.sh --filter benchmarkFiveThousandEntries
-SOURCES_BENCHMARK=1 ./scripts/test.sh --filter benchmarkSixteenSourceRowsAndUnchangedUpdates
-SOURCES_SCAN_BENCHMARK=1 ./scripts/test.sh --filter sixteenSourceReadCountBenchmark
-./scripts/test.sh --filter benchmarkActualLinksPresentationPathWithFiveThousandPages
+./scripts/performance.sh --skip-update
 ```
+
+The single opt-in performance suite selects the five `benchmark` workloads and
+enables them with `NOEMA_PERFORMANCE_TESTS=1`. Routine tests report these workloads
+as skipped. Small functional tests retain cache-reuse, read-count and indexing
+assertions without timing measurements or historical before/after comparisons.
 
 - 5,000-entry service benchmark targets cached loading below 2 s and search p95
   below 150 ms. Historical scan/index timings are not app launch/render latency.
