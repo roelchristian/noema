@@ -58,7 +58,11 @@ declaration counts nor known static cases imply tests actually executed or passe
 Capture inventory before a reduction in managed evidence, then repeat after it.
 Run `python3 scripts/test-test-inventory.py` when changing the scanner. Check selected
 SwiftPM graphs and verify every retained functional source remains in Extended;
-moving workloads must conserve protected regression assertions.
+moving workloads must conserve protected regression assertions. Run
+`python3 scripts/test-validation-tiers.py` after manifest or runner changes; it
+checks target selection, legacy harness routing and build-reuse guards. Review
+runtime matrix cases as well as declaration counts; do not impose a numerical
+test cap. Describe each new test's distinct risk and chosen tier in the PR.
 
 Measure clean, incremental, warm and execution-only samples separately. Use the
 same Mac/toolchain, dependency resolution, tier, flags and scratch build path for a
