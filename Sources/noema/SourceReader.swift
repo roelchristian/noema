@@ -102,6 +102,11 @@ import VaultCore
                         return
                     }
                 }
+                // Snapshot creation suspends; validate the owning lease again after it
+                // and the optional caller predicate, including direct reader entry points.
+                if let gated = contentStore as? GatedVaultContentStore {
+                    try gated.validateAccess(operation: "SourceReader.presentPreview")
+                }
                 preview.previewItem = (snapshot?.url ?? url) as NSURL
                 window.contentView = preview
             }
