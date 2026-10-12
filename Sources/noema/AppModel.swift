@@ -158,7 +158,14 @@ struct AISuggestion: Identifiable, Sendable {
     private var semanticRowsRevision: UUID?
     private var semanticRowsEditorRevision: UUID?
     var selectedSemanticID: String?
-    var recentPageIDs: [UUID] = []
+    private var sidebarRecentHistory = SidebarRecentHistory()
+    var sidebarRecentDefaults: UserDefaults = .standard
+    private var sidebarRecentVaultID: UUID?
+    private var sidebarRecentCacheRevision: UUID?
+    private var sidebarRecentCacheEditorRevision: UUID?
+    private var sidebarRecentCache: [SidebarRecentItem] = []
+    private(set) var selectedSidebarRecentItemID: RecentItemID?
+    var recentItemIDs: [RecentItemID] { isLocked ? [] : sidebarRecentHistory.ids }
     private(set) var editingLockOperations: Set<UUID> = []
     var tags: [String] = []
     var wordCount = 0
@@ -343,6 +350,7 @@ struct AISuggestion: Identifiable, Sendable {
     ) {
         self.activityRecorder = activityRecorder
         self.storageProvider = storageProvider
+        self.sidebarRecentDefaults = aiDefaults
         self.aiPreferenceDefaults = aiDefaults
         self.aiProviderPreferences = AIProviderPreferences(defaults: aiDefaults)
         self.sessionManager = sessionManager
@@ -485,28 +493,75 @@ struct AISuggestion: Identifiable, Sendable {
         if case .tag(let tag) = scope { return tag }
         return nil
     }
-    var recentPages: [NoteRecord] {
+    var sidebarRecentItems: [SidebarRecentItem] {
+        guard canOperateOnLoadedContent, !isLocked else { return [] }
+        if sidebarRecentCacheRevision == libraryCatalogRevision,
+           sidebarRecentCacheEditorRevision == cloudEditorRevision { return sidebarRecentCache }
         let noteMap = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let accessed = recentPageIDs.compactMap { noteMap[$0] }
-        let accessedSet = Set(accessed.map(\.id))
-        let remaining = notes.filter { !accessedSet.contains($0.id) }.sorted {
-            sidebarUpdatedDate($0) > sidebarUpdatedDate($1)
+        let sourceMap = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        sidebarRecentCache = recentItemIDs.compactMap { id in
+            switch id {
+            case .page(let pageID):
+                guard let note = noteMap[pageID] else { return nil }
+                let label = currentNote?.id == pageID ? title : note.title
+                return SidebarRecentItem(id: id, title: label, symbol: "doc.text", accessibilityLabel: "Page, \(label)", pageID: pageID)
+            case .source(let sourceID):
+                guard let source = sourceMap[sourceID], source.contentState != .unavailable, source.availabilityIssue == nil else { return nil }
+                return SidebarRecentItem(id: id, title: source.title, symbol: source.metadata.isLinked ? "link" : "doc", accessibilityLabel: "Source, \(source.title)", pageID: nil)
+            case .semanticBlock(let pageID, let blockID):
+                guard let note = noteMap[pageID] else { return nil }
+                let content = currentNote?.id == pageID ? body : note.body
+                guard let block = BlockDocumentCodec.decode(content).block(blockID) else { return nil }
+                let label = block.text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+                let semantic = SemanticPresentation.find(block.metadata.semantic)
+                let pageTitle = currentNote?.id == pageID ? title : note.title
+                return SidebarRecentItem(id: id, title: label.isEmpty ? "Untitled block" : label,
+                    symbol: semantic?.symbol ?? "square.stack", accessibilityLabel: "\(semantic?.title ?? "Semantic block"), \(label), in \(pageTitle)", pageID: pageID)
+            }
         }
-        return Array((accessed + remaining).prefix(5))
+        sidebarRecentCacheRevision = libraryCatalogRevision
+        sidebarRecentCacheEditorRevision = cloudEditorRevision
+        return sidebarRecentCache
     }
-    var allPagesByUpdated: [NoteRecord] {
-        notes.sorted {
-            let lhs = sidebarUpdatedDate($0)
-            let rhs = sidebarUpdatedDate($1)
-            if lhs != rhs { return lhs > rhs }
-            return $0.title.localizedStandardCompare($1.title) == .orderedAscending
+
+    private func recentPreferenceKey(_ vaultID: UUID) -> String { "noema.sidebarRecentItems.v1.\(vaultID.uuidString)" }
+
+    private func restoreSidebarRecentHistory(vaultID: UUID) {
+        sidebarRecentVaultID = vaultID
+        let decoded = sidebarRecentDefaults.data(forKey: recentPreferenceKey(vaultID))
+            .flatMap { try? JSONDecoder().decode([RecentItemID].self, from: $0) } ?? []
+        sidebarRecentHistory = SidebarRecentHistory(ids: decoded)
+        sidebarRecentCacheRevision = nil
+    }
+
+    private func persistSidebarRecentHistory() {
+        guard let vaultID = sidebarRecentVaultID ?? repository?.manifest.id,
+              let data = try? JSONEncoder().encode(sidebarRecentHistory.ids) else { return }
+        sidebarRecentDefaults.set(data, forKey: recentPreferenceKey(vaultID))
+    }
+
+    private func recordSidebarAccess(_ id: RecentItemID) {
+        guard canOperateOnLoadedContent, !isLocked else { return }
+        sidebarRecentHistory.record(id)
+        selectedSidebarRecentItemID = id
+        sidebarRecentCacheRevision = nil
+        persistSidebarRecentHistory()
+    }
+
+    private func pruneSidebarRecentHistory() {
+        sidebarRecentCacheRevision = nil
+        let valid = Set(sidebarRecentItems.map(\.id))
+        sidebarRecentHistory.prune(keeping: valid)
+        if let selectedSidebarRecentItemID, !valid.contains(selectedSidebarRecentItemID) { self.selectedSidebarRecentItemID = nil }
+        persistSidebarRecentHistory()
+    }
+
+    func openSidebarRecentItem(_ id: RecentItemID) {
+        switch id {
+        case .page(let pageID): select(pageID, scope: .wiki)
+        case .source(let sourceID): select(sourceID, scope: .sources, previewSource: true)
+        case .semanticBlock(let pageID, let blockID): select(pageID, scope: .wiki, block: blockID)
         }
-    }
-    private func sidebarUpdatedDate(_ note: NoteRecord) -> Date {
-        LibraryRow.date(note.updatedAt) ?? .distantPast
-    }
-    var recentSources: [SourceRecord] {
-        Array(sources.sorted { $0.metadata.capturedAt > $1.metadata.capturedAt }.prefix(10))
     }
     var linkSuggestions: [NoteRecord] {
         guard let wikiQuery else { return [] }
@@ -650,7 +705,9 @@ struct AISuggestion: Identifiable, Sendable {
         semanticRowsRevision = nil; semanticRowsEditorRevision = nil
         notes = []; sources = []; rows = []; semanticRows = []; trashedPages = []; recoveredDrafts = []; damagedRecoveryEntries = []; issues = []
         dismissedVaultNotices = []
-        tags = []; backlinks = []; outgoingLinkTargets = []; preview = []; recentPageIDs = []; unseenRenamedPages = []
+        tags = []; backlinks = []; outgoingLinkTargets = []; preview = []; unseenRenamedPages = []
+        sidebarRecentHistory = SidebarRecentHistory(); sidebarRecentVaultID = nil
+        selectedSidebarRecentItemID = nil; sidebarRecentCacheRevision = nil; sidebarRecentCache = []
         resetSearch(); scope = .wiki
         setLibrarySourceSelection(nil)
         selectedID = nil; selectedSemanticID = nil; currentNote = nil; currentSource = nil
@@ -1654,7 +1711,7 @@ struct AISuggestion: Identifiable, Sendable {
             lockedVaultURL = nil
             repository = repo; index = searchIndex; recovery = journal
             unseenRenamedPages.removeAll()
-            recentPageIDs.removeAll()
+            restoreSidebarRecentHistory(vaultID: vaultID)
             root = url; vaultName = url.lastPathComponent; scope = .wiki; resetSearch()
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
             title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0; reading = true
@@ -1838,7 +1895,7 @@ struct AISuggestion: Identifiable, Sendable {
             lockedVaultURL = nil
             repository = repo; index = searchIndex; recovery = journal
             unseenRenamedPages.removeAll()
-            recentPageIDs.removeAll()
+            restoreSidebarRecentHistory(vaultID: vaultID)
             root = candidateURL; vaultName = candidateURL.lastPathComponent; scope = .wiki; resetSearch()
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
             title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0; reading = true
@@ -1987,6 +2044,7 @@ struct AISuggestion: Identifiable, Sendable {
             } else if let note = currentNote, !notes.contains(where: { $0.id == note.id }), !saving {
                 externalChange = true
             }
+            pruneSidebarRecentHistory()
             try await index.reconcile(result)
             guard isCompletionValid(completionTicket, operation: "refresh.reconcile") else { return }
             try Task.checkCancellation()
@@ -2054,7 +2112,7 @@ struct AISuggestion: Identifiable, Sendable {
             self.autosaveTask?.cancel(); self.wikiQuery = nil; self.editorAction = nil
             self.scope = scope
             if scope == .trash { self.searchText = "" }
-            self.selectedID = nil; self.currentNote = nil; self.currentSource = nil; self.selectedSemanticID = nil
+            self.selectedID = nil; self.currentNote = nil; self.currentSource = nil; self.selectedSemanticID = nil; self.selectedSidebarRecentItemID = nil
             self.externalChange = false; self.errorMessage = nil; self.reading = true
             if self.searchText.isEmpty {
                 switch scope {
@@ -2214,7 +2272,7 @@ struct AISuggestion: Identifiable, Sendable {
             errorMessage = error.localizedDescription
         }
     }
-    func select(_ id: UUID?, scope targetScope: LibraryScope? = nil, block blockID: UUID? = nil) {
+    func select(_ id: UUID?, scope targetScope: LibraryScope? = nil, block blockID: UUID? = nil, previewSource: Bool = false) {
         guard canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: id)
         Task {
@@ -2228,12 +2286,39 @@ struct AISuggestion: Identifiable, Sendable {
                 await updateRows()
                 guard isCompletionValid(completionTicket, operation: "select.updateRows") else { return }
             }
+            if let blockID {
+                guard let note = notes.first(where: { $0.id == id }), BlockDocumentCodec.decode(note.body).block(blockID) != nil else {
+                    if let id { sidebarRecentHistory.prune(keeping: Set(recentItemIDs.filter { $0 != .semanticBlock(pageID: id, blockID: blockID) })); sidebarRecentCacheRevision = nil; persistSidebarRecentHistory() }
+                    return
+                }
+            }
+            selectedSidebarRecentItemID = nil
             selectedID = id; currentSource = nil; currentNote = nil; externalChange = false; errorMessage = nil
             reading = true
-            if let note = notes.first(where: { $0.id == id }) { apply(note) }
+            if let note = notes.first(where: { $0.id == id }) {
+                apply(note)
+                recordSidebarAccess(blockID.map { .semanticBlock(pageID: note.id, blockID: $0) } ?? .page(note.id))
+            }
             else if let source = sources.first(where: { $0.id == id }) {
+                var source = source
+                if previewSource, source.contentState == .notLoaded, let repository {
+                    do { source = try await repository.loadSource(id: source.id) }
+                    catch { if isCompletionValid(completionTicket, operation: "select.loadSource.error") { errorMessage = error.localizedDescription }; return }
+                    guard isCompletionValid(completionTicket, operation: "select.loadSource") else { return }
+                    if let position = sources.firstIndex(where: { $0.id == source.id }) { sources[position] = source }
+                }
                 currentSource = source; title = source.title; body = source.body; reading = true
-                generatePreview(); backlinks = []; outgoingLinkTargets = []
+                generatePreview(recordSourceAccess: !previewSource); backlinks = []; outgoingLinkTargets = []
+                if previewSource, let root, let repository {
+                    do {
+                        try await SourceReader.open(source, root: root, contentStore: repository.contentStore,
+                            isStillValid: { [weak self] in self?.isCompletionValid(completionTicket, operation: "select.sourceReader") == true })
+                        guard isCompletionValid(completionTicket, operation: "select.sourceReader.presented") else { return }
+                        if SourceReader.openReaderIDs.contains(source.id) { recordSidebarAccess(.source(source.id)) }
+                    } catch {
+                        if isCompletionValid(completionTicket, operation: "select.sourceReader.error") { errorMessage = error.localizedDescription }
+                    }
+                }
             } else {
                 title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0
                 editorNotice = nil; editingHint = nil; editorReadOnly = false
@@ -2263,8 +2348,6 @@ struct AISuggestion: Identifiable, Sendable {
         let isDifferentPage = currentNote?.id != note.id
         lccSaveTask?.cancel()
         markPageViewed(note.id)
-        recentPageIDs.removeAll { $0 == note.id }
-        recentPageIDs.insert(note.id, at: 0)
         editingHint = nil
         aiSummaryNotice = nil
         editorAction = nil
@@ -2367,6 +2450,8 @@ struct AISuggestion: Identifiable, Sendable {
             guard isCompletionValid(completionTicket, operation: "openBlockURL.finish") else { return }
             guard let note = notes.first(where: { $0.id == noteID }), BlockDocumentCodec.decode(note.body).block(blockID) != nil else { errorMessage = "This block link is not available in the open vault."; return }
             autosaveTask?.cancel(); selectedID = noteID; currentSource = nil; apply(note); reading = true
+            selectedSemanticID = "\(noteID):\(blockID)"
+            recordSidebarAccess(.semanticBlock(pageID: noteID, blockID: blockID))
             editorAction = EditorAction(operation: .block(blockID)); await updateBacklinks()
         }
     }
@@ -2590,7 +2675,7 @@ struct AISuggestion: Identifiable, Sendable {
         guard isVaultAvailable else { return }
         Task { _ = await finishCurrentPage() }
     }
-    func generatePreview() {
+    func generatePreview(recordSourceAccess: Bool = false) {
         previewTask?.cancel()
         guard canOperateOnLoadedContent else { return }
         let captured = body
@@ -2607,6 +2692,7 @@ struct AISuggestion: Identifiable, Sendable {
                 operation: "generatePreview"
             ) else { return }
             preview = blocks; wordCount = count
+            if recordSourceAccess, let source = currentSource, source.contentState == .loaded, source.availabilityIssue == nil { recordSidebarAccess(.source(source.id)) }
         }
     }
     private func updateTags() { tags = Array(Set(notes.flatMap(\.allTags))).sorted() }
@@ -2628,6 +2714,7 @@ struct AISuggestion: Identifiable, Sendable {
                 errorMessage = nil
                 notes.insert(note, at: 0); scope = .wiki; reading = false
                 selectedID = note.id; currentSource = nil; apply(note)
+                recordSidebarAccess(.page(note.id))
                 await refresh()
             } catch { if isCompletionValid(completionTicket, operation: "newPage.error") { errorMessage = error.localizedDescription } }
         }
@@ -2728,6 +2815,7 @@ struct AISuggestion: Identifiable, Sendable {
                 guard isCompletionValid(completionTicket, operation: "saveDraftAsNewPage") else { return }
                 applyRecoveryListing(drafts)
                 notes.insert(note, at: 0); scope = .wiki; currentSource = nil; selectedID = note.id; apply(note)
+                recordSidebarAccess(.page(note.id))
                 errorMessage = nil; showRecovery = false; await refresh()
             } catch { if isCompletionValid(completionTicket, operation: "saveDraftAsNewPage.error") { errorMessage = error.localizedDescription } }
         }
@@ -3182,6 +3270,9 @@ struct AISuggestion: Identifiable, Sendable {
                         self?.isCompletionValid(completionTicket, operation: "openSource.reader") == true
                     }
                 )
+                if isCompletionValid(completionTicket, operation: "openSource.presented"), SourceReader.openReaderIDs.contains(source.id) {
+                    recordSidebarAccess(.source(source.id))
+                }
             } catch { if isCompletionValid(completionTicket, operation: "openSource.error") { errorMessage = error.localizedDescription } }
         }
     }
@@ -3417,6 +3508,7 @@ extension AppModel {
             aiPageDraft = nil; aiPageSubmission = nil; aiPageOperationID = nil; aiPageActivityID = nil
             errorMessage = nil; searchText = ""; scope = .wiki; reading = false
             notes.insert(saved, at: 0); selectedID = saved.id; currentSource = nil; apply(saved)
+            recordSidebarAccess(.page(saved.id))
             await refresh()
             return true
         } catch {

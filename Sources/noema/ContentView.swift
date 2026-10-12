@@ -10,13 +10,7 @@ struct ContentView: View {
     }
     @Bindable var model: AppModel
     @Environment(\.noemaTheme) private var theme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.appearsActive) private var activeWindow
     @State private var showAllSearchResults = false
-    @FocusState private var sidebarTabFocused: String?
-    @FocusState private var sidebarPageFocused: UUID?
-    @FocusState private var sidebarItemFocused: String?
-    @FocusState private var sidebarFooterFocused: String?
     @State private var showTrashConfirmation = false
     @State private var hoveredSidebarPageID: UUID?
     @State private var trashPageID: UUID?
@@ -29,8 +23,6 @@ struct ContentView: View {
     @State private var inspectorState: InspectorState
     @State private var paneState: WorkspacePaneState
     @State private var workspaceWidth: CGFloat = 1280
-    @State private var recentSectionExpanded = true
-    @State private var allPagesSectionExpanded = true
     @State private var pageSortOrder: PageSortOrder = .updated
     private var sourceSelection: UUID? { model.librarySourceSelection }
     private var sourceSelectionBinding: Binding<UUID?> {
@@ -77,12 +69,7 @@ struct ContentView: View {
     private var inspectorContext: InspectorContext {
         InspectorContext.resolve(model: model, librarySourceSelection: sourceSelection)
     }
-    private var tabAnimation: Animation? {
-        reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.84, blendDuration: 0.1)
-    }
     private func switchSidebarScope(_ scope: LibraryScope) {
-        // Tab chrome animates via `.animation(_, value: activeSidebarTab)`; wrapping the whole scope
-        // change in withAnimation also animated the heavy Table/workspace and made switches jitter.
         showAllSearchResults = false
         SourcesPerformance.event("SidebarScopeChange")
         model.changeScope(scope)
@@ -347,136 +334,75 @@ struct ContentView: View {
         if case .tag = model.scope { return true }
         return false
     }
-    private var activeSidebarTab: LibraryScope {
-        switch model.scope {
-        case .sources: return .sources
-        case .semantic: return .semantic
-        case .trash: return .trash
-        case .wiki, .tag: return .wiki
+    private enum SidebarSelection: Hashable {
+        case destination(LibraryScope)
+        case recent(RecentItemID)
+    }
+    private var sidebarSelection: SidebarSelection? {
+        if let id = model.selectedSidebarRecentItemID,
+           model.currentNote != nil || model.currentSource != nil {
+            return .recent(id)
         }
+        if model.currentSource != nil { return .destination(.sources) }
+        if let note = model.currentNote { return .recent(.page(note.id)) }
+        switch model.scope {
+        case .wiki, .tag: return .destination(.wiki)
+        case .sources: return .destination(.sources)
+        case .semantic: return .destination(.semantic)
+        case .trash: return nil
+        }
+    }
+    private var sidebarSelectionBinding: Binding<SidebarSelection?> {
+        Binding(get: { sidebarSelection }, set: { selection in
+            guard let selection else { return }
+            showAllSearchResults = false
+            switch selection {
+            case .destination(let scope):
+                model.setLibrarySourceSelection(nil)
+                switchSidebarScope(scope)
+            case .recent(let id):
+                model.openSidebarRecentItem(id)
+            }
+        })
     }
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: NoemaSpacing.sm) {
-                HStack(spacing: NoemaSpacing.sm) {
-                    NoemaMark(presentation: .glyph).frame(width: 20, height: 20).accessibilityHidden(true)
-                    Text("Noema").font(NoemaTypography.navigationEmphasis).foregroundStyle(theme.text(for: .textPrimary, on: .sidebar))
-                    Spacer()
-                }
-                Group {
-                    HStack(spacing: NoemaSpacing.xs) {
-                        sidebarTabButton(
-                            title: "Pages",
-                            symbol: "book.closed",
-                            count: model.notes.count,
-                            showLabel: activeSidebarTab == .wiki
-                        ) {
-                            switchSidebarScope(.wiki)
-                        }
-                        sidebarTabButton(
-                            title: "Sources",
-                            symbol: "tray.full",
-                            count: model.sources.count,
-                            showLabel: activeSidebarTab == .sources
-                        ) {
-                            switchSidebarScope(.sources)
-                        }
-                        sidebarTabButton(
-                            title: "Semantic Blocks",
-                            symbol: "tag",
-                            count: nil,
-                            showLabel: activeSidebarTab == .semantic
-                        ) {
-                            switchSidebarScope(.semantic)
-                        }
-                    }
-                    .padding(NoemaMetrics.controlGroupInset)
-                    .background(
-                        RoundedRectangle(cornerRadius: NoemaMetrics.radiusStandard, style: .continuous)
-                            .fill(theme.color(for: .elevated))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: NoemaMetrics.radiusStandard, style: .continuous)
-                            .strokeBorder(theme.color(for: .separator), lineWidth: NoemaMetrics.borderWidth)
-                    )
-                    .animation(tabAnimation, value: activeSidebarTab)
-                }
+            HStack(spacing: NoemaSpacing.sm) {
+                NoemaMark(presentation: .glyph).frame(width: 20, height: 20).accessibilityHidden(true)
+                Text("Noema").font(NoemaTypography.navigationEmphasis).foregroundStyle(theme.text(for: .textPrimary, on: .sidebar))
+                Spacer()
             }
             .padding(.horizontal, NoemaMetrics.sidebarInset)
             .padding(.top, NoemaSpacing.md)
             .padding(.bottom, NoemaSpacing.sm)
 
-            List {
-                if showAllSearchResults {
-                    searchResultSections
-                } else if model.scope == .trash {
-                    Section("TRASH") {
-                        Label(model.trashedPages.count == 1 ? "1 deleted item" : "\(model.trashedPages.count) deleted items", systemImage: "trash")
-                        Text("Deleted pages and sources stay recoverable for 15 days.")
+            List(selection: sidebarSelectionBinding) {
+                Section {
+                    sidebarNavigationRow("Pages", symbol: "book.closed", scope: .wiki)
+                    sidebarNavigationRow("Sources", symbol: "tray.full", scope: .sources)
+                    sidebarNavigationRow("Semantic Blocks", symbol: "tag", scope: .semantic)
+                }
+                Section {
+                    if model.sidebarRecentItems.isEmpty {
+                        Text("No recently opened items")
                             .font(NoemaTypography.metadata)
-                            .foregroundStyle(theme.text(for: .textSecondary, on: .sidebar))
-                            .lineLimit(nil)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                } else {
-                    Section(isExpanded: $recentSectionExpanded) {
-                        if activeSidebarTab == .sources {
-                            ForEach(model.recentSources) { source in
-                                sidebarItemRow(
-                                    title: source.title,
-                                    symbol: source.metadata.isLinked ? "link" : "doc.text",
-                                    active: sourceSelection == source.id || model.currentSource?.id == source.id
-                                ) {
-                                    model.setLibrarySourceSelection(source.id)
-                                    if model.currentNote != nil || model.currentSource != nil || model.scope != .sources {
-                                        switchSidebarScope(.sources)
-                                    }
-                                }
-                            }
-                            sidebarFooterLink("View all sources") {
-                                model.setLibrarySourceSelection(nil)
-                                switchSidebarScope(.sources)
-                            }
-                        } else if activeSidebarTab == .semantic {
-                            ForEach(model.semanticRows.prefix(10)) { hit in
-                                let presentation = SemanticPresentation.find(hit.semantic)
-                                sidebarItemRow(
-                                    title: hit.preview.isEmpty ? hit.pageTitle : hit.preview,
-                                    symbol: presentation?.symbol ?? "tag",
-                                    active: model.selectedSemanticID == hit.id
-                                ) {
-                                    model.select(hit.pageID, block: hit.blockID)
-                                }
-                            }
-                            sidebarFooterLink("View all blocks") {
-                                switchSidebarScope(.semantic)
-                            }
-                        } else {
-                            ForEach(model.recentPages) { note in
-                                sidebarPageRow(note)
-                            }
-                        }
-                    } header: {
-                        Text(activeSidebarTab == .sources ? "RECENT SOURCES" : activeSidebarTab == .semantic ? "RECENT BLOCKS" : "RECENT PAGES")
-                            .font(NoemaTypography.sidebarSection)
-                            .foregroundStyle(theme.text(for: .textSecondary, on: .sidebar))
-                            .contentTransition(.opacity)
-                    }
-                    if activeSidebarTab == .wiki {
-                        Section(isExpanded: $allPagesSectionExpanded) {
-                            ForEach(model.allPagesByUpdated) { note in
-                                sidebarPageRow(note, showRelativeEditTime: true)
-                            }
-                        } header: {
-                            Text("ALL PAGES")
-                                .font(NoemaTypography.sidebarSection)
-                                .foregroundStyle(theme.text(for: .textSecondary, on: .sidebar))
+                            .foregroundStyle(.secondary)
+                            .frame(minHeight: NoemaMetrics.compactRowHeight)
+                    } else {
+                        ForEach(model.sidebarRecentItems) { item in
+                            sidebarRecentRow(item)
+                                .tag(SidebarSelection.recent(item.id))
                         }
                     }
+                } header: {
+                    Text("RECENT ITEMS")
+                        .font(NoemaTypography.sidebarSection)
+                        .foregroundStyle(theme.text(for: .textSecondary, on: .sidebar))
                 }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
+            .accessibilityLabel("Workspace navigation")
 
             VStack(alignment: .leading, spacing: NoemaSpacing.sm) {
                 Divider().overlay(theme.color(for: .separator))
@@ -627,154 +553,65 @@ struct ContentView: View {
         .accessibilityLabel("\(title), \(excerpt)")
         .help(title)
     }
-    private func sidebarTabButton(title: String, symbol: String, count: Int?, showLabel: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: NoemaSpacing.sm) {
-                Image(systemName: symbol)
-                    .font(showLabel ? NoemaTypography.navigationEmphasis : NoemaTypography.navigation)
-                    .noemaChromeForeground(.textSecondary)
-                if showLabel {
-                    HStack(spacing: NoemaSpacing.sm) {
-                        Text(title)
-                            .font(NoemaTypography.navigationEmphasis)
-                            .noemaChromeForeground()
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                        Spacer(minLength: 2)
-                        if let count {
-                            Text(count.formatted())
-                                .font(NoemaTypography.metadata)
-                                .noemaChromeForeground()
-                                .monospacedDigit()
-                                .fixedSize(horizontal: true, vertical: false)
-                        }
-                    }
-                    .transition(reduceMotion ? .identity : .opacity.combined(with: .scale(scale: 0.96, anchor: .leading)))
-                }
-            }
-            .padding(.horizontal, showLabel ? NoemaSpacing.sm : 0)
-            .frame(maxWidth: showLabel ? .infinity : NoemaMetrics.compactRowHeight, minHeight: NoemaMetrics.compactRowHeight)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(NoemaChromeButtonStyle(selected: showLabel, surface: .elevated,
-                                            focused: sidebarTabFocused == title))
-        .focused($sidebarTabFocused, equals: title)
-        .accessibilityAddTraits(showLabel ? [.isSelected] : [])
-        .accessibilityValue(showLabel ? "Selected" : "")
-        .help(title)
-        .accessibilityLabel(title)
-    }
-    private func relativeEditTime(_ value: String) -> String {
-        guard let date = LibraryRow.date(value) else { return "" }
-        let now = Date()
-        if abs(now.timeIntervalSince(date)) < 45 {
-            return "now"
-        }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        formatter.dateTimeStyle = .named
-        return formatter.localizedString(for: min(date, now), relativeTo: now)
-    }
-    private func sidebarPageRow(_ note: NoteRecord, showRelativeEditTime: Bool = false) -> some View {
-        let active = model.currentNote?.id == note.id
-        return HStack(spacing: NoemaSpacing.sm) {
-            SidebarPageIcon(unread: model.unseenRenamedPages.contains(note.id), active: active, title: note.title) {
-                showAllSearchResults = false
-                model.select(note.id)
-            }
-            Button { showAllSearchResults = false; model.select(note.id) } label: {
-                HStack(spacing: NoemaSpacing.sm) {
-                    Text(note.title)
-                        .font(NoemaTypography.navigation)
-                        .noemaChromeForeground()
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    if showRelativeEditTime {
-                        let relative = relativeEditTime(note.updatedAt)
-                        if !relative.isEmpty {
-                            Text(relative)
-                                .font(NoemaTypography.metadata)
-                                .noemaChromeForeground(.textTertiary)
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                                .help("Last edited \(metadataDate(note.updatedAt))")
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(NoemaChromeButtonStyle(selected: active, drawsSelection: false,
-                                                focused: sidebarPageFocused == note.id))
-            .focused($sidebarPageFocused, equals: note.id)
-            .help(note.title)
-            SidebarEditingLockControl(locked: note.isEditingLocked,
-                                      selected: active,
-                                      visible: active || hoveredSidebarPageID == note.id,
-                                      pending: model.editingLockOperations.contains(note.id)) {
-                model.toggleEditingLock(note.id)
-            }
-        }
-        .onHover { hovering in
-            if hovering { hoveredSidebarPageID = note.id }
-            else if hoveredSidebarPageID == note.id { hoveredSidebarPageID = nil }
-        }
-        .padding(.leading, 2)
-        .padding(.trailing, 4)
-        .frame(minHeight: NoemaMetrics.compactRowHeight)
-        .contentShape(Rectangle())
-        .background(
-            RoundedRectangle(cornerRadius: NoemaMetrics.radiusSmall, style: .continuous)
-                .fill(active ? theme.color(for: .selection, active: activeWindow) : Color.clear)
-        )
-        .listRowInsets(EdgeInsets(top: 0.5, leading: 0, bottom: 0.5, trailing: 4))
-        .listRowSeparator(.hidden)
-        .contextMenu {
-            AISummaryMenuCommands(model: model, target: .page(note.id))
-            Button(note.isEditingLocked ? "Unlock Editing" : "Lock Editing") {
-                model.toggleEditingLock(note.id)
-            }
-            .disabled(model.editingLockOperations.contains(note.id))
-            Button("Delete…", role: .destructive) { trashPageID = note.id; showTrashConfirmation = true }
-        }
-    }
-    private func sidebarItemRow(title: String, symbol: String, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: NoemaSpacing.sm) {
-                Image(systemName: symbol)
-                    .font(NoemaTypography.navigation)
-                    .noemaChromeForeground(.textSecondary)
-                    .frame(width: NoemaMetrics.iconWidth)
-                Text(title)
-                    .font(NoemaTypography.navigation)
-                    .noemaChromeForeground()
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-            }
-            .padding(.leading, 2)
-            .padding(.trailing, 8)
-            .frame(minHeight: NoemaMetrics.compactRowHeight)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(NoemaChromeButtonStyle(selected: active, focused: sidebarItemFocused == title))
-        .focused($sidebarItemFocused, equals: title)
-        .listRowInsets(EdgeInsets(top: 0.5, leading: 0, bottom: 0.5, trailing: 4))
-        .listRowSeparator(.hidden)
-    }
-    private func sidebarFooterLink(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+    private func sidebarRowLabel(_ title: String, symbol: String) -> some View {
+        HStack(spacing: NoemaSpacing.sm) {
+            Image(systemName: symbol)
+                .font(NoemaTypography.navigation)
+                .foregroundStyle(.secondary)
+                .frame(width: NoemaMetrics.iconWidth)
+                .accessibilityHidden(true)
             Text(title)
                 .font(NoemaTypography.navigation)
-                .noemaChromeForeground(.textSecondary)
-                .padding(.leading, 2)
-                .padding(.trailing, 8)
-                .frame(maxWidth: .infinity, minHeight: NoemaMetrics.toolbarControlHeight, alignment: .leading)
-                .contentShape(Rectangle())
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: NoemaSpacing.xs)
         }
-        .buttonStyle(NoemaChromeButtonStyle(focused: sidebarFooterFocused == title))
-        .focused($sidebarFooterFocused, equals: title)
-        .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 4))
+        .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+    private func sidebarNavigationRow(_ title: String, symbol: String, scope: LibraryScope) -> some View {
+        sidebarRowLabel(title, symbol: symbol)
+            .tag(SidebarSelection.destination(scope))
+            .listRowInsets(EdgeInsets(top: 0, leading: NoemaSpacing.sm, bottom: 0, trailing: NoemaSpacing.sm))
+            .listRowSeparator(.hidden)
+            .accessibilityLabel(title)
+            .help(title)
+    }
+    private func sidebarRecentRow(_ item: SidebarRecentItem) -> some View {
+        let note = item.pageID.flatMap { id in model.notes.first { $0.id == id } }
+        let active = sidebarSelection == .recent(item.id)
+        return HStack(spacing: NoemaSpacing.xs) {
+            sidebarRowLabel(item.title, symbol: item.symbol)
+            if let note {
+                SidebarEditingLockControl(locked: note.isEditingLocked,
+                                          selected: active,
+                                          visible: active || hoveredSidebarPageID == note.id,
+                                          pending: model.editingLockOperations.contains(note.id)) {
+                    model.toggleEditingLock(note.id)
+                }
+            }
+        }
+        .frame(minHeight: NoemaMetrics.compactRowHeight)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if hovering { hoveredSidebarPageID = item.pageID }
+            else if hoveredSidebarPageID == item.pageID { hoveredSidebarPageID = nil }
+        }
+        .listRowInsets(EdgeInsets(top: 0, leading: NoemaSpacing.sm, bottom: 0, trailing: NoemaSpacing.sm))
         .listRowSeparator(.hidden)
+        .help(item.accessibilityLabel)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(item.accessibilityLabel)
+        .contextMenu {
+            if let note {
+                AISummaryMenuCommands(model: model, target: .page(note.id))
+                Button(note.isEditingLocked ? "Unlock Editing" : "Lock Editing") {
+                    model.toggleEditingLock(note.id)
+                }
+                .disabled(model.editingLockOperations.contains(note.id))
+                Button("Delete…", role: .destructive) { trashPageID = note.id; showTrashConfirmation = true }
+            }
+        }
     }
     private var sortedPageRows: [LibraryRow] {
         switch pageSortOrder {
@@ -1525,35 +1362,6 @@ struct TopicPageSheet: View {
         }
         .onChange(of: model.aiPageDraft?.id) { _, _ in reviewedTitle = model.aiPageDraft?.enrichment.title ?? "" }
         .onDisappear { model.cancelAIPage(); model.aiPageSourceID = nil; model.aiPageProviderOverride = nil }
-    }
-}
-
-private struct SidebarPageIcon: View {
-    let unread: Bool
-    let active: Bool
-    let title: String
-    let select: () -> Void
-    @FocusState private var focused: Bool
-    var body: some View {
-        Button(action: select) {
-            Image(systemName: "doc.text")
-                .font(NoemaTypography.navigation)
-                .noemaChromeForeground(.textSecondary)
-                .overlay(alignment: .topTrailing) {
-                    if unread {
-                        Circle().fill(Color(nsColor: .systemBlue)).frame(width: 4, height: 4)
-                            .accessibilityHidden(true)
-                    }
-                }
-                .frame(width: NoemaMetrics.iconWidth)
-                .frame(minWidth: NoemaMetrics.toolbarControlHeight, minHeight: NoemaMetrics.compactRowHeight)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(NoemaChromeButtonStyle(selected: active, drawsSelection: false, focused: focused))
-        .focused($focused)
-        .help("Open page")
-        .accessibilityLabel("Open \(title)")
-        .accessibilityValue(unread ? "Unread title change" : "")
     }
 }
 

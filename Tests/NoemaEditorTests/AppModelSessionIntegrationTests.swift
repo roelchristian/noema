@@ -264,7 +264,7 @@ struct AppModelSessionIntegrationTests {
         #expect(model.tags.isEmpty)
         #expect(model.backlinks.isEmpty)
         #expect(model.preview.isEmpty)
-        #expect(model.recentPageIDs.isEmpty)
+        #expect(model.recentItemIDs.isEmpty)
         #expect(model.unseenRenamedPages.isEmpty)
         #expect(model.selectedID == nil)
         #expect(model.selectedSemanticID == nil)
