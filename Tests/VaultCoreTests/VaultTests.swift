@@ -329,3 +329,114 @@ func benchmarkFiveThousandEntries() async throws {
     }
     #expect(!FileManager.default.fileExists(atPath: folder.path))
 }
+
+
+@Test(arguments: [
+    #"{"mode":"sqliteBlocks","schemaVersion":1,"database":"vault.sqlite","localOnly":true}"#,
+    #"{"mode":"unknown"}"#, #"{"mode":"markdown","schemaVersion":99}"#,
+    #"{"mode":"markdown","schemaVersion":1}"#, #"{"mode":1}"#,
+    #"{"schemaVersion":1}"#, #"null"#, #""markdown""#
+])
+func unsupportedStorageDeclarationsRejectWithoutMutating(storage: String) throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let bytes = Data("{\"formatVersion\":1,\"id\":\"\(UUID().uuidString)\",\"storage\":\(storage)}".utf8)
+    let url = root.appendingPathComponent("vault.json")
+    try bytes.write(to: url)
+    #expect(throws: VaultError.self) { try FileVaultRepository.inspectManifest(at: root) }
+    #expect(throws: VaultError.self) { try FileVaultRepository.preflightOpen(root: root) }
+    #expect(throws: VaultError.self) { try FileVaultRepository.open(root: root, create: true) }
+    #expect(try Data(contentsOf: url) == bytes)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["vault.json"])
+}
+
+@Test(arguments: ["", #", "storage":{"mode":"markdown"}"#])
+func legacyManifestAndCanonicalBytesSurviveOpeningAndScanning(storage: String) async throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let vaultID = UUID(), pageID = UUID()
+    let manifest = Data("{\"formatVersion\":1,\"id\":\"\(vaultID.uuidString)\",\"optionalFutureHint\":{\"opaque\":true}\(storage)}".utf8)
+    try manifest.write(to: root.appendingPathComponent("vault.json"))
+    try FileManager.default.createDirectory(at: root.appendingPathComponent("Wiki"), withIntermediateDirectories: false)
+    let page = Data("---\nid: \(pageID.uuidString)\ntitle: Legacy\nfuture_property: opaque\n---\n# Body\n\nUnchanged text.\n".utf8)
+    let pageURL = root.appendingPathComponent("Wiki/Legacy.md")
+    try page.write(to: pageURL)
+    let repository = try FileVaultRepository.open(root: root)
+    let note = try #require(try await repository.scan().notes.first)
+    #expect(repository.manifest.id == vaultID)
+    #expect(note.id == pageID)
+    #expect(BlockDocumentCodec.encode(BlockDocumentCodec.decode(note.body)) == note.body)
+    let encoded = try NoteCodec.encode(note)
+    #expect(String(decoding: encoded, as: UTF8.self).contains("future_property: opaque"))
+    #expect(try Data(contentsOf: pageURL) == page)
+    #expect(try Data(contentsOf: root.appendingPathComponent("vault.json")) == manifest)
+}
+
+@Test(arguments: [2, 99])
+func futureVaultVersionsRejectWithoutMutation(version: Int) throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let bytes = Data("{\"formatVersion\":\(version),\"id\":\"\(UUID().uuidString)\"}".utf8)
+    let url = root.appendingPathComponent("vault.json")
+    try bytes.write(to: url)
+    #expect(throws: VaultError.self) { try FileVaultRepository.open(root: root, create: true) }
+    #expect(try Data(contentsOf: url) == bytes)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["vault.json"])
+}
+
+
+private struct ManifestFailureStore: VaultContentStore {
+    let error: VaultContentStoreError
+    func read(at path: String) throws -> Data { throw error }
+    func createDirectory(at path: String) throws { Issue.record("Failed open attempted directory creation"); throw error }
+    func snapshot(at path: String) throws -> VaultContentSnapshot { throw error }
+    func write(_ data: Data, at path: String, condition: VaultWriteCondition) throws { Issue.record("Failed open attempted a write"); throw error }
+    func move(from source: String, to destination: String, expected: VaultContentSnapshot) throws { throw error }
+    func delete(at path: String, expected: VaultContentSnapshot) throws { throw error }
+}
+
+@Test(arguments: [false, true])
+func unavailableManifestAndPermissionFailureRemainDistinctWithoutInitialization(create: Bool) throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let cloud = ManifestFailureStore(error: .unavailable("vault.json"))
+    do { _ = try FileVaultRepository.open(root: root, create: create, contentStore: cloud); Issue.record("Unavailable manifest opened") }
+    catch VaultError.unavailable(let message) { #expect(message.contains("iCloud")) }
+    catch { Issue.record("Incorrect cloud classification: \(error)") }
+    let denied = VaultContentStoreError.io(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError, message: "Permission denied")
+    #expect(throws: denied) { try FileVaultRepository.open(root: root, create: create, contentStore: ManifestFailureStore(error: denied)) }
+    let provider = VaultStorageProvider { _ in cloud }
+    do { _ = try FileVaultRepository.preflightOpen(root: root, create: create, storageProvider: provider); Issue.record("Unavailable manifest passed preflight") }
+    catch VaultError.unavailable(let message) { #expect(message.contains("iCloud")) }
+    catch { Issue.record("Incorrect preflight classification: \(error)") }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    #expect(throws: VaultError.self) { try FileVaultRepository.open(root: root) }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    #expect(throws: VaultError.self) { try FileVaultRepository.open(root: root.appendingPathComponent("Absent")) }
+}
+
+@Test func missingManifestInNonemptyRootCannotBeInitialized() throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let wiki = root.appendingPathComponent("Wiki")
+    try FileManager.default.createDirectory(at: wiki, withIntermediateDirectories: false)
+    let page = wiki.appendingPathComponent("Preserved.md")
+    let bytes = Data("Potentially recoverable original content".utf8)
+    try bytes.write(to: page)
+    #expect(throws: VaultError.self) { try FileVaultRepository.preflightOpen(root: root, create: true) }
+    #expect(throws: VaultError.self) { try FileVaultRepository.open(root: root, create: true) }
+    #expect(try Data(contentsOf: page) == bytes)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["Wiki"])
+    #expect(try FileManager.default.contentsOfDirectory(atPath: wiki.path) == ["Preserved.md"])
+}
+
+@Test(arguments: [#"{"formatVersion":"1","id":"bad"}"#, #"{"formatVersion":1}"#, "{damaged"])
+func damagedManifestRejectionPreservesBytesAndCanRetryAfterRepair(input: String) throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("vault.json"), bytes = Data(input.utf8)
+    try bytes.write(to: url)
+    do { _ = try FileVaultRepository.open(root: root, create: true); Issue.record("Damaged manifest opened") }
+    catch VaultError.invalid(let message) { #expect(message.contains("damaged")) }
+    catch { Issue.record("Incorrect damaged-manifest classification: \(error)") }
+    #expect(try Data(contentsOf: url) == bytes)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["vault.json"])
+    // Repair is explicit test action, never an automatic repository downgrade.
+    let id = UUID()
+    try JSONEncoder().encode(VaultManifest(id: id)).write(to: url)
+    #expect(try FileVaultRepository.open(root: root).manifest.id == id)
+}

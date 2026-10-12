@@ -47,6 +47,19 @@ public actor FileVaultRepository: VaultRepository {
         contentStore: (any VaultContentStore)? = nil,
         storageProvider: VaultStorageProvider = .plaintext
     ) throws -> VaultManifest {
+        guard let manifest = try inspectManifestIfPresent(at: root, contentStore: contentStore,
+            storageProvider: storageProvider, allowCreation: false) else {
+            throw VaultError.invalid("Choose a vault folder containing vault.json, or create a new vault.")
+        }
+        return manifest
+    }
+
+    private static func inspectManifestIfPresent(
+        at root: URL,
+        contentStore: (any VaultContentStore)? = nil,
+        storageProvider: VaultStorageProvider = .plaintext,
+        allowCreation: Bool
+    ) throws -> VaultManifest? {
         let accessRoot = root
         let normalizedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
         let fm = FileManager.default
@@ -65,6 +78,12 @@ public actor FileVaultRepository: VaultRepository {
         } catch let storeError as VaultContentStoreError {
             switch storeError {
             case .missing:
+                if allowCreation {
+                    guard try fm.contentsOfDirectory(atPath: normalizedRoot.path).isEmpty else {
+                        throw VaultError.invalid("The selected folder contains existing content but has no readable vault manifest. Its contents have been preserved; choose an empty folder to create a vault.")
+                    }
+                    return nil
+                }
                 throw VaultError.invalid("Choose a vault folder containing vault.json, or create a new vault.")
             case .unavailable:
                 throw VaultError.unavailable("Downloading vault metadata from iCloud. Try again when the download finishes.")
@@ -72,9 +91,25 @@ public actor FileVaultRepository: VaultRepository {
                 throw storeError
             }
         }
-        let manifest = try JSONDecoder().decode(VaultManifest.self, from: data)
+        let manifest: VaultManifest
+        do { manifest = try JSONDecoder().decode(VaultManifest.self, from: data) }
+        catch {
+            throw VaultError.invalid("The vault manifest is damaged or has malformed format declarations. Its original bytes have been preserved.")
+        }
         guard manifest.formatVersion == 1 else {
             throw VaultError.invalid("This vault uses an unsupported format version.")
+        }
+        // v1 has no required storage schema. A declaration must not silently select
+        // a future authority merely because Codable ignores unknown fields.
+        let declaration = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        if let storage = declaration?["storage"] {
+            guard let storage = storage as? [String: Any],
+                  storage["mode"] as? String == "markdown",
+                  storage["schemaVersion"] == nil,
+                  storage["database"] == nil,
+                  storage["localOnly"] == nil else {
+                throw VaultError.invalid("This vault uses an unsupported or malformed storage declaration.")
+            }
         }
         return manifest
     }
@@ -92,14 +127,8 @@ public actor FileVaultRepository: VaultRepository {
         guard fm.fileExists(atPath: normalizedRoot.path, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw VaultError.unavailable("The vault folder ‘\(normalizedRoot.lastPathComponent)’ could not be found. It may have been moved, renamed, or disconnected.")
         }
-        let manifestURL = normalizedRoot.appendingPathComponent("vault.json")
-        let manifest: VaultManifest?
-        if !create || fm.fileExists(atPath: manifestURL.path) {
-            manifest = try inspectManifest(at: accessRoot, storageProvider: storageProvider)
-        } else {
-            _ = try storageProvider.makeStore(root: accessRoot)
-            manifest = nil
-        }
+        let manifest = try inspectManifestIfPresent(at: accessRoot,
+            storageProvider: storageProvider, allowCreation: create)
         for name in ["Wiki", "Sources", trashDirectoryName, "Conflicts"] {
             let directory = normalizedRoot.appendingPathComponent(name)
             guard directory.resolvingSymlinksInPath() == directory else { throw VaultContentStoreError.unsafePath(name) }
@@ -124,9 +153,9 @@ public actor FileVaultRepository: VaultRepository {
         let accessRoot = root
         let root = root.standardizedFileURL.resolvingSymlinksInPath()
         let fm = FileManager.default
-        let manifestURL = root.appendingPathComponent("vault.json")
-        guard create || fm.fileExists(atPath: manifestURL.path) else {
-            throw VaultError.invalid("Choose a vault folder containing vault.json, or create a new vault.")
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw VaultError.unavailable("The vault folder ‘\(root.lastPathComponent)’ could not be found. It may have been moved, renamed, or disconnected.")
         }
         if let accessGate {
             try accessGate.validate(lease: sessionLease, targetRoot: root, targetVaultID: nil, operation: "open")
@@ -150,8 +179,11 @@ public actor FileVaultRepository: VaultRepository {
             store = rawStore
         }
         let manifest: VaultManifest
-        if fm.fileExists(atPath: manifestURL.path) {
-            manifest = try inspectManifest(at: accessRoot, contentStore: store, storageProvider: storageProvider)
+        // Only provider-confirmed missing metadata in an empty root permits creation.
+        // Unavailable cloud metadata and damaged/nonempty vaults never initialize.
+        if let existing = try inspectManifestIfPresent(at: accessRoot, contentStore: store,
+            storageProvider: storageProvider, allowCreation: create) {
+            manifest = existing
         } else {
             guard create else { throw VaultError.invalid("Choose a vault folder containing vault.json, or create a new vault.") }
             manifest = VaultManifest()

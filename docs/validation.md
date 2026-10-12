@@ -380,3 +380,35 @@ old offscreen glass ambiguity or validate live menu/alert/sheet presentation.
 ## External AI acceptance
 
 The [external AI contract](contracts/external-ai.md) defines the in-process boundary and residual risks. Credential, authorization, gateway and actual URLSession adversarial suites use synthetic keys and intercepted/mock transport. AI integration tests cover strict one-inference enrichment/composition, request-mode consent, title preservation/collisions, typed classification/provenance, legacy decoding, conditional writes, unavailable classification, stale leases/edits, cancellation and source relationships. Consent policy tests cover explicit-action dispatch and real vault lock/unlock grant resets. Classification tests validate the finite exact locally verified schedule headings plus supported outlines; they do not establish full LCC coverage. URL policy tests reject private/reserved destinations and unsafe redirects, while DNS rebinding remains a documented transport limitation. These scenarios do not establish hardware authentication, signed-Keychain access, system-event delivery, live-provider/native-model behavior or interactive sheet acceptance. Standing device, accessibility and crash-durability gates remain pending; see the device/provider checklist above.
+
+## D05 compatibility and preservation acceptance
+
+Production supports plaintext Markdown format 1 only. This matrix names automated
+scenarios; source coverage does not establish a fresh passing run. PR validation
+records actual execution and the independent storage review.
+
+| Guarantee | Exact regression evidence / disposition |
+| --- | --- |
+| Legacy canonical bytes, identity and opaque optional YAML | `VaultTests.legacyManifestAndCanonicalBytesSurviveOpeningAndScanning`; `WikiPageAdapterTests.legacyProvenanceIsAbsentAndUnknownFrontmatterSurvives`; `BlockDocumentTests.blockNoOpCommandsPreserveOriginalMarkdownAndIdentity` |
+| Unknown format, mode or required schema rejects before mutation | `VaultTests.unsupportedStorageDeclarationsRejectWithoutMutating`, `futureVaultVersionsRejectWithoutMutation`; no SQLite/encrypted production mode enabled |
+| Future required document features preserve original source read-only | `BlockDocumentTests.blockFutureFormatAndMalformedDataRemainRecoverable` |
+| Creation collision, partial initialization and cleanup | `VaultCreationTests.creationPublicationCollisionPreservesInitializedStagingAndOccupiedDestination`, `failedInitializationRemovesOnlyEmptyOwnedStaging`: preserve nonempty staging; reject occupied retry before staging |
+| Unavailable, denied, damaged or missing manifest never authorizes accidental creation | `VaultTests.unavailableManifestAndPermissionFailureRemainDistinctWithoutInitialization` (open/preflight, create false/true), `damagedManifestRejectionPreservesBytesAndCanRetryAfterRepair`, `missingManifestInNonemptyRootCannotBeInitialized` |
+| Created vault survives first native authentication cancellation | `VaultAuthenticationIntegrationTests.optedInCreatePersistsRequirementBeforePromptAndCancellationKeepsCreatedBytes` |
+| Derived index failure preserves canonical bytes and permits lifecycle retry | `AppModelSessionIntegrationTests.failedDerivedIndexInitializationPreservesCanonicalBytesAndRetriesLifecycle` (open/unlock) |
+| Failed transitions, stale callbacks and quiescence respect central state | `VaultSessionManagerTests.failedOpeningUnlockingLockingAndClosingRecoverDeterministically`, `rollbackRequestsCannotMutateASupersedingSession`; `VaultSaveQuiescenceTests.unrecoverableQuiescenceFailureReportsErrorAndAvoidsFalselyPublishingLocked` |
+| Admitted commit windows and unsaved recovery survive lock failure | `VaultSaveQuiescenceTests.inFlightSavesEnteringCommitWindowCompleteAndRemainRecognizedWhilePreCommitSavesPreserveRecoveryDraft`; `VaultCleanupFailureTests.committedSaveReportsRecoveryCleanupFailureAndAbortsLockWithoutLosingCommit` |
+| Damaged recovery peers, identity isolation and repeated stale recovery | `RecoveryStoreIsolationTests.oneCorruptEntryDoesNotBlockSeveralValidDraftsAndOriginalBytesSurviveReopening`, `identityMismatchAndUnreadableEntryAreReportedWithoutBlockingPeers`, `repeatedStaleRecoveryAttemptsPreserveExternalCanonicalAndJournalBytes`; `VaultAccessGateTests.wrongVaultAccessIsRejectedAcrossRepositoriesStoresAndLeases` |
+| External edits, source publication and unavailable-source retry | `WikiPageAdapterTests.racePreservesCanonicalAndRecoveryDraft`; `SourceAdapterTests.metadataRacePreservesExternalChange`, `failedPublicationRetainsStagingAndURLStatusPreservesOriginal`, `availabilityChecksRetainBrokenLinkedSourcesAndRecover` |
+| Migration authority, recovery inventory and rollback prerequisites | [Block storage implementation gate](contracts/block-editor.md#storage-decision-and-implementation-gate-edtblk01) and [recovery limits](contracts/block-editor.md#recovery-authority-and-current-guarantees); EDT.BLK owns SQLite implementation, E-series owns encryption |
+
+D06 still requires real-provider/iCloud, native-authentication, accessibility and
+actual process-crash/power-loss acceptance. Synthetic fixtures do not close these
+gaps or establish protection against arbitrary external writers between an empty
+staging observation and recursive cleanup. Nonempty retained staging is preservation
+data; repeated user-directed failures may retain multiple copies requiring explicit
+review, with no automatic purge. Recovery journals lack revision checks between
+competing valid writers; recovery-as-new-page retry is not currently idempotent.
+Unknown source JSON fields have no lossless rewrite guarantee; future required
+metadata needs a compatibility gate before mutation. Derived index failure does
+not establish canonical corruption. CI remains disabled.

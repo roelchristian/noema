@@ -113,11 +113,19 @@ and warn when a selected lossy format cannot represent unknown types/metadata.
    gates, schema negotiation, backup and crash recovery before offering migration.
    Quiesce and close writes, resolve conflicts or stop, preserve recovery drafts,
    and capture checksum-verified source-vault snapshots through existing boundaries.
+   A preflight snapshot is not a publication authority after asynchronous work:
+   revalidate captured source revisions, root capability and session identity before
+   committing or selecting the destination. External changes stop migration without
+   overwriting either version; retry starts from fresh observations.
 2. Create an independent local destination vault with a new vault UUID and preserved
    page/block/source UUIDs. The original v1 vault stays untouched and authoritative
    for its own identity. Keep an explicit complete v1 backup, including source blobs,
-   Removed Pages, conflicts, manifests and unsupported/recovered payloads. Never infer
-   that recovery drafts or damaged content are disposable migration evidence.
+   Removed Pages, conflicts, manifests and unsupported/recovered payloads. Inventory
+   app-local recovery journals separately from the portable source root, retaining
+   decoded drafts and opaque damaged/mismatched bytes with their original vault/page
+   relationships. A new destination vault identity must not silently relabel old
+   journals. Never infer that recovery drafts or damaged content are disposable
+   migration evidence; if their safe mapping is unresolved, stop migration.
 3. Build the destination in sibling staging. Import documents and metadata in DB
    transactions; copy/import originals with checksum verification, preserve linked
    bookmarks and unavailable references, unknown frontmatter and retained trash.
@@ -132,6 +140,11 @@ and warn when a selected lossy format cannot represent unknown types/metadata.
    success. Interrupted staging/publication leaves the original unchanged and never
    selects a partial destination. Preserve failed staging diagnostics under the
    approved lifecycle policy; do not delete source data or preserved recovery drafts.
+   Staging containing unique recoverable content is preservation data, not disposable
+   agent evidence: the local evidence cleanup policy does not authorize its deletion.
+   If publication succeeds but destination verification/open fails, retain both the
+   published destination and the original, and keep the source session selected or
+   return to it through the established authorized admission route.
 6. Rollback reopens the untouched original; later SQLite edits require explicit export
    or reverse migration into another independent Markdown vault. Never replay them
    silently into the backup. Repeated migration refuses occupied destinations.
@@ -141,6 +154,32 @@ and bytes, unknown blocks/metadata, conflicts and stale writes, inaccessible sou
 local-root rejection, interrupted migration/commit, backup restoration and lock/switch
 interleavings. Device, accessibility, crash/power-loss and two-Mac transport acceptance
 remain standing gaps in [validation](../validation.md); service tests do not close them.
+
+## Recovery authority and current guarantees
+
+A committed canonical page, an unsaved editor draft and a preserved conflicting
+version are independent content. Capture timestamps do not grant a draft authority
+to overwrite canonical bytes. Recovery into the original page uses the repository's
+expected-content check; a newer external edit rejects that write and retains the
+external page, recovery journal and conflict copy. Reopening does not waive this
+check. Saving as a new page is an explicit separate disposition with a new identity.
+Derived search data can be rebuilt and must never supersede these copies.
+
+[RecoveryStoreIsolationTests](../../Tests/VaultCoreTests/RecoveryStoreIsolationTests.swift)
+covers corrupt/mismatched peer isolation, retained bytes across session changes and
+repeated stale recovery attempts across reopen. [WikiPageAdapterTests](../../Tests/VaultCoreTests/WikiPageAdapterTests.swift)
+covers edits/deletions racing the adapter commit, while
+[VaultSaveQuiescenceTests](../../Tests/VaultCoreTests/VaultSaveQuiescenceTests.swift)
+covers durable commit draining, pre-commit journaling and failed journaling returning
+the session to open. These synthetic fixtures do not establish process-crash durability.
+
+Current recovery journals serialize operations in their actor and validate the
+session lease. A valid same-page journal write replaces the previous valid draft;
+deletion checks decoded identity, not an expected draft revision. Callers must retain
+existing save/quiescence serialization. Compare-and-swap between independently
+competing journal writers and idempotent retry of recovery-as-new-page publication
+are not current guarantees; future EDT.BLK/E-series recovery design must address
+these before introducing additional writers or migration replay.
 
 ## Current Markdown editor compatibility
 

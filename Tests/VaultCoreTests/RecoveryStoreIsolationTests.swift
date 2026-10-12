@@ -140,4 +140,47 @@ struct RecoveryStoreIsolationTests {
         #expect(try Data(contentsOf: differentlyNamed) == differentlyNamedBytes)
         #expect(FileManager.default.fileExists(atPath: unreadable.path))
     }
+
+    @Test func repeatedStaleRecoveryAttemptsPreserveExternalCanonicalAndJournalBytes() async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("recovery-stale-retry-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let repository = try FileVaultRepository.open(root: root, create: true)
+        let note = try await repository.create(title: "Page", body: "Committed original")
+        let directory = root.appendingPathComponent("Drafts")
+        let recovery = try RecoveryStore(unguardedTestingDirectory: directory)
+        let draft = DraftRecord(note: note, title: note.title, body: "Independent unsaved version", tags: ["draft"])
+        try await recovery.store(draft)
+        let journalURL = directory.appendingPathComponent(note.id.uuidString + ".json")
+        let journalBytes = try Data(contentsOf: journalURL)
+        var external = note
+        external.body = "Newer external version"
+        let canonicalBytes = try NoteCodec.encode(external)
+        let canonicalURL = root.appendingPathComponent(note.relativePath)
+        try canonicalBytes.write(to: canonicalURL, options: .atomic)
+
+        // Reopening must not grant an old draft authority to replace a newer external file.
+        for candidate in [repository, try FileVaultRepository.open(root: root)] {
+            do {
+                _ = try await candidate.save(note: draft.note, title: draft.title, body: draft.body, tags: draft.tags)
+                Issue.record("Expected a stale recovery conflict")
+            } catch VaultError.conflict(let path) {
+                let preserved = try NoteCodec.decode(Data(contentsOf: URL(fileURLWithPath: path)),
+                    path: note.relativePath, vaultID: candidate.manifest.id)
+                #expect(preserved.id == note.id)
+                #expect(preserved.body == draft.body)
+            }
+            #expect(try Data(contentsOf: canonicalURL) == canonicalBytes)
+            #expect(try Data(contentsOf: journalURL) == journalBytes)
+            let reopened = try RecoveryStore(unguardedTestingDirectory: directory)
+            #expect(try await reopened.drafts().first?.id == note.id)
+            #expect(try await reopened.drafts().first?.body == draft.body)
+            let scanned = try await candidate.scan().notes
+            #expect(scanned.count == 1)
+            #expect(scanned.first?.id == note.id)
+            #expect(scanned.first?.body == external.body)
+        }
+    }
+
 }
