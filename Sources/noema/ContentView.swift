@@ -810,7 +810,6 @@ struct ContentView: View {
                             Button("Check Availability of All Sources") { model.checkSourceAvailability(model.sources) }
                                 .disabled(model.sources.isEmpty || !model.checkingSourceAvailability.isEmpty)
                         } label: { Label("Source Actions", systemImage: "ellipsis.circle") }
-                        headerActions
                         if model.busy { ProgressView().controlSize(.small).accessibilityLabel("Updating library").accessibilityValue("In progress") }
                     }
                     if let error = model.errorMessage {
@@ -936,8 +935,6 @@ struct ContentView: View {
                             Button("Check Availability of All Sources") { model.checkSourceAvailability(model.sources) }
                                 .disabled(model.sources.isEmpty || !model.checkingSourceAvailability.isEmpty)
                         } label: { Label("Source Actions", systemImage: "ellipsis.circle") }
-                    } else {
-                        headerActions
                     }
                     if model.busy { ProgressView().controlSize(.small).accessibilityLabel("Updating library").accessibilityValue("In progress") }
                 }
@@ -1064,8 +1061,13 @@ struct ContentView: View {
                     DismissibleNotice(message: notice, isError: false, surface: .canvas) { model.editorNotice = nil }.font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
                         .background(theme.color(for: .canvas))
                 }
-                pageHeader
-                Divider().overlay(theme.color(for: .separator))
+                if let notice = model.aiSummaryNotice {
+                    DismissibleNotice(message: notice, isError: false, surface: .canvas) { model.aiSummaryNotice = nil }
+                        .font(NoemaTypography.metadata)
+                        .padding(.vertical, NoemaSpacing.md)
+                        .readingColumn(reservesEditorGutter: true)
+                }
+                // Native text views already provide the document's 24 pt top inset.
                 ZStack(alignment: .topLeading) {
                     if let source = model.currentSource, sourceOriginal || source.metadata.storedFilename.hasSuffix(".txt") {
                         MarkdownEditor(text: .constant(model.body), action: nil, onWikiQuery: { _ in }, editable: false)
@@ -1097,7 +1099,6 @@ struct ContentView: View {
                 if model.scope != .sources { Button("New personal page") { model.newPage(template: true) }.buttonStyle(.glass) }
                 if let error = model.errorMessage { DismissibleNotice(message: error, surface: .canvas) { model.errorMessage = nil }.frame(maxWidth: 500) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                .safeAreaBar(edge: .top) { HStack { Spacer(); headerActions }.padding(.horizontal, 28).padding(.top, 14).padding(.bottom, 6) }
         }
     }
     private var semanticBlockList: some View {
@@ -1248,84 +1249,13 @@ struct ContentView: View {
             }
         }.labelStyle(.iconOnly).buttonStyle(.glass).fixedSize(horizontal: true, vertical: false)
     }
-    private var pageHeader: some View {
-        VStack(alignment: .leading, spacing: NoemaSpacing.md) {
-            if let notice = model.aiSummaryNotice { DismissibleNotice(message: notice, isError: false, surface: .canvas) { model.aiSummaryNotice = nil }.font(NoemaTypography.metadata) }
-            if model.currentSource != nil || model.editingHint != nil {
-                HStack {
-                    if model.currentSource != nil {
-                        Label("Raw source", systemImage: "tray.full")
-                            .font(NoemaTypography.metadataEmphasis).foregroundStyle(theme.text(for: .textSecondary, on: .canvas))
-                    }
-                    Spacer()
-                    if model.currentNote != nil, let hint = model.editingHint {
-                        Text(hint).font(NoemaTypography.metadata).foregroundStyle(theme.text(for: .textSecondary, on: .canvas))
-                    }
-                    if model.currentSource != nil {
-                        Label("Read only", systemImage: "lock").font(NoemaTypography.metadata).foregroundStyle(theme.text(for: .textSecondary, on: .canvas))
-                    }
-                }
-            }
-            if model.currentNote != nil {
-                if model.reading && !isInspectorPresented {
-                    ViewThatFits(in: .horizontal) {
-                        HStack(alignment: .center, spacing: NoemaSpacing.lg) {
-                            pageTitle.fixedSize(horizontal: true, vertical: false)
-                            Spacer()
-                            headerActions
-                        }
-                        VStack(alignment: .leading, spacing: NoemaSpacing.md) {
-                            pageTitle
-                            headerActions
-                        }
-                    }
-                } else {
-                    HStack(alignment: .center, spacing: NoemaSpacing.lg) {
-                        pageTitle
-                        if !isInspectorPresented {
-                            Spacer()
-                            headerActions
-                        }
-                    }
-                    if isInspectorPresented {
-                        headerActions
-                    }
-                }
-                if model.reading, let note = model.currentNote, !note.allTags.isEmpty {
-                    HStack { ForEach(note.allTags.prefix(8), id: \.self) { tag in Button("#" + tag) { model.changeScope(.tag(tag)) }.font(NoemaTypography.metadata).buttonStyle(.bordered).tint(theme.color(.graphHighlight)).controlSize(.small) } }
-                }
-            } else {
-                HStack(alignment: .center, spacing: NoemaSpacing.lg) {
-                    Text(model.title).foregroundStyle(theme.text(for: .textPrimary, on: .canvas)).font(NoemaTypography.documentTitle).textSelection(.enabled)
-                    Spacer()
-                    headerActions
-                }
-                if let source = model.currentSource {
-                    HStack {
-                        Text(source.metadata.originalFilename)
-                        Text((source.metadata.isLinked ? "· Linked " : "· Imported ") + String(source.metadata.capturedAt.prefix(10)))
-                        if let address = source.metadata.originURL, let url = URL(string: address) { Link("Original URL", destination: url).foregroundStyle(theme.text(.accentSecondary)) }
-                    }.font(NoemaTypography.metadata).foregroundStyle(theme.text(for: .textSecondary, on: .canvas))
-                }
-            }
-        }
-        .padding(.top, 14).padding(.bottom, 12)
-        .readingColumn(reservesEditorGutter: true)
-    }
-    private var pageTitle: some View {
-        Group {
-            if model.reading {
-                Text(model.title).foregroundStyle(theme.text(for: .textPrimary, on: .canvas)).textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .onTapGesture(count: 2) { model.beginEditing() }
-            } else {
-                TextField("Page title", text: $model.title).textFieldStyle(.plain)
-                    .foregroundStyle(theme.text(for: .textPrimary, on: .canvas))
-            }
-        }.font(NoemaTypography.documentTitle)
-    }
     private var pageFooter: some View {
         VStack(alignment: .leading, spacing: NoemaSpacing.md) {
+            if let hint = model.editingHint {
+                Text(hint)
+                    .font(NoemaTypography.metadata)
+                    .foregroundStyle(theme.text(for: .textSecondary, on: .elevated))
+            }
             if !model.backlinks.isEmpty {
                 HStack(alignment: .top) {
                     Text("Linked from").font(NoemaTypography.metadata).foregroundStyle(theme.text(for: .textSecondary, on: .elevated))
