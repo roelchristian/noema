@@ -2,38 +2,69 @@
 import PackageDescription
 import Foundation
 
-// Capture tests enter the graph only through an explicitly invoked harness.
-let visualValidationTargets: [Target] = ProcessInfo.processInfo.environment["NOEMA_VISUAL_VALIDATION"] == "1"
-    ? [.testTarget(name: "NoemaVisualValidationTests", dependencies: ["noema", "VaultCore", "NoemaBrand", "NativeAuthentication"])]
-    : []
+// Choose targets while evaluating the manifest, before SwiftPM plans compilation.
+let environment = ProcessInfo.processInfo.environment
+let tier = environment["NOEMA_TEST_TIER"] ?? "extended"
+let domainTests = ["VaultCoreTests", "NativeAuthenticationTests", "ExternalAITests", "NoemaBrandTests"]
+let functionalTests = domainTests + ["NoemaEditorTests"]
+let requestedTests = (environment["NOEMA_TEST_TARGETS"] ?? "").split(separator: ",").map(String.init)
+let specializedTests = [
+    ("NOEMA_PERFORMANCE_TESTS", "NoemaPerformanceTests"),
+    ("NOEMA_VISUAL_VALIDATION", "NoemaVisualValidationTests"),
+    ("NOEMA_FIXTURE_VALIDATION", "NoemaFixtureValidationTests")
+].filter { environment[$0.0] == "1" }.map { $0.1 }
+let selectedTests: [String]
+switch tier {
+case "quick": selectedTests = domainTests
+case "standard":
+    precondition(!requestedTests.isEmpty, "standard requires NOEMA_TEST_TARGETS")
+    precondition(requestedTests.allSatisfy { functionalTests.contains($0) }, "unknown functional test target")
+    selectedTests = requestedTests
+case "extended": selectedTests = functionalTests + specializedTests
+case "specialized":
+    precondition(!specializedTests.isEmpty, "specialized requires an explicit validation gate")
+    selectedTests = specializedTests
+case "compile": selectedTests = []
+default: preconditionFailure("unknown NOEMA_TEST_TIER: \(tier)")
+}
+let needsApplication = tier == "compile" || selectedTests.contains { ["NoemaEditorTests", "NoemaVisualValidationTests", "NoemaPerformanceTests"].contains($0) }
+let testDependencies: [String: [Target.Dependency]] = [
+    "NativeAuthenticationTests": ["NativeAuthentication"],
+    "ExternalAITests": ["ExternalAI", "VaultCore", "NativeAuthentication"],
+    "VaultCoreTests": ["VaultCore", "NativeAuthentication"],
+    "NoemaBrandTests": ["NoemaBrand"],
+    "NoemaEditorTests": ["noema", "NativeAuthentication"],
+    "NoemaPerformanceTests": ["noema", "VaultCore", "NoemaBrand", "NativeAuthentication"],
+    "NoemaVisualValidationTests": ["noema", "VaultCore", "NoemaBrand", "NativeAuthentication"],
+    "NoemaFixtureValidationTests": ["VaultCore"]
+]
 
-// Example-vault quality checks are separate from runtime regression coverage.
-let fixtureValidationTargets: [Target] = ProcessInfo.processInfo.environment["NOEMA_FIXTURE_VALIDATION"] == "1"
-    ? [.testTarget(name: "NoemaFixtureValidationTests", dependencies: ["VaultCore"])]
-    : []
+let coreTargets: [Target] = [
+    .target(name: "NoemaBrand"),
+    .target(name: "NativeAuthentication"),
+    .target(name: "VaultCore", dependencies: [
+        "NativeAuthentication",
+        .product(name: "Markdown", package: "swift-markdown"),
+        .product(name: "Yams", package: "Yams")
+    ], linkerSettings: [.linkedLibrary("sqlite3")]),
+    .target(name: "ExternalAI", dependencies: ["VaultCore", "NativeAuthentication"])
+]
+let applicationTargets: [Target] = needsApplication
+    ? [.executableTarget(name: "noema", dependencies: ["VaultCore", "NoemaBrand", "ExternalAI"])] : []
+let validationTargets: [Target] = selectedTests.map { name in
+    Target.testTarget(name: name, dependencies: testDependencies[name]!)
+}
+let selectedProducts: [Product] = needsApplication
+    ? [.executable(name: "noema", targets: ["noema"])] : []
+let allTargets: [Target] = coreTargets + applicationTargets + validationTargets
 
 let package = Package(
     name: "noema",
     platforms: [.macOS("26.0")],
-    products: [.executable(name: "noema", targets: ["noema"])],
+    products: selectedProducts,
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.7.0"),
         .package(url: "https://github.com/jpsim/Yams.git", from: "6.2.2")
     ],
-    targets: [
-        .target(name: "NoemaBrand"),
-        .target(name: "NativeAuthentication"),
-        .target(name: "VaultCore", dependencies: [
-            "NativeAuthentication",
-            .product(name: "Markdown", package: "swift-markdown"),
-            .product(name: "Yams", package: "Yams")
-        ], linkerSettings: [.linkedLibrary("sqlite3")]),
-        .target(name: "ExternalAI", dependencies: ["VaultCore", "NativeAuthentication"]),
-        .executableTarget(name: "noema", dependencies: ["VaultCore", "NoemaBrand", "ExternalAI"]),
-        .testTarget(name: "NativeAuthenticationTests", dependencies: ["NativeAuthentication"]),
-        .testTarget(name: "ExternalAITests", dependencies: ["ExternalAI", "VaultCore", "NativeAuthentication"]),
-        .testTarget(name: "VaultCoreTests", dependencies: ["VaultCore", "NativeAuthentication"]),
-        .testTarget(name: "NoemaBrandTests", dependencies: ["NoemaBrand"]),
-        .testTarget(name: "NoemaEditorTests", dependencies: ["noema", "NativeAuthentication"])
-    ] + visualValidationTargets + fixtureValidationTargets
+    targets: allTargets
 )
