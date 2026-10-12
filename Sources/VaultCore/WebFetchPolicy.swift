@@ -19,7 +19,7 @@ public enum WebFetchPolicy {
         // Accept globally routed unicast only; reject mapped IPv4, loopback, link-local,
         // multicast, unique-local, documentation and transition/tunnel destinations.
         guard bytes[0] & 0xe0 == 0x20 else { return false }
-        return !(bytes[0] == 0x20 && bytes[1] == 0x01 && (bytes[2] == 0x0d && bytes[3] == 0xb8 || bytes[2] == 0 && bytes[3] == 0))
+        return !(bytes[0] == 0x20 && bytes[1] == 0x01 && (bytes[2] == 0x0d && bytes[3] == 0xb8 || bytes[2] < 2))
             && !(bytes[0] == 0x20 && bytes[1] == 0x02)
     }
 
@@ -64,13 +64,18 @@ public enum WebFetchPolicy {
 }
 
 final class WebFetchRedirectDelegate: NSObject, URLSessionTaskDelegate, Sendable {
+    private let validate: @Sendable (URL) async throws -> Void
+    init(validate: @escaping @Sendable (URL) async throws -> Void = WebFetchPolicy.validateDestination) {
+        self.validate = validate
+        super.init()
+    }
     func urlSession(_ session: URLSession, task: URLSessionTask,
         willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest
     ) async -> URLRequest? {
         guard let original = response.url, let destination = request.url,
               !(original.scheme == "https" && destination.scheme != "https"),
               task.countOfBytesReceived <= FileVaultRepository.maximumImportBytes else { return nil }
-        do { try await WebFetchPolicy.validateDestination(destination); return request }
+        do { try await validate(destination); return request }
         catch { return nil }
     }
 }

@@ -104,7 +104,7 @@ struct AISummaryControls: View {
                 Label(presentation.commandTitle, systemImage: "sparkles").labelStyle(.titleAndIcon)
             }
             .disabled(presentation.disabled)
-            .help("\(presentation.commandTitle) using \(aiProviderLabel(presentation.provider))")
+            .help("\(presentation.commandTitle) using \(aiProviderLabel(presentation.provider)); classification updates with the summary")
             .accessibilityLabel("\(presentation.commandTitle) using \(aiProviderLabel(presentation.provider))")
             Menu {
                 AISummaryOptionsCommands(model: model, target: target)

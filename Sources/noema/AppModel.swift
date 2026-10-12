@@ -2882,7 +2882,8 @@ struct AISuggestion: Identifiable, Sendable {
         }.value
     }
     func createPageFromSource(_ source: SourceRecord, provider: AIProvider? = nil) {
-        guard canOperateOnLoadedContent, !downloadingSources.contains(source.id), !hasPendingCloudSummary else { return }
+        guard canOperateOnLoadedContent, !downloadingSources.contains(source.id), !hasPendingCloudSummary,
+              !generatingTopicPage, aiPageDraft == nil, aiPageSubmission == nil else { return }
         aiPageSourceID = source.id
         aiPageProviderOverride = provider
         showTopicPage = true
