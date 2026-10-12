@@ -15,7 +15,12 @@ extension RichArticleView {
          onBegin: @escaping () -> Void, onEnd: @escaping () -> Void,
          onWikiLink: @escaping (String) -> Void, onWikiQuery: @escaping (String?) -> Void = { _ in },
          noteID: UUID? = nil, vaultID: UUID? = nil, sessionID: UUID? = nil,
-         hidesAISummary: Bool = false) {
+         hidesAISummary: Bool = false,
+         onSemanticLoad: ((Coordinator) -> Void)? = nil,
+         annotationChoices: (() async throws -> [EditorAnnotationChoice])? = nil,
+         onAnnotate: ((Coordinator, UUID, NSRange, EditorAnnotationChoice, UInt64) async throws -> Void)? = nil,
+         onInspectAssociation: ((UUID) -> Void)? = nil,
+         onSemanticSelection: (([UUID]) -> Void)? = nil) {
         let state = InterchangeFixtureState(text.wrappedValue)
         self.init(document: Binding(get: {
             if state.source != text.wrappedValue {
@@ -28,7 +33,9 @@ extension RichArticleView {
         }), reading: reading,
             locked: locked, action: action, onBegin: onBegin, onEnd: onEnd,
             onWikiLink: onWikiLink, onWikiQuery: onWikiQuery, noteID: noteID,
-            vaultID: vaultID, sessionID: sessionID, hidesAISummary: hidesAISummary)
+            vaultID: vaultID, sessionID: sessionID, hidesAISummary: hidesAISummary,
+            onSemanticLoad: onSemanticLoad, annotationChoices: annotationChoices, onAnnotate: onAnnotate,
+            onInspectAssociation: onInspectAssociation, onSemanticSelection: onSemanticSelection)
     }
     var text: String { BlockDocumentCodec.encode(document) }
 }

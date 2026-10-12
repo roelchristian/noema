@@ -24,6 +24,12 @@ struct RichArticleView: NSViewRepresentable {
     var onSessionReady: ((Coordinator?) -> Void)? = nil
     var onSnapshot: ((EditorSession.DocumentSnapshot) -> Void)? = nil
     var onBlockLink: (URL) -> Void = { _ in }
+    var onSemanticLoad: ((Coordinator) -> Void)? = nil
+    var annotationChoices: (() async throws -> [EditorAnnotationChoice])? = nil
+    var onAnnotate: ((Coordinator, UUID, NSRange, EditorAnnotationChoice, UInt64) async throws -> Void)? = nil
+    var onInspectAssociation: ((UUID) -> Void)? = nil
+    var onSemanticSelection: (([UUID]) -> Void)? = nil
+    var onAnnotationAvailabilityChange: ((Bool) -> Void)? = nil
     var onScrollOffset: (CGFloat) -> Void = { _ in }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
@@ -53,11 +59,13 @@ struct RichArticleView: NSViewRepresentable {
         let macrosChanged = coordinator.lastMacros != texMacros
         view.showSemanticHeadings = showSemanticHeadings
         view.typography = typography
-        view.locked = locked || coordinator.document.unsupportedVersion
+        view.locked = locked || coordinator.document.unsupportedVersion || (onSemanticLoad != nil && coordinator.session.semanticEdit == nil)
         view.isEditable = !reading && !view.locked; view.theme = theme
         view.begin = onBegin; view.end = onEnd
         view.lockedClick = onBegin
         view.handleKey = { [weak coordinator] in coordinator?.handleKey($0) ?? false }
+        view.annotationAction = { [weak coordinator] in coordinator?.annotateSelection(nil) }
+        view.annotationAvailable = { [weak coordinator] in coordinator?.annotationSelection() != nil }
         view.blockMenu = { [weak coordinator] in coordinator?.contextMenu() ?? NSMenu() }
         view.activateBlock = { [weak coordinator] id, command in coordinator?.mutate(command, id: id, name: "Change block") }
         view.selectBlock = { [weak coordinator] in coordinator?.selectBlock($0, modifiers: $1) }
@@ -74,6 +82,7 @@ struct RichArticleView: NSViewRepresentable {
                 coordinator.presentationRefreshPending = false
             } else { coordinator.presentationRefreshPending = true }
         }
+        coordinator.updateAnnotationAvailability()
         if let action, coordinator.lastAction != action.id {
             if case .block = action.operation { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
             else if view.isEditable { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
@@ -162,7 +171,7 @@ struct SummarizedArticleView: View {
                     model.registerEditorSession(coordinator.session)
                     model.flushEditorPublication = { [weak coordinator] in coordinator?.flushPublication() }
                 } else { model.flushEditorPublication = nil }
-            }, onSnapshot: model.acceptEditorSnapshot, onBlockLink: model.openBlockURL, onScrollOffset: { disclosure.scrolled(to: $0) })
+            }, onSnapshot: model.acceptEditorSnapshot, onBlockLink: model.openBlockURL, onSemanticLoad: model.configureSemanticEditor, annotationChoices: model.annotationChoices, onAnnotate: model.annotateSelection, onInspectAssociation: model.inspectSemanticAssociation, onSemanticSelection: model.semanticSelectionChanged, onAnnotationAvailabilityChange: { model.canAnnotateSelection = $0 }, onScrollOffset: { disclosure.scrolled(to: $0) })
                 .frame(maxWidth: .infinity)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: disclosure.collapsed)

@@ -34,7 +34,7 @@ import VaultCore
 
 @Test func nativeWindowTitlesRepresentEveryLibraryScopeWithoutRedundantVaultSubtitle() {
     let scopes: [(LibraryScope, String)] = [
-        (.wiki, "Pages"), (.sources, "Sources"), (.semantic, "Semantic Blocks"),
+        (.wiki, "Pages"), (.sources, "Sources"), (.semantic, "Knowledge"),
         (.trash, "Trash"), (.tag("Research"), "#Research")
     ]
     for (scope, expected) in scopes {

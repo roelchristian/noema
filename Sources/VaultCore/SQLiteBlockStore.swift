@@ -718,6 +718,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
                 guard let byteReceipt, let vaultID = self.canonicalVaultID else { throw VaultError.invalid("Verified source receipt required.") }
                 try byteReceipt.validate(source: source, vaultID: vaultID, operationID: operationID)
             } else if source.original != nil { throw VaultError.invalid("Unavailable identity cannot invent original bytes.") }
+            try publication?()
         }
         return try transaction(validating: validateBytes) {
             try validateBytes()
@@ -1139,6 +1140,23 @@ extension SQLiteBlockStore {
         if let id=object.subjectEntityID { try run("INSERT INTO semantic_object_entities VALUES(?,?,'subject')", [.text(object.id.uuidString),.text(id.uuidString)]) }
         return .init(object:object,revision:revision)
     }
+    /// A bounded, coherent catalogue includes independent objects with no occurrences.
+    public func knowledgeCatalogue() throws -> KnowledgeCatalogueSnapshot {
+        try requireSemantic()
+        return try readTransaction {
+            let entities = try searchEntities(query: "", limit: 1000)
+            let query = try statement("SELECT id FROM semantic_objects ORDER BY id LIMIT 1000", [])
+            defer { sqlite3_finalize(query) }
+            var objects: [SemanticObjectSnapshot] = []
+            while true {
+                let step = sqlite3_step(query)
+                if step == SQLITE_DONE { break }
+                guard step == SQLITE_ROW, let id = UUID(uuidString: text(query, 0)) else { throw failure() }
+                objects.append(try objectInTransaction(id: id))
+            }
+            return .init(entities: entities, objects: objects, annotations: Array(try annotationRows().prefix(1000)), vaultRevision: try vaultRevision())
+        }
+    }
     public func loadObject(id: UUID) throws -> SemanticObjectSnapshot { try requireSemantic(); return try readTransaction { try objectInTransaction(id:id) } }
     public func createObject(_ object: SemanticObject, expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<SemanticObjectSnapshot> {
         try requireSemantic(); return try transaction {
@@ -1251,7 +1269,13 @@ extension SQLiteBlockStore {
         if case .array(let values)=document.extensions?.properties["annotations"] { for raw in values { let i=try decoder.decode(InlineAnnotation.self,from:encoder.encode(raw)); incoming.insert(i.id); let ref=SemanticReferent(identity:i.targetEntity ?? .init(kind:"legacy",id:i.id),disposition: i.targetEntity.map { ["person","place","concept","question","definition"].contains($0.kind) ? .live : .unresolved } ?? .unresolved); var a=SemanticAnnotation(id:i.id,location:.inline(pageID:pageID,blockID:i.blockID,target:i.target),referent:ref,designation:i.designation,anchorDisposition:i.disposition,expectedRevision:i.expectedRevision,payload:i.payload,createdAt:i.createdAt,modifiedAt:i.modifiedAt); if case .object(let fields)=raw { a.unknownFields=fields.filter{ !["id","pageID","blockID","designation","targetEntity","payload","createdAt","modifiedAt","expectedRevision","target","disposition"].contains($0.key) } }; if let old = try annotationInTransaction(id:a.id) { guard old.annotation.location.pageID == pageID else { throw KnowledgeStoreError.identityConflict(a.id) }; if old.annotation.referent.identity == a.referent.identity { a.referent = old.annotation.referent }; a.locationUnknownFields = old.annotation.locationUnknownFields }; try persistAnnotation(a,document:document,allowExisting:true) } }
         for old in try annotationRows(pageID:pageID) where !incoming.contains(old.annotation.id) { var a=old.annotation; if case .wholeBlock = a.location, a.anchorDisposition == .resolved, let blockID=a.location.blockID, document.block(blockID) != nil { guard a.expectedRevision == (previousRevision?.token ?? Data()) else { throw KnowledgeStoreError.staleRevision }; a.expectedRevision=pageRevision.token }; if case .inline=a.location { a.anchorDisposition = .deleted }; if let b=a.location.blockID, document.block(b) == nil { a.anchorDisposition = .deleted }; try persistAnnotation(a,document:document,allowExisting:true) }
     }
-    public func loadSemanticPage(pageID: UUID) throws -> SemanticPageSnapshot { try requireSemantic(); return try readTransaction { .init(snapshot:try load(pageID:pageID),annotations:try annotationRows(pageID:pageID)) } }
+    private func semanticPageObjects(_ pageID: UUID) throws -> [SemanticObjectSnapshot] {
+        let ids = Set(try annotationRows(pageID: pageID).filter {
+            $0.annotation.referent.disposition != .unresolved && ["question", "definition"].contains($0.annotation.referent.identity.kind)
+        }.map { $0.annotation.referent.identity.id })
+        return try ids.sorted { $0.uuidString < $1.uuidString }.map { try objectInTransaction(id: $0) }
+    }
+    public func loadSemanticPage(pageID: UUID) throws -> SemanticPageSnapshot { try requireSemantic(); return try readTransaction { .init(snapshot:try load(pageID:pageID),annotations:try annotationRows(pageID:pageID),objects:try semanticPageObjects(pageID)) } }
     public func saveSemanticPage(_ incoming: SemanticPageEdit, condition: BlockStoreWriteCondition, expectedObjectRevisions: [UUID:BlockStoreRevision], expectedEntityRevisions: [UUID:BlockStoreRevision], expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<SemanticPageSnapshot> {
         try requireSemantic(); return try transaction {
             try checkedKnowledgeRevision(expectedVaultRevision); try checkKnowledgeOperation(operationID)
@@ -1278,13 +1302,21 @@ extension SQLiteBlockStore {
                 }
             }
             var content=edit.document; content.extensions?.properties.removeValue(forKey:"annotations")
-            let snapshot=try persist(content,pageID:edit.pageID,condition:condition,metadata:nil,semanticProjection:false)
+            var metadata = edit.metadata
+            guard metadata == nil || metadata?.id == edit.pageID else { throw PersistencePayloadError.invalidAnnotation }
+            try metadata?.extensions?.validateWritable()
+            if let metadata { try validateOptionalFields(metadata.unknownFields) }
+            metadata?.body = ""; metadata?.contentHash = ""
+            if canonicalVaultID != nil { metadata?.sourceIDs = nil }
+            let metadataBytes = try metadata.map { try encoder.encode($0) }
+            let snapshot=try persist(content,pageID:edit.pageID,condition:condition,metadata:metadataBytes,semanticProjection:false)
+            if canonicalVaultID != nil, let record = edit.metadata { try replaceSourceLinks(pageID: edit.pageID, sourceIDs: record.linkedSourceIDs) }
             for var annotation in edit.annotations {
                 if annotation.anchorDisposition == .resolved { annotation.expectedRevision=snapshot.revision.token; if case .inline(let page,let block,var target)=annotation.location { target.digest=InlineAnnotationTarget.evidence(quote:target.quote,revision:annotation.expectedRevision); annotation.location = .inline(pageID:page,blockID:block,target:target) } }
                 _ = try persistAnnotation(annotation,document:snapshot.document,expected:edit.expectedAnnotationRevisions[annotation.id])
             }
             for prior in existing where !edit.annotations.contains(where:{$0.id == prior.annotation.id}) { var annotation=prior.annotation; annotation.anchorDisposition = .deleted; _ = try persistAnnotation(annotation,document:snapshot.document,expected:prior.revision) }
-            let result=SemanticPageSnapshot(snapshot:try loadDocument(pageID:edit.pageID),annotations:try annotationRows(pageID:edit.pageID))
+            let result=SemanticPageSnapshot(snapshot:try loadDocument(pageID:edit.pageID),annotations:try annotationRows(pageID:edit.pageID),objects:try semanticPageObjects(edit.pageID))
             let vault=try recordKnowledgeOperation(edit.pageID,revision:result.snapshot.revision,kind:"semanticPage",operationID:operationID)
             return .init(value:result,vaultRevision:vault,operationID:operationID)
         }

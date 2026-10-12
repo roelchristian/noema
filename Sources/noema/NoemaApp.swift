@@ -90,6 +90,7 @@ import VaultCore
                     .disabled(!model.canPerformWorkspaceCommand(.close))
             }
             CommandMenu("Format") {
+                Button("Annotate Selection…") { model.format("annotate-selection", "") }.keyboardShortcut("a", modifiers: [.command, .shift]).disabled(!model.canFormatDocument || !model.canAnnotateSelection)
                 Button("Block Actions…") { model.format("block-actions", "") }.keyboardShortcut("b", modifiers: [.command, .shift]).disabled(!model.canFormatDocument)
                 Button("Bold") { model.format("**", "**") }.keyboardShortcut("b").disabled(!model.canFormatDocument)
                 Button("Italic") { model.format("*", "*") }.keyboardShortcut("i").disabled(!model.canFormatDocument)

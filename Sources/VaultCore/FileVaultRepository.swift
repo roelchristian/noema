@@ -1,4 +1,24 @@
 import Foundation
+import Synchronization
+
+private final class SourceDownloadAuthority: Sendable {
+    let target: URL
+    private enum State { case pending, completing, cancelled }
+    private let state = Mutex(State.pending)
+    init(target: URL) { self.target = target }
+    func beginCompletion() throws {
+        try state.withLock {
+            guard $0 == .pending else { throw VaultError.invalid("Source download is no longer active.") }
+            $0 = .completing
+        }
+    }
+    func validate() throws {
+        try state.withLock {
+            guard $0 == .completing else { throw VaultError.invalid("Source download was cancelled.") }
+        }
+    }
+    func cancel() { state.withLock { $0 = .cancelled } }
+}
 
 public protocol VaultRepository: Sendable {
     func scan(progress: (@Sendable (ScanBatch) -> Void)?) async throws -> ScanBatch
@@ -34,6 +54,7 @@ public actor FileVaultRepository: VaultRepository {
     let sourceCache = SourceSnapshotCache()
     private var cacheInvalidatorID: UUID?
     var downloadingSources: [UUID: SourceRecord] = [:]
+    private var sourceDownloadTargets: [UUID: SourceDownloadAuthority] = [:]
     private let fm = FileManager.default
     let encoder: JSONEncoder = {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; return encoder
@@ -358,6 +379,81 @@ public actor FileVaultRepository: VaultRepository {
         try await save(note: note, title: title, document: document, tags: tags, preserveUpdatedAt: false)
     }
 
+    /// Recovery copies preservation data into fresh identities and publishes the entire page once.
+    public func recoverSemanticDraft(_ draft: DraftRecord) async throws -> NoteRecord {
+        try validateAccess(operation: "recoverSemanticDraft")
+        guard let original = draft.semanticEdit else { throw VaultError.invalid("The draft has no semantic state.") }
+        let vault = try await sqliteBlockStore.canonicalVaultRevision()
+        let pages = try await scan().notes
+        var title = draft.title + " (recovered)", suffix = 2
+        while titleExists(title, in: pages) { title = draft.title + " (recovered) \(suffix)"; suffix += 1 }
+        var objects: [UUID: SemanticObjectSnapshot] = [:]
+        for object in original.objects { objects[object.id] = .init(object: object, revision: .init(token: Data())) }
+        for annotation in original.annotations where annotation.referent.disposition != .unresolved {
+            let identity = annotation.referent.identity
+            if ["question", "definition"].contains(identity.kind), objects[identity.id] == nil {
+                objects[identity.id] = try await sqliteBlockStore.loadObject(id: identity.id)
+            }
+        }
+        let pageID = UUID()
+        var edit = try original.duplicatedPage(to: pageID, objects: Array(objects.values))
+        var entityRevisions: [UUID: BlockStoreRevision] = [:], objectRevisions: [UUID: BlockStoreRevision] = [:]
+        for annotation in edit.annotations where annotation.referent.disposition != .unresolved {
+            let identity = annotation.referent.identity
+            if ["question", "definition"].contains(identity.kind) {
+                if !edit.objects.contains(where: { $0.id == identity.id }) { objectRevisions[identity.id] = try await sqliteBlockStore.loadObject(id: identity.id).revision }
+            } else { entityRevisions[identity.id] = try await sqliteBlockStore.loadEntity(id: identity.id).revision }
+        }
+        for object in edit.objects {
+            for id in object.relatedEntityIDs + [object.subjectEntityID].compactMap({ $0 }) {
+                entityRevisions[id] = try await sqliteBlockStore.loadEntity(id: id).revision
+            }
+        }
+        var note = draft.note
+        note.id = pageID; note.title = title; note.aliases = []; note.tags = normalizeTags(draft.tags)
+        note.createdAt = timestamp(); note.updatedAt = note.createdAt; note.editingLocked = false
+        note.relativePath = "sqlite/" + pageID.uuidString.lowercased(); note.contentHash = ""
+        note.body = BlockDocumentCodec.encode(edit.document); note.inlineTags = MarkdownService.analyze(note.body).tags
+        edit.metadata = note
+        let result = try await sqliteBlockStore.saveSemanticPage(edit, condition: .createOnly,
+            expectedObjectRevisions: objectRevisions, expectedEntityRevisions: entityRevisions,
+            expectedVaultRevision: vault, operationID: UUID())
+        return semanticRecord(note, snapshot: result.value.snapshot)
+    }
+
+    private func semanticRecord(_ metadata: NoteRecord, snapshot: BlockStoreSnapshot) -> NoteRecord {
+        var record = metadata, portable = snapshot.document
+        if !portable.unsupportedVersion { portable.originalSource = nil }
+        record.body = BlockDocumentCodec.encode(portable)
+        record.document = snapshot.document
+        record.contentHash = snapshot.revision.token.base64EncodedString()
+        record.inlineTags = MarkdownService.analyze(record.body).tags
+        return record
+    }
+
+    public func saveSemantic(note: NoteRecord, title: String, tags: [String], edit: SemanticPageEdit,
+        expectedPageRevision: BlockStoreRevision, expectedEntityRevisions: [UUID: BlockStoreRevision],
+        expectedObjectRevisions: [UUID: BlockStoreRevision], expectedVaultRevision: BlockStoreRevision) async throws -> (NoteRecord, SemanticPageSnapshot) {
+        try validateAccess(operation: "saveSemantic")
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { throw VaultError.invalid("A wiki page needs a title.") }
+        let pages = try await scan().notes
+        guard let current = pages.first(where: { $0.id == note.id }), !current.isEditingLocked,
+              edit.pageID == note.id else { throw VaultError.invalid("This page is unavailable or locked.") }
+        guard !titleExists(title, in: pages.filter { $0.id != note.id }) else { throw VaultError.duplicateTitle(title) }
+        var updated = note
+        updated.title = title; updated.tags = normalizeTags(tags); updated.updatedAt = timestamp()
+        updated.body = BlockDocumentCodec.encode(edit.document)
+        updated.inlineTags = MarkdownService.analyze(updated.body).tags
+        if current.title != title { updated.aiTitleProvenance = nil }
+        if normalized(title) != normalized(note.title), !updated.aliases.contains(note.title) { updated.aliases.append(note.title) }
+        var value = edit; value.metadata = updated
+        let result = try await sqliteBlockStore.saveSemanticPage(value, condition: .replace(expected: expectedPageRevision),
+            expectedObjectRevisions: expectedObjectRevisions, expectedEntityRevisions: expectedEntityRevisions,
+            expectedVaultRevision: expectedVaultRevision, operationID: UUID())
+        return (semanticRecord(updated, snapshot: result.value.snapshot), result.value)
+    }
+
     private func save(note: NoteRecord, title: String, body: String, tags: [String], preserveUpdatedAt: Bool) async throws -> NoteRecord {
         try await save(note: note, title: title, document: note.document ?? BlockDocumentCodec.decode(body), tags: tags, preserveUpdatedAt: preserveUpdatedAt)
     }
@@ -485,7 +581,7 @@ public actor FileVaultRepository: VaultRepository {
         return issue ?? "Available"
     }
 
-    private func publishSource(id: UUID = UUID(), capturedAt: String? = nil, data: Data, filename: String, title: String, originURL: String?, isURLSource: Bool) async throws -> SourceRecord {
+    private func publishSource(id: UUID = UUID(), capturedAt: String? = nil, data: Data, filename: String, title: String, originURL: String?, isURLSource: Bool, validating publication: (@Sendable () throws -> Void)? = nil) async throws -> SourceRecord {
         try validateAccess(operation: "publishSource")
         guard data.count <= Self.maximumImportBytes else { throw VaultError.invalid("Files larger than 2 MB must be linked instead of imported.") }
         try await rejectDuplicateSource(checksum: digest(data), excludingID: id)
@@ -497,7 +593,7 @@ public actor FileVaultRepository: VaultRepository {
         }
         var metadata = SourceMetadata(id: id, title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent : title, capturedAt: capturedAt ?? timestamp(), originalFilename: URL(fileURLWithPath: filename).lastPathComponent, originURL: originURL?.isEmpty == true ? nil : originURL, sha256: digest(data), fileSize: data.count, storedFilename: "original.\(storedExtension)")
         metadata.isURLSource = isURLSource ? true : nil
-        try await canonicalPublish(metadata: metadata, original: data)
+        try await canonicalPublish(metadata: metadata, original: data, validating: publication)
         return SourceRecord(metadata: metadata, body: body)
     }
 
@@ -636,6 +732,7 @@ public actor FileVaultRepository: VaultRepository {
         )
         let source = SourceRecord(metadata: metadata, body: "", availabilityIssue: "Downloading from iCloud", contentState: .unavailable)
         downloadingSources[id] = source
+        sourceDownloadTargets[id] = SourceDownloadAuthority(target: targetURL.standardizedFileURL)
         return source
     }
 
@@ -645,7 +742,12 @@ public actor FileVaultRepository: VaultRepository {
             throw VaultError.invalid("Source download is no longer active.")
         }
         let targetURL = Self.logicalCloudURL(url)
-        defer { downloadingSources.removeValue(forKey: id) }
+        guard let authority = sourceDownloadTargets[id], authority.target == targetURL.standardizedFileURL,
+              shouldImport == !pending.metadata.isLinked else {
+            throw VaultError.invalid("Source download completion does not match its file or ownership.")
+        }
+        try authority.beginCompletion()
+        defer { cancelSourceDownload(id: id) }
         if shouldImport {
             return try await publishSource(
                 id: id,
@@ -654,7 +756,8 @@ public actor FileVaultRepository: VaultRepository {
                 filename: targetURL.lastPathComponent,
                 title: pending.title,
                 originURL: nil,
-                isURLSource: false
+                isURLSource: false,
+                validating: { try authority.validate() }
             )
         }
         try await rejectDuplicateSource(checksum: digest(data), linkedURL: targetURL, excludingID: id)
@@ -671,19 +774,22 @@ public actor FileVaultRepository: VaultRepository {
             linkedBookmark: bookmark,
             storedFilename: pending.metadata.storedFilename
         )
-        try await canonicalPublish(metadata: metadata)
+        try await canonicalPublish(metadata: metadata, validating: { try authority.validate() })
         let current = try await canonicalSourceMetadata(id: metadata.id)
         return SourceRecord(metadata: current.metadata, body: body)
     }
 
     public func cancelSourceDownload(id: UUID) {
         downloadingSources.removeValue(forKey: id)
+        sourceDownloadTargets.removeValue(forKey: id)?.cancel()
     }
 
     @discardableResult
     public func cancelAllSourceDownloads() -> [UUID] {
         let ids = Array(downloadingSources.keys)
         downloadingSources.removeAll()
+        for authority in sourceDownloadTargets.values { authority.cancel() }
+        sourceDownloadTargets.removeAll()
         return ids
     }
 
@@ -719,6 +825,9 @@ public actor FileVaultRepository: VaultRepository {
         let url = root.appendingPathComponent(pending).standardizedFileURL
         guard fm.fileExists(atPath: url.path) else { return false }
         let snapshot = try contentStore.snapshot(at: pending)
+        guard case .directory(let files) = snapshot, files.isEmpty else {
+            throw VaultError.storage("Interrupted import staging retained for recovery: " + pending)
+        }
         try contentStore.delete(at: pending, expected: snapshot)
         return true
     }
@@ -808,7 +917,10 @@ public actor FileVaultRepository: VaultRepository {
     public func deleteSource(_ source: SourceRecord) async throws {
         try validateAccess(operation: "deleteSource")
         sourceCache.remove(source.id)
-        if downloadingSources.removeValue(forKey: source.id) != nil { return }
+        if downloadingSources[source.id] != nil {
+            cancelSourceDownload(id: source.id)
+            return
+        }
         let current = try await canonicalSourceMetadata(id: source.id)
         guard current.metadata == source.metadata else { throw VaultError.conflict("Source changed.") }
         _ = try await sqliteBlockStore.setSourceTrashed(id: source.id, expected: current.revision, trashed: true)

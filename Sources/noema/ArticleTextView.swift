@@ -19,6 +19,7 @@ import VaultCore
     var begin: (() -> Void)?
     var lockedClick: (() -> Void)?
     var end: (() -> Void)?
+    let semanticRangeIndex = BlockTextStorage.SemanticRangeIndex()
     var locked = false
     var theme = NoemaTheme()
     var typography = EditorTypography() { didSet { if typography != oldValue { updateReadingGeometry() } } }
@@ -47,6 +48,8 @@ import VaultCore
         super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacement)
     }
     var handleKey: ((NSEvent) -> Bool)?
+    var annotationAction: (() -> Void)?
+    var annotationAvailable: (() -> Bool)?
     var blockMenu: (() -> NSMenu)?
     var activateBlock: ((UUID, BlockMutation) -> Void)?
     var pasteContent: ((NSPasteboard) -> Void)?
@@ -310,6 +313,7 @@ import VaultCore
             let characters = layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
             ranges = index.intersecting(characters)
         } else { ranges = BlockTextStorage.ranges(storage) }
+        drawSemanticRanges(in: dirtyRect, blocks: ranges)
         var numberByDepth: [Int: Int] = [:]
         for (id, range) in ranges {
             let depth = storage.attribute(.blockDepth, at: range.location, effectiveRange: nil) as? Int ?? 0
@@ -505,6 +509,7 @@ import VaultCore
                 edit.target = self
                 menu.addItem(edit)
             }
+            addSemanticAssociations(to: menu, at: convert(event.locationInWindow, from: nil))
             addDocumentSelectionItem(to: menu)
             return menu
         }
@@ -522,8 +527,22 @@ import VaultCore
         }
         let menu = super.menu(for: event) ?? NSMenu()
         if let actions = blockMenu?() { menu.addItem(.separator()); let item = NSMenuItem(title: "Block", action: nil, keyEquivalent: ""); item.submenu = actions; menu.addItem(item) }
+        addAnnotationItem(to: menu)
+        addSemanticAssociations(to: menu, at: point)
         addDocumentSelectionItem(to: menu)
         return menu
+    }
+    private func addAnnotationItem(to menu: NSMenu) {
+        let item = NSMenuItem(title: "Annotate Selection…", action: #selector(annotateSelection(_:)), keyEquivalent: "A")
+        item.target = self; item.keyEquivalentModifierMask = [.command, .shift]
+        item.isEnabled = annotationAvailable?() == true
+        item.toolTip = item.isEnabled ? "Associate this text with an entity, question, or definition" : "Select complete characters within one editable block"
+        menu.addItem(item)
+    }
+    @objc func annotateSelection(_ sender: Any?) { annotationAction?() }
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(annotateSelection(_:)) { return annotationAvailable?() == true }
+        return super.validateUserInterfaceItem(item)
     }
     private func addDocumentSelectionItem(to menu: NSMenu) {
         let item = NSMenuItem(title: "Select Entire Document", action: #selector(selectEntireDocument(_:)), keyEquivalent: "a")

@@ -123,6 +123,26 @@ extension FileVaultRepository {
         return try await publishSourceMetadata(snapshot, metadata: metadata, validate: validate)
     }
 
+    /// Automatic source processing uses the captured canonical revision and retains manual classification.
+    public func publishSourceProcessing(_ snapshot: SourceSummarySnapshot, title: String, summary: String,
+        lcc: String?, provenance: SummaryProvenance, validate: @escaping @Sendable () throws -> Void
+    ) async throws -> SourceRecord {
+        let provenance = try enrichmentProvenance(provenance, revision: snapshot.sourceRevision)
+        var metadata = snapshot.source.metadata
+        metadata.title = try acceptedTitle(title)
+        guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw VaultError.invalid("A source processing summary is required.")
+        }
+        metadata.aiTitleProvenance = provenance
+        metadata.aiSummary = summary; metadata.aiSummaryProvenance = provenance
+        if metadata.lcc == nil, let lcc {
+            metadata.lcc = try acceptedLCC(lcc)
+            metadata.lccClassification = nil
+            metadata.aiLCCProvenance = provenance
+        }
+        return try await publishSourceMetadata(snapshot, metadata: metadata, validate: validate)
+    }
+
     /// A reviewed draft is encoded fully before a single create-only canonical write.
     /// Source relationships use the captured original and metadata, never a cached excerpt.
     public func createEnrichedPage(id: UUID = UUID(), title: String, body: String, summary: String,

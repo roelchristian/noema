@@ -154,6 +154,15 @@ struct SourcesNavigationIntegrationTests {
         #expect(model.body == source.body)
         #expect(!model.preview.isEmpty)
         #expect(model.currentSource?.metadata.lcc == "QA")
+        try await SourceReader.open(try await repository.loadSource(id: source.id), root: root, contentStore: repository.contentStore)
+        #expect(SourceReader.openReaderIDs.contains(source.id))
+        var brokenBookmark = source
+        brokenBookmark.metadata.linkedBookmark = Data()
+        await #expect(throws: (any Error).self) {
+            try await SourceReader.open(brokenBookmark, root: root, contentStore: repository.contentStore)
+        }
+        #expect(!SourceReader.openReaderIDs.contains(source.id))
+        try await SourceReader.open(source, root: root, contentStore: repository.contentStore)
         #expect(try await repository.scanSources().sources.first?.metadata.lcc == "QA")
         #expect(try await model.sourceSummaryContent(metadata.sources[0], root: root).contains("Fresh selected"))
         await model.refresh()
@@ -173,6 +182,7 @@ struct SourcesNavigationIntegrationTests {
         #expect(model.currentSource?.contentState == .unavailable)
         #expect(model.body.isEmpty && model.preview.isEmpty && model.wordCount == 0)
         #expect(model.sourceAvailability[source.id] == nil)
+        #expect(!SourceReader.openReaderIDs.contains(source.id))
         #expect(model.currentSource?.availabilityIssue?.contains("iCloud") == true)
         store.unavailable.withLock { $0 = false }
         await model.refresh()
@@ -209,11 +219,14 @@ struct SourcesNavigationIntegrationTests {
         model.changeScope(.sources); model.select(source.id)
         await waitUntil { model.currentSource?.id == source.id && !model.preview.isEmpty }
         let oldPreview = model.preview
+        try await SourceReader.open(source, root: root, contentStore: repository.contentStore)
+        #expect(SourceReader.openReaderIDs.contains(source.id))
         try Data("Second linked content with more words".utf8).write(to: external)
         await model.refresh()
         await waitUntil { model.wordCount == 6 }
         #expect(model.body == "Second linked content with more words")
         #expect(model.preview != oldPreview && !model.preview.isEmpty)
+        #expect(!SourceReader.openReaderIDs.contains(source.id))
         #expect(await model.closeVault())
     }
 

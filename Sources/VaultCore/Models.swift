@@ -174,6 +174,8 @@ public struct ScanBatch: Sendable {
     public var sourceVerification: [UUID: SourceScanVerification] = [:]
     /// Extracted-content revisions permit index reconciliation without hashing cached bodies again.
     public var sourceContentRevisions: [UUID: String] = [:]
+    /// Verified original-byte fingerprints for invalidating open previews, including binary linked files.
+    public var sourceOriginalRevisions: [UUID: String] = [:]
     public init() {}
 }
 public struct WikiLink: Codable, Sendable, Equatable {
@@ -192,13 +194,14 @@ public struct DraftRecord: Codable, Identifiable, Sendable {
     public var body: String
     public var tags: [String]
     public var capturedAt: String
+    public var semanticEdit: SemanticPageEdit? = nil
     public var id: UUID { note.id }
-    public init(note: NoteRecord, title: String, body: String, tags: [String]) {
-        self.note = note; self.title = title; self.body = body; self.tags = tags
+    public init(note: NoteRecord, title: String, body: String, tags: [String], semanticEdit: SemanticPageEdit? = nil) {
+        self.note = note; self.title = title; self.body = body; self.tags = tags; self.semanticEdit = semanticEdit
         self.capturedAt = timestamp()
     }
-    public init(note: NoteRecord, title: String, document: BlockDocument, tags: [String]) {
-        self.note = note; self.title = title; self.body = ""; self.document = document; self.tags = tags
+    public init(note: NoteRecord, title: String, document: BlockDocument, tags: [String], semanticEdit: SemanticPageEdit? = nil) {
+        self.note = note; self.title = title; self.body = ""; self.document = document; self.tags = tags; self.semanticEdit = semanticEdit
         self.capturedAt = timestamp()
     }
 }
