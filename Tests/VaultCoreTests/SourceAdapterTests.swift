@@ -140,7 +140,7 @@ struct SourceAdapterTests {
         let completed = try await repo.completeSourceDownload(id: pending.id, at: external, data: Data(contentsOf: external), shouldImport: false)
         #expect(completed.id == pending.id)
         #expect(completed.metadata.linkedBookmark != nil)
-        try await repo.deleteSource(completed)
+        try await repo.deleteSource(repo.loadSource(id: completed.id))
         let importing = try await repo.beginSourceDownload(at: external, shouldImport: true)
         let imported = try await repo.completeSourceDownload(id: importing.id, at: external, data: Data(contentsOf: external), shouldImport: true)
         #expect(imported.id == importing.id)
@@ -365,7 +365,7 @@ extension SourceAdapterTests {
         #expect(try Data(contentsOf: original) == Data("Changed".utf8))
         let trash = try #require(try await repository.trashItems().first)
         try await repository.restore(trash)
-        let restored = try await repository.loadSource(id: renamed.id)
+        let restored = try #require(try await repository.scan().sources.first(where: { $0.id == renamed.id }))
         #expect(restored.contentState == .unavailable && restored.body.isEmpty)
         try await repository.deleteSource(restored)
         #expect(FileManager.default.fileExists(atPath: original.path))
@@ -429,7 +429,8 @@ extension SourceAdapterTests {
         try bytes.write(to: file)
         // Replacing the deleted file invalidates the old security bookmark; relinking restores access.
         #expect(FileVaultRepository.checkSourceAvailability(source, root: root, contentStore: repository.contentStore).contains("stale"))
-        try await repository.deleteSource(repository.loadSource(id: source.id))
+        let unavailable = try #require(try await repository.scan().sources.first(where: { $0.id == source.id }))
+        try await repository.deleteSource(unavailable)
         let relinked = try await repository.linkSources(at: file, maximumFiles: 1)[0]
         #expect(FileVaultRepository.checkSourceAvailability(relinked, root: root, contentStore: repository.contentStore) == "Available")
         #expect(try await repository.scan().sources.first(where: { $0.id == relinked.id })?.availabilityIssue == nil)
