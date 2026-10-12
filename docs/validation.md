@@ -8,6 +8,17 @@ Reference environment: Apple Silicon, macOS 27.0, Swift 6.2.4, macOS SDK 26.2.
 Prior native runs establish the domain acceptance stated below; they are not claims
 that a later change has been tested. Rerun the relevant commands for each PR.
 
+## STOR02B–STOR03 acceptance scope
+
+The production baseline is format 2, directly initialized schema 5. Historical
+Markdown/schema-1–4 vaults are intentionally unsupported. The repository demo and its
+content-only checks are retired; canonical fixtures are generated in temporary roots.
+Native archive APIs include committed SQLite and controlled originals/preservation,
+with RecoveryStore drafts and linked originals explicitly excluded. Independent
+storage review and integrated test results must be recorded in the PR; implementation
+alone is not acceptance. Standing device/accessibility, process-termination, power-loss,
+filesystem-failure and linked-source acceptance gaps remain open.
+
 ## Reproducible checks
 
 Run from the repository root:

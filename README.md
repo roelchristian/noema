@@ -2,7 +2,7 @@
 
 **A personal atlas of thought.**
 
-Noema is a native macOS personal wiki with a read-only source library, structured block and TeX math editing, optional on-device Apple Intelligence, portable plaintext storage, and provider-selected content enrichment and reviewed AI page creation.
+Noema is a native macOS personal wiki with a read-only source library, structured block and TeX math editing, optional on-device Apple Intelligence, local SQLite storage, and provider-selected content enrichment and reviewed AI page creation.
 
 ## Build and quick start
 
@@ -18,7 +18,7 @@ open "dist/noema.app"
 ./scripts/test.sh extended
 ```
 
-Open `Examples/Demo Vault` for a tour, or choose **Create a vault** and select a parent folder. Keep personal vaults outside this repository. New vaults use editable Markdown pages. Explicit local conversion can select SQLite page storage; see [development](docs/development.md#local-sqlite-page-format). Imported originals retain their bytes, and linked originals remain read-only.
+Choose **Create a vault** and select an independently local parent folder. New vaults use format 2 and schema-5 SQLite; imported originals retain their bytes and linked originals remain read-only. Historical Markdown and schema-1–4 vaults are intentionally unsupported and rejected without modification. Markdown remains explicit import/export interchange. See [development](docs/development.md#local-sqlite-vault-format).
 
 Vault locking revokes access inside Noema. You can require native macOS authentication when opening or unlocking a vault, including after reopening or restarting Noema, through the creation dialog or **Settings → Vault access on this Mac**. This opt-in preference applies on this Mac and protects against casual access through Noema. Canonical files, indexes, drafts, previews and linked originals remain plaintext. Encrypted creation is disabled pending cryptographic storage. **Saved locally** confirms this Mac's save; two-Mac iCloud transport acceptance remains pending.
 

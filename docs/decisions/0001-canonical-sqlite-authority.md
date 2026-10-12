@@ -1,34 +1,18 @@
 # Canonical SQLite authority (STOR.01)
 
-Status: approved architectural specification with conditional implementation
-handoff; author and independent dispositions are recorded below. This decision
-authorizes no runtime authority transition.
+Status: implemented production cutover under STOR02B–STOR03; independent storage
+review remains required. Historical execution evidence remains in Git history.
 
 ## Baseline and reconciliation
 
-Baseline: `890898fbe0d1511e64dd3e41f932be1147bb79b3`, also the connected
-GitHub application's `main` when inspected on 2026-10-12. The working tree began
-clean. There was no existing ADR directory. Source and tests govern discrepancies.
-[BLK09–11](https://github.com/roelchristian/noema/pull/35) and
-[BLK12–14](https://github.com/roelchristian/noema/pull/36) are merged. Their reported
-691-test and 55-test runs are historical evidence, not tests repeated by STOR.01.
-Both PRs left independent storage review and production acceptance outstanding.
-
-| Capability / classification | Current evidence and source of truth | Disposition / owner |
-| --- | --- | --- |
-| SQLite pages: implemented and verified by named tests | `SQLiteBlockStore`, `SQLiteBlockStoreTests`, `SQLiteRepositoryTests`: actor connection, prepared statements, FK parentage, relational ordering, opaque revisions, atomic page/document writes, incremental changed rows | Preserve foundation; STOR.02 extends its owner |
-| Durability: implemented but limited | BLK12 transaction cancellation/authority checks, WAL/FULL, backup API, checkpoint and AppModel retirement; existing cancellation/backup/lifecycle tests cover specific schedules | Preserve; STOR.03 must establish process/power-loss and disk-failure acceptance |
-| Migration: implemented but limited | `SQLiteVaultMigration` and tests: verified file backup, staged page import, byte/inventory rechecks, database publication then conditional manifest cutover, receipt-based interrupted publication recovery | No conversion here; STOR.03 extends explicit migration to new authorities |
-| Markdown interchange: implemented but limited | `MarkdownInteroperability`, explicit import and stable-ID export tests; readable export reports loss | Preserve BLK13 APIs; native workflow acceptance remains open |
-| Source/page references: implemented but limited | `NoteRecord.sourceIDs` in SQLite page metadata; sources remain `Sources/<UUID>/metadata.json` and controlled originals | STOR.02 moves metadata/references together; present relationships have no source FK or cross-store transaction |
-| General metadata authority: documented only here / missing in runtime | No schema-2 source, conflict, vault-identity or tombstone tables; file-backed source Trash/conflicts/retention remain canonical | Explicit schema/capability transition; never reinterpret schema 2 |
-| Unknown fields: contradictory guarantee | `BlockStore` comment promises opaque retention; current typed Codable models preserve supported fields and declared string metadata, not arbitrary JSON keys | Contract records limit; STOR.02 supplies bounded opaque payloads and writable capability gates |
-| Universal sync-root detection: missing | `requireLocalRoot` checks symlinks, ubiquity, positively local volumes and known provider/root names; arbitrary synchronisers cannot be inferred | Preserve fail-closed checks and require independent local-root choice; no live-file replication |
-| Complete archive: missing | Page bundle omits source/preservation data; database backup omits file authorities and app-local drafts | Separate verifiable archive/restore contract; STOR.03 |
-| SQLite unavailable / production v1-only: superseded, contradictory | Older D-series/editor/development wording conflicts with merged format-2 routing | Replace in authoritative docs; no second implementation |
-| Default SQLite creation: documented only here | `VaultCreation.createNewVault` still initializes format 1 | STOR.02 explicitly changes eligible new creation; existing identities/formats unchanged |
-| Encryption: missing implementation, future dependency | Authentication and session gates enforce application access only; persisted surfaces remain plaintext | E-series owns cryptography and device acceptance; never imply confidentiality from locking |
-| Inline annotations: documented only here | Rich runs are formatting values, no annotation identities or anchors | Deferred extension in block contract; no tagging/entity engine |
+Schema 5 is the sole production authority. New vaults initialize it directly; format 2
+and the required capability declaration agree with database identity. Markdown-first
+storage and schema-1–4 conversions are deliberately retired. Unsupported vaults reject
+without modification. SQLite owns all canonical logical records; imported originals
+remain controlled immutable files and linked originals remain externally owned.
+Native archives preserve committed SQLite and owned bytes, excluding disclosed
+application-local recovery drafts and external originals. Encryption, device and
+process/power-loss acceptance remain deferred.
 
 ## Decision and authority
 

@@ -115,7 +115,7 @@ A run uses `.active` while executing (a file or lock directory), `.pinned` to re
 ./scripts/cleanup-local-evidence.sh --force --dry-run
 ```
 
-Successful test/build wrappers run age-based cleanup. `--force` bypasses age only; active/pinned runs remain protected and completion is still required. Cleanup never targets user vaults, worktrees, `Examples/Demo Vault`, recovery data, previews or protected fixtures. Its dedicated managed-root and symlink checks prevent path escape. Periodic development maintenance can run the same command.
+Successful test/build wrappers run age-based cleanup. `--force` bypasses age only; active/pinned runs remain protected and completion is still required. Cleanup never targets user vaults, worktrees, recovery data, previews or protected fixtures. Its dedicated managed-root and symlink checks prevent path escape. Periodic development maintenance can run the same command.
 
 ## Documentation maintenance
 
@@ -143,7 +143,7 @@ and auxiliary-window isolation using the [standing matrix](validation.md#native-
 
 ## Core workflow
 
-For a quick tour, open `Examples/Demo Vault`. Keep your personal content vaults outside this source repository.
+Create a temporary schema-5 vault for a tour. Keep personal vaults outside this source repository.
 
 ### Vaults
 - **Create a vault:** Click **Create a vault** (default name **My Knowledge Vault**) and choose a parent folder such as **iCloud Drive / Noema**. Creation publishes a complete plaintext v1 folder only after confirmation and rejects occupied names. Optionally enable **Require authentication in Noema** before creation: Noema then authenticates before showing the new vault. Cancelling authentication preserves the created folder and its preference for a later **Open Vault** retry. **Encrypted vault** remains unavailable; encryption and recovery-key protection are separate future work.
@@ -199,68 +199,41 @@ Select text and activate hyperlinks with ordinary clicks while reading. Press **
 
 ```text
 My Vault/
-  vault.json                     # formatVersion: 1, stable vault UUID
-  Wiki/
-    Pertinax.md                  # frontmatter and editable Markdown body
-  Sources/
-    <source-uuid>/
-      original.txt              # original bytes; may instead be original.md, .pdf, etc.
-      metadata.json             # identity, origin, capture time, checksum, optional AI summary
-  Conflicts/                    # preserved competing drafts and iCloud conflict versions
-  Removed Pages/                # recoverable trashed pages and source directories (15-day retention)
-  Trash Retention.json          # first-seen timestamps for undated trash entries
+  vault.json       # format 2; schema 5, UUID and required capabilities
+  blocks.sqlite    # canonical pages, blocks, sources, knowledge and annotations
+  Sources/         # immutable imported originals
+  Conflicts/       # required preservation bytes
 ```
 
-- **Wiki frontmatter:** `id`, `title`, `aliases`, `tags`, optional `lcc` (Library of Congress Classification code), `created_at`, `updated_at`, and optional `sources` UUID references and lock state. Unknown YAML fields are preserved semantically; external Markdown files receive frontmatter only on their first app save.
-- **Source metadata:** `id`, `title`, `capturedAt`, `originalFilename`, optional `originURL`, optional `lcc`, `sha256`, `storedFilename`, and optional `aiSummary`, `fileSize`, `linkedBookmark`, `isURLSource`, and `webAvailabilityIssue`. Imported originals are stored byte-for-byte via staged `.import-<uuid>` directories and published only once both original and metadata exist.
-- **App-local storage:** `AppModel` places `search.sqlite` (and SQLite-managed `search.sqlite-wal` / `search.sqlite-shm` while present) and `Drafts/<note UUID>.json` under `<Application Support URL>/KnowledgeVault/<vault UUID>/`, outside the synced vault. The base is the runtime URL returned by Foundation for the user's Application Support directory; a sandboxed app can resolve it inside its app container. An unsandboxed example is `~/Library/Application Support/KnowledgeVault/<vault UUID>/`. Tests can substitute the base with `localStorageRoot`. Keep `Drafts` if you have unsaved recovery work; the search index is rebuildable. These files remain plaintext when the vault is locked.
+App-local RecoveryStore drafts remain outside the vault and may contain the only
+unsaved copy. Search indexes are derived and rebuildable. All files remain plaintext.
 
-## Local SQLite page format
+## Local SQLite vault format
 
-`SQLiteVaultMigration.convert(root:)` is an explicit local operation for a quiescent,
-closed Markdown vault. It verifies a full pre-conversion backup and imported block
-records in staging, publishes `blocks.sqlite`, then conditionally changes `vault.json`
-to format 2 with `storageMode: sqliteBlocks`. Original Markdown pages remain intact;
-format 2 scans use the database as the sole page authority. Source originals and
-metadata, source Trash and preserved conflicts continue through the existing content
-adapter. Database `user_version=2` owns page metadata, blocks and page Trash only.
-Reopen after conversion. Noema Markdown export/import is explicit interoperability;
-a live-page Markdown bundle or database-only snapshot is not a complete vault archive.
+Creation initializes schema 5 directly in an owned staging root, verifies identity,
+capabilities and integrity, closes the database and publishes create-only. No historical
+format conversion or Markdown authority remains. Old and future formats reject without
+mutation. Imported originals remain controlled immutable files; linked originals are
+externally owned. SQLite metadata, page/source relationships and logical Trash use one
+actor and transaction owner. Known synchronized/nonlocal roots reject; independently
+local storage is required. Session locking is access control, not encryption.
 
-The [STOR.01 ownership contract](contracts/storage-boundary.md) approves a future
-explicit schema-3/capability transition and a SQLite creation default only for verified
-eligible local roots. Neither is active: creation still publishes format 1, and opening
-existing format 1/2 vaults never changes their authority. The [architecture](architecture.md)
-distinguishes implemented storage from the deferred complete archive/restore contract.
-Conversion rejects future block envelopes, symlinks, nonlocal volumes and known
-cloud-provider roots. Arbitrary third-party sync folders cannot be identified by
-filesystem attributes alone; callers must choose an independently local vault.
-A failed manifest cutover preserves format 1 authority. A later retry preserves a
-published database only when its retained publication receipt matches the manifest
-and database digest; unrelated occupied databases are rejected.
+`FileVaultRepository.archive(to:)` produces a version-1 native directory package with
+an actor-owned SQLite backup, manifest, controlled originals and preservation files.
+Each file has a byte length and SHA-256 entry. `NativeVaultArchive.restore` verifies
+schema, identity, capabilities, foreign keys, page reconstruction and source checksums
+before create-only publication to a new local destination. Restoration requires a
+current destination-bound session lease; authentication remains the caller's admission
+responsibility. Failed nonempty staging is retained. External linked originals and
+application-local RecoveryStore drafts are explicitly excluded; archives capture
+committed work, and must never be represented as capturing unsaved edits. These APIs
+currently have no dedicated archive UI.
 
-## iCloud, conflicts, and Trash
+## Canonical fixture validation
 
-- **Coordinated sync:** Noema uses security-scoped folder bookmarks, `NSFileCoordinator`, and a file presenter to observe external changes. **Saved locally** confirms a local write on this Mac, not completion of an iCloud upload. Use **Refresh from Files** if external edits have not yet appeared.
-- **Conflict preservation:** If a page changes on disk while you are editing, Noema keeps the disk version and saves your competing draft to `Conflicts/` and local recovery storage so you can reload or save as a new page. iCloud conflict versions are copied before being marked resolved.
-- **Recoverable Trash (`Removed Pages`):** Open **Trash** from the bottom-left vault menu to restore or permanently delete trashed pages and source records in a single unified list (external linked files are never deleted). Restore checks for identity, title, or duplicate-source collisions, while **Empty Trash…** and permanent deletion verify snapshots so modified, unreadable, or conflicted items are preserved and reported. Items in `Removed Pages` expire automatically after **15 days** on vault open/refresh (undated items receive a full 15-day grace period, and any surviving legacy `.Trash` Markdown files are migrated automatically under coordinated access).
-
-## Example vault fixture validation
-
-Run the example-vault quality checks when changing `Examples/Demo Vault` or its LCC
-metadata:
-
-```sh
-./scripts/validate-fixtures.sh --skip-update
-```
-
-The script explicitly includes `NoemaFixtureValidationTests` with
-`NOEMA_FIXTURE_VALIDATION=1` and filters the run to that target. The
-[fixture checks](../Tests/NoemaFixtureValidationTests/DemoVaultFixtureValidationTests.swift)
-require at least one demo page and source, decode their metadata with the production
-codecs, and require a non-empty LCC for each. This sample-content requirement is
-reviewed independently of runtime LCC serialization, persistence and source-to-page
-inheritance assertions in the routine regression suite.
+The historical repository demo has been removed. Tests generate disposable schema-5
+vaults; no opaque generated SQLite database is committed. Run
+`./scripts/validate-fixtures.sh --skip-update` for native archive integrity fixtures.
 
 ## Explicit visual validation
 

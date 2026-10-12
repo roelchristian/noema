@@ -42,7 +42,7 @@ class HygieneTests(unittest.TestCase):
     def test_generated_paths_and_extensions(self):
         for path in ['validation/tokens/shot.png', 'validation/log.txt', 'validation/evidence/data.json', 'validation/capture-manifest.json', 'validation/notes.md', 'validation/report.html']:
             self.assertTrue(hygiene.path_errors(path, set()), path)
-        for path in ['validation/tokens/capture.sh', 'validation/tokens/.gitignore', 'Tests/sample.png', 'Resources/Brand/Icon.png', 'Examples/Demo Vault/Wiki/Story.md']:
+        for path in ['validation/tokens/capture.sh', 'validation/tokens/.gitignore', 'Tests/sample.png', 'Resources/Brand/Icon.png', 'Examples/Protected Fixture/Wiki/Story.md']:
             self.assertFalse(hygiene.path_errors(path, set()), path)
 
     def test_docs_evidence_directories_do_not_bypass_retention(self):
@@ -98,7 +98,7 @@ class HygieneTests(unittest.TestCase):
         self.assertTrue(self.inspect()[0])
 
     def test_examples_do_not_require_wiki_link_resolution(self):
-        self.write('Examples/Demo Vault/Wiki/Page.md', '[personal](missing.md)')
+        self.write('Examples/Protected Fixture/Wiki/Page.md', '[personal](missing.md)')
         self.assertFalse(self.inspect()[0])
 
     def test_linked_sources_and_scripts_must_exist(self):

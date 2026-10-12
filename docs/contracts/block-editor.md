@@ -26,21 +26,11 @@ transaction; sequential `BlockStore` calls do not establish that guarantee.
 
 ### One authority per vault
 
-| Mode | Manifest and authoritative content | Compatibility |
-| --- | --- | --- |
-| `markdown` | Existing `vault.json` format 1 (`formatVersion`, `id`); an absent storage discriminator means `markdown` only for v1. Wiki frontmatter plus Markdown, including the checksummed `noema:document` envelope, is the single page authority. Existing Sources and Removed Pages layouts remain authoritative. | Existing local/iCloud Markdown vaults open unchanged. Opening and no-op editing never migrate or rewrite them. The current `FileVaultRepository` / `VaultContentStore` route remains in use. |
-| `sqliteBlocks` | `vault.json` format 2 declares `storageMode: "sqliteBlocks"` alongside the vault UUID. The fixed `blocks.sqlite` database is the sole authority for page metadata, ordered block records and page trash state. Sources retain existing original/metadata files. | Explicit local conversion only; format 1 clients reject it. Preserved Wiki files are migration backups, never fallback live pages. Unknown format/mode/schema rejects writable open. |
-
-The v2 manifest is a routing/identity contract, not a second page-content store.
-STOR.01 retains this page-only authority. Future expanded authority requires the
-explicit schema-3 transition and required manifest authority capability specified in
-[storage-boundary.md](storage-boundary.md); merely adding tables or opening a vault
-does not transfer file-backed source, conflict or Trash authority.
-Only the fixed contained database path is permitted. SQLite schema version is stored in `PRAGMA user_version`; future schema versions
-reject writable open. A missing/damaged DB never authorizes importing an old Wiki directory as
-canonical fallback. There is no mirrored Markdown write, background two-way sync,
-or mixed per-page mode. Future explicit `markdown` manifests must declare their
-supported vault format; do not add fields to existing v1 manifests on open.
+Format 2 with explicit schema 5 is the only production authority. `blocks.sqlite`
+contains pages, blocks, page/source metadata, relationships, knowledge and semantic
+records. Identity and required capabilities agree with `vault.json` before admission.
+Historical Markdown and schema-1–4 vaults reject without mutation. Missing/damaged
+SQLite never falls back to Wiki Markdown. Import/export remains deliberate interchange.
 
 SQLite transactions commit a complete page document and its revision together;
 revisions are not exported text hashes. The adapter must retain stable IDs, order,
@@ -67,9 +57,8 @@ all owned source blobs, never a database-only copy while WAL may contain commits
 
 Imported source originals remain immutable checksum-validated blobs at the existing
 contained `Sources/<UUID>/` locations, accessed through `VaultContentStore`.
-Source metadata and summaries remain in existing `metadata.json` files; page-level
-source UUID relationships belong to page metadata in SQLite. Existing source
-publication, checksum, trash and bookmark rules remain unchanged. Linked originals
+Source metadata, summaries and page-source relationships are SQLite-owned. Receipt-bound
+publication, checksum, Trash and bookmark rules remain mandatory. Linked originals
 stay externally owned and read-only; unavailable sources retain UUID references.
 
 The canonical SQLite connection belongs to `SQLiteBlockStore`, selected by
@@ -276,41 +265,11 @@ Noema archive restoration with unknown optional/required payloads and stable IDs
 P1 adds adversarial interruption and stale-anchor acceptance. Annotation consumers
 and their storage schema remain deferred until a separately reviewed feature.
 
-### Explicit migration and rollback specification
+### Breaking production cutover
 
-1. Quiesce and close repository/editor writes before explicit conversion. Production
-   conversion requires the admitted gate/lease, validates a local nonsymlink root,
-   and rejects unsupported manifest/block envelope versions. Revalidate captured
-   original revisions and session/root capability immediately before cutover;
-   external changes stop conversion without overwriting either version.
-2. Preserve the vault UUID and all page/block/source identities. Read canonical
-   inputs through the selected adapter and create a complete verified v1 backup
-   under `.noema-migrations/<run>/backup`, including source originals, metadata,
-   trash, conflicts and the original manifest. App-local recovery journals retain
-   their original vault/page identity and bytes, including damaged peers; this
-   same-identity conversion never relabels or deletes them.
-3. Build a single-file SQLite database inside the retained run directory. Import
-   through `NoteCodec` and `BlockDocumentCodec`, then verify page counts, metadata
-   and exact document reconstruction. Recheck the complete original inventory and
-   bytes before publication; verification failure prevents cutover.
-4. Close the database, publish it at the fixed `blocks.sqlite` path through an
-   expected-snapshot move, then conditionally replace the original manifest with
-   format 2. The manifest changes last and alone selects page authority; original
-   Markdown files remain byte-for-byte preserved.
-5. An interrupted conversion keeps format 1 usable. Matching interrupted database
-   publication is identified by its retained receipt and preserved within that run
-   before retry. Unrelated occupied databases are never overwritten or discarded.
-   Successful repeated conversion validates the existing selected database. Failed
-   staging with recoverable content is preservation data; agent evidence cleanup
-   never authorizes deleting it.
-6. Reopen only after conversion returns. Pre-conversion backup is preservation
-   data. Later SQLite edits require an explicit export/reverse conversion; never
-   silently replay them into the original backup.
-
-Author/reviewer storage disposition and automated acceptance remain required.
-Device, accessibility, process-crash/power-loss and two-Mac transport acceptance
-remain standing gaps in [validation](../validation.md); injected service failures
-do not close them.
+STOR02B–STOR03 retires historical format conversion and upgrades. Unsupported vaults
+are preserved and rejected. New production vaults initialize schema 5 directly;
+archive restoration validates the same schema and never merges occupied identities.
 
 ## Explicit Markdown interchange (EDT.BLK13)
 
@@ -366,7 +325,7 @@ these before introducing additional writers or migration replay.
 
 The editor retains a single native AppKit text system and the `AppModel.body` / repository / recovery path.
 
-In vault format 1, canonical pages remain frontmatter plus Markdown. On an editor mutation, the body gains a trailing HTML comment (`noema:document`) containing base64-encoded JSON. The envelope has its own version (1), a SHA-256 of the readable Markdown, and a complete block tree: stable UUIDs, string-backed structure kinds, rich runs, independent semantic designation, optional status/language/icon/extension metadata, timestamps, and children. Array order is position. No sidecar or index becomes canonical, and coordinated writes/conflicts/recovery operate on the complete body atomically.
+For explicit Markdown interchange, exported pages contain frontmatter plus Markdown. On an editor mutation, the body gains a trailing HTML comment (`noema:document`) containing base64-encoded JSON. The envelope has its own version (1), a SHA-256 of the readable Markdown, and a complete block tree: stable UUIDs, string-backed structure kinds, rich runs, independent semantic designation, optional status/language/icon/extension metadata, timestamps, and children. Array order is position. No sidecar or index becomes canonical, and coordinated writes/conflicts/recovery operate on the complete body atomically.
 
 Opening plain Markdown does not rewrite it. Untouched imported block spellings survive saves, including unsupported tables, HTML, and images. Legacy `noema:block` markers import their IDs/tags. Changed blocks produce readable Markdown plus the lossless JSON envelope. Standard Markdown readers ignore the comment and retain a useful textual document, though callout/toggle semantics, underline/highlight, and statuses require noema for full presentation. Returning to the previous application is possible by retaining the file and editing the readable body; old versions do not understand the new metadata.
 
