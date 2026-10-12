@@ -212,7 +212,10 @@ import VaultCore
         if let index = blockRangeIndex, let layoutManager, let textContainer {
             let expanded = dirtyRect.insetBy(dx: -8, dy: -(typography.semanticHeadingSpace + 16))
                 .offsetBy(dx: -textContainerOrigin.x, dy: -textContainerOrigin.y)
-            let glyphs = layoutManager.glyphRange(forBoundingRect: expanded, in: textContainer)
+            // Gutter-only invalidation must still find the adjacent text lines.
+            let lineBand = NSRect(x: 0, y: expanded.minY,
+                width: textContainer.containerSize.width, height: expanded.height)
+            let glyphs = layoutManager.glyphRange(forBoundingRect: lineBand, in: textContainer)
             let characters = layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
             ranges = index.intersecting(characters)
         } else { ranges = BlockTextStorage.ranges(storage) }

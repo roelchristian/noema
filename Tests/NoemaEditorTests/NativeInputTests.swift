@@ -69,7 +69,8 @@ import VaultCore
 
 @MainActor private func nativeSessionEditor(_ source: String) -> (RichArticleView.Coordinator, ArticleTextView, NSWindow) {
     _ = NSApplication.shared
-    let parent = RichArticleView(text: .constant(source), reading: false, locked: false, action: nil,
+    var body = source
+    let parent = RichArticleView(text: Binding(get: { body }, set: { body = $0 }), reading: false, locked: false, action: nil,
         onBegin: {}, onEnd: {}, onWikiLink: { _ in })
     let coordinator = parent.makeCoordinator()
     let view = nativeInputView(source)
@@ -155,4 +156,26 @@ import VaultCore
         context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0))
     #expect(coordinator.handleKey(documentEvent))
     #expect(view.selectedRange() == NSRange(location: 0, length: view.string.utf16.count))
+}
+
+
+@Test @MainActor func nativeInputCompositionReplacingAcrossBlocksKeepsSurvivingContent() {
+    let (coordinator, view, window) = nativeSessionEditor("First\nSecond\nLast")
+    defer { coordinator.invalidatePublication(); window.close() }
+    let originalID = coordinator.document.blocks[0].id
+    let lastID = coordinator.document.blocks[2].id
+    let ranges = BlockTextStorage.ranges(view.textStorage!)
+    let selection = NSRange(location: 2, length: ranges[1].1.location + 3 - 2)
+    view.setSelectedRange(selection)
+    view.undoManager?.beginUndoGrouping()
+    view.setMarkedText("日本", selectedRange: NSRange(location: 2, length: 0), replacementRange: selection)
+    #expect(view.hasMarkedText())
+    view.insertText("日本語", replacementRange: NSRange(location: NSNotFound, length: 0))
+    view.undoManager?.endUndoGrouping()
+    #expect(!view.hasMarkedText())
+    #expect(view.string == "Fi日本語ond\nLast\n")
+    #expect(coordinator.document.blocks.first?.id == originalID)
+    #expect(coordinator.document.block(lastID)?.text == "Last")
+    #expect(coordinator.document.flattened.map(\.text).joined() == "Fi日本語ondLast")
+    #expect(BlockDocumentCodec.valid(coordinator.document))
 }
