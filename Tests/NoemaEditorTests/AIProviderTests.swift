@@ -118,7 +118,7 @@ struct AIProviderTests {
         defer { defaults.removePersistentDomain(forName: domain) }
         for json in [
             "not JSON",
-            #"{"version":3,"settings":{"defaultProvider":"openAI","overrides":[]}}"#,
+            #"{"version":4,"settings":{"defaultProvider":"openAI","overrides":[]}}"#,
             #"{"version":1,"settings":{"defaultProvider":"unknown","overrides":[]}}"#,
             #"{"version":1,"settings":{"defaultProvider":"openAI","overrides":["unknown",{"inheritDefault":{}}]}}"#,
             #"{"version":1}"#
@@ -163,7 +163,7 @@ struct AIProviderTests {
             #expect(preferences.settings.preferredProvider(for: .suggestTitle) == .openAI)
             let migrated = try JSONDecoder().decode(LegacySettings.self,
                 from: #require(defaults.data(forKey: AIProviderPreferences.preferenceKey)))
-            #expect(migrated.version == 2)
+            #expect(migrated.version == 3)
             #expect(AIProviderPreferences(defaults: defaults).settings == preferences.settings)
         }
     }
@@ -185,7 +185,33 @@ struct AIProviderTests {
         preferences.setOverride(.inheritDefault, for: .summarizeSource)
         #expect(preferences.settings.preferredProvider(for: .summarizePage) == .openAI)
         #expect(preferences.settings.preferredProvider(for: .summarizeSource) == .openAI)
-        #expect(AIAction.configurableActions == [.summarizePage, .suggestTitle, .classifyLCC])
+        #expect(AIAction.configurableActions == [.summarizePage, .suggestTitle, .composePage])
+    }
+
+    @Test @MainActor
+    func legacyLCCChoiceMigratesOnlyWhenNoSummaryChoiceExists() throws {
+        struct Stored: Codable { let version: Int; let settings: AIProviderSettings }
+        let domain = "noema-ai-provider-lcc-migration-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        for version in [1, 2] {
+            for summary in [nil, AIProviderPreference.specific(.onDevice)] {
+                var overrides: [AIAction: AIProviderPreference] = [.classifyLCC: .specific(.openAI)]
+                overrides[.summarizePage] = summary
+                defaults.set(try JSONEncoder().encode(Stored(version: version,
+                    settings: .init(defaultProvider: .onDevice, overrides: overrides))),
+                    forKey: AIProviderPreferences.preferenceKey)
+                let preferences = AIProviderPreferences(defaults: defaults)
+                #expect(preferences.settings.preferredProvider(for: .summarizePage)
+                    == (summary == nil ? .openAI : .onDevice))
+                #expect(preferences.settings.overrides[.classifyLCC] == nil)
+                #expect(preferences.settings.preferredProvider(for: .composePage) == .onDevice)
+            }
+        }
+        let preferences = AIProviderPreferences(defaults: defaults)
+        preferences.setOverride(.specific(.openAI), for: .composePage)
+        #expect(AIProviderPreferences(defaults: defaults).settings.preferredProvider(for: .composePage) == .openAI)
+        #expect(preferences.settings.preferredProvider(for: .summarizePage) == .onDevice)
     }
 
     @Test

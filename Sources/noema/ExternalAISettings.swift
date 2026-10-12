@@ -16,6 +16,16 @@ struct ExternalAISettings: View {
 
     var body: some View {
         Section("OpenAI connection") {
+            Picker("Content submission confirmation", selection: Binding(
+                get: { service.consentPolicy },
+                set: { service.setConsentPolicy($0) })) {
+                ForEach(OpenAIConsentPolicy.allCases) { policy in
+                    Text(policy.displayName).tag(policy)
+                }
+            }
+            .pickerStyle(.menu)
+            Text(consentPolicyDescription)
+                .font(.caption).foregroundStyle(.secondary)
             LabeledContent("Credential", value: credentialDescription)
             if service.credentialStatus?.presence == .inaccessible {
                 Text("Noema cannot access this saved key. Remove it here, then save the key again. If removal fails, unlock the login Keychain in Keychain Access.")
@@ -85,7 +95,7 @@ struct ExternalAISettings: View {
             if let feedback {
                 Text(feedback).font(.caption).foregroundStyle(failed ? Color.red : Color.secondary)
             }
-            Text("When OpenAI is chosen for a summary, title suggestion or LCC classification, only the selected page or source text is sent after your confirmation. Submitted text leaves this Mac and API usage may incur charges. Preferences and connection settings do not authorize a submission. Automatic intelligence remains on-device.")
+            Text("Explicit OpenAI enrichment, title suggestions and page creation send only the selected content under your confirmation policy. Submitted text leaves this Mac and API usage may incur charges. Provider and connection settings never start a submission. Automatic intelligence remains on-device.")
                 .font(.callout).foregroundStyle(.secondary)
             Text("Connection validation sends a model metadata request with no vault content. Session access lasts at most four hours and expires after 30 minutes without external AI activity. Removing a key here does not revoke the key at OpenAI.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -105,6 +115,14 @@ struct ExternalAISettings: View {
             operation = nil
             isBusy = false
             feedback = nil
+        }
+    }
+
+    private var consentPolicyDescription: String {
+        switch service.consentPolicy {
+        case .always: "Review the exact selected text and confirm every OpenAI submission."
+        case .oncePerSession: "Confirm the first explicit submission in each unlocked vault session. Locking, switching or closing the vault clears approval. macOS authentication remains required."
+        case .neverAsk: "Explicit AI actions send selected content to OpenAI without a routine confirmation sheet. Content leaves this Mac and API charges may apply. macOS authentication remains required."
         }
     }
 

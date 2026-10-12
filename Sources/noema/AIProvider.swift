@@ -20,19 +20,21 @@ enum AIAction: String, Codable, CaseIterable, Identifiable, Sendable {
     case suggestTitle
     case classifyLCC
     case processSource
+    case composePage
 
     var id: Self { self }
     var isSummary: Bool { self == .summarizePage || self == .summarizeSource }
     /// Page and source requests retain separate destinations but share one preference.
-    var preferenceAction: AIAction { self == .summarizeSource ? .summarizePage : self }
-    static let configurableActions: [AIAction] = [.summarizePage, .suggestTitle, .classifyLCC]
+    var preferenceAction: AIAction { self == .summarizeSource || self == .classifyLCC ? .summarizePage : self }
+    static let configurableActions: [AIAction] = [.summarizePage, .suggestTitle, .composePage]
     var displayName: String {
         switch self {
-        case .summarizePage: "Summarisation"
+        case .summarizePage: "Content enrichment"
         case .summarizeSource: "Source summaries"
         case .suggestTitle: "Title suggestions"
         case .classifyLCC: "LCC classification"
         case .processSource: "Source processing"
+        case .composePage: "Page creation"
         }
     }
 }
@@ -65,13 +67,15 @@ struct AIProviderSettings: Codable, Equatable, Sendable {
     @ObservationIgnored private let defaults: UserDefaults
     private(set) var settings: AIProviderSettings
 
-    /// The former page choice wins if both legacy summary choices exist. Otherwise
-    /// preserve the source choice. This migration touches intent only, never artifacts.
+    /// Page summary choice wins, then source summary, then the retired LCC override.
+    /// Conflicting legacy LCC intent cannot trigger a separate request or artifact rewrite.
     private static func consolidated(_ original: AIProviderSettings) -> AIProviderSettings {
         var updated = original
         let summary = original.overrides[.summarizePage] ?? original.overrides[.summarizeSource]
+            ?? original.overrides[.classifyLCC]
         updated.overrides.removeValue(forKey: .summarizeSource)
         updated.overrides.removeValue(forKey: .processSource)
+        updated.overrides.removeValue(forKey: .classifyLCC)
         if let summary, summary != .inheritDefault { updated.overrides[.summarizePage] = summary }
         else { updated.overrides.removeValue(forKey: .summarizePage) }
         return updated
@@ -86,10 +90,10 @@ struct AIProviderSettings: Codable, Equatable, Sendable {
         self.defaults = defaults
         if let data = defaults.data(forKey: Self.preferenceKey),
            let stored = try? JSONDecoder().decode(StoredSettings.self, from: data),
-           (1...2).contains(stored.version) {
+           (1...3).contains(stored.version) {
             settings = Self.consolidated(stored.settings)
-            if stored.version == 1,
-               let migrated = try? JSONEncoder().encode(StoredSettings(version: 2, settings: settings)) {
+            if stored.version < 3,
+               let migrated = try? JSONEncoder().encode(StoredSettings(version: 3, settings: settings)) {
                 defaults.set(migrated, forKey: Self.preferenceKey)
             }
         } else {
@@ -125,7 +129,7 @@ struct AIProviderSettings: Codable, Equatable, Sendable {
 
     private func persist(_ updated: AIProviderSettings) {
         guard updated != settings,
-              let data = try? JSONEncoder().encode(StoredSettings(version: 2, settings: updated)) else { return }
+              let data = try? JSONEncoder().encode(StoredSettings(version: 3, settings: updated)) else { return }
         defaults.set(data, forKey: Self.preferenceKey)
         settings = updated
     }
@@ -142,6 +146,7 @@ enum AIActionInput: Equatable, Sendable {
     case selectedPageText
     case selectedSourceText
     case pageOrSourceText
+    case pageCreationContent
 }
 
 enum AIActionDestination: Equatable, Sendable {
@@ -150,6 +155,7 @@ enum AIActionDestination: Equatable, Sendable {
     case pageOrSourceTitle
     case pageOrSourceClassification
     case sourceMetadataOrNewPage
+    case newPage
 }
 
 struct AIProviderCapability: Sendable {
@@ -179,8 +185,9 @@ enum AIProviderCapabilities {
         case .suggestTitle: (input, destination) = (.pageOrSourceText, .pageOrSourceTitle)
         case .classifyLCC: (input, destination) = (.pageOrSourceText, .pageOrSourceClassification)
         case .processSource: (input, destination) = (.selectedSourceText, .sourceMetadataOrNewPage)
+        case .composePage: (input, destination) = (.pageCreationContent, .newPage)
         }
-        let supportsCloud = action.isSummary || action == .suggestTitle || action == .classifyLCC
+        let supportsCloud = action.isSummary || action == .suggestTitle || action == .classifyLCC || action == .composePage
         return AIProviderCapability(
             support: provider == .onDevice || supportsCloud ? .supported : .unauthorized,
             input: input, destination: destination,
