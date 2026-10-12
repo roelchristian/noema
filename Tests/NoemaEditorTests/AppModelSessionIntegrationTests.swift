@@ -702,6 +702,43 @@ struct AppModelSessionIntegrationTests {
         #expect(model.sessionPhase == .closed && !model.isLocked)
     }
 
+    @Test(arguments: [false, true]) @MainActor
+    func failedDerivedIndexInitializationPreservesCanonicalBytesAndRetriesLifecycle(unlocking: Bool) async throws {
+        let root = try makeTempVault(name: "IndexInitializationRetry")
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let repo = try FileVaultRepository.open(root: root)
+        let note = try await repo.create(title: "Retained", body: "Canonical content survives derived failures")
+        let manifestURL = root.appendingPathComponent("vault.json")
+        let pageURL = root.appendingPathComponent(note.relativePath)
+        let manifestBytes = try Data(contentsOf: manifestURL)
+        let pageBytes = try Data(contentsOf: pageURL)
+        let model = AppModel()
+        model.localStorageRoot = root.deletingLastPathComponent()
+        model.persistSecurityScopedBookmark = false
+        if unlocking {
+            await model.open(root, create: false)
+            try #require(await model.lockVault())
+        }
+        let factory = model.searchIndexFactory
+        model.searchIndexFactory = { _, _, _ in throw VaultError.storage("Injected derived index initialization failure") }
+        if unlocking { #expect(!(await model.unlockVault())) }
+        else { await model.open(root, create: false) }
+        #expect(model.sessionPhase == (unlocking ? .locked : .closed))
+        #expect(model.sessionState == model.sessionManager.accessGate.currentState)
+        #expect(model.root == nil && model.index == nil && model.notes.isEmpty)
+        #expect(model.errorMessage?.contains("Injected derived index") == true)
+        #expect(try Data(contentsOf: manifestURL) == manifestBytes)
+        #expect(try Data(contentsOf: pageURL) == pageBytes)
+        model.searchIndexFactory = factory
+        if unlocking { try #require(await model.unlockVault()) }
+        else { await model.open(root, create: false) }
+        #expect(model.isVaultAvailable && model.sessionPhase == .open && model.errorMessage == nil)
+        #expect(model.notes.contains { $0.id == note.id && $0.body == note.body })
+        #expect(try Data(contentsOf: manifestURL) == manifestBytes)
+        #expect(try Data(contentsOf: pageURL) == pageBytes)
+        #expect(await model.closeVault())
+    }
+
     @Test @MainActor func endToEndProtectedOperationEntryPointsAndRecoveryAndSourceReaderAreEnforcedAcrossSessionLifecycle() async throws {
         let root = try makeTempVault(name: "D027ReleaseGateVault")
         let linkedURL = root.deletingLastPathComponent().appendingPathComponent("external-linked.txt")
