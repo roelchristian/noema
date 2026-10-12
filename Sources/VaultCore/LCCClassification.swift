@@ -77,8 +77,9 @@ public enum LCCClassificationVocabulary {
     /// Remote structured outputs must match exactly, without whitespace or case repair.
     public static func isAuthorized(_ code: String) -> Bool { codes.contains(code) }
 
-    /// Native legacy generation produces full call numbers. New suggestions may retain only
-    /// their authorized subject prefix; this never changes an existing accepted classification.
+    /// Native legacy generation may produce full call numbers. Preserve verified schedule
+    /// headings; otherwise retain the authorized subject prefix, never an invented number.
+    /// This conversion never changes an existing accepted classification.
     public static func suggestionCode(fromCallNumber text: String) -> String? {
         let code = text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard code.range(of: #"^[A-Z]{1,3}(?:[0-9]{1,4}(?:\.[A-Z0-9]+)*)?$"#,

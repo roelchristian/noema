@@ -251,7 +251,7 @@ public protocol ExternalAISummarizing: Sendable {
     func summarizeSource(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult
 }
 
-/// The three expressly invoked operations share one security boundary. Summary-only test
+/// Explicit enrichment, composition and metadata actions share one security boundary. Summary-only test
 /// doubles and callers can continue to conform to ExternalAISummarizing.
 public protocol ExternalAIEnriching: ExternalAISummarizing {
     func composePage(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult
