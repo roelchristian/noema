@@ -35,8 +35,9 @@ extension VaultUIIntegrationTests {
             var busy = stable; busy.busy = true
             var pending = stable; pending.actionPending = true
             var modal = stable; modal.presentationPending = true
+            var settings = stable; settings.settingsPresented = true
             var stale = stable; stale.stateMatchesManager = false
-            for policy in [busy, pending, modal, stale] {
+            for policy in [busy, pending, modal, settings, stale] {
                 for command in WorkspaceCommand.allCases { #expect(!policy.allows(command)) }
             }
         }
@@ -254,6 +255,81 @@ extension VaultUIIntegrationTests {
             #expect(model.currentNote?.isEditingLocked == true)
             #expect(model.editingLocked)
             #expect(!ContentView.canTrashPage(lockedNote, model: model))
+
+            let close = try #require(model.performWorkspaceCommand(.close))
+            await close.value
+        }
+
+        @Test @MainActor
+        func modalSettingsGatesWorkspaceCommandsAndInteractionsWhileAllowingBackgroundSaves() async throws {
+            let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaSettingsCommandGate-\(UUID())")
+            let root = base.appendingPathComponent("Vault")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: base) }
+
+            let repository = try FileVaultRepository.open(root: root, create: true)
+            let first = try await repository.create(title: "First Page", body: "Original first body")
+            let second = try await repository.create(title: "Second Page", body: "Second body")
+            let model = AppModel()
+            model.localStorageRoot = base
+            model.persistSecurityScopedBookmark = false
+            await model.open(root, create: false)
+            #expect(model.isVaultAvailable)
+
+            model.currentNote = first
+            model.selectedID = first.id
+            model.title = first.title
+            model.body = first.body
+            model.reading = true
+
+            model.openSettings(category: .appearance)
+            #expect(model.showSettings)
+            #expect(!model.canInteractWithWorkspace)
+            #expect(!model.canFormatDocument)
+
+            // Every workspace command is unavailable while Settings is presented.
+            for command in WorkspaceCommand.allCases {
+                #expect(!model.canPerformWorkspaceCommand(command))
+                #expect(model.performWorkspaceCommand(command) == nil)
+            }
+
+            // Navigation, scope changes, editing, formatting, creation, and deletion cannot occur behind Settings.
+            model.changeScope(.sources)
+            #expect(model.scope == .wiki)
+
+            model.select(second.id)
+            #expect(model.currentNote?.id == first.id)
+
+            model.beginEditing()
+            #expect(model.reading)
+
+            model.reading = false
+            #expect(!model.canFormatDocument)
+            model.format("**", "**")
+            #expect(model.body == "Original first body")
+
+            model.newPage()
+            try await Task.sleep(for: .milliseconds(50))
+            #expect(model.notes.count == 2)
+
+            model.trashPage(first.id)
+            try await Task.sleep(for: .milliseconds(50))
+            #expect(model.notes.count == 2)
+
+            // Background saves continue to persist pending edits while Settings is open.
+            model.body = "Updated while Settings open"
+            await model.saveCurrent()
+            let batch = try await repository.scan()
+            let saved = try #require(batch.notes.first { $0.id == first.id })
+            #expect(saved.body.contains("Updated while Settings open"))
+
+            model.dismissSettings()
+            #expect(!model.showSettings)
+            #expect(model.canInteractWithWorkspace)
+            #expect(model.canFormatDocument)
+
+            model.changeScope(.sources)
+            #expect(model.scope == .sources)
 
             let close = try #require(model.performWorkspaceCommand(.close))
             await close.value

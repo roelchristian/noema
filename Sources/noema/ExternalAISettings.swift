@@ -45,6 +45,7 @@ struct ExternalAISettings: View {
             LabeledContent("Model") {
                 HStack {
                     TextField("Model", text: $modelEntry)
+                        .labelsHidden()
                         .textFieldStyle(.roundedBorder)
                         .autocorrectionDisabled()
                         .disabled(isBusy)

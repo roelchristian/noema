@@ -182,20 +182,69 @@ struct NoemaSettings: View {
         )
     }
 
+    @Environment(\.noemaTheme) private var theme
+
     private var sidebar: some View {
-        List(selection: categoryBinding) {
+        List {
             ForEach(SettingsGroup.allCases) { group in
-                Section(group.title) {
+                Section {
                     ForEach(group.categories) { category in
-                        Label(category.title, systemImage: category.symbol)
-                            .tag(category)
+                        sidebarRow(for: category)
                     }
+                } header: {
+                    Text(group.title)
+                        .font(NoemaTypography.sidebarSection)
+                        .foregroundStyle(theme.text(for: .textSecondary, on: .sidebar))
                 }
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(theme.color(for: .sidebar))
         .frame(width: SettingsModalMetrics.sidebarWidth)
         .accessibilityLabel("Settings categories")
+    }
+
+    private func sidebarRow(for category: SettingsCategory) -> some View {
+        let isSelected = selectedCategory == category
+        return Button {
+            categoryBinding.wrappedValue = category
+        } label: {
+            HStack(spacing: NoemaSpacing.sm) {
+                Image(systemName: category.symbol)
+                    .font(NoemaTypography.navigation)
+                    .foregroundStyle(
+                        isSelected
+                            ? theme.text(for: .textOnSelection, on: .selection)
+                            : theme.color(for: .accent)
+                    )
+                    .frame(width: NoemaMetrics.iconWidth)
+                    .accessibilityHidden(true)
+                Text(category.title)
+                    .font(isSelected ? NoemaTypography.navigationEmphasis : NoemaTypography.navigation)
+                    .foregroundStyle(
+                        isSelected
+                            ? theme.text(for: .textOnSelection, on: .selection)
+                            : theme.text(for: .textPrimary, on: .sidebar)
+                    )
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isSelected ? theme.color(for: .selection) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
+        .listRowSeparator(.hidden)
+        .accessibilityLabel(category.title)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var detailColumn: some View {
