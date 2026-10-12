@@ -2617,6 +2617,9 @@ struct AISuggestion: Identifiable, Sendable {
                 currentNote = saved
                 lccInput = saved.lcc ?? ""
                 if title == draft.title { title = saved.title }
+                // Canonical persistence can add codec evidence to an unchanged input.
+                // Reconcile only the captured body; later user edits retain their draft.
+                if body == draft.body { body = saved.body }
                 if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
                 updateTags()
             }
