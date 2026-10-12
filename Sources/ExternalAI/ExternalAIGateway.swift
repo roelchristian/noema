@@ -10,6 +10,8 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
     private let sessions: ExternalAISessionManager
     private let gate: VaultAccessGate
     private let transport: any OpenAITransporting
+    private let activityRecorder: AIActivityRecorder?
+    private let pricingCatalogue: AIUsagePricingCatalogue
     public let configuration: ExternalAIModelConfiguration
     private var consumedConsent: Set<UUID> = []
     private var consumedRequests: Set<UUID> = []
@@ -24,22 +26,28 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
     private var publicationCapabilities: [UUID: Publication] = [:]
 
     public init(credentialBroker: ExternalAICredentialBroker, sessionManager: ExternalAISessionManager,
-                accessGate: VaultAccessGate, configuration: ExternalAIModelConfiguration = .default) {
+                accessGate: VaultAccessGate, configuration: ExternalAIModelConfiguration = .default,
+                activityRecorder: AIActivityRecorder? = .shared, pricingCatalogue: AIUsagePricingCatalogue = .unpriced) {
         broker = credentialBroker
         sessions = sessionManager
         gate = accessGate
         self.configuration = configuration
+        self.activityRecorder = activityRecorder
+        self.pricingCatalogue = pricingCatalogue
         transport = OpenAITransport()
     }
 
     init(credentialBroker: ExternalAICredentialBroker, sessionManager: ExternalAISessionManager,
          accessGate: VaultAccessGate, configuration: ExternalAIModelConfiguration = .default,
-         transport: any OpenAITransporting) {
+         transport: any OpenAITransporting, activityRecorder: AIActivityRecorder? = .shared,
+         pricingCatalogue: AIUsagePricingCatalogue = .unpriced) {
         broker = credentialBroker
         sessions = sessionManager
         gate = accessGate
         self.configuration = configuration
         self.transport = transport
+        self.activityRecorder = activityRecorder
+        self.pricingCatalogue = pricingCatalogue
     }
 
     public func summarizePage(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult {
@@ -96,6 +104,10 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
     /// Fixed provider metadata request. No vault selection or content is read or submitted.
     /// This checks key/model access; it does not perform inference or authorize a vault session.
     public func validateConnection() async throws {
+        let observation = ExternalAIActivityObservation()
+        let activityID = UUID()
+        _ = await activityRecorder?.begin(id: activityID, action: .validateConnection,
+            executionMode: .userInvoked, provider: .openAI, modelID: configuration.model)
         do {
             try Task.checkCancellation()
             let version = try await broker.credentialVersion()
@@ -110,9 +122,9 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
                     request.timeoutInterval = ExternalAILimits.requestTimeout
                     request.setValue("application/json", forHTTPHeaderField: "Accept")
                     try credential.authorizeConnectionValidation(&request)
-                    return try await transport.perform(request) { resume in
+                    return try await transport.perform(request, beforeDispatch: { resume in
                         try broker.withValidatedCredential(version: version, body: resume)
-                    }
+                    }, didDispatch: { observation.dispatched() })
                 }
             }
             cancellationScope.install(worker)
@@ -121,10 +133,24 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
             guard response.body.count <= ExternalAILimits.maximumResponseBytes,
                   let metadata = try? JSONDecoder().decode(ModelMetadata.self, from: response.body),
                   metadata.object == "model", metadata.id == model else { throw ExternalAIError.invalidResponse }
-        } catch { throw sanitized(error) }
+            await observation.flush(id: activityID, recorder: activityRecorder, model: model, pricing: pricingCatalogue)
+            try Task.checkCancellation()
+            try broker.withValidatedCredential(version: version) {}
+            // No suspension after the final credential/cancellation boundary. Persistence
+            // is best effort and must not turn a valid connection response into authority.
+            let recorder = activityRecorder
+            Task { await recorder?.finish(activityID, status: .completed) }
+        } catch {
+            let failure = sanitized(error)
+            await observation.flush(id: activityID, recorder: activityRecorder, model: configuration.model, pricing: pricingCatalogue)
+            await activityRecorder?.finish(activityID, status: failure == .cancelled || failure == .authenticationCancelled ? .cancelled : .failed,
+                                           failureCode: failure.activityFailureCode)
+            throw failure
+        }
     }
 
     private func perform(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult {
+        let observation = ExternalAIActivityObservation()
         do {
             try Task.checkCancellation()
             guard request.contentByteCount <= ExternalAILimits.maximumContentBytes else { throw ExternalAIError.payloadTooLarge }
@@ -170,14 +196,21 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
                             networkRequest.setValue("application/json", forHTTPHeaderField: "Accept")
                             networkRequest.httpBody = body
                             try credential.authorize(&networkRequest)
-                            return try await transport.perform(networkRequest) { resume in
+                            let response = try await transport.perform(networkRequest, beforeDispatch: { resume in
                                 try Task.checkCancellation()
                                 try gate.withOpenSession(lease: lease, operation: "externalAISummary.dispatch") {
                                     try sessions.withValidatedAuthorization(capability) {
                                         try broker.withValidatedCredential(version: capability.credentialVersion, body: resume)
                                     }
                                 }
+                            }, didDispatch: { observation.dispatched() })
+                            // Usage remains diagnostic metadata even if the broker subsequently
+                            // rejects this completed exchange after cancellation or revocation.
+                            // Observe it before that check without granting output authority.
+                            if response.statusCode == 200 {
+                                observation.received(Self.reportedUsage(from: response.body))
                             }
+                            return response
                         }
                         try Self.checkStatus(response.statusCode)
                         let summary = try Self.output(from: response.body, action: request.action, mode: request.mode)
@@ -197,6 +230,7 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
             }
             cancellationScope.install(worker)
             let summary = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+            await observation.flush(id: request.id, recorder: activityRecorder, model: configuration.model, pricing: pricingCatalogue)
             try Task.checkCancellation()
             try await sessions.validate(capability)
             try sessions.validateSynchronously(capability)
@@ -214,7 +248,10 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
                 contentRevision: result.contentRevision, resultDigest: result.publicationDigest,
                 provenance: provenance)
             return result
-        } catch { throw sanitized(error) }
+        } catch {
+            await observation.flush(id: request.id, recorder: activityRecorder, model: configuration.model, pricing: pricingCatalogue)
+            throw sanitized(error)
+        }
     }
 
     static func summaryBody(content: String, model: String,

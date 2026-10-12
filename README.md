@@ -25,6 +25,8 @@ Selected page/source enrichment generates a summary and verified classification 
 
 ## Documentation
 
+**Settings → Intelligence → Activity History** shows local metadata for on-device and OpenAI operations, with filters, target navigation for the current open vault, reported cloud tokens and optional cost estimates. History defaults to 90-day retention; you can change retention, clear history or export up to 1,000 matching metadata records. Recording is best effort. Document text and titles are never stored in history; vault and target identifiers remain plaintext in its application-local database. No built-in model prices are assumed. See the [activity privacy contract](docs/contracts/external-ai.md#activity-history).
+
 - [Development and everyday workflow](docs/development.md): build, commands, file format and local evidence retention.
 - [Architecture](docs/architecture.md): components, concurrency, storage and session lifecycle.
 - Contracts: [storage boundary](docs/contracts/storage-boundary.md), [vault access authentication](docs/contracts/vault-access-authentication.md), [design tokens](docs/contracts/design-tokens.md), [source scanning](docs/contracts/source-scanning.md), [block editor](docs/contracts/block-editor.md).

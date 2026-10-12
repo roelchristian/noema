@@ -249,6 +249,8 @@ struct AISuggestion: Identifiable, Sendable {
     var aiPageDraft: AIPageDraft?
     var aiPageSubmission: AIPageSubmission?
     private var aiPageOperationID: UUID?
+    private var aiPageActivityID: UUID?
+    private var aiPagePublicationActivityID: UUID?
     var aiPageTask: Task<Void, Never>?
     var aiPageFetch: @Sendable (URL) async throws -> WebSourceFetch = WebSourceFetcher.fetch
 
@@ -262,6 +264,7 @@ struct AISuggestion: Identifiable, Sendable {
     var searchFocusToken = 0
     var workspaceNavigationToken = 0
     private let storageProvider: VaultStorageProvider
+    let activityRecorder: AIActivityRecorder
     let externalAIService: ExternalAIService
     let aiProviderPreferences: AIProviderPreferences
     @ObservationIgnored private let aiPreferenceDefaults: UserDefaults
@@ -334,13 +337,15 @@ struct AISuggestion: Identifiable, Sendable {
         recovery: RecoveryStore? = nil,
         storageProvider: VaultStorageProvider = .plaintext,
         sessionManager: VaultSessionManager = VaultSessionManager(),
-        aiDefaults: UserDefaults = .standard
+        aiDefaults: UserDefaults = .standard,
+        activityRecorder: AIActivityRecorder = .shared
     ) {
+        self.activityRecorder = activityRecorder
         self.storageProvider = storageProvider
         self.aiPreferenceDefaults = aiDefaults
         self.aiProviderPreferences = AIProviderPreferences(defaults: aiDefaults)
         self.sessionManager = sessionManager
-        self.externalAIService = ExternalAIService(accessGate: sessionManager.accessGate, defaults: aiDefaults)
+        self.externalAIService = ExternalAIService(accessGate: sessionManager.accessGate, defaults: aiDefaults, activityRecorder: activityRecorder)
         self.repository = repository
         self.recovery = recovery
         self.activeLease = repository?.sessionLease
@@ -869,6 +874,13 @@ struct AISuggestion: Identifiable, Sendable {
     }
 
     func dismissAISuggestion() {
+        // An in-flight acceptance owns its final review outcome: cancellation
+        // must not race a canonical write that has already committed.
+        let rejectedID = pendingAISuggestion?.id
+        if let rejectedID {
+            let recorder = activityRecorder
+            Task { await recorder.updateOutcome(rejectedID, outcome: .rejected) }
+        }
         pendingAISuggestion = nil; pendingAISuggestionContext = nil
         suggestionRequestID = nil
         explicitTitleTask?.cancel(); explicitTitleTask = nil
@@ -898,65 +910,75 @@ struct AISuggestion: Identifiable, Sendable {
             if action == .suggestTitle { generatingPageTitle = true } else { generatingPageLCC = true }
         } else if action == .classifyLCC { generatingSourceLCCs.insert(target.id) }
         explicitTitleTask = Task {
-            defer {
-                if suggestionRequestID == identity {
-                    generatingPageTitle = false; generatingPageLCC = false
-                    generatingSourceLCCs.remove(target.id); explicitTitleTask = nil
+            await withLocalAIActivity(id: identity, target: target, action: action == .suggestTitle ? .suggestTitle : .classifyLCC) { activity in
+                defer {
+                    if suggestionRequestID == identity {
+                        generatingPageTitle = false; generatingPageLCC = false
+                        generatingSourceLCCs.remove(target.id); explicitTitleTask = nil
+                    }
                 }
-            }
-            do {
-                let snapshot: CloudSummarySnapshot
-                let input: String
-                var revision = cloudEditorRevision
-                switch target {
-                case .page(let id):
-                    await lccSaveTask?.value
-                    guard currentNote?.id == id, !editingLocked, !externalChange,
-                          await saveCurrent(), let note = currentNote else { throw ExternalAIError.staleContent }
-                    revision = cloudEditorRevision
-                    let page = try await repository.pageSummarySnapshot(note)
-                    snapshot = .page(page)
-                    let text = BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(
-                        BlockDocumentCodec.decode(page.note.body).withoutAISummary))
-                    input = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && action == .classifyLCC ? page.note.title : text
-                case .source(let id):
-                    await sourceLCCSaveTasks[id]?.value
+                do {
+                    let snapshot: CloudSummarySnapshot
+                    let input: String
+                    var revision = cloudEditorRevision
+                    switch target {
+                    case .page(let id):
+                        await lccSaveTask?.value
+                        guard currentNote?.id == id, !editingLocked, !externalChange,
+                              await saveCurrent(), let note = currentNote else { throw ExternalAIError.staleContent }
+                        revision = cloudEditorRevision
+                        let page = try await repository.pageSummarySnapshot(note)
+                        snapshot = .page(page)
+                        let text = BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(
+                            BlockDocumentCodec.decode(page.note.body).withoutAISummary))
+                        input = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && action == .classifyLCC ? page.note.title : text
+                    case .source(let id):
+                        await sourceLCCSaveTasks[id]?.value
+                        guard revision == cloudEditorRevision else { throw ExternalAIError.staleContent }
+                        let source = try await repository.sourceSummarySnapshot(id: id)
+                        snapshot = .source(source)
+                        input = try await Task.detached { try CloudSummaryConfirmation.extractedText(source) }.value
+                    }
+                    try Task.checkCancellation()
+                    guard suggestionRequestID == identity, selectedID == selection,
+                          lease == sessionManager.accessGate.currentLease else { throw ExternalAIError.staleSession }
                     guard revision == cloudEditorRevision else { throw ExternalAIError.staleContent }
-                    let source = try await repository.sourceSummarySnapshot(id: id)
-                    snapshot = .source(source)
-                    input = try await Task.detached { try CloudSummaryConfirmation.extractedText(source) }.value
+                    try validateEditableMetadata(snapshot)
+                    guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ExternalAIError.emptyContent }
+                    cloudPublicationGuard.arm(requestID: identity)
+                    try await activity.start(contentSizeBytes: input.utf8.count)
+                    let value: String
+                    if action == .suggestTitle {
+                        guard let generated = try await client.pageTitle(String(input.prefix(6000))),
+                              let clean = OnDeviceSummary.cleanTitle(generated),
+                              clean.split(whereSeparator: \.isWhitespace).count <= 8 else { throw ExternalAIError.invalidResponse }
+                        value = clean
+                    } else {
+                        guard let generated = try await client.lccCode(String(input.prefix(6000))),
+                              let clean = OnDeviceSummary.cleanLCC(generated),
+                              let validated = LCCClassificationVocabulary.suggestionCode(fromCallNumber: clean) else { throw ExternalAIError.invalidResponse }
+                        value = validated
+                    }
+                    try Task.checkCancellation()
+                    try cloudPublicationGuard.validate(requestID: identity)
+                    guard suggestionRequestID == identity, selectedID == selection, revision == cloudEditorRevision,
+                          lease == sessionManager.accessGate.currentLease else { throw ExternalAIError.staleContent }
+                    activity.complete(outcome: .suggested)
+                    await activity.finalize()
+                    try Task.checkCancellation()
+                    try cloudPublicationGuard.validate(requestID: identity)
+                    guard suggestionRequestID == identity, selectedID == selection, revision == cloudEditorRevision,
+                          lease == sessionManager.accessGate.currentLease else { throw ExternalAIError.staleContent }
+                    pendingAISuggestion = AISuggestion(id: identity, action: action, value: value, rationale: nil,
+                        provider: .onDevice, target: target)
+                    pendingAISuggestionContext = AISuggestionContext(snapshot: snapshot, selection: selection,
+                        editorRevision: revision, provenance: SummaryProvenance(provider: "On-device", model: "Apple Intelligence",
+                            generatedAt: Date(), sourceRevision: Self.sourceRevision(snapshot)), validate: { try Task.checkCancellation() })
+                } catch {
+                    activity.fail(error)
+                    guard suggestionRequestID == identity, !Task.isCancelled else { return }
+                    aiProviderNotice = Self.cloudError(error)
                 }
-                try Task.checkCancellation()
-                guard suggestionRequestID == identity, selectedID == selection,
-                      lease == sessionManager.accessGate.currentLease else { throw ExternalAIError.staleSession }
-                guard revision == cloudEditorRevision else { throw ExternalAIError.staleContent }
-                try validateEditableMetadata(snapshot)
-                guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ExternalAIError.emptyContent }
-                cloudPublicationGuard.arm(requestID: identity)
-                let value: String
-                if action == .suggestTitle {
-                    guard let generated = try await client.pageTitle(String(input.prefix(6000))),
-                          let clean = OnDeviceSummary.cleanTitle(generated),
-                          clean.split(whereSeparator: \.isWhitespace).count <= 8 else { throw ExternalAIError.invalidResponse }
-                    value = clean
-                } else {
-                    guard let generated = try await client.lccCode(String(input.prefix(6000))),
-                          let clean = OnDeviceSummary.cleanLCC(generated),
-                          let validated = LCCClassificationVocabulary.suggestionCode(fromCallNumber: clean) else { throw ExternalAIError.invalidResponse }
-                    value = validated
-                }
-                try Task.checkCancellation()
-                try cloudPublicationGuard.validate(requestID: identity)
-                guard suggestionRequestID == identity, selectedID == selection, revision == cloudEditorRevision,
-                      lease == sessionManager.accessGate.currentLease else { throw ExternalAIError.staleContent }
-                pendingAISuggestion = AISuggestion(id: identity, action: action, value: value, rationale: nil,
-                    provider: .onDevice, target: target)
-                pendingAISuggestionContext = AISuggestionContext(snapshot: snapshot, selection: selection,
-                    editorRevision: revision, provenance: SummaryProvenance(provider: "On-device", model: "Apple Intelligence",
-                        generatedAt: Date(), sourceRevision: Self.sourceRevision(snapshot)), validate: { try Task.checkCancellation() })
-            } catch {
-                guard suggestionRequestID == identity, !Task.isCancelled else { return }
-                aiProviderNotice = Self.cloudError(error)
             }
         }
     }
@@ -992,6 +1014,7 @@ struct AISuggestion: Identifiable, Sendable {
                     } else {
                         saved = try await repository.publishPageLCC(page, lcc: suggestion.value, provenance: context.provenance, validate: validate)
                     }
+                    await activityRecorder.updateOutcome(suggestion.id, outcome: .published)
                     guard generation == ticket, canOperateOnLoadedContent else { return }
                     recordPageRename(saved.id, from: page.note.title, to: saved.title)
                     if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
@@ -1003,6 +1026,7 @@ struct AISuggestion: Identifiable, Sendable {
                     } else {
                         saved = try await repository.publishSourceLCC(source, lcc: suggestion.value, provenance: context.provenance, validate: validate)
                     }
+                    await activityRecorder.updateOutcome(suggestion.id, outcome: .published)
                     guard generation == ticket, canOperateOnLoadedContent else { return }
                     if let i = sources.firstIndex(where: { $0.id == saved.id }) { sources[i] = saved }
                     if currentSource?.id == saved.id { currentSource = saved }
@@ -1010,6 +1034,7 @@ struct AISuggestion: Identifiable, Sendable {
                 }
                 await refresh()
             } catch {
+                await activityRecorder.updateOutcome(suggestion.id, outcome: .rejected)
                 if generation == ticket, !Task.isCancelled { aiProviderNotice = Self.cloudError(error) }
             }
         }
@@ -1023,6 +1048,7 @@ struct AISuggestion: Identifiable, Sendable {
     private var cloudSummaryTask: Task<Void, Never>?
     /// Tests capture a pending worker before cancellation so assertions wait for its completion.
     var cloudSummaryTaskForTesting: Task<Void, Never>? { cloudSummaryTask }
+    private var cloudActivityID: UUID?
     private var cloudRequestID: UUID?
     /// Test seam: restricted, consent-bound summaries only; production always uses the gateway.
     /// Test seam for preflight status only; it cannot grant gateway authorization or consent.
@@ -1031,6 +1057,11 @@ struct AISuggestion: Identifiable, Sendable {
     var cloudPublicationOverride: (@Sendable (ExternalAISummaryResult) async throws -> (@Sendable () throws -> Void))?
 
     func cancelCloudSummary() {
+        if let activityID = cloudActivityID, cloudSummaryConfirmation != nil {
+            let recorder = activityRecorder
+            Task { await recorder.finish(activityID, status: .cancelled, failureCode: .cancelled) }
+            cloudActivityID = nil
+        }
         cancelAIPage()
         dismissAISuggestion()
         providerPreflightID = nil
@@ -1052,6 +1083,7 @@ struct AISuggestion: Identifiable, Sendable {
         cloudRequestID = identity; cloudSummaryTarget = target
         let selection = selectedID
         cloudSummaryTask = Task {
+            var createdActivityID: UUID?
             do {
                 let snapshot: CloudSummarySnapshot
                 let text: String
@@ -1088,14 +1120,32 @@ struct AISuggestion: Identifiable, Sendable {
                 try Task.checkCancellation()
                 guard cloudRequestID == identity, selectedID == selection, revision == cloudEditorRevision,
                       request.authority.matches(sessionManager.accessGate.currentLease) else { throw ExternalAIError.staleSession }
+                let configuration = externalAIService.configuration
+                createdActivityID = request.id
+                cloudActivityID = request.id
+                await activityRecorder.begin(id: request.id, vaultID: lease.vaultID,
+                    target: AIActivityTarget(type: target.isPageActivityTarget ? .page : .source, id: target.id),
+                    action: request.action.activityAction, executionMode: .userInvoked, provider: .openAI,
+                    modelID: configuration.model, contentSizeBytes: request.content.utf8.count)
+                try Task.checkCancellation()
+                guard cloudRequestID == identity, selectedID == selection, revision == cloudEditorRevision,
+                      request.authority.matches(sessionManager.accessGate.currentLease) else {
+                    throw ExternalAIError.staleSession
+                }
+                guard configuration == externalAIService.configuration else { throw ExternalAIError.staleContent }
                 cloudSummaryConfirmation = CloudSummaryConfirmation(request: request, snapshot: snapshot,
-                    title: itemTitle, model: externalAIService.configuration.model,
+                    title: itemTitle, model: configuration.model,
                     selection: selection, editorRevision: revision, presentation: presentation)
                 cloudSummaryTarget = nil; cloudSummaryTask = nil
                 if try !externalAIService.requiresSubmissionConfirmation(for: request.authority) {
                     confirmCloudSummary(userConfirmed: false)
                 }
             } catch {
+                if let activityID = createdActivityID {
+                    let failure = AIActivityOperation.failure(error)
+                    await activityRecorder.finish(activityID, status: failure.status, failureCode: failure.code)
+                    if cloudActivityID == activityID { cloudActivityID = nil }
+                }
                 guard cloudRequestID == identity else { return }
                 cloudSummaryTarget = nil; cloudSummaryTask = nil
                 cloudSummaryError = Self.cloudError(error)
@@ -1112,12 +1162,16 @@ struct AISuggestion: Identifiable, Sendable {
         let override = cloudSummaryOverride
         let publicationOverride = cloudPublicationOverride
         guard confirmation.model == externalAIService.configuration.model else {
+            let recorder = activityRecorder
+            Task { await recorder.finish(request.id, status: .cancelled, failureCode: .publication) }
+            cloudActivityID = nil
             cloudSummaryError = ExternalAIError.staleContent.localizedDescription; return
         }
         cloudSummaryTarget = request.target
         cloudPublicationGuard.arm(requestID: request.id)
         let publicationGuard = cloudPublicationGuard
         cloudSummaryTask = Task {
+            var suggestedInferenceCompleted = false
             defer {
                 if cloudRequestID == identity { cloudSummaryTarget = nil; cloudSummaryTask = nil }
             }
@@ -1167,12 +1221,21 @@ struct AISuggestion: Identifiable, Sendable {
                         value = suggestion.code; rationale = suggestion.rationale
                     }
                     try publicationGuard.validate(requestID: request.id)
+                    await activityRecorder.finish(request.id, status: .completed, outcome: .suggested)
+                    suggestedInferenceCompleted = true
+                    try Task.checkCancellation()
+                    try publicationGuard.validate(requestID: request.id)
+                    guard cloudRequestID == identity, request.authority.matches(sessionManager.accessGate.currentLease),
+                          selectedID == confirmation.selection, cloudEditorRevision == confirmation.editorRevision else {
+                        throw ExternalAIError.staleContent
+                    }
                     pendingAISuggestion = AISuggestion(id: request.id,
                         action: request.action == .suggestTitle ? .suggestTitle : .classifyLCC,
                         value: value, rationale: rationale, provider: .openAI, target: request.target)
                     pendingAISuggestionContext = AISuggestionContext(snapshot: confirmation.snapshot,
                         selection: confirmation.selection, editorRevision: confirmation.editorRevision,
                         provenance: provenance, validate: validate)
+                    if cloudActivityID == request.id { cloudActivityID = nil }
                     return
                 }
                 switch confirmation.snapshot {
@@ -1187,6 +1250,8 @@ struct AISuggestion: Identifiable, Sendable {
                         try publicationGuard.validate(requestID: request.id)
                         try validate()
                     })
+                    await activityRecorder.finish(request.id, status: .completed, outcome: .published)
+                    if cloudActivityID == request.id { cloudActivityID = nil }
                     try Task.checkCancellation()
                     guard cloudRequestID == identity, request.authority.matches(sessionManager.accessGate.currentLease) else { return }
                     if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
@@ -1198,6 +1263,8 @@ struct AISuggestion: Identifiable, Sendable {
                         try publicationGuard.validate(requestID: request.id)
                         try validate()
                     })
+                    await activityRecorder.finish(request.id, status: .completed, outcome: .published)
+                    if cloudActivityID == request.id { cloudActivityID = nil }
                     try Task.checkCancellation()
                     guard cloudRequestID == identity, request.authority.matches(sessionManager.accessGate.currentLease) else { return }
                     if let i = sources.firstIndex(where: { $0.id == saved.id }) { sources[i] = saved }
@@ -1205,6 +1272,10 @@ struct AISuggestion: Identifiable, Sendable {
                 }
                 await refresh()
             } catch {
+                if suggestedInferenceCompleted { await activityRecorder.updateOutcome(request.id, outcome: .rejected) }
+                let failure = AIActivityOperation.failure(error)
+                await activityRecorder.finish(request.id, status: failure.status, failureCode: failure.code)
+                if cloudActivityID == request.id { cloudActivityID = nil }
                 guard cloudRequestID == identity else { return }
                 cloudSummaryError = Self.cloudError(error)
             }
@@ -1245,51 +1316,56 @@ struct AISuggestion: Identifiable, Sendable {
         generatingAISummary = true; aiSummaryNotice = nil
         aiSummaryTask?.cancel()
         aiSummaryTask = Task {
-            defer {
-                if generation == completionTicket.token, nativePageSummaryRequestID == requestID {
-                    nativePageSummaryRequestID = nil; nativePageSummaryID = nil
-                    generatingAISummary = false
-                    aiSummaryTask = nil
+            await withLocalAIActivity(id: requestID, target: capturedID.map { .page($0) }, action: .summarizePage) { activity in
+                defer {
+                    if generation == completionTicket.token, nativePageSummaryRequestID == requestID {
+                        nativePageSummaryRequestID = nil; nativePageSummaryID = nil
+                        generatingAISummary = false
+                        aiSummaryTask = nil
+                    }
                 }
-            }
-            do {
-                guard await saveCurrent(), let note = currentNote, let repository else { throw ExternalAIError.staleContent }
-                let snapshot = try await repository.pageSummarySnapshot(note)
-                let enrichment = try await nativeEnrichment(client, text: content, mode: Self.enrichmentMode(.page(snapshot)))
-                let summary = enrichment.summary
-                guard isCompletionValid(
-                    completionTicket,
-                    expectedTargetID: currentNote?.id,
-                    checkTargetID: true,
-                    operation: "summarizePage"
-                ) else { return }
-                guard !Task.isCancelled, nativePageSummaryRequestID == requestID else { return }
-                guard body == capturedBody, capturedRevision == cloudEditorRevision, !editingLocked, !externalChange,
-                      aiPreferenceDefaults.bool(forKey: EditorPreferences.aiSummariesKey) else {
-                    aiSummaryNotice = "The page changed during generation. Generate the summary again."; return
-                }
-                guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, summary.utf8.count <= ExternalAILimits.maximumSummaryBytes else { aiSummaryNotice = "No valid summary was returned. Try again."; return }
-                let provenance = SummaryProvenance(provider: "On-device", model: "Apple Intelligence", generatedAt: Date(), sourceRevision: snapshot.sourceRevision)
-                cloudPublicationGuard.arm(requestID: requestID)
-                let publicationGuard = cloudPublicationGuard
-                let saved = try await repository.publishPageEnrichment(snapshot, summary: summary,
-                    classification: Self.classification(enrichment.classification, provenance: provenance),
-                    title: Self.enrichmentMode(.page(snapshot)) == .initial ? enrichment.title : nil,
-                    provenance: provenance, validate: { try publicationGuard.validate(requestID: requestID) })
-                guard !Task.isCancelled, nativePageSummaryRequestID == requestID,
-                      capturedRevision == cloudEditorRevision else { return }
-                if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
-                apply(saved)
+                do {
+                    guard await saveCurrent(), let note = currentNote, let repository else { throw ExternalAIError.staleContent }
+                    let snapshot = try await repository.pageSummarySnapshot(note)
+                    try await activity.start(contentSizeBytes: content.utf8.count)
+                    let enrichment = try await nativeEnrichment(client, text: content, mode: Self.enrichmentMode(.page(snapshot)))
+                    let summary = enrichment.summary
+                    guard isCompletionValid(
+                        completionTicket,
+                        expectedTargetID: currentNote?.id,
+                        checkTargetID: true,
+                        operation: "summarizePage"
+                    ) else { return }
+                    guard !Task.isCancelled, nativePageSummaryRequestID == requestID else { return }
+                    guard body == capturedBody, capturedRevision == cloudEditorRevision, !editingLocked, !externalChange,
+                          aiPreferenceDefaults.bool(forKey: EditorPreferences.aiSummariesKey) else {
+                        aiSummaryNotice = "The page changed during generation. Generate the summary again."; return
+                    }
+                    guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, summary.utf8.count <= ExternalAILimits.maximumSummaryBytes else { activity.fail(ExternalAIError.invalidResponse); aiSummaryNotice = "No valid summary was returned. Try again."; return }
+                    let provenance = SummaryProvenance(provider: "On-device", model: "Apple Intelligence", generatedAt: Date(), sourceRevision: snapshot.sourceRevision)
+                    cloudPublicationGuard.arm(requestID: requestID)
+                    let publicationGuard = cloudPublicationGuard
+                    let saved = try await repository.publishPageEnrichment(snapshot, summary: summary,
+                        classification: Self.classification(enrichment.classification, provenance: provenance),
+                        title: Self.enrichmentMode(.page(snapshot)) == .initial ? enrichment.title : nil,
+                        provenance: provenance, validate: { try publicationGuard.validate(requestID: requestID) })
+                    activity.complete()
+                    guard !Task.isCancelled, nativePageSummaryRequestID == requestID,
+                          capturedRevision == cloudEditorRevision else { return }
+                    if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
+                    apply(saved)
 
-            } catch {
-                guard !Task.isCancelled, nativePageSummaryRequestID == requestID else { return }
-                guard isCompletionValid(
-                    completionTicket,
-                    expectedTargetID: currentNote?.id,
-                    checkTargetID: true,
-                    operation: "summarizePage"
-                ) else { return }
-                aiSummaryNotice = "On-device summary generation failed. Try again."
+                } catch {
+                    activity.fail(error)
+                    guard !Task.isCancelled, nativePageSummaryRequestID == requestID else { return }
+                    guard isCompletionValid(
+                        completionTicket,
+                        expectedTargetID: currentNote?.id,
+                        checkTargetID: true,
+                        operation: "summarizePage"
+                    ) else { return }
+                    aiSummaryNotice = "On-device summary generation failed. Try again."
+                }
             }
         }
     }
@@ -2453,31 +2529,35 @@ struct AISuggestion: Identifiable, Sendable {
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let client = aiClient
         titleTasks[note.id] = Task { [self] in
-            defer { if generation == completionTicket.token { titleTasks.removeValue(forKey: note.id) } }
-            do {
-                async let generatedTitle = client.pageTitle(content)
-                async let generatedLCC = client.inferLCC(content)
-                let (generated, lcc) = try await (generatedTitle, generatedLCC)
-                guard let generated else { return }
-                await waitForSave()
-                guard isCompletionValid(completionTicket, operation: "startTitleGeneration.generate"),
-                      untitledPages[note.id] == note.title,
-                      editorAllowsGeneratedTitle(for: note) else { return }
-                saving = true
-                defer { if generation == completionTicket.token { saving = false } }
-                var updatedNote = note
-                if note.lcc == nil, let lcc, !lcc.isEmpty { updatedNote.lcc = lcc }
-                let saved = try await repository.save(note: updatedNote, title: generated, body: note.body, tags: note.tags)
-                guard isCompletionValid(completionTicket, operation: "startTitleGeneration.save") else { return }
-                recordPageRename(saved.id, from: note.title, to: saved.title)
-                untitledPages.removeValue(forKey: note.id)
-                if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
-                if currentNote?.id == saved.id {
-                    currentNote = saved
-                    if title == note.title { title = saved.title }
-                }
-                scheduleRefresh()
-            } catch { /* Content is already saved; retain the placeholder for another attempt. */ }
+            await withLocalAIActivity(target: .page(note.id), action: .suggestTitle, executionMode: .automatic) { activity in
+                defer { if generation == completionTicket.token { titleTasks.removeValue(forKey: note.id) } }
+                do {
+                    try await activity.start(contentSizeBytes: content.utf8.count)
+                    async let generatedTitle = client.pageTitle(content)
+                    async let generatedLCC = client.inferLCC(content)
+                    let (generated, lcc) = try await (generatedTitle, generatedLCC)
+                    guard let generated else { activity.fail(ExternalAIError.invalidResponse); return }
+                    await waitForSave()
+                    guard isCompletionValid(completionTicket, operation: "startTitleGeneration.generate"),
+                          untitledPages[note.id] == note.title,
+                          editorAllowsGeneratedTitle(for: note) else { return }
+                    saving = true
+                    defer { if generation == completionTicket.token { saving = false } }
+                    var updatedNote = note
+                    if note.lcc == nil, let lcc, !lcc.isEmpty { updatedNote.lcc = lcc }
+                    let saved = try await repository.save(note: updatedNote, title: generated, body: note.body, tags: note.tags)
+                    activity.complete()
+                    guard isCompletionValid(completionTicket, operation: "startTitleGeneration.save") else { return }
+                    recordPageRename(saved.id, from: note.title, to: saved.title)
+                    untitledPages.removeValue(forKey: note.id)
+                    if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
+                    if currentNote?.id == saved.id {
+                        currentNote = saved
+                        if title == note.title { title = saved.title }
+                    }
+                    scheduleRefresh()
+                } catch { activity.fail(error) /* Content is already saved; retain the placeholder for another attempt. */ }
+            }
         }
     }
     func suggestPageTitle(provider: AIProvider? = nil) {
@@ -2951,39 +3031,44 @@ struct AISuggestion: Identifiable, Sendable {
         let client = aiClient
         generatingSourceSummaries.insert(source.id)
         sourceSummaryTasks[source.id] = Task {
-            defer {
-                if generation == completionTicket.token, nativeSourceSummaryIDs[source.id] == requestID {
-                    nativeSourceSummaryIDs.removeValue(forKey: source.id)
-                    generatingSourceSummaries.remove(source.id); sourceSummaryTasks.removeValue(forKey: source.id)
+            await withLocalAIActivity(id: requestID, target: .source(source.id), action: .summarizeSource) { activity in
+                defer {
+                    if generation == completionTicket.token, nativeSourceSummaryIDs[source.id] == requestID {
+                        nativeSourceSummaryIDs.removeValue(forKey: source.id)
+                        generatingSourceSummaries.remove(source.id); sourceSummaryTasks.removeValue(forKey: source.id)
+                    }
                 }
-            }
-            do {
-                let snapshot = try await repository.sourceSummarySnapshot(id: source.id)
-                let text = try await Task.detached { try CloudSummaryConfirmation.extractedText(snapshot) }.value
-                guard isCompletionValid(completionTicket, operation: "generateSourceSummary.read") else { return }
-                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ExternalAIError.emptyContent }
-                cloudPublicationGuard.arm(requestID: requestID)
-                let publicationGuard = cloudPublicationGuard
-                let enrichment = try await nativeEnrichment(client, text: String(text.prefix(6000)), mode: Self.enrichmentMode(.source(snapshot)))
-                let summary = enrichment.summary
-                try Task.checkCancellation()
-                guard nativeSourceSummaryIDs[source.id] == requestID,
-                      isCompletionValid(completionTicket, operation: "generateSourceSummary.generate") else { return }
-                guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                      summary.utf8.count <= ExternalAILimits.maximumSummaryBytes else { throw ExternalAIError.invalidResponse }
-                let saved = try await repository.publishSourceEnrichment(snapshot, summary: summary,
-                    classification: Self.classification(enrichment.classification, provenance: SummaryProvenance(provider: "On-device", model: "Apple Intelligence", generatedAt: Date())),
-                    title: Self.enrichmentMode(.source(snapshot)) == .initial ? enrichment.title : nil,
-                    provenance: SummaryProvenance(provider: "On-device", model: "Apple Intelligence", generatedAt: Date()),
-                    validate: { try publicationGuard.validate(requestID: requestID) })
-                guard isCompletionValid(completionTicket, operation: "generateSourceSummary.save") else { return }
-                if let i = sources.firstIndex(where: { $0.id == saved.id }) { sources[i] = saved }
-                if currentSource?.id == saved.id { currentSource = saved }
-                await refresh()
-            } catch {
-                guard !Task.isCancelled, nativeSourceSummaryIDs[source.id] == requestID,
-                      isCompletionValid(completionTicket, operation: "generateSourceSummary.error") else { return }
-                aiProviderNotice = Self.cloudError(error)
+                do {
+                    let snapshot = try await repository.sourceSummarySnapshot(id: source.id)
+                    let text = try await Task.detached { try CloudSummaryConfirmation.extractedText(snapshot) }.value
+                    guard isCompletionValid(completionTicket, operation: "generateSourceSummary.read") else { return }
+                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ExternalAIError.emptyContent }
+                    cloudPublicationGuard.arm(requestID: requestID)
+                    let publicationGuard = cloudPublicationGuard
+                    try await activity.start(contentSizeBytes: text.utf8.count)
+                    let enrichment = try await nativeEnrichment(client, text: String(text.prefix(6000)), mode: Self.enrichmentMode(.source(snapshot)))
+                    let summary = enrichment.summary
+                    try Task.checkCancellation()
+                    guard nativeSourceSummaryIDs[source.id] == requestID,
+                          isCompletionValid(completionTicket, operation: "generateSourceSummary.generate") else { return }
+                    guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                          summary.utf8.count <= ExternalAILimits.maximumSummaryBytes else { throw ExternalAIError.invalidResponse }
+                    let saved = try await repository.publishSourceEnrichment(snapshot, summary: summary,
+                        classification: Self.classification(enrichment.classification, provenance: SummaryProvenance(provider: "On-device", model: "Apple Intelligence", generatedAt: Date())),
+                        title: Self.enrichmentMode(.source(snapshot)) == .initial ? enrichment.title : nil,
+                        provenance: SummaryProvenance(provider: "On-device", model: "Apple Intelligence", generatedAt: Date()),
+                        validate: { try publicationGuard.validate(requestID: requestID) })
+                    activity.complete()
+                    guard isCompletionValid(completionTicket, operation: "generateSourceSummary.save") else { return }
+                    if let i = sources.firstIndex(where: { $0.id == saved.id }) { sources[i] = saved }
+                    if currentSource?.id == saved.id { currentSource = saved }
+                    await refresh()
+                } catch {
+                    activity.fail(error)
+                    guard !Task.isCancelled, nativeSourceSummaryIDs[source.id] == requestID,
+                          isCompletionValid(completionTicket, operation: "generateSourceSummary.error") else { return }
+                    aiProviderNotice = Self.cloudError(error)
+                }
             }
         }
     }
@@ -3005,33 +3090,37 @@ struct AISuggestion: Identifiable, Sendable {
                 if sourceNamingOverrides.contains(source.id) {
                     generatingSourceTitles.remove(source.id); sourceRenameCompleted += 1; continue
                 }
-                do {
-                    if let reason = client.unavailabilityReason() { throw VaultError.unavailable(reason) }
-                    let source = try await repository.loadSource(id: source.id)
-                    let text = try await sourceSummaryContent(source, root: root)
-                    guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.read") else { return }
-                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw VaultError.unavailable("No readable text for automatic naming and summary. Original file name retained.") }
-                    let excerpt = String(text.prefix(6000))
-                    async let generatedTitle = client.pageTitle(text)
-                    async let generatedSummary = client.summarize(excerpt)
-                    async let generatedLCC = client.inferLCC(excerpt)
-                    let (titleResult, summary, lcc) = try await (generatedTitle, generatedSummary, generatedLCC)
-                    guard let title = titleResult else { throw VaultError.unavailable("No valid topic title was generated. Original file name retained.") }
-                    guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.generate") else { return }
-                    if sourceNamingOverrides.contains(source.id) {
-                        generatingSourceTitles.remove(source.id); sourceRenameCompleted += 1; continue
-                    }
-                    guard sources.first(where: { $0.id == source.id })?.metadata.lcc == source.metadata.lcc else {
-                        throw ExternalAIError.staleContent
-                    }
-                    let renamed = try await repository.renameSource(source, title: title, summary: summary,
-                        lcc: source.metadata.lcc == nil ? lcc : nil)
-                    guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.rename") else { return }
-                    if let position = sources.firstIndex(where: { $0.id == source.id }) { sources[position] = renamed }
-                    if let index { try await index.reconcile(repository.scan()) }
-                    guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.reconcile") else { return }
-                    await updateRows()
-                } catch { if isCompletionValid(completionTicket, operation: "enqueueSourceTitle.error") { errorMessage = "Source naming: " + error.localizedDescription } }
+                await withLocalAIActivity(target: .source(source.id), action: .processSource, executionMode: .automatic) { activity in
+                    do {
+                        if let reason = client.unavailabilityReason() { throw VaultError.unavailable(reason) }
+                        let source = try await repository.loadSource(id: source.id)
+                        let text = try await sourceSummaryContent(source, root: root)
+                        guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.read") else { return }
+                        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw VaultError.unavailable("No readable text for automatic naming and summary. Original file name retained.") }
+                        let excerpt = String(text.prefix(6000))
+                        try await activity.start(contentSizeBytes: text.utf8.count)
+                        async let generatedTitle = client.pageTitle(text)
+                        async let generatedSummary = client.summarize(excerpt)
+                        async let generatedLCC = client.inferLCC(excerpt)
+                        let (titleResult, summary, lcc) = try await (generatedTitle, generatedSummary, generatedLCC)
+                        guard let title = titleResult else { throw VaultError.unavailable("No valid topic title was generated. Original file name retained.") }
+                        guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.generate") else { return }
+                        if sourceNamingOverrides.contains(source.id) {
+                            return
+                        }
+                        guard sources.first(where: { $0.id == source.id })?.metadata.lcc == source.metadata.lcc else {
+                            throw ExternalAIError.staleContent
+                        }
+                        let renamed = try await repository.renameSource(source, title: title, summary: summary,
+                            lcc: source.metadata.lcc == nil ? lcc : nil)
+                        activity.complete()
+                        guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.rename") else { return }
+                        if let position = sources.firstIndex(where: { $0.id == source.id }) { sources[position] = renamed }
+                        if let index { try await index.reconcile(repository.scan()) }
+                        guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.reconcile") else { return }
+                        await updateRows()
+                    } catch { activity.fail(error); if isCompletionValid(completionTicket, operation: "enqueueSourceTitle.error") { errorMessage = "Source naming: " + error.localizedDescription } }
+                }
                 if generation == ticket {
                     generatingSourceTitles.remove(source.id); sourceRenameCompleted += 1
                 }
@@ -3106,6 +3195,15 @@ struct AISuggestion: Identifiable, Sendable {
 extension AppModel {
     /// Preparation and inference create only transient drafts. Publication is an explicit review action.
     func cancelAIPage() {
+        if let activityID = aiPageActivityID, aiPagePublicationActivityID != activityID {
+            let recorder = activityRecorder
+            if aiPageDraft != nil {
+                Task { await recorder.updateOutcome(activityID, outcome: .rejected) }
+            } else if aiPageSubmission != nil {
+                Task { await recorder.finish(activityID, status: .cancelled, failureCode: .cancelled) }
+            }
+        }
+        aiPageActivityID = nil
         cloudPublicationGuard.invalidate()
         aiPageOperationID = nil
         aiPageTask?.cancel(); aiPageTask = nil
@@ -3119,12 +3217,23 @@ extension AppModel {
         if case .topic(let text) = input {
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 120 else { return false }
         }
+        if let previousActivityID = aiPageActivityID {
+            let recorder = activityRecorder
+            if aiPageDraft != nil {
+                Task { await recorder.updateOutcome(previousActivityID, outcome: .rejected) }
+            } else if aiPageSubmission != nil {
+                Task { await recorder.finish(previousActivityID, status: .cancelled, failureCode: .cancelled) }
+            }
+        }
+        aiPageActivityID = nil
         aiPageDraft = nil; aiPageSubmission = nil
         let identity = UUID()
         aiPageOperationID = identity
         generatingTopicPage = true; errorMessage = nil
         let provider = preferredAIProvider(for: .composePage, temporaryOverride: aiPageProviderOverride)
         let client = aiClient
+        var startedActivityID: UUID?
+        var suggestionCompleted = false
         defer { if aiPageOperationID == identity { generatingTopicPage = false } }
         do {
             guard await finishCurrentPage(), lease == sessionManager.accessGate.currentLease else { throw ExternalAIError.staleSession }
@@ -3174,14 +3283,34 @@ extension AppModel {
                 guard resolveAIAction(.composePage, provider: .openAI).isEligible else { return false }
                 let request = try ExternalAISummaryRequest(authority: context.authority, target: .page(context.id),
                     contentRevision: UUID(), content: text, action: .composePage, mode: .compose)
-                aiPageSubmission = AIPageSubmission(request: request, context: context, model: externalAIService.configuration.model)
+                let configuration = externalAIService.configuration
+                startedActivityID = request.id; aiPageActivityID = request.id
+                await activityRecorder.begin(id: request.id, vaultID: lease.vaultID,
+                    target: .init(type: .page, id: context.id), action: .composePage,
+                    executionMode: .userInvoked, provider: .openAI, modelID: configuration.model,
+                    contentSizeBytes: text.utf8.count)
+                guard aiPageOperationID == identity else { throw ExternalAIError.cancelled }
+                try validateAIPageContext(context)
+                guard configuration == externalAIService.configuration else { throw ExternalAIError.staleContent }
+                aiPageSubmission = AIPageSubmission(request: request, context: context, model: configuration.model)
                 if try !externalAIService.requiresSubmissionConfirmation(for: context.authority) {
                     await generateCloudAIPage(userConfirmed: false)
                 }
             } else {
                 guard admitsNativeAction(.composePage, provider: .onDevice) else { return false }
                 guard let enrich = client.enrich else { throw ExternalAIError.unsupportedAction }
+                startedActivityID = identity; aiPageActivityID = identity
+                await activityRecorder.begin(id: identity, vaultID: lease.vaultID,
+                    target: .init(type: .page, id: context.id), action: .composePage,
+                    executionMode: .userInvoked, provider: .onDevice, modelID: "apple-foundation-models",
+                    contentSizeBytes: text.utf8.count)
+                guard aiPageOperationID == identity else { throw ExternalAIError.cancelled }
+                try validateAIPageContext(context)
                 let enrichment = try await enrich(text, .compose)
+                guard aiPageOperationID == identity else { throw ExternalAIError.cancelled }
+                try validateAIPageContext(context)
+                await activityRecorder.finish(identity, status: .completed, outcome: .suggested)
+                suggestionCompleted = true
                 guard aiPageOperationID == identity else { throw ExternalAIError.cancelled }
                 try validateAIPageContext(context)
                 let provenance = SummaryProvenance(provider: "On-device", model: "Apple Intelligence", generatedAt: Date())
@@ -3189,6 +3318,12 @@ extension AppModel {
             }
             return aiPageDraft != nil || aiPageSubmission != nil
         } catch {
+            if let activityID = startedActivityID {
+                if suggestionCompleted { await activityRecorder.updateOutcome(activityID, outcome: .rejected) }
+                let failure = AIActivityOperation.failure(error)
+                await activityRecorder.finish(activityID, status: failure.status, failureCode: failure.code)
+                if aiPageActivityID == activityID { aiPageActivityID = nil }
+            }
             if aiPageOperationID == identity { errorMessage = Self.cloudError(error) }
             return false
         }
@@ -3198,6 +3333,7 @@ extension AppModel {
         guard let submission = aiPageSubmission, let identity = aiPageOperationID else { return }
         aiPageSubmission = nil
         generatingTopicPage = true
+        var suggestionCompleted = false
         defer { if aiPageOperationID == identity { generatingTopicPage = false } }
         do {
             try validateAIPageContext(submission.context)
@@ -3221,8 +3357,16 @@ extension AppModel {
             try validateAIPageContext(submission.context)
             let provenance = SummaryProvenance(provider: "OpenAI", model: result.provenance.model,
                 generatedAt: result.provenance.generatedAt)
+            await activityRecorder.finish(submission.request.id, status: .completed, outcome: .suggested)
+            suggestionCompleted = true
+            guard aiPageOperationID == identity else { throw ExternalAIError.cancelled }
+            try validateAIPageContext(submission.context)
             aiPageDraft = AIPageDraft(context: submission.context, enrichment: enrichment, provenance: provenance, validate: validate)
         } catch {
+            if suggestionCompleted { await activityRecorder.updateOutcome(submission.request.id, outcome: .rejected) }
+            let failure = AIActivityOperation.failure(error)
+            await activityRecorder.finish(submission.request.id, status: failure.status, failureCode: failure.code)
+            if aiPageActivityID == submission.request.id { aiPageActivityID = nil }
             if aiPageOperationID == identity { errorMessage = Self.cloudError(error) }
         }
     }
@@ -3235,8 +3379,13 @@ extension AppModel {
 
     func publishAIPageDraft(title reviewedTitle: String) async -> Bool {
         guard let draft = aiPageDraft, let identity = aiPageOperationID, let repository else { return false }
+        let activityID = aiPageActivityID
+        aiPagePublicationActivityID = activityID
         generatingTopicPage = true
-        defer { if aiPageOperationID == identity { generatingTopicPage = false } }
+        defer {
+            if aiPagePublicationActivityID == activityID { aiPagePublicationActivityID = nil }
+            if aiPageOperationID == identity { generatingTopicPage = false }
+        }
         do {
             try validateAIPageContext(draft.context)
             try draft.validate()
@@ -3257,13 +3406,17 @@ extension AppModel {
                     try publicationGuard.validate(requestID: identity)
                     try draft.validate()
                 })
+            if let activityID { await activityRecorder.updateOutcome(activityID, outcome: .published) }
             guard aiPageOperationID == identity, draft.context.authority.matches(sessionManager.accessGate.currentLease) else { return false }
-            aiPageDraft = nil; aiPageSubmission = nil; aiPageOperationID = nil
+            aiPageDraft = nil; aiPageSubmission = nil; aiPageOperationID = nil; aiPageActivityID = nil
             errorMessage = nil; searchText = ""; scope = .wiki; reading = false
             notes.insert(saved, at: 0); selectedID = saved.id; currentSource = nil; apply(saved)
             await refresh()
             return true
         } catch {
+            if aiPageOperationID != identity, let activityID {
+                await activityRecorder.updateOutcome(activityID, outcome: .rejected)
+            }
             if aiPageOperationID == identity { errorMessage = Self.cloudError(error) }
             return false
         }

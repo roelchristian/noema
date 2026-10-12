@@ -127,7 +127,7 @@ struct NoemaSettings: View {
                 Text("Manage custom \\newcommand definitions (0–3 arguments) for inline ($...$) and display ($$...$$) math.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            IntelligenceSettings(preferences: aiProviderPreferences)
+            IntelligenceSettings(preferences: aiProviderPreferences, appModel: model)
             Section("On-device intelligence") {
                 Toggle("Enable on-device AI summaries", isOn: $aiSummaries)
                 Picker("Show page summaries", selection: $aiSummaryPlacement) {

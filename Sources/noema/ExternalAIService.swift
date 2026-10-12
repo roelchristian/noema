@@ -19,11 +19,13 @@ final class ExternalAIService {
     private(set) var consentPolicy: OpenAIConsentPolicy
 
     @ObservationIgnored private let accessGate: VaultAccessGate
+    @ObservationIgnored private let activityRecorder: AIActivityRecorder
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let consentSession = OpenAIConsentSession()
     @ObservationIgnored private var consentObservation: UUID?
 
-    init(accessGate: VaultAccessGate, defaults: UserDefaults = .standard) {
+    init(accessGate: VaultAccessGate, defaults: UserDefaults = .standard, activityRecorder: AIActivityRecorder = .shared) {
+        self.activityRecorder = activityRecorder
         self.accessGate = accessGate
         self.defaults = defaults
         consentPolicy = OpenAIConsentPolicy.load(from: defaults)
@@ -34,7 +36,7 @@ final class ExternalAIService {
         let sessions = ExternalAISessionManager(accessGate: accessGate, credentialBroker: broker)
         sessionManager = sessions
         gateway = ExternalAIGateway(credentialBroker: broker, sessionManager: sessions,
-                                   accessGate: accessGate, configuration: configuration)
+                                   accessGate: accessGate, configuration: configuration, activityRecorder: activityRecorder)
     }
 
     deinit {
@@ -145,7 +147,7 @@ final class ExternalAIService {
         clearConsentSession()
         configuration = selected
         gateway = ExternalAIGateway(credentialBroker: credentialBroker, sessionManager: sessionManager,
-                                   accessGate: accessGate, configuration: selected)
+                                   accessGate: accessGate, configuration: selected, activityRecorder: activityRecorder)
         authorizationState = .revoked
     }
 

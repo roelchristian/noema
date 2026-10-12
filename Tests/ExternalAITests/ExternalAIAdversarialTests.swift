@@ -23,11 +23,12 @@ private actor AuditTransport: OpenAITransporting {
     init(status: Int = 200, body: Data = auditResponse) { self.status = status; self.body = body }
     func setBefore(_ hook: @escaping @Sendable () async throws -> Void) { beforeResume = hook }
     func setAfter(_ hook: @escaping @Sendable () async throws -> Void) { afterResume = hook }
-    func perform(_ request: URLRequest, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void) async throws -> OpenAIHTTPResponse {
+    func perform(_ request: URLRequest, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void, didDispatch: @escaping @Sendable () -> Void) async throws -> OpenAIHTTPResponse {
         try await beforeResume?()
         let dispatched = Mutex(false)
         try beforeDispatch { dispatched.withLock { $0 = true } }
         guard dispatched.withLock({ $0 }) else { throw ExternalAIError.cancelled }
+        didDispatch()
         count += 1
         try await afterResume?()
         return OpenAIHTTPResponse(statusCode: status, body: body)
@@ -39,13 +40,15 @@ private struct AuditFixture {
     let manager: ExternalAISessionManager
     let gateway: ExternalAIGateway
     let request: ExternalAISummaryRequest
-    init(transport: AuditTransport, now: @escaping @Sendable () -> Date = { Date() }) async throws {
+    init(transport: AuditTransport, now: @escaping @Sendable () -> Date = { Date() },
+         activityRecorder: AIActivityRecorder? = nil, pricingCatalogue: AIUsagePricingCatalogue = .unpriced) async throws {
         let session = VaultSession(vaultID: UUID(), root: URL(fileURLWithPath: "/tmp/noema-d02a-audit"), generation: 17)
         gate = VaultAccessGate(initialState: .open(session))
         broker = ExternalAICredentialBroker(keychain: AuditKeychain(), now: now)
         try await broker.store("synthetic-audit-credential-only")
         manager = ExternalAISessionManager(accessGate: gate, credentialBroker: broker, authenticator: AuditAuthenticator(), observeSystemEvents: false)
-        gateway = ExternalAIGateway(credentialBroker: broker, sessionManager: manager, accessGate: gate, transport: transport)
+        gateway = ExternalAIGateway(credentialBroker: broker, sessionManager: manager, accessGate: gate,
+            transport: transport, activityRecorder: activityRecorder, pricingCatalogue: pricingCatalogue)
         request = try ExternalAISummaryRequest(authority: ExternalAIVaultAuthority(session: session), target: .page(UUID()), contentRevision: UUID(), content: "Private selected text")
     }
 }
@@ -68,6 +71,46 @@ private struct AuditFixture {
     }
     await #expect(throws: ExternalAIError.cancelled) { try await f.gateway.validateConnection() }
     #expect(await transport.count == 1)
+}
+
+@Test(arguments: [false, true])
+func auditCredentialRevocationAfterResponsePreservesUsageWithoutPublication(remove: Bool) async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("noema-revoked-activity-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = try SQLiteAIActivityStore(url: directory.appendingPathComponent("activity.sqlite"))
+    let recorder = AIActivityRecorder(store: store)
+    let price = try #require(AIUsagePrice(model: ExternalAIModelConfiguration.default.model,
+        effectiveFrom: .distantPast, inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.5,
+        outputUSDPerMillion: 8))
+    var response = try #require(JSONSerialization.jsonObject(with: auditResponse) as? [String: Any])
+    response["usage"] = ["input_tokens": 100, "output_tokens": 20,
+                         "input_tokens_details": ["cached_tokens": 30]]
+    let body = try JSONSerialization.data(withJSONObject: response)
+    let transport = AuditTransport(body: body)
+    let f = try await AuditFixture(transport: transport, activityRecorder: recorder,
+        pricingCatalogue: .init(version: "synthetic-test-v1", rates: [price]))
+    await recorder.begin(id: f.request.id, vaultID: f.request.authority.vaultID,
+        action: .summarizePage, executionMode: .userInvoked, provider: .openAI,
+        modelID: f.gateway.configuration.model)
+    await transport.setAfter {
+        if remove { try await f.broker.remove() }
+        else { try await f.broker.replace("synthetic-replacement-credential") }
+        #expect(Task.isCancelled)
+    }
+    await #expect(throws: ExternalAIError.cancelled) {
+        _ = try await f.gateway.summarizePage(f.request, consent: ExternalAIContentConsent(approving: f.request))
+    }
+    let record = try #require(try await store.query(AIActivityQuery()).first)
+    #expect(record.requestCount == 1 && record.usage?.inputTokens == 100)
+    #expect(record.usage?.outputTokens == 20 && record.usage?.cachedInputTokens == 30)
+    #expect(record.estimatedCostUSD == 0.000315)
+    // The caller owns finalization, and revocation must issue no publication capability.
+    #expect(record.status == .running && record.outcome == .notApplicable)
+    let model = await f.gateway.configuration.model
+    let forged = try ExternalAISummaryResult(request: f.request, summary: "Approved summary",
+        provenance: ExternalAIProvenance(model: model))
+    await #expect(throws: ExternalAIError.authorizationRevoked) { try await f.gateway.publicationPermit(for: forged) }
+    #expect(f.gate.registrySnapshot().activeCount == 0)
 }
 
 @Test func auditRevocationAfterTransientFailurePreventsRetry() async throws {

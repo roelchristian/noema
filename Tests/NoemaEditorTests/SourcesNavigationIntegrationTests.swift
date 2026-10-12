@@ -63,7 +63,13 @@ struct SourcesNavigationIntegrationTests {
         await model.refresh()
         #expect(model.rows.first?.title == "Renamed Source")
         model.searchText = "searchable"
-        await model.updateRows()
+        model.queryChanged()
+        // Scope changes and watcher refreshes can supersede a search while it awaits
+        // the index. Observe the current query's published results, as the UI does.
+        await waitUntil {
+            model.searchStatus == .results && model.sidebarSearchResults.sources.map(\.id) == [source.id]
+        }
+        #expect(model.searchStatus == .results)
         #expect(model.sidebarSearchResults.sources.map(\.id) == [source.id])
         model.searchText = ""
         await model.updateRows()

@@ -97,3 +97,46 @@ private let auditResume: @Sendable (@Sendable () -> Void) throws -> Void = { $0(
         }
     }
 }
+
+@Test func transportReportsOnlyActualResumesIncludingFailedResponses() async throws {
+    let dispatches = Mutex(0)
+    let observer: @Sendable () -> Void = { dispatches.withLock { $0 += 1 } }
+    let transport = OpenAITransport(protocolClasses: [AuditURLProtocol.self])
+    await #expect(throws: ExternalAIError.authorizationRevoked) {
+        try await transport.perform(auditHTTP("json"), beforeDispatch: { _ in
+            throw ExternalAIError.authorizationRevoked
+        }, didDispatch: observer)
+    }
+    #expect(dispatches.withLock { $0 } == 0)
+    _ = try await transport.perform(auditHTTP("json"), beforeDispatch: auditResume, didDispatch: observer)
+    #expect(dispatches.withLock { $0 } == 1)
+    await #expect(throws: ExternalAIError.networkUnavailable) {
+        try await transport.perform(auditHTTP("error"), beforeDispatch: auditResume, didDispatch: observer)
+    }
+    #expect(dispatches.withLock { $0 } == 2)
+}
+
+@Test func cancelledTransportDoesNotReportDispatch() async throws {
+    let dispatches = Mutex(0)
+    let worker = Task {
+        while !Task.isCancelled { await Task.yield() }
+        return try await OpenAITransport(protocolClasses: [AuditURLProtocol.self]).perform(auditHTTP("json"),
+            beforeDispatch: auditResume, didDispatch: { dispatches.withLock { $0 += 1 } })
+    }
+    worker.cancel()
+    await #expect(throws: CancellationError.self) { try await worker.value }
+    #expect(dispatches.withLock { $0 } == 0)
+}
+
+@Test func cancellationAfterAdmissionBeforeResumeDoesNotReportDispatch() async throws {
+    let dispatches = Mutex(0)
+    let worker = Task {
+        try await OpenAITransport(protocolClasses: [AuditURLProtocol.self]).perform(auditHTTP("json"),
+            beforeDispatch: { resume in
+                withUnsafeCurrentTask { $0?.cancel() }
+                resume()
+            }, didDispatch: { dispatches.withLock { $0 += 1 } })
+    }
+    await #expect(throws: ExternalAIError.cancelled) { try await worker.value }
+    #expect(dispatches.withLock { $0 } == 0)
+}

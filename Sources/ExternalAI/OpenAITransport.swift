@@ -4,7 +4,13 @@ import VaultCore
 
 /// Internal dependency injection boundary. No feature code can submit arbitrary requests.
 protocol OpenAITransporting: Sendable {
-    func perform(_ request: URLRequest, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void) async throws -> OpenAIHTTPResponse
+    func perform(_ request: URLRequest, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void, didDispatch: @escaping @Sendable () -> Void) async throws -> OpenAIHTTPResponse
+}
+
+extension OpenAITransporting {
+    func perform(_ request: URLRequest, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void) async throws -> OpenAIHTTPResponse {
+        try await perform(request, beforeDispatch: beforeDispatch, didDispatch: {})
+    }
 }
 
 struct OpenAIHTTPResponse: Sendable {
@@ -16,11 +22,11 @@ struct OpenAITransport: OpenAITransporting {
     // Internal URLProtocol seam exercises the actual session delegate without live network.
     private let protocolClasses: [AnyClass]?
     init(protocolClasses: [AnyClass]? = nil) { self.protocolClasses = protocolClasses }
-    func perform(_ request: URLRequest, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void) async throws -> OpenAIHTTPResponse {
+    func perform(_ request: URLRequest, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void, didDispatch: @escaping @Sendable () -> Void) async throws -> OpenAIHTTPResponse {
         let exchange = OpenAIHTTPExchange()
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
-            return try await exchange.execute(request, protocolClasses: protocolClasses, beforeDispatch: beforeDispatch)
+            return try await exchange.execute(request, protocolClasses: protocolClasses, beforeDispatch: beforeDispatch, didDispatch: didDispatch)
         } onCancel: { exchange.cancel() }
     }
 }
@@ -39,7 +45,7 @@ private final class OpenAIHTTPExchange: NSObject, URLSessionDataDelegate, @unche
     }
     private let state = Mutex(State())
 
-    func execute(_ request: URLRequest, protocolClasses: [AnyClass]?, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void) async throws -> OpenAIHTTPResponse {
+    func execute(_ request: URLRequest, protocolClasses: [AnyClass]?, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void, didDispatch: @escaping @Sendable () -> Void) async throws -> OpenAIHTTPResponse {
         try await withCheckedThrowingContinuation { continuation in
             let configuration = URLSessionConfiguration.ephemeral
             configuration.protocolClasses = protocolClasses ?? configuration.protocolClasses
@@ -62,7 +68,14 @@ private final class OpenAIHTTPExchange: NSObject, URLSessionDataDelegate, @unche
                 try beforeDispatch { [self, task] in
                     // Synchronizes cancellation with resume. Lifecycle dispatch admission is
                     // held by the gateway around this closure, so locking cannot race resume.
-                    state.withLock { if !$0.ended && !$0.cancelled { task.resume() } }
+                    state.withLock {
+                        if !$0.ended && !$0.cancelled {
+                            task.resume()
+                            // This callback only updates bounded in-memory counters. It must not
+                            // perform storage, async work, or acquire authorization locks.
+                            didDispatch()
+                        }
+                    }
                 }
             } catch { finish(.failure(sanitized(error))) }
         }

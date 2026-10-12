@@ -208,5 +208,23 @@
     "statement": "try handle.write(contentsOf: Data((Self.signature + filename).utf8))",
     "count": 1,
     "reason": "Application-owned noncanonical preview directory and private payload/lease marker. Creation is confined to the fixed temporary root; orphan removal requires marker/child validation and a nonblocking process lease, and uses scoped nonrecursive unlink/rmdir."
+  },
+  {
+    "path": "Sources/VaultCore/AIActivityStore.swift",
+    "statement": "guard sqlite3_open_v2(url.path, &pointer, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let pointer else {",
+    "count": 1,
+    "reason": "SQLiteAIActivityStore owns metadata-only app-local activity SQLite and WAL/SHM; production target is Application Support/Noema/Activity/activity.sqlite, never canonical vault bytes."
+  },
+  {
+    "path": "Sources/VaultCore/AIActivityStore.swift",
+    "statement": "try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)",
+    "count": 1,
+    "reason": "SQLiteAIActivityStore owns metadata-only app-local activity SQLite and WAL/SHM; production target is Application Support/Noema/Activity/activity.sqlite, never canonical vault bytes."
+  },
+  {
+    "path": "Sources/noema/AIActivityExport.swift",
+    "statement": "do { try data.write(to: destination, options: .withoutOverwriting) }",
+    "count": 1,
+    "reason": "AIActivityExportDestination owns a user-selected new external JSON export; synchronous resolved-root refusal protects vault/recovery/activity storage and OS create-only writing refuses any existing file, including selection-to-write races. No canonical mutations or deletion."
   }
 ]

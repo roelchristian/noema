@@ -23,11 +23,12 @@ private actor GatewayMockTransport: OpenAITransporting {
         responses = statuses.map { OpenAIHTTPResponse(statusCode: $0, body: body) }
         self.onDispatch = onDispatch
     }
-    func perform(_ request: URLRequest, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void) async throws -> OpenAIHTTPResponse {
+    func perform(_ request: URLRequest, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void, didDispatch: @escaping @Sendable () -> Void) async throws -> OpenAIHTTPResponse {
         onDispatch?()
         let resumed = Mutex(false)
         try beforeDispatch { resumed.withLock { $0 = true } }
         guard resumed.withLock({ $0 }) else { throw ExternalAIError.cancelled }
+        didDispatch()
         requests.append(request)
         return responses.count > 1 ? responses.removeFirst() : responses[0]
     }
@@ -39,7 +40,8 @@ private struct GatewayFixture {
     let manager: ExternalAISessionManager
     let gateway: ExternalAIGateway
     init(transport: GatewayMockTransport, gate: VaultAccessGate? = nil, session: VaultSession? = nil,
-         configuration: ExternalAIModelConfiguration = .default) async throws {
+         configuration: ExternalAIModelConfiguration = .default,
+         activityRecorder: AIActivityRecorder? = nil, pricingCatalogue: AIUsagePricingCatalogue = .unpriced) async throws {
         self.session = session ?? VaultSession(vaultID: UUID(), root: URL(fileURLWithPath: "/tmp/gateway-test"), generation: 4)
         self.gate = gate ?? VaultAccessGate(initialState: .open(self.session))
         broker = ExternalAICredentialBroker(keychain: GatewayKeychain())
@@ -47,7 +49,8 @@ private struct GatewayFixture {
         manager = ExternalAISessionManager(accessGate: self.gate, credentialBroker: broker,
                                          authenticator: GatewayAuthenticator(), observeSystemEvents: false)
         gateway = ExternalAIGateway(credentialBroker: broker, sessionManager: manager,
-                                  accessGate: self.gate, configuration: configuration, transport: transport)
+                                  accessGate: self.gate, configuration: configuration, transport: transport,
+                                  activityRecorder: activityRecorder, pricingCatalogue: pricingCatalogue)
     }
     func request(content: String = "selected document text", target: ExternalAISummaryTarget = .page(UUID())) throws -> ExternalAISummaryRequest {
         try ExternalAISummaryRequest(authority: ExternalAIVaultAuthority(session: session), target: target,
@@ -318,21 +321,96 @@ func gatewayCancelledMetadataActionsNeverDispatch(action: ExternalAIAction) asyn
     #expect(await mock.requests.isEmpty)
 }
 
+@Test func gatewayActivityCountsRetriesOnOneLogicalRecordAndPreservesUnknownCost() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("noema-cloud-activity-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = try SQLiteAIActivityStore(url: directory.appendingPathComponent("activity.sqlite"))
+    let recorder = AIActivityRecorder(store: store)
+    var response = try #require(JSONSerialization.jsonObject(with: validResponse) as? [String: Any])
+    response["usage"] = ["input_tokens": 100, "output_tokens": 20,
+                         "input_tokens_details": ["cached_tokens": 30]]
+    let body = try JSONSerialization.data(withJSONObject: response)
+    let mock = GatewayMockTransport(statuses: [429, 200], body: body)
+    let fixture = try await GatewayFixture(transport: mock, activityRecorder: recorder)
+    let request = try fixture.request(content: "synthetic-private-document")
+    _ = await recorder.begin(id: request.id, vaultID: fixture.session.vaultID,
+        target: AIActivityTarget(type: .page, id: request.target.id), action: .summarizePage,
+        executionMode: .userInvoked, provider: .openAI, modelID: fixture.gateway.configuration.model)
+    _ = try await fixture.gateway.summarizePage(request, consent: ExternalAIContentConsent(approving: request))
+    let records = try await store.query(AIActivityQuery())
+    let record = try #require(records.first)
+    #expect(records.count == 1 && record.id == request.id)
+    #expect(record.requestCount == 2)
+    #expect(record.usage?.inputTokens == 100 && record.usage?.outputTokens == 20)
+    #expect(record.usage?.cachedInputTokens == 30)
+    #expect(record.estimatedCostUSD == nil)
+    // Publication belongs to the caller, so gateway success must not finalize its record.
+    #expect(record.status == .running && record.outcome == .notApplicable)
+    let persisted = try String(decoding: JSONEncoder().encode(records), as: UTF8.self)
+    #expect(!persisted.contains(request.content) && !persisted.contains("A concise summary"))
+}
+
+@Test func gatewayActivityDoesNotCountRejectedAdmissionAndConnectionIsSeparate() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("noema-cloud-activity-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = try SQLiteAIActivityStore(url: directory.appendingPathComponent("activity.sqlite"))
+    let recorder = AIActivityRecorder(store: store)
+    let fixture = try await GatewayFixture(transport: GatewayMockTransport(), activityRecorder: recorder)
+    let request = try fixture.request()
+    _ = await recorder.begin(id: request.id, action: .summarizePage,
+        executionMode: .userInvoked, provider: .openAI)
+    let other = try fixture.request(content: "different approved content")
+    await #expect(throws: ExternalAIError.consentRequired) {
+        try await fixture.gateway.summarizePage(request, consent: ExternalAIContentConsent(approving: other))
+    }
+    #expect(try await store.query(AIActivityQuery()).first?.requestCount == 0)
+    let configuration = ExternalAIModelConfiguration.default
+    let metadata = Data("{\"object\":\"model\",\"id\":\"\(configuration.model)\"}".utf8)
+    let connection = try await GatewayFixture(transport: GatewayMockTransport(body: metadata), activityRecorder: recorder)
+    try await connection.gateway.validateConnection()
+    var records = try await store.query(AIActivityQuery(action: .validateConnection))
+    for _ in 0..<100 where records.first?.status == .running {
+        try await Task.sleep(for: .milliseconds(1))
+        records = try await store.query(AIActivityQuery(action: .validateConnection))
+    }
+    let record = try #require(records.first)
+    #expect(records.count == 1 && record.id != request.id)
+    #expect(record.vaultID == nil && record.target == nil)
+    #expect(record.requestCount == 1 && record.status == .completed)
+    #expect(record.usage == nil && record.estimatedCostUSD == nil)
+}
+
 @Test func gatewayComposesAllArtifactsInOneInferenceAndRejectsArtifactSubstitution() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("noema-compose-activity-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = try SQLiteAIActivityStore(url: directory.appendingPathComponent("activity.sqlite"))
+    let recorder = AIActivityRecorder(store: store)
     let output = ##"{"title":"Computer Science","summary":"A concise summary.","classification":{"code":"QA76","level":"schedule","rationale":"Computer science subject"},"body":"# Computer Science\n\nA source-backed article."}"##
-    let body = try JSONSerialization.data(withJSONObject: ["object": "response", "status": "completed", "output": [
+    let body = try JSONSerialization.data(withJSONObject: ["object": "response", "status": "completed",
+        "usage": ["input_tokens": 80, "output_tokens": 900, "input_tokens_details": ["cached_tokens": 0]], "output": [
         ["type": "message", "role": "assistant", "status": "completed", "content": [["type": "output_text", "text": output]]]]])
     let mock = GatewayMockTransport(body: body)
-    let fixture = try await GatewayFixture(transport: mock)
+    let fixture = try await GatewayFixture(transport: mock, activityRecorder: recorder)
     let base = try fixture.request()
     let request = try ExternalAISummaryRequest(authority: base.authority, target: base.target,
         contentRevision: base.contentRevision, content: base.content, action: .composePage)
+    await recorder.begin(id: request.id, vaultID: fixture.session.vaultID,
+        target: AIActivityTarget(type: .page, id: request.target.id), action: .composePage,
+        executionMode: .userInvoked, provider: .openAI, modelID: fixture.gateway.configuration.model)
     let result = try await fixture.gateway.composePage(request, consent: ExternalAIContentConsent(approving: request))
     #expect(await mock.requests.count == 1)
     #expect(result.title == "Computer Science")
     #expect(result.lccSuggestion?.code == "QA76")
     #expect(result.enrichment?.body?.contains("source-backed") == true)
     try await fixture.gateway.validatePublication(of: result)
+    let records = try await store.query(AIActivityQuery(action: .composePage))
+    let record = try #require(records.first)
+    #expect(records.count == 1 && record.id == request.id && record.requestCount == 1)
+    #expect(record.usage?.inputTokens == 80 && record.usage?.outputTokens == 900)
+    #expect(record.usage?.cachedInputTokens == 0 && record.estimatedCostUSD == nil)
+    #expect(record.status == .running && record.outcome == .notApplicable)
+    let persisted = String(decoding: try JSONEncoder().encode(records), as: UTF8.self)
+    #expect(!persisted.contains(request.content) && !persisted.contains("source-backed article"))
     let forged = try ExternalAISummaryResult(request: request,
         enrichment: ExternalAIEnrichment(title: result.title, summary: result.summary,
             classification: result.lccSuggestion, body: "Unrelated substituted body", mode: .compose), provenance: result.provenance)
