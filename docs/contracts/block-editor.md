@@ -104,11 +104,10 @@ structural kind; retain unknown semantic strings and extension metadata.
 String-backed `BlockKind` preserves unknown kind strings; semantic/status strings
 and `BlockMetadata.extra` preserve supported string values. Unknown kinds use a
 fallback presentation without discarding their runs, descendants or metadata.
-These mechanisms do **not** preserve arbitrary unknown JSON properties: current
-`Codable` decoding can discard them. The `BlockStore` protocol's opaque-field
-preservation requirement exceeds the present implementation for arbitrary future
-fields. Such preservation is an STOR.02 compatibility prerequisite, not a verified
-current guarantee. Current unsupported envelope versions set `unsupportedVersion`,
+STOR02A adds bounded typed optional JSON and direct unknown-field preservation
+at document, block, metadata, run/style and page-metadata scopes, as described
+below. Unsupported required semantics still reject writable admission; preserving
+a value does not authorize interpreting or editing its required semantics. Current unsupported envelope versions set `unsupportedVersion`,
 retain `originalSource`, and block ordinary mutations/import/save; unsupported
 SQLite schema versions reject open. No general preservation-only SQLite reader is
 implemented.
@@ -162,14 +161,16 @@ or no-op commands preserve the complete value and create no dirty change.
 Movement/reparenting keeps UUIDs; duplicate creates fresh subtree UUIDs. Splitting
 keeps the original block ID on the prefix and allocates the suffix ID; merging
 into a previous paragraph keeps that survivor's ID and moves descendants.
-Current UTF-16 slicing checks bounds but does not itself enforce grapheme
-boundaries. Annotation-safe boundary validation remains future work.
+STOR02A exact text-edit and annotated split paths enforce grapheme boundaries;
+general native editing still needs KNOW03 compound annotation/session integration.
 
 Existing evidence is in [BlockDocumentTests](../../Tests/VaultCoreTests/BlockDocumentTests.swift),
 [EditorSessionTests](../../Tests/VaultCoreTests/EditorSessionTests.swift),
 [SQLiteBlockStoreTests](../../Tests/VaultCoreTests/SQLiteBlockStoreTests.swift) and
 [SQLiteRepositoryTests](../../Tests/VaultCoreTests/SQLiteRepositoryTests.swift).
-Their supported fixtures do not establish arbitrary future-field preservation.
+STOR02A preservation coverage additionally lives in `PersistencePayloadTests`,
+`NoteRecordPersistenceTests` and `AnnotationPersistenceTests`; unknown required
+semantics and unsupported wrappers remain nonwritable.
 
 ### Future payload compatibility gate (STOR.02)
 
@@ -208,12 +209,20 @@ kinds remain preservation values and cannot obtain schema-3 write authority.
 annotations use stable IDs and version-1 UTF-16 half-open grapheme-boundary targets,
 quoted text, context and revision digest. Bare replacements conservatively retain
 anchors as stale, missing blocks as deleted; exact unchanged text retains anchors.
-This foundation has no annotation UI or semantic target resolver. Dedicated edit
-transformations for split/merge/edge insertions and duplicate identity/provenance
-remain required before annotation-aware editing; callers must retain unresolved
-records. Future annotation consumers must satisfy the transformation rules below.
+This foundation has no annotation UI or canonical knowledge target resolver.
+`BlockDocument.replaceText` and `BlockMutation` already transform exact edits,
+split/merge and duplicates with preservation evidence. KNOW03 must connect those
+algorithms to independent semantic records and transactional editor persistence;
+callers retain unresolved records. The transformation rules below remain binding.
 
 ### Deferred inline annotation contract
+
+The [canonical knowledge contract](knowledge-model.md) adds independent entity
+and semantic-object targets, whole-block/entity/object locations and schema-5
+relational annotation authority. It supersedes the earlier proposed extension-only
+record layout after an explicit identity-preserving transfer. Existing schema-3
+extension records retain their meaning; offsets, dispositions and transformation
+rules below remain binding.
 
 Annotations are semantic records separate from formatting runs. Splitting/coalescing
 runs for style changes must not create, destroy or rename an annotation. The minimal

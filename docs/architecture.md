@@ -70,6 +70,19 @@ Page provenance is an ordered `sources` UUID sequence in format 1 frontmatter or
 
 `AISummaryPresentation` shares commands, progress, cancellation, copy and provenance across page/source/inspector views. OpenAI preflight inspects credential status without content dispatch. Required consent uses expanded exact-text disclosure for unauthenticated authority and compact disclosure only for a precise live authenticated lease. The global policy can authorize subsequent explicit submissions, but every inference still uses a fresh request-bound receipt and live gateway authentication/publication checks.
 
+## Canonical knowledge foundations
+
+The [knowledge model contract](contracts/knowledge-model.md) and
+[KNOW01 decision](decisions/0002-canonical-knowledge-model.md) define stable
+registered Person, Place and Concept identities, independent Question/Definition
+objects, typed relationships and overlapping block/inline annotations. They are
+implementation contracts for KNOW02/03, not runtime capabilities of this baseline.
+The existing SQLite actor remains the sole connection/transaction owner. Schema 3
+retains its persisted meaning; KNOW02 adds schema 4 with `canonicalKnowledgeV1`,
+and KNOW03 adds schema 5 with `semanticAnnotationsV1`. Existing annotation
+extensions transfer explicitly to one relational authority with identity and opaque
+payload retention. No page-title identity, AI extraction or tagging UI is introduced.
+
 ## Identity and evolution
 
 Vault creation uses an application-owned SwiftUI sheet; NSOpenPanel selects only an existing parent. AppModel retains security-scoped parent access through off-main-actor creation and opening/bookmarking the child. FileVaultRepository.createNewVault validates the name and parent capabilities, stages the complete v1 plaintext structure beside its destination, and publishes it by a coordinated same-parent move without merging an occupied folder. Failed initialization/publication removes only positively observed empty owned staging; nonempty partial or completed vault contents are retained for recovery. Encryption intent stays transient: UI, AppModel, and repository gates reject encrypted requests before creation. The setup sheet exposes encryption as a disabled, off-state future capability and offers only explicitly confirmed plaintext creation. Optional access authentication is an independent per-Mac preference registered for the new UUID before first open; that open authenticates before loading content. Recovery keys, encryption metadata and encrypted indexing remain unavailable until cryptographic storage is implemented and tested together.
