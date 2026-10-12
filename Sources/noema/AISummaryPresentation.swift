@@ -108,8 +108,8 @@ struct AISummaryControls: View {
             .accessibilityLabel("\(presentation.commandTitle) using \(aiProviderLabel(presentation.provider))")
             Menu {
                 AISummaryOptionsCommands(model: model, target: target)
-            } label: { Label("Summary options", systemImage: "chevron.down").labelStyle(.iconOnly) }
-            .menuStyle(.borderlessButton).fixedSize()
+            } label: { Label("Summary options", systemImage: "ellipsis").labelStyle(.iconOnly) }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             .accessibilityLabel("Summary options")
         }
     }
@@ -144,7 +144,7 @@ struct AISummaryMenuCommands: View {
     var body: some View {
         Button("\(presentation.commandTitle) · \(aiProviderLabel(presentation.provider))") { presentation.request() }
             .disabled(presentation.disabled)
-        Menu("Summary options") { AISummaryOptionsCommands(model: model, target: target) }
+        AISummaryOptionsCommands(model: model, target: target)
     }
 }
 

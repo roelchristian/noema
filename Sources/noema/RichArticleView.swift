@@ -116,7 +116,6 @@ struct SummarizedArticleView: View {
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                     Button("Show") { disclosure.toggle() }.buttonStyle(.link).fixedSize()
                                         .accessibilityLabel("Show AI-generated summary")
-                                    deleteSummaryButton
                                 }.font(.caption).foregroundStyle(.secondary)
                                     .transition(.opacity)
                             } else {
@@ -126,7 +125,6 @@ struct SummarizedArticleView: View {
                                         Spacer()
                                         Button("Hide") { disclosure.toggle() }.buttonStyle(.link).font(.caption)
                                             .accessibilityLabel("Hide AI-generated summary")
-                                        deleteSummaryButton
                                     }
                                     Text(aiSummaryProvenanceLabel(provider: summary.metadata.extra["aiProvider"], model: summary.metadata.extra["aiModel"]))
                                         .font(.caption).foregroundStyle(.secondary)
@@ -136,14 +134,6 @@ struct SummarizedArticleView: View {
                                         .buttonStyle(.link).font(.caption)
                                         .accessibilityLabel(summaryExpanded ? "Show less AI-generated summary" : "Show full AI-generated summary")
                                         .accessibilityValue(summaryExpanded ? "Expanded" : "Three-line preview")
-                                    if let id = model.currentNote?.id {
-                                        HStack(spacing: NoemaSpacing.sm) {
-                                            AISummaryControls(model: model, target: .page(id))
-                                            AIProviderBadge(provider: model.preferredAIProvider(for: .summarizePage))
-                                            Button("Copy") { AISummaryPresentation(model: model, target: .page(id)).copy() }
-                                                .accessibilityLabel("Copy AI-generated summary")
-                                        }.controlSize(.small)
-                                    }
                                 }
                                 .transition(.opacity)
                             }
@@ -163,14 +153,6 @@ struct SummarizedArticleView: View {
         .onChange(of: document.aiSummary?.text) { summaryExpanded = false }
         .onChange(of: disclosure.collapsed) { if disclosure.collapsed { summaryExpanded = false } }
     }
-    private var deleteSummaryButton: some View {
-        Button("Delete", role: .destructive) { model.deleteAISummary() }
-        .buttonStyle(.link).font(.caption).fixedSize()
-        .accessibilityLabel("Delete AI-generated summary")
-        .help("Delete AI-generated summary")
-        .disabled(model.editingLocked || summaryBusy)
-    }
-
 }
 
 
