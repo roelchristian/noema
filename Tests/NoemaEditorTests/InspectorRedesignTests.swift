@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import AppKit
 import Testing
+import NoemaBrand
 @testable import VaultCore
 @testable import noema
 
@@ -446,7 +447,7 @@ struct InspectorRedesignTests {
         print("INSPECTOR_BENCHMARK 200 passes (240 blocks): tabbed inspector with cached Insights=\(tabbedDuration), insights decodes=\(state.insightsCache.decodeCount)")
     }
 
-    @Test @MainActor func inspectorContainerRendersAllTabsInLightAndDarkAppearancesAcrossWidthBounds() throws {
+    @Test @MainActor func inspectorLayoutMatrixCoversApplicableTabsWidthsAndContrast() throws {
         var claimMeta = BlockMetadata(); claimMeta.semantic = "claim"
         var questionMeta = BlockMetadata(); questionMeta.semantic = "question"
         let blocks = [
@@ -494,58 +495,43 @@ struct InspectorRedesignTests {
         let pageContext = InspectorContext.page(noteA)
         let sourceContext = InspectorContext.source(sourceA, isDetail: false)
 
-        let screenshotDir = ProcessInfo.processInfo.environment["INSPECTOR_SCREENSHOT_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
-        if let screenshotDir {
-            try FileManager.default.createDirectory(at: screenshotDir, withIntermediateDirectories: true)
-        }
-
-        let appearances: [(name: String, appearance: NSAppearance.Name, scheme: ColorScheme)] = [
-            ("light", .aqua, .light),
-            ("dark", .darkAqua, .dark)
+        // Routine layout coverage uses standard light/dark at every width and
+        // representative full-palette high contrast at the minimum width.
+        // The exhaustive theme/contrast raster matrix is in the visual harness.
+        let appearances: [(preference: ThemePreference, dark: Bool, increased: Bool, widths: [CGFloat])] = [
+            (.system, false, false, [InspectorState.minWidth, InspectorState.idealWidth, InspectorState.maxWidth]),
+            (.system, true, false, [InspectorState.minWidth, InspectorState.idealWidth, InspectorState.maxWidth]),
+            (.midnightIris, false, true, [InspectorState.minWidth]),
+            (.midnightIris, true, true, [InspectorState.minWidth])
         ]
-
-        for (modeName, appName, scheme) in appearances {
-            guard let nsAppearance = NSAppearance(named: appName) else { continue }
-            for width in [InspectorState.minWidth, InspectorState.idealWidth, InspectorState.maxWidth] {
-                for tab in InspectorTab.pageTabs {
-                    state.selectTab(tab, for: pageContext)
-                    let view = InspectorContainer(model: model, state: state, context: pageContext)
-                        .environment(\.colorScheme, scheme)
-                        .systemNoemaTheme()
-                        .frame(width: width, height: 640)
-                    let hosting = NSHostingView(rootView: view)
-                    hosting.appearance = nsAppearance
-                    hosting.frame = NSRect(x: 0, y: 0, width: width, height: 640)
-                    hosting.layoutSubtreeIfNeeded()
-                    #expect(hosting.fittingSize.width >= InspectorState.minWidth)
-                    if let screenshotDir, width == InspectorState.idealWidth {
-                        if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
-                            hosting.cacheDisplay(in: hosting.bounds, to: rep)
-                            if let png = rep.representation(using: .png, properties: [:]) {
-                                try png.write(to: screenshotDir.appendingPathComponent("page-\(tab.rawValue)-\(modeName).png"))
-                            }
-                        }
-                    }
-                }
-
-                for tab in InspectorTab.sourceTabs {
-                    state.selectTab(tab, for: sourceContext)
-                    let view = InspectorContainer(model: model, state: state, context: sourceContext)
-                        .environment(\.colorScheme, scheme)
-                        .systemNoemaTheme()
-                        .frame(width: width, height: 640)
-                    let hosting = NSHostingView(rootView: view)
-                    hosting.appearance = nsAppearance
-                    hosting.frame = NSRect(x: 0, y: 0, width: width, height: 640)
-                    hosting.layoutSubtreeIfNeeded()
-                    #expect(hosting.fittingSize.width >= InspectorState.minWidth)
-                    if let screenshotDir, width == InspectorState.idealWidth {
-                        if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
-                            hosting.cacheDisplay(in: hosting.bounds, to: rep)
-                            if let png = rep.representation(using: .png, properties: [:]) {
-                                try png.write(to: screenshotDir.appendingPathComponent("source-\(tab.rawValue)-\(modeName).png"))
-                            }
-                        }
+        for appearance in appearances {
+            var theme = NoemaTheme(dark: appearance.dark, increasedContrast: appearance.increased)
+            theme.preference = appearance.preference
+            theme.fullPalette = true
+            let name: NSAppearance.Name = appearance.increased
+                ? (appearance.dark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua)
+                : (appearance.dark ? .darkAqua : .aqua)
+            let nativeAppearance = try #require(NSAppearance(named: name))
+            for width in appearance.widths {
+                for context in [pageContext, sourceContext] {
+                    for tab in context.applicableTabs {
+                        state.selectTab(tab, for: context)
+                        #expect(state.activeTab(for: context) == tab)
+                        let view = InspectorContainer(model: model, state: state, context: context)
+                            .environment(\.noemaTheme, theme)
+                            .environment(\.colorScheme, appearance.dark ? .dark : .light)
+                            .environment(\.colorSchemeContrast, appearance.increased ? .increased : .standard)
+                            .transaction { $0.disablesAnimations = true }
+                            .frame(width: width, height: 640)
+                        let hosting = NSHostingView(rootView: view)
+                        hosting.appearance = nativeAppearance
+                        hosting.frame = NSRect(x: 0, y: 0, width: width, height: 640)
+                        hosting.layoutSubtreeIfNeeded()
+                        let label = "\(context.targetKind)-\(tab.rawValue) at \(width)pt, \(appearance.preference.rawValue), dark=\(appearance.dark), contrast=\(appearance.increased)"
+                        #expect(hosting.fittingSize.width >= InspectorState.minWidth, "\(label): below minimum")
+                        #expect(hosting.fittingSize.width <= width + 1, "\(label): horizontal overflow")
+                        let safeArea = hosting.safeAreaInsets.top + hosting.safeAreaInsets.bottom
+                        #expect(hosting.fittingSize.height <= 640 + safeArea + 1, "\(label): vertical overflow")
                     }
                 }
             }
