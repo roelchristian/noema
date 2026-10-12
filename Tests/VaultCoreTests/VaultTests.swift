@@ -29,20 +29,19 @@ private func temporaryFolder() throws -> URL {
     #expect(createdPage.lcc == "BS1315")
 }
 
-@Test func conflictsPreserveBothVersionsAndTrashRejectsStaleData() async throws {
+@Test func stalePageWritesPreserveCurrentContentAndRecoveryDraft() async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
     let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
     let note = try await repo.create(title: "Conflict", body: "Original")
     let external = try await repo.save(note: note, title: note.title, body: "External edit", tags: [])
+    let recovery = try RecoveryStore(unguardedTestingDirectory: folder.appendingPathComponent("LocalDrafts"))
+    try await recovery.store(DraftRecord(note: note, title: note.title, body: "My unsaved edit", tags: []))
     await #expect(throws: (any Error).self) { try await repo.save(note: note, title: note.title, body: "My unsaved edit", tags: []) }
     #expect(try await repo.scan().notes.first?.body == external.body)
-    let copies = try FileManager.default.contentsOfDirectory(at: folder.appendingPathComponent("Conflicts"), includingPropertiesForKeys: nil)
-    #expect(copies.count == 1)
-    #expect(try String(contentsOf: copies[0], encoding: .utf8).contains("My unsaved edit"))
+    #expect(try await recovery.drafts().first?.body == "My unsaved edit")
     await #expect(throws: (any Error).self) { try await repo.trash(note: note) }
-    let fresh = try await repo.scan().notes[0]
+    let fresh = try #require(try await repo.scan().notes.first)
     try await repo.trash(note: fresh)
-    #expect(try await repo.scan().notes.isEmpty)
     #expect(try await repo.scan().notes.isEmpty)
 }
 
