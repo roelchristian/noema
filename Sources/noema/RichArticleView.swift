@@ -60,7 +60,9 @@ struct RichArticleView: NSViewRepresentable {
         view.handleKey = { [weak coordinator] in coordinator?.handleKey($0) ?? false }
         view.blockMenu = { [weak coordinator] in coordinator?.contextMenu() ?? NSMenu() }
         view.activateBlock = { [weak coordinator] id, command in coordinator?.mutate(command, id: id, name: "Change block") }
-        view.canReorder = { [weak coordinator] in coordinator?.document.canReorder($0, before: $1) ?? false }
+        view.selectBlock = { [weak coordinator] in coordinator?.selectBlock($0, modifiers: $1) }
+        view.selectedBlockIDs = coordinator.selectedBlockIDs
+        view.canReorder = { [weak coordinator] in coordinator?.canReorder($0, before: $1) ?? false }
         view.pasteContent = { [weak coordinator] in coordinator?.paste($0) }
         view.insertionPointColor = theme.native(.accentPrimary)
         view.linkTextAttributes = [.foregroundColor: theme.nativeText(.accentSecondary), .underlineStyle: NSUnderlineStyle.single.rawValue]

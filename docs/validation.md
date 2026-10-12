@@ -73,8 +73,15 @@ them. Long-document fixture coverage does not establish sustained typing/frame t
   combinations across all five themes (System, Midnight Iris, Forest, Amber, Rose)
   in Light and Dark remain pending.
 - Native input device acceptance remains pending: real CJK candidate windows, accented dead keys, emoji input, dictation, read-mode drag selection/hyperlink activation and clipboard interoperability across applications. Synthetic `NSTextInputClient` composition and UTF-16 replacement tests do not certify OS input services.
-- Native block pointer drag/drop acceptance remains incomplete: keyboard/menu
-  reordering and undo are tested, but live pointer attempts did not complete a drop.
+- Native block pointer sibling reordering completed in the isolated macOS 27.0
+  acceptance app on 2026-10-12: dragging Alpha below Gamma changed the page from
+  Alpha/Beta/Gamma to Beta/Gamma/Alpha, subsequently displayed in the library.
+  Handle selection and editor focus were observed. Live cancellation, insertion
+  indicators, edge autoscrolling, multi-block dragging and pane/font/window
+  transitions remain pending. Automated UUID/undo and geometry checks in
+  [BlockInteractionTests](../Tests/NoemaEditorTests/BlockInteractionTests.swift) and
+  [BlockGutterTests](../Tests/NoemaEditorTests/BlockGutterTests.swift) do not close
+  those remaining device checks.
 - Formal cached launch-to-render timing and sustained long-document typing/frame
   telemetry remain pending. Service and serialization timings are not these metrics.
 - Deferred UI checks include vault setup sheet layout, editor font switching,
