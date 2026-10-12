@@ -44,13 +44,14 @@ struct WorkspaceCommandAvailability {
     var busy: Bool = false
     var actionPending: Bool = false
     var presentationPending: Bool = false
+    var settingsPresented: Bool = false
     var documentSelected: Bool = false
     var pageSelected: Bool = false
     var hasRecovery: Bool = false
     var hasNotices: Bool = false
 
     func allows(_ command: WorkspaceCommand) -> Bool {
-        guard stateMatchesManager, !busy, !actionPending, !presentationPending else { return false }
+        guard stateMatchesManager, !busy, !actionPending, !presentationPending, !settingsPresented else { return false }
         switch command {
         case .openVault, .createVault:
             return phase == .closed || phase == .open || phase == .locked
@@ -79,7 +80,8 @@ extension AppModel {
             vaultAvailable: isVaultAvailable,
             busy: busy,
             actionPending: isLifecycleActionInProgress || (!ignoringPendingCommand && workspaceCommandPending),
-            presentationPending: isChoosingVault || isChoosingSource || showVaultCreation || showTopicPage || showURLSource || showPasteSource || showRecovery || showIssues,
+            presentationPending: isChoosingVault || isChoosingSource || showVaultCreation || showTopicPage || showURLSource || showPasteSource || showRecovery || showIssues || showSettings,
+            settingsPresented: showSettings,
             documentSelected: currentNote != nil || currentSource != nil,
             pageSelected: currentNote != nil,
             hasRecovery: hasRecoveryEntries,

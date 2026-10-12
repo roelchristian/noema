@@ -130,4 +130,46 @@ struct ExternalAISettingsTests {
         #expect(!service.debugModeEnabled)
         #expect(service.debugReport == nil)
     }
+
+    @Test @MainActor
+    func paneSwitchSanitizesTransientInputsWithoutRevokingSessionState() async throws {
+        let domain = "noema-external-ai-pane-switch-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let gate = VaultAccessGate()
+        let session = VaultSession(vaultID: UUID(), root: URL(fileURLWithPath: "/tmp/pane-switch-settings"), generation: 1)
+        gate.updateState(.open(session))
+
+        let service = ExternalAIService(accessGate: gate, defaults: defaults)
+        try service.setModel("gpt-4.1")
+        let initialState = service.authorizationState
+        let initialGateway = service.gateway
+
+        var enteredKey = "sk-transient-uncommitted-secret"
+        var modelEntry = "gpt-4.1-mini-unapplied"
+        var operation: Task<Void, Never>? = Task { try? await Task.sleep(for: .seconds(30)) }
+        var isBusy = true
+        var feedback: String? = "Pending validation"
+        var failed = true
+
+        ExternalAISettings.sanitizeTransientState(
+            enteredKey: &enteredKey,
+            modelEntry: &modelEntry,
+            configuredModel: service.configuration.model,
+            operation: &operation,
+            isBusy: &isBusy,
+            feedback: &feedback,
+            failed: &failed
+        )
+
+        #expect(enteredKey.isEmpty)
+        #expect(modelEntry == "gpt-4.1")
+        #expect(operation == nil)
+        #expect(!isBusy)
+        #expect(feedback == nil)
+        #expect(!failed)
+        #expect(service.configuration.model == "gpt-4.1")
+        #expect(service.authorizationState == initialState)
+        #expect(service.gateway === initialGateway)
+    }
 }

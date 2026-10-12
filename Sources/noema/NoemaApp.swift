@@ -26,6 +26,13 @@ import VaultCore
                     openWindow(id: "about")
                 }
             }
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    model.openSettings()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+                .disabled(!model.canOpenSettings)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("Create Page with AI…") { model.performWorkspaceCommand(.newTopicPage) }.disabled(!model.canPerformWorkspaceCommand(.newTopicPage))
                 Button("New Page") { model.performWorkspaceCommand(.newPage) }.keyboardShortcut("n").disabled(!model.canPerformWorkspaceCommand(.newPage))
@@ -82,16 +89,16 @@ import VaultCore
                     .disabled(!model.canPerformWorkspaceCommand(.close))
             }
             CommandMenu("Format") {
-                Button("Block Actions…") { model.format("block-actions", "") }.keyboardShortcut("b", modifiers: [.command, .shift]).disabled(!model.isVaultAvailable || model.currentNote == nil || model.reading)
-                Button("Bold") { model.format("**", "**") }.keyboardShortcut("b").disabled(!model.isVaultAvailable || model.currentNote == nil || model.reading)
-                Button("Italic") { model.format("*", "*") }.keyboardShortcut("i").disabled(!model.isVaultAvailable || model.currentNote == nil || model.reading)
-                Button("Underline") { model.format("underline", "") }.keyboardShortcut("u").disabled(!model.isVaultAvailable || model.currentNote == nil || model.reading)
-                Button("Strikethrough") { model.format("strike", "") }.disabled(!model.isVaultAvailable || model.currentNote == nil || model.reading)
-                Button("Inline Code") { model.format("code", "") }.disabled(!model.isVaultAvailable || model.currentNote == nil || model.reading)
-                Button("Inline Math") { model.format("math", "") }.disabled(!model.isVaultAvailable || model.currentNote == nil || model.reading)
-                Button("Highlight") { model.format("highlight", "") }.disabled(!model.isVaultAvailable || model.currentNote == nil || model.reading)
-                Button("Hyperlink…") { model.format("link", "") }.keyboardShortcut("k").disabled(!model.isVaultAvailable || model.currentNote == nil || model.reading)
-                Button("Wiki Link") { model.format("[[", "]]") }.keyboardShortcut("l", modifiers: [.command, .shift]).disabled(!model.isVaultAvailable || model.currentNote == nil || model.reading)
+                Button("Block Actions…") { model.format("block-actions", "") }.keyboardShortcut("b", modifiers: [.command, .shift]).disabled(!model.canFormatDocument)
+                Button("Bold") { model.format("**", "**") }.keyboardShortcut("b").disabled(!model.canFormatDocument)
+                Button("Italic") { model.format("*", "*") }.keyboardShortcut("i").disabled(!model.canFormatDocument)
+                Button("Underline") { model.format("underline", "") }.keyboardShortcut("u").disabled(!model.canFormatDocument)
+                Button("Strikethrough") { model.format("strike", "") }.disabled(!model.canFormatDocument)
+                Button("Inline Code") { model.format("code", "") }.disabled(!model.canFormatDocument)
+                Button("Inline Math") { model.format("math", "") }.disabled(!model.canFormatDocument)
+                Button("Highlight") { model.format("highlight", "") }.disabled(!model.canFormatDocument)
+                Button("Hyperlink…") { model.format("link", "") }.keyboardShortcut("k").disabled(!model.canFormatDocument)
+                Button("Wiki Link") { model.format("[[", "]]") }.keyboardShortcut("l", modifiers: [.command, .shift]).disabled(!model.canFormatDocument)
             }
         }
         Window("About Noema", id: "about") {
@@ -102,11 +109,6 @@ import VaultCore
         }
         .defaultSize(width: 660, height: 560)
         .windowResizability(.contentSize)
-        Settings {
-            NoemaSettings(externalAIService: model.externalAIService, aiProviderPreferences: model.aiProviderPreferences, model: model)
-                .background(SettingsWindowState(phase: model.sessionPhase))
-                .systemNoemaTheme()
-        }
     }
 }
 
