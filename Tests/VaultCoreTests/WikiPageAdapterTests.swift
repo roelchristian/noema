@@ -251,6 +251,6 @@ extension WikiPageAdapterTests {
         let edited = try await repo.save(note: unlocked, title: unlocked.title, body: "New content", tags: unlocked.tags)
         let relocked = try await repo.setEditingLock(note: edited, locked: true)
         #expect(edited.updatedAt >= note.updatedAt)
-        #expect(canonicalTestReadableBody(relocked.updatedAt == edited.updatedAt && relocked.body) == "New content")
+        #expect(relocked.updatedAt == edited.updatedAt && canonicalTestReadableBody(relocked.body) == "New content")
     }
 }
