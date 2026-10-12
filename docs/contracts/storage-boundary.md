@@ -41,6 +41,17 @@ The [adversarial fixture manifest](../../scripts/fixtures/storage-boundary/cases
 
 D01.R2 construction: VaultStorageProvider alone constructs the runtime plaintext adapter. Each repository retains one selected store, shared explicitly with reader, availability and summary consumers. Staged creation uses the same provider for its staging root; published vault open obtains a store bound to the final root. Plaintext v1 bytes and bookmarks are unchanged.
 
+Native vault admission uses the selected `VaultStorageProvider` for pre-authentication
+manifest identity/safety inspection and fresh identity checks. Existing canonical
+bytes still route through `VaultContentStore`; authentication introduces no new byte
+I/O exception or plaintext-adapter constructor. After admission, repository construction
+uses the new D02 lease and gate before AppModel constructs app-local index/recovery
+stores. The locked-folder permission-recovery route must retain the captured normalized
+root and vault UUID. App-local authentication preferences belong to the existing
+UserDefaults exception and never alter the portable manifest. The
+[admission contract](vault-access-authentication.md) qualifies workflow enforcement
+and plaintext/preference-tampering limitations separately from storage routing.
+
 ## App-local locations and lifecycle evidence (D02.REM07)
 
 The production base comes from Foundation's user-domain `applicationSupportDirectory` URL in both `AppModel.open` and `unlockVault`. It can resolve inside the sandbox application container; `~/Library/Application Support` is an unsandboxed example. Tests can replace the base with `AppModel.localStorageRoot`. The code appends these exact components:

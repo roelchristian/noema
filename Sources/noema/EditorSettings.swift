@@ -32,12 +32,12 @@ enum AISummaryPlacement: String, CaseIterable {
 struct NoemaSettings: View {
     let externalAIService: ExternalAIService
     let aiProviderPreferences: AIProviderPreferences
-    let appModel: AppModel?
+    let model: AppModel?
 
-    init(externalAIService: ExternalAIService, aiProviderPreferences: AIProviderPreferences? = nil, appModel: AppModel? = nil) {
+    init(externalAIService: ExternalAIService, aiProviderPreferences: AIProviderPreferences? = nil, model: AppModel? = nil) {
         self.externalAIService = externalAIService
         self.aiProviderPreferences = aiProviderPreferences ?? AIProviderPreferences()
-        self.appModel = appModel
+        self.model = model
     }
 
     @AppStorage(EditorPreferences.fontFamilyKey) private var fontFamily = ""
@@ -69,6 +69,7 @@ struct NoemaSettings: View {
 
     var body: some View {
         Form {
+            if let model { VaultAccessSettings(model: model) }
             Section("Document reading and editing") {
                 Picker("Document font", selection: $fontFamily) {
                     Text("System (macOS)").tag("")
@@ -126,7 +127,7 @@ struct NoemaSettings: View {
                 Text("Manage custom \\newcommand definitions (0–3 arguments) for inline ($...$) and display ($$...$$) math.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            IntelligenceSettings(preferences: aiProviderPreferences, appModel: appModel)
+            IntelligenceSettings(preferences: aiProviderPreferences, appModel: model)
             Section("On-device intelligence") {
                 Toggle("Enable on-device AI summaries", isOn: $aiSummaries)
                 Picker("Show page summaries", selection: $aiSummaryPlacement) {

@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import NativeAuthentication
 
 public enum VaultSessionPhase: String, Sendable, Equatable, CaseIterable {
     case closed
@@ -138,16 +139,246 @@ public actor VaultSessionManager {
     public private(set) var inFlightWaiterCount: Int = 0
     public var epoch: UInt64 { generation }
 
+    private let authenticator: any NativeAuthenticating
+    private let accessPolicy: VaultAccessPolicyStore
+    private let beforeAccessCommit: (@Sendable (VaultSession) async -> Void)?
+    private let authenticationPending = Mutex(false)
+    private var authenticationObservers: [UUID: AsyncStream<Bool>.Continuation] = [:]
+    private struct AccessAttempt {
+        let id: UUID
+        let root: URL
+        let vaultID: UUID
+        let action: String
+        let state: VaultSessionState
+        let generation: UInt64
+        let policy: VaultAccessPolicySnapshot
+        let task: Task<Void, Never>
+        let completion: AsyncThrowingStream<Void, Error>.Continuation
+    }
+    private var activeAccessAttempt: AccessAttempt?
+
     private var observers: [UUID: AsyncStream<VaultSessionState>.Continuation] = [:]
+    private struct AccessCommitBinding: Sendable {
+        let root: URL
+        let vaultID: UUID
+        let policy: VaultAccessPolicySnapshot
+        let storageProvider: VaultStorageProvider
+    }
     private var activeTransitionID: UUID?
-    private var activeOpenTask: (id: UUID, root: URL, task: Task<VaultSession, Error>)?
+    private var activeOpenTask: (id: UUID, root: URL, task: Task<VaultSession, Error>, binding: AccessCommitBinding?)?
     private var activeLockTask: (id: UUID, task: Task<Void, Error>)?
-    private var activeUnlockTask: (id: UUID, task: Task<VaultSession, Error>)?
+    private var activeUnlockTask: (id: UUID, task: Task<VaultSession, Error>, binding: AccessCommitBinding?)?
     private var activeCloseTask: (id: UUID, task: Task<Void, Error>)?
 
     public init(accessGate: VaultAccessGate = VaultAccessGate()) {
         self.accessGate = accessGate
         self.quiescenceCoordinator = VaultSaveQuiescenceCoordinator(accessGate: accessGate)
+        self.authenticator = LocalNativeAuthenticator()
+        self.accessPolicy = .standard
+        self.beforeAccessCommit = nil
+    }
+
+    /// Deterministic fixtures cannot be selected by production clients.
+    init(
+        accessGate: VaultAccessGate = VaultAccessGate(),
+        authenticator: any NativeAuthenticating,
+        accessPolicy: VaultAccessPolicyStore,
+        beforeAccessCommit: (@Sendable (VaultSession) async -> Void)? = nil
+    ) {
+        self.accessGate = accessGate
+        self.quiescenceCoordinator = VaultSaveQuiescenceCoordinator(accessGate: accessGate)
+        self.authenticator = authenticator
+        self.accessPolicy = accessPolicy
+        self.beforeAccessCommit = beforeAccessCommit
+    }
+
+    public nonisolated var isAuthenticationPending: Bool {
+        authenticationPending.withLock { $0 }
+    }
+
+    public nonisolated func accessAuthenticationRequired(for vaultID: UUID) -> Bool {
+        accessPolicy.snapshot(for: vaultID).authenticationRequired
+    }
+
+    public func authenticationObservations() -> AsyncStream<Bool> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            continuation.yield(isAuthenticationPending)
+            authenticationObservers[id] = continuation
+            continuation.onTermination = { [weak self] _ in
+                Task { await self?.removeAuthenticationObserver(id) }
+            }
+        }
+    }
+
+    private func removeAuthenticationObserver(_ id: UUID) {
+        authenticationObservers.removeValue(forKey: id)
+    }
+
+    private func setAuthenticationPending(_ pending: Bool) {
+        authenticationPending.withLock { $0 = pending }
+        for continuation in authenticationObservers.values { continuation.yield(pending) }
+    }
+
+    /// Invalidates admission before signalling cancellation. Late native results are ignored.
+    private func invalidateAccessAttempt() {
+        guard let attempt = activeAccessAttempt else { return }
+        activeAccessAttempt = nil
+        setAuthenticationPending(false)
+        attempt.completion.finish(throwing: VaultSessionError.cancelled(action: attempt.action))
+        attempt.task.cancel()
+    }
+
+    private func cancelAccessAttempt(id: UUID) {
+        guard activeAccessAttempt?.id == id else { return }
+        invalidateAccessAttempt()
+    }
+
+    @discardableResult
+    private func authenticateAdmission(
+        root: URL,
+        vaultID: UUID,
+        action: String,
+        purpose: NativeAuthenticationPurpose,
+        storageProvider: VaultStorageProvider,
+        alwaysAuthenticate: Bool = false
+    ) async throws -> VaultAccessPolicySnapshot {
+        guard activeAccessAttempt == nil else {
+            throw VaultSessionError.transitionInProgress(current: state.phase, requested: action)
+        }
+        if Task.isCancelled { throw VaultSessionError.cancelled(action: action) }
+        let policy = accessPolicy.snapshot(for: vaultID)
+        let expectedState = state
+        let expectedGeneration = generation
+        if policy.authenticationRequired || alwaysAuthenticate {
+            let id = UUID()
+            let (stream, completion) = AsyncThrowingStream<Void, Error>.makeStream()
+            let task = Task { [authenticator] in
+                do {
+                    try Task.checkCancellation()
+                    try await authenticator.authenticate(for: purpose)
+                    try Task.checkCancellation()
+                    completion.yield(())
+                    completion.finish()
+                } catch {
+                    completion.finish(throwing: error)
+                }
+            }
+            activeAccessAttempt = AccessAttempt(
+                id: id, root: root, vaultID: vaultID, action: action,
+                state: expectedState, generation: expectedGeneration, policy: policy,
+                task: task, completion: completion
+            )
+            setAuthenticationPending(true)
+            do {
+                var iterator = stream.makeAsyncIterator()
+                _ = try await withTaskCancellationHandler {
+                    try await iterator.next()
+                } onCancel: {
+                    Task { await self.cancelAccessAttempt(id: id) }
+                }
+                try Task.checkCancellation()
+                guard let attempt = activeAccessAttempt, attempt.id == id,
+                      attempt.root == root, attempt.vaultID == vaultID,
+                      attempt.action == action, attempt.state == state,
+                      attempt.generation == generation, attempt.policy == accessPolicy.snapshot(for: vaultID) else {
+                    throw VaultSessionError.cancelled(action: action)
+                }
+                // Consume the attempt on this actor; it never leaves the manager as a grant.
+                activeAccessAttempt = nil
+                setAuthenticationPending(false)
+            } catch {
+                cancelAccessAttempt(id: id)
+                if error is CancellationError || Task.isCancelled
+                    || (error as? NativeAuthenticationError) == .cancelled
+                    || error is VaultSessionError {
+                    throw VaultSessionError.cancelled(action: action)
+                }
+                if let error = error as? NativeAuthenticationError { throw error }
+                throw NativeAuthenticationError.failed
+            }
+        }
+        guard state == expectedState, generation == expectedGeneration,
+              Self.normalize(root) == root, accessPolicy.snapshot(for: vaultID) == policy else {
+            throw VaultSessionError.cancelled(action: action)
+        }
+        let currentID = try FileVaultRepository.inspectManifest(at: root, storageProvider: storageProvider).id
+        guard currentID == vaultID else {
+            throw VaultSessionError.identityMismatch(expected: vaultID, actual: currentID)
+        }
+        if Task.isCancelled { throw VaultSessionError.cancelled(action: action) }
+        guard accessPolicy.snapshot(for: vaultID) == policy else { throw VaultSessionError.cancelled(action: action) }
+        return policy
+    }
+
+    private func validateCommitBinding(_ binding: AccessCommitBinding?, session: VaultSession, action: String) throws {
+        guard let binding else { return } // Internal fixture loaders have no production admission.
+        guard session.root == binding.root, Self.normalize(binding.root) == binding.root,
+              session.vaultID == binding.vaultID else {
+            throw VaultSessionError.cancelled(action: action)
+        }
+        let currentID = try FileVaultRepository.inspectManifest(at: binding.root, storageProvider: binding.storageProvider).id
+        guard currentID == binding.vaultID else {
+            throw VaultSessionError.identityMismatch(expected: binding.vaultID, actual: currentID)
+        }
+        if Task.isCancelled { throw VaultSessionError.cancelled(action: action) }
+        guard accessPolicy.snapshot(for: binding.vaultID) == binding.policy else {
+            throw VaultSessionError.cancelled(action: action)
+        }
+    }
+
+    private func commitAccessSession(
+        _ session: VaultSession,
+        binding: AccessCommitBinding?,
+        action: String,
+        commit: () -> Void
+    ) throws {
+        // Metadata validation happens before the policy lock; no storage or await occurs below it.
+        try validateCommitBinding(binding, session: session, action: action)
+        if let binding {
+            try accessPolicy.withUnchangedSnapshot(for: binding.vaultID, matching: binding.policy, action: action) {
+                if Task.isCancelled { throw VaultSessionError.cancelled(action: action) }
+                commit()
+            }
+        } else {
+            commit() // Internal loader fixtures only.
+        }
+    }
+
+    /// Changing either direction requires a fresh native attempt for the exact active session.
+    public func setAccessAuthenticationRequired(
+        _ required: Bool,
+        expectedSession: VaultSession,
+        storageProvider: VaultStorageProvider = .plaintext
+    ) async throws {
+        guard state == .open(expectedSession), activeCloseTask == nil else {
+            throw VaultSessionError.cancelled(action: "changeVaultAccessPolicy")
+        }
+        guard accessPolicy.snapshot(for: expectedSession.vaultID).authenticationRequired != required else { return }
+        let admittedPolicy = try await authenticateAdmission(
+            root: expectedSession.root, vaultID: expectedSession.vaultID,
+            action: "changeVaultAccessPolicy", purpose: .changeVaultAccessPolicy,
+            storageProvider: storageProvider, alwaysAuthenticate: true
+        )
+        try accessPolicy.setRequired(required, for: expectedSession.vaultID, matching: admittedPolicy)
+    }
+
+    /// Registers an opt-in only for the fresh UUID created by the existing staged publisher.
+    /// No API accepts an arbitrary UUID for unauthenticated preference writes.
+    public func createVault(
+        parent: URL,
+        name: String,
+        encryptionRequested: Bool,
+        accessAuthenticationRequested: Bool = false,
+        storageProvider: VaultStorageProvider = .plaintext
+    ) throws -> URL {
+        let root = try FileVaultRepository.createNewVault(
+            parent: parent, name: name, encryptionRequested: encryptionRequested,
+            storageProvider: storageProvider
+        )
+        let vaultID = try FileVaultRepository.inspectManifest(at: root, storageProvider: storageProvider).id
+        if accessAuthenticationRequested { accessPolicy.setRequired(true, for: vaultID) }
+        return root
     }
 
     public var currentSession: VaultSession? { state.activeSession }
@@ -229,13 +460,31 @@ public actor VaultSessionManager {
         willExecuteIO: (@Sendable (String) -> Void)? = nil
     ) async throws -> (session: VaultSession, lease: VaultSessionLease, repository: FileVaultRepository) {
         let normalizedRoot = Self.normalize(root)
-        let session = try await open(root: normalizedRoot) { targetRoot in
-            if create {
-                let initialized = try FileVaultRepository.open(root: targetRoot, create: true, storageProvider: storageProvider)
-                return initialized.manifest.id
+        if Task.isCancelled { throw VaultSessionError.cancelled(action: "open") }
+        // Existing vaults never initialize directories or open content before admission.
+        // Reject incompatible lifecycle requests before even the compatibility creation route.
+        if create {
+            guard activeCloseTask == nil else {
+                throw VaultSessionError.transitionInProgress(current: state.phase, requested: "open")
             }
-            return try FileVaultRepository.inspectManifest(at: targetRoot, storageProvider: storageProvider).id
+            switch state {
+            case .closed:
+                if let pending = activeAccessAttempt, pending.root != normalizedRoot { invalidateAccessAttempt() }
+                guard activeAccessAttempt == nil else {
+                    throw VaultSessionError.transitionInProgress(current: state.phase, requested: "open")
+                }
+                if try FileVaultRepository.preflightOpen(root: normalizedRoot, create: true, storageProvider: storageProvider) == nil {
+                    _ = try FileVaultRepository.open(root: normalizedRoot, create: true, storageProvider: storageProvider)
+                }
+            case .open(let existing) where existing.root == normalizedRoot:
+                break
+            case .opening(let pendingRoot, _) where pendingRoot == normalizedRoot:
+                break
+            default:
+                throw VaultSessionError.invalidTransition(from: state.phase, action: "open")
+            }
         }
+        let session = try await open(root: normalizedRoot, storageProvider: storageProvider)
         let lease = session.lease
         do {
             let repository = try FileVaultRepository.open(
@@ -287,16 +536,51 @@ public actor VaultSessionManager {
         url.standardizedFileURL.resolvingSymlinksInPath()
     }
 
-    public static let defaultVaultLoader: @Sendable (URL) async throws -> UUID = { url in
+    static let defaultVaultLoader: @Sendable (URL) async throws -> UUID = { url in
         try FileVaultRepository.inspectManifest(at: url).id
+    }
+
+    /// Supported production access always inspects identity and enforces the per-Mac policy.
+    @discardableResult
+    public func open(root: URL, storageProvider: VaultStorageProvider = .plaintext) async throws -> VaultSession {
+        if Task.isCancelled { throw VaultSessionError.cancelled(action: "open") }
+        let targetRoot = Self.normalize(root)
+        if case .open(let existing) = state, existing.root == targetRoot { return existing }
+        if case .opening(let pendingRoot, _) = state, pendingRoot == targetRoot {
+            return try await open(root: targetRoot, loader: { url in
+                try FileVaultRepository.inspectManifest(at: url, storageProvider: storageProvider).id
+            })
+        }
+        guard state == .closed, activeCloseTask == nil else {
+            throw VaultSessionError.invalidTransition(from: state.phase, action: "open")
+        }
+        if let pending = activeAccessAttempt, pending.root != targetRoot { invalidateAccessAttempt() }
+        let vaultID = try FileVaultRepository.inspectManifest(at: targetRoot, storageProvider: storageProvider).id
+        let admittedPolicy = try await authenticateAdmission(
+            root: targetRoot, vaultID: vaultID, action: "open", purpose: .openVault,
+            storageProvider: storageProvider
+        )
+        return try await openTransition(root: targetRoot, loader: { url in
+            let currentID = try FileVaultRepository.inspectManifest(at: url, storageProvider: storageProvider).id
+            guard currentID == vaultID else { throw VaultSessionError.identityMismatch(expected: vaultID, actual: currentID) }
+            return currentID
+        }, binding: AccessCommitBinding(root: targetRoot, vaultID: vaultID, policy: admittedPolicy, storageProvider: storageProvider))
     }
 
     /// Opens a vault from `.closed`. Duplicate requests for the same URL while `.opening` or `.open`
     /// coalesce or return the existing session without advancing the generation.
     @discardableResult
-    public func open(
+    func open(
         root: URL,
-        loader: @escaping @Sendable (URL) async throws -> UUID = VaultSessionManager.defaultVaultLoader
+        loader: @escaping @Sendable (URL) async throws -> UUID
+    ) async throws -> VaultSession {
+        try await openTransition(root: root, loader: loader)
+    }
+
+    private func openTransition(
+        root: URL,
+        loader: @escaping @Sendable (URL) async throws -> UUID,
+        binding: AccessCommitBinding? = nil
     ) async throws -> VaultSession {
         let targetRoot = Self.normalize(root)
 
@@ -344,7 +628,7 @@ public actor VaultSessionManager {
                     generation: candidateGeneration
                 )
             }
-            activeOpenTask = (transitionID, targetRoot, task)
+            activeOpenTask = (transitionID, targetRoot, task, binding)
             return try await awaitOpenTask(task, id: transitionID)
         }
     }
@@ -359,11 +643,17 @@ public actor VaultSessionManager {
                 task.cancel()
                 Task { await self.handleCancellation(id: id) }
             }
+            if activeTransitionID == id, activeOpenTask?.binding != nil, let beforeAccessCommit {
+                await beforeAccessCommit(session)
+            }
+            if Task.isCancelled { throw VaultSessionError.cancelled(action: "open") }
             if activeTransitionID == id {
-                activeTransitionID = nil
-                activeOpenTask = nil
-                generation = session.generation
-                setState(.open(session))
+                try commitAccessSession(session, binding: activeOpenTask?.binding, action: "open") {
+                    activeTransitionID = nil
+                    activeOpenTask = nil
+                    generation = session.generation
+                    setState(.open(session))
+                }
             }
             guard state == .open(session), case .open(let committed) = state else {
                 throw VaultSessionError.cancelled(action: "open")
@@ -399,6 +689,7 @@ public actor VaultSessionManager {
             }
             throw VaultSessionError.cancelled(action: "lock")
         }
+        invalidateAccessAttempt()
         if activeCloseTask != nil {
             throw VaultSessionError.transitionInProgress(current: state.phase, requested: "lock")
         }
@@ -510,15 +801,43 @@ public actor VaultSessionManager {
         }
     }
 
+    @discardableResult
+    public func unlock(storageProvider: VaultStorageProvider = .plaintext) async throws -> VaultSession {
+        if Task.isCancelled { throw VaultSessionError.cancelled(action: "unlock") }
+        if case .unlocking = state {
+            return try await unlock(storageProvider: storageProvider, loader: { url in
+                try FileVaultRepository.inspectManifest(at: url, storageProvider: storageProvider).id
+            })
+        }
+        guard case .locked(let vaultID, let root, _, _) = state, activeCloseTask == nil else {
+            throw VaultSessionError.invalidTransition(from: state.phase, action: "unlock")
+        }
+        let inspectedID = try FileVaultRepository.inspectManifest(at: root, storageProvider: storageProvider).id
+        guard inspectedID == vaultID else { throw VaultSessionError.identityMismatch(expected: vaultID, actual: inspectedID) }
+        let admittedPolicy = try await authenticateAdmission(
+            root: root, vaultID: vaultID, action: "unlock", purpose: .unlockVault,
+            storageProvider: storageProvider
+        )
+        return try await unlockTransition(storageProvider: storageProvider, loader: { url in
+            try FileVaultRepository.inspectManifest(at: url, storageProvider: storageProvider).id
+        }, binding: AccessCommitBinding(root: root, vaultID: vaultID, policy: admittedPolicy, storageProvider: storageProvider))
+    }
+
     /// Transitions a `.locked` session through `.unlocking` to `.open` with a newly incremented generation.
     @discardableResult
-    public func unlock(
+    func unlock(
         storageProvider: VaultStorageProvider = .plaintext,
-        loader: (@Sendable (URL) async throws -> UUID)? = nil
+        loader: @escaping @Sendable (URL) async throws -> UUID
     ) async throws -> VaultSession {
-        let effectiveLoader: @Sendable (URL) async throws -> UUID = loader ?? { url in
-            try FileVaultRepository.inspectManifest(at: url, storageProvider: storageProvider).id
-        }
+        try await unlockTransition(storageProvider: storageProvider, loader: loader)
+    }
+
+    private func unlockTransition(
+        storageProvider: VaultStorageProvider,
+        loader: @escaping @Sendable (URL) async throws -> UUID,
+        binding: AccessCommitBinding? = nil
+    ) async throws -> VaultSession {
+        let effectiveLoader = loader
         if activeCloseTask != nil {
             throw VaultSessionError.transitionInProgress(current: state.phase, requested: "unlock")
         }
@@ -565,7 +884,7 @@ public actor VaultSessionManager {
                     generation: candidateGeneration
                 )
             }
-            activeUnlockTask = (transitionID, task)
+            activeUnlockTask = (transitionID, task, binding)
             return try await awaitUnlockTask(
                 task,
                 id: transitionID,
@@ -585,9 +904,17 @@ public actor VaultSessionManager {
             throw VaultSessionError.invalidTransition(from: state.phase, action: "unlock")
         }
         let accessRoot = root ?? lockedRoot
-        let session = try await unlock(storageProvider: storageProvider) { _ in
-            try FileVaultRepository.inspectManifest(at: accessRoot, storageProvider: storageProvider).id
+        if Task.isCancelled { throw VaultSessionError.cancelled(action: "unlock") }
+        // Preserve missing-folder/provider diagnostics before rejecting a different candidate root.
+        // This reads identity metadata only, never Wiki, Sources, local index or recovery content.
+        let candidateID = try FileVaultRepository.inspectManifest(at: accessRoot, storageProvider: storageProvider).id
+        guard Self.normalize(accessRoot) == lockedRoot else {
+            throw VaultSessionError.cancelled(action: "unlock")
         }
+        guard candidateID == lockedVaultID else {
+            throw VaultSessionError.identityMismatch(expected: lockedVaultID, actual: candidateID)
+        }
+        let session = try await unlock(storageProvider: storageProvider)
         let lease = session.lease
         do {
             let gatedProvider = storageProvider.gated(
@@ -643,11 +970,17 @@ public actor VaultSessionManager {
                 task.cancel()
                 Task { await self.handleCancellation(id: id) }
             }
+            if activeTransitionID == id, activeUnlockTask?.binding != nil, let beforeAccessCommit {
+                await beforeAccessCommit(session)
+            }
+            if Task.isCancelled { throw VaultSessionError.cancelled(action: "unlock") }
             if activeTransitionID == id {
-                activeTransitionID = nil
-                activeUnlockTask = nil
-                generation = session.generation
-                setState(.open(session))
+                try commitAccessSession(session, binding: activeUnlockTask?.binding, action: "unlock") {
+                    activeTransitionID = nil
+                    activeUnlockTask = nil
+                    generation = session.generation
+                    setState(.open(session))
+                }
             }
             guard state == .open(session), case .open(let committed) = state else {
                 throw VaultSessionError.cancelled(action: "unlock")
@@ -677,7 +1010,7 @@ public actor VaultSessionManager {
     }
 
     /// Closes an `.open` or `.locked` session and returns to `.closed`.
-    /// Calling `close()` when already `.closed` is a no-op.
+    /// Calling `close()` when already `.closed` also cancels any pending access attempt.
     public func close(
         expectedSession: VaultSession? = nil,
         teardown: @escaping @Sendable (VaultSession?) async throws -> Void = { _ in }
@@ -688,6 +1021,7 @@ public actor VaultSessionManager {
             }
             throw VaultSessionError.cancelled(action: "close")
         }
+        invalidateAccessAttempt()
         if let inFlightClose = activeCloseTask {
             try await awaitCloseTask(inFlightClose.task)
             return
@@ -745,8 +1079,17 @@ public actor VaultSessionManager {
         }
     }
 
+    /// Cancels only pending native admission, without cancelling subsequent resource reconstruction.
+    @discardableResult
+    public func cancelAuthentication() -> Bool {
+        guard activeAccessAttempt != nil else { return false }
+        invalidateAccessAttempt()
+        return true
+    }
+
     /// Explicitly cancels an in-flight `.opening`, `.locking`, or `.unlocking` transition.
     public func cancelActiveTransition() {
+        invalidateAccessAttempt()
         guard let id = activeTransitionID else { return }
         handleCancellation(id: id)
     }

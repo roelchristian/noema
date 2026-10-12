@@ -13,6 +13,7 @@ let package = Package(
         .target(name: "NoemaBrand"),
         .target(name: "NativeAuthentication"),
         .target(name: "VaultCore", dependencies: [
+            "NativeAuthentication",
             .product(name: "Markdown", package: "swift-markdown"),
             .product(name: "Yams", package: "Yams")
         ], linkerSettings: [.linkedLibrary("sqlite3")]),
@@ -20,8 +21,8 @@ let package = Package(
         .executableTarget(name: "noema", dependencies: ["VaultCore", "NoemaBrand", "ExternalAI"]),
         .testTarget(name: "NativeAuthenticationTests", dependencies: ["NativeAuthentication"]),
         .testTarget(name: "ExternalAITests", dependencies: ["ExternalAI", "VaultCore", "NativeAuthentication"]),
-        .testTarget(name: "VaultCoreTests", dependencies: ["VaultCore"]),
+        .testTarget(name: "VaultCoreTests", dependencies: ["VaultCore", "NativeAuthentication"]),
         .testTarget(name: "NoemaBrandTests", dependencies: ["NoemaBrand"]),
-        .testTarget(name: "NoemaEditorTests", dependencies: ["noema"])
+        .testTarget(name: "NoemaEditorTests", dependencies: ["noema", "NativeAuthentication"])
     ]
 )
