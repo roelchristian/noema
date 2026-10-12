@@ -234,6 +234,22 @@ public actor FileVaultRepository: VaultRepository {
         )
     }
 
+    /// Run after save/recovery quiescence, while the session still has authority.
+    public func checkpointPageStorage() async throws {
+        try await sqliteBlockStore?.checkpoint()
+    }
+
+    /// Call only after a successful lifecycle transition has retired this repository.
+    public func shutdownPageStorage() async throws {
+        try await sqliteBlockStore?.close()
+    }
+
+    /// A consistent SQLite snapshot. Whole-vault export also needs manifest/source bytes.
+    public func backupDatabase(to destination: URL) async throws {
+        guard let sqliteBlockStore else { throw VaultError.invalid("This vault uses Markdown page storage.") }
+        try await sqliteBlockStore.backup(to: destination)
+    }
+
     private init(
         root: URL,
         manifest: VaultManifest,

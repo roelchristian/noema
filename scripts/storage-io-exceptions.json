@@ -232,5 +232,11 @@
     "statement": "guard sqlite3_open_v2(url.path, &pointer, (createIfMissing ? SQLITE_OPEN_CREATE : 0) | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let pointer else {",
     "count": 1,
     "reason": "SQLiteBlockStore owns the selected local format 2 canonical page database and SQLite journal files; production construction captures session gate and lease."
+  },
+  {
+    "path": "Sources/VaultCore/SQLiteBlockStore.swift",
+    "statement": "try Data().write(to: target, options: .withoutOverwriting)",
+    "count": 1,
+    "reason": "SQLiteBlockStore reserves a new explicit external backup destination without overwriting; rejects canonical database and admitted vault paths. SQLite backup API owns the snapshot transfer and journals. Failed backup files are retained as unacknowledged output."
   }
 ]

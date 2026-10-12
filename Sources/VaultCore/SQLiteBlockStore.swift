@@ -19,6 +19,7 @@ public actor SQLiteBlockStore: BlockStore {
     public nonisolated let mode = BlockStorageMode.sqliteBlocks
     public nonisolated let sessionLease: VaultSessionLease?
     public nonisolated let accessGate: VaultAccessGate?
+    private let databaseURL: URL
     private let connection: BlockSQLiteConnection
     private let encoder: JSONEncoder = { let value = JSONEncoder(); value.outputFormatting = [.sortedKeys]; return value }()
     private let decoder = JSONDecoder()
@@ -31,6 +32,7 @@ public actor SQLiteBlockStore: BlockStore {
         let root = sessionLease.root.standardizedFileURL.resolvingSymlinksInPath().path + "/"
         guard url.standardizedFileURL.resolvingSymlinksInPath().path.hasPrefix(root) else { throw VaultError.invalid("Block database must belong to the admitted vault.") }
         self.sessionLease = sessionLease; self.accessGate = accessGate
+        databaseURL = url.standardizedFileURL.resolvingSymlinksInPath()
         connection = try BlockSQLiteConnection(url: url, createIfMissing: createIfMissing)
         try Self.prepare(connection, initializeIfNeeded: createIfMissing)
     }
@@ -38,6 +40,7 @@ public actor SQLiteBlockStore: BlockStore {
     /// Callers must separately establish a safe local staging target.
     init(unguardedTestingURL url: URL, createIfMissing: Bool = true) throws {
         sessionLease = nil; accessGate = nil
+        databaseURL = url.standardizedFileURL.resolvingSymlinksInPath()
         connection = try BlockSQLiteConnection(url: url, createIfMissing: createIfMissing)
         try Self.prepare(connection, initializeIfNeeded: createIfMissing)
     }
@@ -58,6 +61,7 @@ public actor SQLiteBlockStore: BlockStore {
         var version = try readVersion()
         guard version >= 0, version <= schemaVersion else { throw VaultError.invalid("Unsupported block database schema version.") }
         guard version != 0 || initializeIfNeeded else { throw VaultError.invalid("The block database has no supported schema.") }
+        try exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=1000; PRAGMA temp_store=MEMORY;")
         if version == 0 {
             try exec("BEGIN IMMEDIATE")
             do {
@@ -111,10 +115,12 @@ public actor SQLiteBlockStore: BlockStore {
         guard sqlite3_step(statement) == SQLITE_DONE else { throw failure() }
     }
     private func transaction<T>(validating publication: (@Sendable () throws -> Void)? = nil, _ operation: () throws -> T) throws -> T {
+        try Task.checkCancellation()
         try validate("blockStore.write"); try run("BEGIN IMMEDIATE")
         do {
             try publication?()
             let value = try operation()
+            try Task.checkCancellation()
             try validate("blockStore.commit"); try publication?(); try run("COMMIT")
             return value
         }
@@ -239,7 +245,9 @@ public actor SQLiteBlockStore: BlockStore {
         guard sqlite3_step(statement) == SQLITE_ROW, sqlite3_column_type(statement, 0) != SQLITE_NULL else { throw VaultError.unavailable("Page metadata missing.") }
         var record = try decoder.decode(NoteRecord.self, from: blob(statement, 0))
         guard record.id == pageID else { throw VaultError.invalid("Page metadata identity does not match its record.") }
-        record.body = BlockDocumentCodec.encode(snapshot.document); record.contentHash = snapshot.revision.token.base64EncodedString()
+        var portableDocument = snapshot.document
+        if !portableDocument.unsupportedVersion { portableDocument.originalSource = nil }
+        record.body = BlockDocumentCodec.encode(portableDocument); record.contentHash = snapshot.revision.token.base64EncodedString()
         record.inlineTags = MarkdownService.analyze(record.body).tags
         if sqlite3_column_int(statement, 1) == 1 {
             let cycle = digest(snapshot.revision.token) + "-" + pageID.uuidString.lowercased()
@@ -299,6 +307,40 @@ public actor SQLiteBlockStore: BlockStore {
         let statement = try statement("PRAGMA wal_checkpoint(TRUNCATE)"); defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW, sqlite3_column_int(statement, 0) == 0 else { throw failure() }
     }
+    /// An explicit portable snapshot; copying an open database/WAL is unsupported.
+    /// A new destination outside the canonical vault is reserved without overwriting.
+    public func backup(to destination: URL) throws {
+        try Task.checkCancellation()
+        try validate("blockStore.backup")
+        let target = destination.standardizedFileURL.resolvingSymlinksInPath()
+        guard target != databaseURL else { throw VaultError.invalid("Backup cannot replace the canonical database.") }
+        if let sessionLease {
+            let root = sessionLease.root.standardizedFileURL.resolvingSymlinksInPath()
+            guard target != root, !target.path.hasPrefix(root.path + "/") else {
+                throw VaultError.invalid("Choose a backup destination outside the canonical vault.")
+            }
+        }
+        try Data().write(to: target, options: .withoutOverwriting)
+        let output = try BlockSQLiteConnection(url: target, createIfMissing: false)
+        guard let destinationDB = output.pointer,
+              let backup = sqlite3_backup_init(destinationDB, "main", try db, "main") else {
+            throw VaultError.storage("Could not initialize database backup.")
+        }
+        // This actor holds no suspension point during snapshot transfer. SQLite's
+        // backup API includes committed WAL content and rolls back incomplete copies.
+        let result = sqlite3_backup_step(backup, -1)
+        let finished = sqlite3_backup_finish(backup)
+        guard result == SQLITE_DONE, finished == SQLITE_OK else {
+            throw VaultError.storage("Database backup did not complete (\(result), \(finished)).")
+        }
+        try validate("blockStore.backup")
+        try Task.checkCancellation()
+        guard sqlite3_close(destinationDB) == SQLITE_OK else { throw VaultError.storage("Could not close database backup.") }
+        output.pointer = nil
+    }
+
+    /// Resource retirement remains permitted after the session lease is revoked.
+    /// SQLite owns journal cleanup; callers must never unlink WAL/SHM themselves.
     public func close() throws {
         guard let pointer = connection.pointer else { return }
         guard sqlite3_close(pointer) == SQLITE_OK else { throw failure() }

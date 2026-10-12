@@ -142,6 +142,30 @@ Device, accessibility, process-crash/power-loss and two-Mac transport acceptance
 remain standing gaps in [validation](../validation.md); injected service failures
 do not close them.
 
+## Explicit Markdown interchange (EDT.BLK13)
+
+`FileVaultRepository.exportMarkdown` and `exportVaultMarkdown` export committed
+live pages. Noema exports contain frontmatter and a versioned document envelope,
+including for originally plain Markdown, preserving page/block IDs, semantics,
+unknown frontmatter and recovered metadata. Readable exports omit that envelope
+and frontmatter and always report a loss warning. Unsupported source spelling
+remains available in the document model and lossless envelope.
+
+`importMarkdown` is an explicit operation. Create-only import retains recognised
+identities and rejects occupied page IDs/titles. Replacement requires a captured
+canonical `NoteRecord` revision, rejects mismatched declared identities and locked
+pages, and uses the ordinary repository conflict check. Externally edited readable
+text invalidates its old envelope checksum; the explicit import retains that stale
+payload for recovery while importing the changed text. SQLite mode never observes
+an exported Wiki file as a second content authority.
+
+Whole-vault Markdown export is a live-page interchange bundle; sources, trash,
+recovery drafts and manifest policy require a complete backup. SQLite page export
+reads one database snapshot. Markdown mode retains its existing per-file
+coordination and has no cross-file transaction. A quiescent whole-vault packaging
+and restore workflow remains acceptance work; a database snapshot alone is not a
+whole-vault backup. Multi-device database replication is deferred.
+
 ## Recovery authority and current guarantees
 
 A committed canonical page, an unsaved editor draft and a preserved conflicting

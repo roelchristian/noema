@@ -123,4 +123,47 @@ struct SQLiteRepositoryTests {
         #expect(try await repository.trashedPages().isEmpty)
     }
 
+    @Test func explicitMarkdownRoundTripPreservesIDsAndMetadata() async throws {
+        let (root, repository) = try await fixture()
+        let (otherRoot, other) = try await fixture()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: otherRoot)
+        }
+        let original = try await repository.create(title: "Portable", body: "# Heading\n\nA **bold** paragraph\n\n| raw | table |")
+        let exported = try await repository.exportMarkdown(pageID: original.id)
+        #expect(exported.warnings.isEmpty)
+        let imported = try await other.importMarkdown(exported.data, filename: exported.filename)
+        #expect(imported.id == original.id)
+        #expect(BlockDocumentCodec.decode(imported.body).flattened.map(\.id) == BlockDocumentCodec.decode(original.body).flattened.map(\.id))
+        #expect(BlockDocumentCodec.readable(BlockDocumentCodec.decode(imported.body)).contains("| raw | table |"))
+        await #expect(throws: VaultError.self) {
+            _ = try await other.importMarkdown(exported.data, filename: exported.filename)
+        }
+        let readable = try await repository.exportMarkdown(pageID: original.id, format: .readable)
+        #expect(!readable.warnings.isEmpty)
+        #expect(!String(decoding: readable.data, as: UTF8.self).contains("noema:document"))
+        #expect(try await repository.exportVaultMarkdown().map(\.pageID) == [original.id])
+    }
+
+    @Test func externalMarkdownRequiresExplicitRevisionCheckedImport() async throws {
+        let (root, repository) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = try await repository.create(title: "External", body: "Before")
+        let exported = try await repository.exportMarkdown(pageID: original.id)
+        let changed = String(decoding: exported.data, as: UTF8.self).replacingOccurrences(of: "Before", with: "Externally edited")
+        try Data(changed.utf8).write(to: root.appendingPathComponent("Wiki/export.md"))
+        #expect(try await repository.scan().notes.first?.body == original.body)
+        let imported = try await repository.importMarkdown(Data(changed.utf8), filename: exported.filename, disposition: .replace(expected: original))
+        #expect(BlockDocumentCodec.readable(BlockDocumentCodec.decode(imported.body)).contains("Externally edited"))
+        #expect(BlockDocumentCodec.decode(imported.body).recoveredMetadata != nil)
+        await #expect(throws: Error.self) {
+            _ = try await repository.importMarkdown(exported.data, filename: exported.filename, disposition: .replace(expected: original))
+        }
+        let locked = try await repository.setEditingLock(note: imported, locked: true)
+        await #expect(throws: VaultError.self) {
+            _ = try await repository.importMarkdown(exported.data, filename: exported.filename, disposition: .replace(expected: locked))
+        }
+    }
+
 }
