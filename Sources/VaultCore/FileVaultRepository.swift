@@ -72,7 +72,11 @@ public actor FileVaultRepository: VaultRepository {
                 throw storeError
             }
         }
-        let manifest = try JSONDecoder().decode(VaultManifest.self, from: data)
+        let manifest: VaultManifest
+        do { manifest = try JSONDecoder().decode(VaultManifest.self, from: data) }
+        catch {
+            throw VaultError.invalid("The vault manifest is damaged or has malformed format declarations. Its original bytes have been preserved.")
+        }
         guard manifest.formatVersion == 1 else {
             throw VaultError.invalid("This vault uses an unsupported format version.")
         }
@@ -137,8 +141,9 @@ public actor FileVaultRepository: VaultRepository {
         let root = root.standardizedFileURL.resolvingSymlinksInPath()
         let fm = FileManager.default
         let manifestURL = root.appendingPathComponent("vault.json")
-        guard create || fm.fileExists(atPath: manifestURL.path) else {
-            throw VaultError.invalid("Choose a vault folder containing vault.json, or create a new vault.")
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw VaultError.unavailable("The vault folder ‘\(root.lastPathComponent)’ could not be found. It may have been moved, renamed, or disconnected.")
         }
         if let accessGate {
             try accessGate.validate(lease: sessionLease, targetRoot: root, targetVaultID: nil, operation: "open")
@@ -162,7 +167,9 @@ public actor FileVaultRepository: VaultRepository {
             store = rawStore
         }
         let manifest: VaultManifest
-        if fm.fileExists(atPath: manifestURL.path) {
+        // Missing cloud metadata must be classified by the selected provider,
+        // rather than mistaken for an absent manifest by a filesystem probe.
+        if !create || fm.fileExists(atPath: manifestURL.path) {
             manifest = try inspectManifest(at: accessRoot, contentStore: store, storageProvider: storageProvider)
         } else {
             guard create else { throw VaultError.invalid("Choose a vault folder containing vault.json, or create a new vault.") }

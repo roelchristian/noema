@@ -380,3 +380,44 @@ func futureVaultVersionsRejectWithoutMutation(version: Int) throws {
     #expect(try Data(contentsOf: url) == bytes)
     #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["vault.json"])
 }
+
+
+private struct ManifestFailureStore: VaultContentStore {
+    let error: VaultContentStoreError
+    func read(at path: String) throws -> Data { throw error }
+    func createDirectory(at path: String) throws { Issue.record("Failed open attempted directory creation"); throw error }
+    func snapshot(at path: String) throws -> VaultContentSnapshot { throw error }
+    func write(_ data: Data, at path: String, condition: VaultWriteCondition) throws { Issue.record("Failed open attempted a write"); throw error }
+    func move(from source: String, to destination: String, expected: VaultContentSnapshot) throws { throw error }
+    func delete(at path: String, expected: VaultContentSnapshot) throws { throw error }
+}
+
+@Test func unavailableManifestAndPermissionFailureRemainDistinctWithoutInitialization() throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let cloud = ManifestFailureStore(error: .unavailable("vault.json"))
+    do { _ = try FileVaultRepository.open(root: root, contentStore: cloud); Issue.record("Unavailable manifest opened") }
+    catch VaultError.unavailable(let message) { #expect(message.contains("iCloud")) }
+    catch { Issue.record("Incorrect cloud classification: \(error)") }
+    let denied = VaultContentStoreError.io(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError, message: "Permission denied")
+    #expect(throws: denied) { try FileVaultRepository.open(root: root, contentStore: ManifestFailureStore(error: denied)) }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    #expect(throws: VaultError.self) { try FileVaultRepository.open(root: root) }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    #expect(throws: VaultError.self) { try FileVaultRepository.open(root: root.appendingPathComponent("Absent")) }
+}
+
+@Test(arguments: [#"{"formatVersion":"1","id":"bad"}"#, #"{"formatVersion":1}"#, "{damaged"])
+func damagedManifestRejectionPreservesBytesAndCanRetryAfterRepair(input: String) throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("vault.json"), bytes = Data(input.utf8)
+    try bytes.write(to: url)
+    do { _ = try FileVaultRepository.open(root: root, create: true); Issue.record("Damaged manifest opened") }
+    catch VaultError.invalid(let message) { #expect(message.contains("damaged")) }
+    catch { Issue.record("Incorrect damaged-manifest classification: \(error)") }
+    #expect(try Data(contentsOf: url) == bytes)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["vault.json"])
+    // Repair is explicit test action, never an automatic repository downgrade.
+    let id = UUID()
+    try JSONEncoder().encode(VaultManifest(id: id)).write(to: url)
+    #expect(try FileVaultRepository.open(root: root).manifest.id == id)
+}
