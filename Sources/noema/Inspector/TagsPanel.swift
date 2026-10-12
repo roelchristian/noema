@@ -1,7 +1,7 @@
 import SwiftUI
 import VaultCore
 
-/// Pure presentation model for page tags in the inspector, separating editable frontmatter tags from derived inline tags
+/// Pure presentation model for page tags in the inspector, separating editable page tags from derived inline tags
 /// while routing mutations through the authoritative `AppModel.tagInput` binding.
 struct TagsPanelModel {
     static func editableTags(from tagInput: String) -> [String] {
@@ -65,7 +65,7 @@ struct TagsPanel: View {
                         if pageTags.isEmpty {
                             Text("No page tags")
                                 .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
-                            Text("Page tags are saved in the note’s frontmatter.")
+                            Text("Add tags to organize this page.")
                                 .font(NoemaTypography.metadata)
                                 .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         } else {
@@ -122,15 +122,6 @@ struct TagsPanel: View {
                                 .disabled(normalizeTags(newTagText.components(separatedBy: ",")).isEmpty)
                             }
                             .padding(.top, 2)
-
-                            LabeledContent("Frontmatter") {
-                                TextField("Comma-separated tags", text: $model.tagInput)
-                                    .textFieldStyle(.roundedBorder)
-                                    .controlSize(.small)
-                                    .font(NoemaTypography.metadata)
-                                    .accessibilityLabel("Page tags frontmatter")
-                            }
-                            .font(NoemaTypography.metadata)
                         } else if note.isEditingLocked || model.editingLocked {
                             Label("Unlock editing to add or remove page tags.", systemImage: "lock")
                                 .font(NoemaTypography.metadata)

@@ -149,7 +149,8 @@ struct VaultCleanupFailureTests {
         #expect(try await recovery.drafts().first?.body == "Pending committed body")
     }
 
-    @Test func cancelledImportReportsCleanupFailureAndRetainsStagedContent() async throws {
+    @Test(arguments: [false, true])
+    func cancelledImportReportsCleanupFailureOrPreservationAndRetainsStaging(nonempty: Bool) async throws {
         let root = try fixtureRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try CleanupFailureStore(root: root)
@@ -160,13 +161,14 @@ struct VaultCleanupFailureTests {
         let sourceID = UUID()
         let staging = "Sources/.import-\(sourceID.uuidString)"
         let bytes = Data("Recoverable interrupted import".utf8)
+        let expectedMessage = nonempty ? "retained for recovery" : "Injected staging cleanup failure"
         store.state.withLock { $0.failStagingDeletion = true }
         do {
             _ = try await manager.quiescenceCoordinator.performSourceImport(
                 sourceID: sourceID, repository: repo
             ) { context in
                 try repo.contentStore.createDirectory(at: staging)
-                try repo.contentStore.write(bytes, at: staging + "/original.txt", condition: .createOnly)
+                if nonempty { try repo.contentStore.write(bytes, at: staging + "/original.txt", condition: .createOnly) }
                 context.requestPreCommitCancellation()
                 try context.checkPreCommitCancellation()
                 return (bytes, "original.txt", "Cancelled", nil, false)
@@ -179,9 +181,9 @@ struct VaultCleanupFailureTests {
             }
             #expect(id == sourceID)
             #expect(operationMessage.contains("cancel"))
-            #expect(cleanupMessage.contains("Injected staging cleanup failure"))
+            #expect(cleanupMessage.contains(expectedMessage))
         }
-        #expect(try store.base.snapshot(at: staging) == .directory(["original.txt": bytes]))
+        #expect(try store.base.snapshot(at: staging) == .directory(nonempty ? ["original.txt": bytes] : [:]))
         #expect(try await repo.scan().sources.isEmpty)
         // Remove the injector: the recorded error must still reach lock rather than silently succeeding.
         store.state.withLock { $0.failStagingDeletion = false }
@@ -194,10 +196,10 @@ struct VaultCleanupFailureTests {
                 return
             }
             #expect(message.contains("cancel"))
-            #expect(message.contains("Injected staging cleanup failure"))
+            #expect(message.contains(expectedMessage))
         }
         #expect(await manager.state == .open(session))
-        #expect(try store.base.read(at: staging + "/original.txt") == bytes)
+        #expect(try store.base.snapshot(at: staging) == .directory(nonempty ? ["original.txt": bytes] : [:]))
     }
 
     @Test(arguments: [false, true])

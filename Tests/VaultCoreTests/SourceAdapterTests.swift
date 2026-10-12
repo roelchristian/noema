@@ -16,7 +16,9 @@ final class SourceStoreProbe: VaultContentStore {
     init(root: URL) throws { base = try PlaintextVaultContentStore(root: root) }
     func synchronize(at path: String) throws { try base.synchronize(at: path) }
     func publishCanonicalOriginal(_ data: Data, metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
-        try base.publishCanonicalOriginal(data, metadata: metadata, vaultID: vaultID, operationID: operationID)
+        let receipt = try base.publishCanonicalOriginal(data, metadata: metadata, vaultID: vaultID, operationID: operationID)
+        if state.withLock({ $0.failPublication }) { throw VaultError.storage("Injected post-byte publication failure") }
+        return receipt
     }
     func verifyCanonicalOriginal(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
         try base.verifyCanonicalOriginal(metadata: metadata, vaultID: vaultID, operationID: operationID)
@@ -227,6 +229,120 @@ struct SourceAdapterTests {
 
 
 extension SourceAdapterTests {
+    @Test(arguments: [false, true], [0, 1, 2])
+    func cancelledDownloadCannotCommitDuringReceiptVerification(shouldImport: Bool, cancellation: Int) async throws {
+        let fixture = try folder(); defer { try? FileManager.default.removeItem(at: fixture) }
+        let root = fixture.appendingPathComponent("Vault")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let external = fixture.appendingPathComponent("External.txt")
+        let bytes = Data("Captured download bytes".utf8)
+        try bytes.write(to: external)
+        let entered = AsyncStream.makeStream(of: Void.self)
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let receiptChecks = Mutex(0)
+        let manager = VaultSessionManager()
+        let (_, _, repo) = try await manager.openRepository(root: root, create: true) { operation in
+            guard operation == (shouldImport ? "canonicalOriginal.receipt" : "canonicalLinked.receipt") else { return }
+            // The fifth hook is inside the final pre-COMMIT receipt verification.
+            let pause = receiptChecks.withLock { $0 += 1; return $0 == 5 }
+            if pause {
+                entered.continuation.yield(())
+                #expect(release.wait(timeout: .now() + 10) == .success)
+            }
+        }
+        let pending = try await repo.beginSourceDownload(at: external, shouldImport: shouldImport)
+        let completing = Task {
+            try await repo.completeSourceDownload(id: pending.id, at: external, data: bytes, shouldImport: shouldImport)
+        }
+        for await _ in entered.stream { break }
+        switch cancellation {
+        case 0: await repo.cancelSourceDownload(id: pending.id)
+        case 1: _ = await repo.cancelAllSourceDownloads()
+        default: try await repo.deleteSource(pending)
+        }
+        release.signal()
+        await #expect(throws: VaultError.self) { _ = try await completing.value }
+        #expect(try await repo.sqliteBlockStore.sourceSnapshots().isEmpty)
+        #expect(await repo.activeDownloadingSourceIDs.isEmpty)
+        let path = "Sources/" + pending.id.uuidString.lowercased()
+        if shouldImport {
+            #expect(try repo.contentStore.snapshot(at: path) == .directory(["original.txt": bytes]))
+        } else {
+            #expect(throws: VaultContentStoreError.self) { try repo.contentStore.snapshot(at: path) }
+        }
+        #expect(try Data(contentsOf: external) == bytes)
+        let reopened = try await canonicalSchema5TestRepository(root: root)
+        #expect(try await reopened.scanSources().sources.isEmpty)
+    }
+
+    @Test(arguments: [false, true])
+    func downloadCompletionRejectsChangedTargetOrOwnership(shouldImport: Bool) async throws {
+        let fixture = try folder(); defer { try? FileManager.default.removeItem(at: fixture) }
+        let root = fixture.appendingPathComponent("Vault")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let external = fixture.appendingPathComponent("External.txt")
+        let bytes = Data("Downloaded original".utf8)
+        try bytes.write(to: external)
+        let repo = try await canonicalSchema5TestRepository(root: root, create: true)
+        let pending = try await repo.beginSourceDownload(at: external, shouldImport: shouldImport)
+        #expect(try await repo.sqliteBlockStore.sourceSnapshots().isEmpty)
+        await #expect(throws: VaultError.self) {
+            try await repo.completeSourceDownload(id: pending.id, at: external, data: bytes, shouldImport: !shouldImport)
+        }
+        await #expect(throws: VaultError.self) {
+            try await repo.completeSourceDownload(id: pending.id, at: fixture.appendingPathComponent("Other.txt"), data: bytes, shouldImport: shouldImport)
+        }
+        #expect(try await repo.sqliteBlockStore.sourceSnapshots().isEmpty)
+        #expect(await repo.activeDownloadingSourceIDs == [pending.id])
+        let completed = try await repo.completeSourceDownload(id: pending.id, at: external, data: bytes, shouldImport: shouldImport)
+        #expect(completed.metadata.isLinked == !shouldImport)
+        #expect(try await repo.sqliteBlockStore.sourceSnapshots().count == 1)
+        #expect(await repo.activeDownloadingSourceIDs.isEmpty)
+        #expect(try Data(contentsOf: external) == bytes)
+    }
+
+    @Test func failedCanonicalImportRetainsOriginalWithoutPublishingMetadata() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let adapter = try SourceStoreProbe(root: root)
+        let repo = try await canonicalSchema5TestRepository(root: root, create: true, contentStore: adapter)
+        let id = UUID(), bytes = Data("Only captured copy".utf8)
+        adapter.state.withLock { $0.failPublication = true }
+        await #expect(throws: VaultError.self) {
+            try await repo.importPreparedSource(id: id, data: bytes, filename: "capture.txt", title: "Capture", originURL: nil, isURLSource: false)
+        }
+        let path = "Sources/" + id.uuidString.lowercased()
+        #expect(try adapter.base.snapshot(at: path) == .directory(["original.txt": bytes]))
+        #expect(try await repo.sqliteBlockStore.sourceSnapshots().isEmpty)
+        let reopened = try await canonicalSchema5TestRepository(root: root, contentStore: adapter)
+        #expect(try await reopened.scanSources().sources.isEmpty)
+        adapter.state.withLock { $0.failPublication = false }
+        await #expect(throws: (any Error).self) {
+            try await reopened.importPreparedSource(id: id, data: Data("Replacement".utf8), filename: "capture.txt", title: "Retry", originURL: nil, isURLSource: false)
+        }
+        #expect(try adapter.base.read(at: path + "/original.txt") == bytes)
+        #expect(try await reopened.sqliteBlockStore.sourceSnapshots().isEmpty)
+    }
+
+    @Test func interruptedStagingCleanupPreservesNonemptyAndUnexpectedEntries() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let repo = try await canonicalSchema5TestRepository(root: root, create: true)
+        let id = UUID(), path = "Sources/.import-" + id.uuidString
+        let bytes = Data("Unique interrupted capture".utf8)
+        try repo.contentStore.createDirectory(at: path)
+        try repo.contentStore.write(bytes, at: path + "/original.txt", condition: .createOnly)
+        await #expect(throws: VaultError.self) { try await repo.cleanupInterruptedImportStaging(id: id) }
+        #expect(try repo.contentStore.read(at: path + "/original.txt") == bytes)
+        let emptyID = UUID(), emptyPath = "Sources/.import-" + emptyID.uuidString
+        try repo.contentStore.createDirectory(at: emptyPath)
+        #expect(try await repo.cleanupInterruptedImportStaging(id: emptyID))
+        #expect(try await repo.cleanupInterruptedImportStaging(id: emptyID) == false)
+        let fileID = UUID(), filePath = "Sources/.import-" + fileID.uuidString
+        try repo.contentStore.write(bytes, at: filePath, condition: .createOnly)
+        await #expect(throws: VaultError.self) { try await repo.cleanupInterruptedImportStaging(id: fileID) }
+        #expect(try repo.contentStore.read(at: filePath) == bytes)
+    }
+
     @Test func sourceImportPreservesOriginalAndRejectsMutation() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
         let repo = try await canonicalSchema5TestRepository(root: folder, create: true)

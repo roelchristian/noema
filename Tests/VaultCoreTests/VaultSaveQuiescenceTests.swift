@@ -223,7 +223,8 @@ struct VaultSaveQuiescenceTests {
 
     }
 
-    @Test func cancelledImportsCleanOnlyOwnedStagingAndPreserveUnknownCopiesAcrossLockAndReopen() async throws {
+    @Test(arguments: [false, true])
+    func cancelledImportsPreserveNonemptyStagingAndCleanEmptyStagingAcrossLockAndReopen(nonempty: Bool) async throws {
         let (root, _, recovery) = try await makeTempVaultAndRecovery()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
 
@@ -257,10 +258,12 @@ struct VaultSaveQuiescenceTests {
                 repository: repo,
                 lease: lease,
                 prepare: { context in
-                    // Create a staging directory during pre-commit preparation to verify cleanup on cancellation.
+                    // Cancellation may discard an empty directory, but never captured bytes.
                     let staging = "Sources/.import-\(interruptedImportID.uuidString)"
                     try repo.contentStore.createDirectory(at: staging)
-                    try repo.contentStore.write(Data("staged pre-commit".utf8), at: staging + "/original.txt", condition: .createOnly)
+                    if nonempty {
+                        try repo.contentStore.write(Data("staged pre-commit".utf8), at: staging + "/original.txt", condition: .createOnly)
+                    }
 
                     let cancelStream = AsyncStream.makeStream(of: Void.self)
                     context.onPreCommitCancel {
@@ -314,20 +317,35 @@ struct VaultSaveQuiescenceTests {
         #expect(committedSource.id == committedImportID)
         #expect(committedSource.title == "Committed Source")
 
-        await #expect(throws: VaultOperationAdmissionError.cancelled(operation: "sourceImport")) {
-            _ = try await preCommitImportTask.value
+        if nonempty {
+            await #expect(throws: VaultQuiescenceError.self) { _ = try await preCommitImportTask.value }
+            await #expect(throws: VaultSessionError.self) { _ = try await lockTask.value }
+            #expect(await manager.state.phase == .open)
+            #expect(try repo.contentStore.read(at: "Sources/.import-\(interruptedImportID.uuidString)/original.txt") == Data("staged pre-commit".utf8))
+        } else {
+            await #expect(throws: VaultOperationAdmissionError.cancelled(operation: "sourceImport")) {
+                _ = try await preCommitImportTask.value
+            }
         }
 
-        let report = try #require(try await lockTask.value)
+        let report: VaultQuiescenceReport
+        if nonempty {
+            report = try #require(try await manager.lockWithQuiescence(repository: repo, recovery: recovery,
+                pendingState: VaultPendingEditorState(activeDownloadSourceIDs: [pendingDownload.id])))
+        } else {
+            report = try #require(try await lockTask.value)
+            #expect(report.cancelledSourceImportIDs.contains(interruptedImportID))
+        }
         #expect(await manager.state.phase == .locked)
-        #expect(report.cancelledSourceImportIDs.contains(interruptedImportID))
         #expect(report.cancelledSourceImportIDs.contains(pendingDownload.id))
         #expect(await repo.activeDownloadingSourceIDs.isEmpty)
 
-        // Only tracked cancelled staging is disposable; orphan bytes may be unique.
+        // Tracked nonempty staging and untracked captured bytes both survive.
         let sourcesDir = root.appendingPathComponent("Sources")
         let remainingEntries = try FileManager.default.contentsOfDirectory(at: sourcesDir, includingPropertiesForKeys: nil)
-        #expect(remainingEntries.filter { $0.lastPathComponent.hasPrefix(".import-") }.map(\.lastPathComponent) == [".import-" + orphanStagingID.uuidString])
+        var expectedStaging = Set([".import-" + orphanStagingID.uuidString])
+        if nonempty { expectedStaging.insert(".import-" + interruptedImportID.uuidString) }
+        #expect(Set(remainingEntries.filter { $0.lastPathComponent.hasPrefix(".import-") }.map(\.lastPathComponent)) == expectedStaging)
         #expect(try Data(contentsOf: root.appendingPathComponent(orphanStagingRelPath + "/original.txt")) == Data("partial bytes".utf8))
         #expect(!report.cleanedStagingPaths.contains(orphanStagingRelPath))
 
@@ -340,6 +358,10 @@ struct VaultSaveQuiescenceTests {
         )
         let scanned = try await unlockedRepo.scan()
         #expect(try unlockedRepo.contentStore.read(at: orphanStagingRelPath + "/original.txt") == Data("partial bytes".utf8))
+        if nonempty {
+            #expect(try unlockedRepo.contentStore.read(at: "Sources/.import-\(interruptedImportID.uuidString)/original.txt") == Data("staged pre-commit".utf8))
+            #expect(!report.cleanedStagingPaths.contains("Sources/.import-" + interruptedImportID.uuidString))
+        }
         #expect(scanned.sources.map(\.id) == [committedImportID])
         #expect(scanned.issues.isEmpty)
     }

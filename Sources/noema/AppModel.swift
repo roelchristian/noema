@@ -2098,6 +2098,7 @@ struct AISuggestion: Identifiable, Sendable {
                 if let previous = previousTitles[note.id] { recordPageRename(note.id, from: previous, to: note.title) }
             }
             notes = result.notes; sources = result.sources
+            SourceReader.reconcile(result)
             // Explicit checks are snapshots too: never let an old Available override a new failure.
             let availableIDs = Set(sources.filter { $0.contentState == .loaded && $0.availabilityIssue == nil }.map(\.id))
             sourceAvailability = sourceAvailability.filter { availableIDs.contains($0.key) }
@@ -3319,7 +3320,8 @@ struct AISuggestion: Identifiable, Sendable {
                 await withLocalAIActivity(target: .source(source.id), action: .processSource, executionMode: .automatic) { activity in
                     do {
                         if let reason = client.unavailabilityReason() { throw VaultError.unavailable(reason) }
-                        let source = try await repository.loadSource(id: source.id)
+                        let snapshot = try await repository.sourceSummarySnapshot(id: source.id)
+                        let source = snapshot.source
                         let text = try await sourceSummaryContent(source, root: root)
                         guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.read") else { return }
                         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw VaultError.unavailable("No readable text for automatic naming and summary. Original file name retained.") }
@@ -3337,8 +3339,9 @@ struct AISuggestion: Identifiable, Sendable {
                         guard sources.first(where: { $0.id == source.id })?.metadata.lcc == source.metadata.lcc else {
                             throw ExternalAIError.staleContent
                         }
-                        let renamed = try await repository.renameSource(source, title: title, summary: summary,
-                            lcc: source.metadata.lcc == nil ? lcc : nil)
+                        let renamed = try await repository.publishSourceProcessing(snapshot, title: title, summary: summary,
+                            lcc: lcc, provenance: SummaryProvenance(provider: "On-device", model: "Apple Intelligence", generatedAt: Date()),
+                            validate: { try Task.checkCancellation() })
                         activity.complete()
                         guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.rename") else { return }
                         if let position = sources.firstIndex(where: { $0.id == source.id }) { sources[position] = renamed }
