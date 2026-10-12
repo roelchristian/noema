@@ -59,11 +59,28 @@ import VaultCore
     private func blockRange(for id: UUID, storage: NSTextStorage) -> NSRange? {
         blockRangeIndex?.range(for: id) ?? BlockTextStorage.ranges(storage).first(where: { $0.0 == id })?.1
     }
+    func invalidateDecorations(in requested: NSRange) {
+        guard let storage = textStorage, storage.length > 0 else { return }
+        let location = min(max(0, requested.location), storage.length - 1)
+        let range = NSRange(location: location, length: min(max(1, requested.length), storage.length - location))
+        let affected = blockRangeIndex?.intersecting(range) ?? BlockTextStorage.ranges(storage).filter {
+            NSIntersectionRange($0.1, range).length > 0
+        }
+        for (_, range) in affected {
+            let rect = rect(for: range)
+            setNeedsDisplay(NSRect(x: 0, y: rect.minY - typography.semanticHeadingSpace - 8,
+                width: bounds.width, height: rect.height + typography.semanticHeadingSpace + 16))
+        }
+    }
     private func invalidateDecoration(for id: UUID?) {
         guard let id, let storage = textStorage, let range = blockRange(for: id, storage: storage) else { return }
-        let rect = rect(for: range)
-        setNeedsDisplay(NSRect(x: 0, y: rect.minY - typography.semanticHeadingSpace - 8,
-                              width: bounds.width, height: rect.height + typography.semanticHeadingSpace + 16))
+        invalidateDecorations(in: range)
+    }
+    private func updateDropTarget(_ id: UUID?, after: Bool = false) {
+        guard id != dropID || after != dropAfter else { return }
+        invalidateDecoration(for: dropID)
+        dropID = id; dropAfter = after
+        invalidateDecoration(for: id)
     }
     var hoverID: UUID?
     var dropID: UUID?
@@ -362,19 +379,22 @@ import VaultCore
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard let id = draggedID(sender) else { return super.draggingUpdated(sender) }
         let point = convert(sender.draggingLocation, from: nil)
-        guard let target = blockAt(point), canReorder?(id, target) == true else { dropID = nil; needsDisplay = true; return [] }
-        dropID = target
-        if let storage = textStorage, let range = blockRange(for: target, storage: storage) { dropAfter = point.y > rect(for: range).midY }
-        needsDisplay = true; return .move
+        guard let target = blockAt(point), canReorder?(id, target) == true else { updateDropTarget(nil); return [] }
+        let after = textStorage.flatMap { storage in
+            blockRange(for: target, storage: storage).map { point.y > rect(for: $0).midY }
+        } ?? false
+        updateDropTarget(target, after: after); return .move
     }
-    override func draggingExited(_ sender: NSDraggingInfo?) { dropID = nil; needsDisplay = true }
+    override func draggingExited(_ sender: NSDraggingInfo?) { updateDropTarget(nil) }
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
         if draggedID(sender) != nil { return draggingUpdated(sender) == .move }
         return super.prepareForDragOperation(sender)
     }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard let id = draggedID(sender), let target = dropID else { return super.performDragOperation(sender) }
-        dropID = nil; needsDisplay = true; activateBlock?(id, dropAfter ? .reorderAfter(target) : .reorder(before: target)); return true
+        let after = dropAfter
+        updateDropTarget(nil)
+        activateBlock?(id, after ? .reorderAfter(target) : .reorder(before: target)); return true
     }
     override func menu(for event: NSEvent) -> NSMenu? {
         guard isEditable, !locked else {
