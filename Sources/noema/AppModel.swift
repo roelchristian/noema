@@ -2487,7 +2487,10 @@ struct AISuggestion: Identifiable, Sendable {
                 guard isCompletionValid(completionTicket, operation: "updateSourceLCC.save") else { return }
                 if let i = sources.firstIndex(where: { $0.id == source.id }) { sources[i] = updated }
                 if currentSource?.id == source.id { currentSource = updated }
-                if let index { try await index.reconcile(repository.scan()) }
+                // Metadata-only input must be materialized for the selected inspector,
+                // as well as indexed. Refresh publishes verified original content
+                // through the session completion guards and clears unavailable text.
+                await refresh()
             } catch {
                 if isCompletionValid(completionTicket, operation: "updateSourceLCC.error") {
                     errorMessage = error.localizedDescription

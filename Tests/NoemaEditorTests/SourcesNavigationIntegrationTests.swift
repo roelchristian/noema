@@ -147,11 +147,13 @@ struct SourcesNavigationIntegrationTests {
             if try await repository.scanSources().sources.first?.metadata.lcc == "QA" { break }
             try await Task.sleep(for: .milliseconds(10))
         }
-        // Wait for the index actor after the metadata write, while the UI still has a notLoaded record.
-        try await Task.sleep(for: .milliseconds(30))
+        // A metadata-only save also materializes the selected inspector through refresh.
         await waitUntil { model.currentSource?.contentState == .loaded && model.body == source.body && !model.preview.isEmpty }
         #expect(model.errorMessage == nil)
-        #expect(model.currentSource?.contentState == .loaded && model.body == source.body && !model.preview.isEmpty)
+        #expect(model.currentSource?.contentState == .loaded)
+        #expect(model.body == source.body)
+        #expect(!model.preview.isEmpty)
+        #expect(model.currentSource?.metadata.lcc == "QA")
         #expect(try await repository.scanSources().sources.first?.metadata.lcc == "QA")
         #expect(try await model.sourceSummaryContent(metadata.sources[0], root: root).contains("Fresh selected"))
         await model.refresh()
