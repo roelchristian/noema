@@ -113,11 +113,19 @@ and warn when a selected lossy format cannot represent unknown types/metadata.
    gates, schema negotiation, backup and crash recovery before offering migration.
    Quiesce and close writes, resolve conflicts or stop, preserve recovery drafts,
    and capture checksum-verified source-vault snapshots through existing boundaries.
+   A preflight snapshot is not a publication authority after asynchronous work:
+   revalidate captured source revisions, root capability and session identity before
+   committing or selecting the destination. External changes stop migration without
+   overwriting either version; retry starts from fresh observations.
 2. Create an independent local destination vault with a new vault UUID and preserved
    page/block/source UUIDs. The original v1 vault stays untouched and authoritative
    for its own identity. Keep an explicit complete v1 backup, including source blobs,
-   Removed Pages, conflicts, manifests and unsupported/recovered payloads. Never infer
-   that recovery drafts or damaged content are disposable migration evidence.
+   Removed Pages, conflicts, manifests and unsupported/recovered payloads. Inventory
+   app-local recovery journals separately from the portable source root, retaining
+   decoded drafts and opaque damaged/mismatched bytes with their original vault/page
+   relationships. A new destination vault identity must not silently relabel old
+   journals. Never infer that recovery drafts or damaged content are disposable
+   migration evidence; if their safe mapping is unresolved, stop migration.
 3. Build the destination in sibling staging. Import documents and metadata in DB
    transactions; copy/import originals with checksum verification, preserve linked
    bookmarks and unavailable references, unknown frontmatter and retained trash.
@@ -132,6 +140,11 @@ and warn when a selected lossy format cannot represent unknown types/metadata.
    success. Interrupted staging/publication leaves the original unchanged and never
    selects a partial destination. Preserve failed staging diagnostics under the
    approved lifecycle policy; do not delete source data or preserved recovery drafts.
+   Staging containing unique recoverable content is preservation data, not disposable
+   agent evidence: the local evidence cleanup policy does not authorize its deletion.
+   If publication succeeds but destination verification/open fails, retain both the
+   published destination and the original, and keep the source session selected or
+   return to it through the established authorized admission route.
 6. Rollback reopens the untouched original; later SQLite edits require explicit export
    or reverse migration into another independent Markdown vault. Never replay them
    silently into the backup. Repeated migration refuses occupied destinations.
