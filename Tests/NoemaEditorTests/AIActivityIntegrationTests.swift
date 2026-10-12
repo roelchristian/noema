@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import ExternalAI
-import VaultCore
+@testable import VaultCore
 @testable import noema
 
 extension VaultUIIntegrationTests {
