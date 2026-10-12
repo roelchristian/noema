@@ -10,7 +10,9 @@ public struct VaultCanonicalStorageDeclaration: Codable, Sendable, Equatable {
     public var requiredCapabilities: [String] = ["canonicalMetadataV1"]
     public init() {}
     public var isSupported: Bool {
-        mode == "sqliteBlocks" && schemaVersion == 3 && database == "blocks.sqlite" && localOnly && requiredCapabilities == ["canonicalMetadataV1"]
+        mode == "sqliteBlocks" && database == "blocks.sqlite" && localOnly &&
+        ((schemaVersion == 3 && requiredCapabilities == ["canonicalMetadataV1"]) ||
+         (schemaVersion == 4 && requiredCapabilities == ["canonicalKnowledgeV1", "canonicalMetadataV1"]))
     }
 }
 public struct VaultManifest: Codable, Sendable {
