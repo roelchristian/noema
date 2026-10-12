@@ -250,7 +250,7 @@ injection does not close those acceptance gaps. PRs record actual command outcom
 ./scripts/performance.sh --skip-update
 ```
 
-The single opt-in performance suite selects the five `benchmark` workloads and
+The single opt-in performance suite selects the `benchmark` workloads and
 enables them with `NOEMA_PERFORMANCE_TESTS=1`. Routine tests report these workloads
 as skipped. Small functional tests retain cache-reuse, read-count and indexing
 assertions without timing measurements or historical before/after comparisons.
@@ -265,6 +265,23 @@ assertions without timing measurements or historical before/after comparisons.
   These service measurements cover attributed-string rendering/capture and codec
   encode/decode. They exclude text-view layout, keyboard events, undo, autosave
   and filesystem delivery, and do not establish live typing frame-rate acceptance.
+- EDT.BLK14 extends [RichArticleTests](../Tests/NoemaEditorTests/RichArticleTests.swift)
+  with opt-in 100/1,000/5,000-block comparisons on identical fixtures: full rendering
+  versus incremental content application, index construction/selection, sibling
+  reorder/model application, capture and Markdown codec round-trip. The comparison
+  validates identical attributed results and stable block identities; timings are
+  observations, with no hardware-independent pass threshold. Use three independent
+  process samples per revision on the same idle Mac, same build configuration and
+  fixture, retaining commit/OS/Swift provenance in local evidence. This is a service
+  comparison, not complete before/after editor acceptance.
+- Group 5 release acceptance remains pending for actual keyboard-to-display typing,
+  pointer drag/autoscroll, sustained scrolling, document opening including native
+  layout, peak/resident memory and canonical database write counts/latency. Collect
+  matching Instruments traces at all three sizes before and after integration;
+  synthetic service timings cannot certify these metrics. Required native checks
+  remain those above, including VoiceOver, themes/contrast, reduced motion, input
+  methods, read/edit transitions and lock/unlock/reopen. No compatibility branch
+  should be removed until legacy Markdown preservation tests pass.
 - Sixteen synthetic source rows construct metadata without eager excerpt decoding.
   Unchanged synchronization must not rebuild/reformat/sort rows; the benchmark
   asserts exactly 16 row constructions across initial setup and 1,000 updates.
