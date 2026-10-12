@@ -29,6 +29,41 @@ extension RichArticleView {
         var slashRange: NSRange?
         var dismissedSlash: Int?
         var pendingSingleBlock: (UUID, Int)?
+        var selectedBlockIDs: Set<UUID> = []
+        var blockSelectionAnchor: UUID?
+        var blockSelectionFocus: UUID?
+        func clearBlockSelection() {
+            selectedBlockIDs = []; blockSelectionAnchor = nil; blockSelectionFocus = nil
+            view?.selectedBlockIDs = []
+        }
+        func selectBlock(_ id: UUID, modifiers: NSEvent.ModifierFlags) {
+            guard let view, view.isEditable, !view.locked, document.block(id) != nil else { return }
+            let ordered = rangeIndex?.ordered.map { $0.0 } ?? document.flattened.map(\.id)
+            if modifiers.contains(.shift), let anchor = blockSelectionAnchor,
+               let start = ordered.firstIndex(of: anchor), let end = ordered.firstIndex(of: id) {
+                selectedBlockIDs = Set(ordered[min(start, end)...max(start, end)])
+            } else if modifiers.contains(.command) {
+                if !selectedBlockIDs.insert(id).inserted { selectedBlockIDs.remove(id) }
+                blockSelectionAnchor = id
+            } else {
+                selectedBlockIDs = [id]; blockSelectionAnchor = id
+            }
+            blockSelectionFocus = id
+            view.selectedBlockIDs = selectedBlockIDs
+            dismissPalette()
+        }
+        var actionBlocks: [EditorBlock] {
+            selectedBlockIDs.isEmpty ? current().map { [$0.0] } ?? [] : document.selectedBlocks(selectedBlockIDs)
+        }
+        func canReorder(_ id: UUID, before target: UUID) -> Bool {
+            let ids = selectedBlockIDs.contains(id) ? document.normalizedSelection(selectedBlockIDs) : [id]
+            return !ids.isEmpty && !ids.contains(target) && ids.allSatisfy { document.canReorder($0, before: target) }
+        }
+        func copyBlocks(to pasteboard: NSPasteboard = .general) {
+            guard !actionBlocks.isEmpty else { return }
+            pasteboard.clearContents()
+            pasteboard.setString(BlockDocumentCodec.readable(BlockDocument(blocks: actionBlocks)), forType: .string)
+        }
         init(_ parent: RichArticleView) {
             self.parent = parent; super.init()
             suggestions.dismiss = { [weak self] in self?.dismissPalette() }
@@ -46,6 +81,7 @@ extension RichArticleView {
         func load(_ source: String) {
             publicationTask?.cancel()
             pendingSingleBlock = nil; deferredComposition = false
+            clearBlockSelection()
             session.load(BlockDocumentCodec.decode(source), identity: .init(pageID: parent.noteID, vaultID: parent.vaultID, sessionID: parent.sessionID), selection: view?.selectedRange() ?? NSRange(location: 0, length: 0))
             lastText = source
             suggestions.close(); render(selection: view?.selectedRange() ?? NSRange(location: 0, length: 0))
@@ -178,35 +214,47 @@ extension RichArticleView {
             guard view?.textStorage != nil, let range = rangeIndex?.range(for: cursor.id) else { return NSRange(location: 0, length: 0) }
             return NSRange(location: range.location + min(max(0, cursor.offset), range.length - 1), length: 0)
         }
-        func restore(_ snapshot: Snapshot, name: String) {
+        func restore(_ snapshot: Snapshot, name: String, blockSelection: Set<UUID> = []) {
             guard let view, snapshot.identity == session.identity, snapshot.generation == session.generation else { return }
             session.selection = view.selectedRange()
             let inverse = session.snapshot()
-            view.undoManager?.registerUndo(withTarget: self) { target in target.restore(inverse, name: name) }
-            session.restore(snapshot, name: name); render(selection: snapshot.selection); publish()
+            let inverseBlocks = selectedBlockIDs
+            view.undoManager?.registerUndo(withTarget: self) { target in target.restore(inverse, name: name, blockSelection: inverseBlocks) }
+            session.restore(snapshot, name: name); render(selection: snapshot.selection)
+            selectedBlockIDs = blockSelection.filter { document.block($0) != nil }
+            view.selectedBlockIDs = selectedBlockIDs
+            blockSelectionAnchor = document.normalizedSelection(selectedBlockIDs).first
+            publish()
             view.undoManager?.setActionName(name)
         }
         func transaction(_ name: String, _ change: () -> BlockCursor?) {
             guard let view, view.isEditable, !view.locked, !changing, !view.hasMarkedText(), !view.isSettingMarkedText else { return }
             capture(); session.selection = view.selectedRange(); let before = session.snapshot()
+            let beforeBlocks = selectedBlockIDs
             let cursor = change()
             guard document != before.document else { return }
             view.breakUndoCoalescing()
             view.undoManager?.beginUndoGrouping()
-            view.undoManager?.registerUndo(withTarget: self) { target in target.restore(before, name: name) }
+            view.undoManager?.registerUndo(withTarget: self) { target in target.restore(before, name: name, blockSelection: beforeBlocks) }
             view.undoManager?.setActionName(name)
             view.undoManager?.endUndoGrouping()
             render(selection: before.selection)
+            changing = true
             if let cursor { view.setSelectedRange(selection(for: cursor)) }
+            changing = false
+            selectedBlockIDs = selectedBlockIDs.filter { document.block($0) != nil }
+            view.selectedBlockIDs = selectedBlockIDs
             updateTypingAttributes(); publish(); view.scrollRangeToVisible(view.selectedRange())
         }
         func mutate(_ command: BlockMutation, id: UUID? = nil, name: String) {
             guard let view, let (block, range) = current() else { return }
             let offset = view.selectedRange().location - range.location
+            let batch = !selectedBlockIDs.isEmpty && (id == nil || selectedBlockIDs.contains(id!))
             transaction(name) {
-                let result = document.apply(command, to: id ?? block.id)
+                let result = batch ? document.apply(command, to: selectedBlockIDs) : document.apply(command, to: id ?? block.id)
                 switch command {
                 case .split, .mergeBackward, .delete, .removeKeepingChildren, .duplicate: return result
+                case .reorder, .reorderAfter: return result.map { _ in BlockCursor(block.id, offset: offset) }
                 default: return result.map { BlockCursor($0.id, offset: offset) }
                 }
             }
@@ -271,6 +319,7 @@ extension RichArticleView {
             if view.selectedRange().length == 0, view.string.hasSuffix("\n"), view.selectedRange().location == view.string.utf16.count {
                 changing = true; view.setSelectedRange(NSRange(location: max(0, view.string.utf16.count - 1), length: 0)); changing = false
             }
+            clearBlockSelection()
             session.selection = view.selectedRange()
             updateTypingAttributes(); updatePalette(); updateWikiQuery()
         }
@@ -303,6 +352,7 @@ extension RichArticleView {
         }
         func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
             guard !document.unsupportedVersion, !parent.locked else { return false }
+            clearBlockSelection()
             if textView.hasMarkedText() || view?.isSettingMarkedText == true {
                 deferredComposition = true; pendingSingleBlock = nil; return true
             }
@@ -350,6 +400,10 @@ extension RichArticleView {
         }
         func dismissPalette() { dismissedSlash = slashRange?.location; suggestions.close() }
         func apply(_ command: BlockCommand, removingQuery: Bool) {
+            if !removingQuery {
+                mutate(command.mutation, name: command.title)
+                return
+            }
             guard let view, let (block, range) = current() else { return }
             var offset = view.selectedRange().location - range.location
             let query = removingQuery ? slashRange : nil
@@ -378,6 +432,22 @@ extension RichArticleView {
                 }
             }
             let command = event.modifierFlags.contains(.command), shift = event.modifierFlags.contains(.shift), option = event.modifierFlags.contains(.option)
+            if !selectedBlockIDs.isEmpty {
+                if event.keyCode == 53 { clearBlockSelection(); return true }
+                if event.keyCode == 51 || event.keyCode == 117 { mutate(.delete, name: "Delete blocks"); return true }
+                if command, event.charactersIgnoringModifiers?.lowercased() == "c" { copyBlocks(); return true }
+                if command, event.charactersIgnoringModifiers?.lowercased() == "d" { mutate(.duplicate, name: "Duplicate blocks"); return true }
+                if command && option && (event.keyCode == 126 || event.keyCode == 125) {
+                    mutate(.move(event.keyCode == 126 ? -1 : 1), name: "Move blocks"); return true
+                }
+                if shift && (event.keyCode == 126 || event.keyCode == 125), let anchor = blockSelectionFocus ?? document.normalizedSelection(selectedBlockIDs).last {
+                    let ordered = rangeIndex?.ordered.map { $0.0 } ?? []
+                    if let index = ordered.firstIndex(of: anchor), ordered.indices.contains(index + (event.keyCode == 126 ? -1 : 1)) {
+                        selectBlock(ordered[index + (event.keyCode == 126 ? -1 : 1)], modifiers: .shift)
+                    }
+                    return true
+                }
+            }
             if command {
                 switch event.charactersIgnoringModifiers?.lowercased() {
                 case "b": format("bold"); return true
@@ -617,14 +687,40 @@ extension RichArticleView {
             for command in BlockCommand.all {
                 let item = NSMenuItem(title: command.title, action: #selector(contextCommand(_:)), keyEquivalent: "")
                 item.target = self; item.representedObject = command.id; item.image = NSImage(systemSymbolName: command.symbol, accessibilityDescription: nil)
+                let targets = actionBlocks
+                if !targets.isEmpty {
+                    let matches = targets.filter { block in
+                        if let semantic = command.semantic { return block.metadata.semantic == (semantic.isEmpty ? nil : semantic) }
+                        if case .transform(let kind) = command.mutation { return block.kind == kind }
+                        return false
+                    }.count
+                    item.state = matches == targets.count ? .on : (matches > 0 ? .mixed : .off)
+                }
                 (command.semantic == nil ? structure : tags).addItem(item)
             }
+            let unknown = Set(actionBlocks.compactMap { $0.metadata.semantic }).filter { SemanticPresentation.find($0) == nil }.sorted()
+            for designation in unknown {
+                let item = NSMenuItem(title: designation, action: nil, keyEquivalent: "")
+                item.state = .on; tags.addItem(item)
+            }
             for (title, submenu) in [("Turn into", structure), ("Semantic tag", tags)] { let item = NSMenuItem(title: title, action: nil, keyEquivalent: ""); item.submenu = submenu; menu.addItem(item) }
-            if let block = current()?.0 {
-                let statuses = SemanticPresentation.find(block.metadata.semantic)?.statuses ?? []
-                if !statuses.isEmpty {
+            if let block = actionBlocks.first {
+                let targets = actionBlocks
+                let statuses = SemanticPresentation.find(block.metadata.semantic)?.statuses.filter { status in
+                    targets.allSatisfy { SemanticPresentation.find($0.metadata.semantic)?.statuses.contains(status) == true }
+                } ?? []
+                if !statuses.isEmpty || block.metadata.status != nil {
                     let submenu = NSMenu()
-                    for status in ["None"] + statuses { addAction(status.capitalized, value: "status:" + (status == "None" ? "" : status), to: submenu) }
+                    for status in ["None"] + statuses {
+                        addAction(status.capitalized, value: "status:" + (status == "None" ? "" : status), to: submenu)
+                        let selected = status == "None" ? nil : status
+                        let matches = targets.filter { $0.metadata.status == selected }.count
+                        submenu.items.last?.state = matches == targets.count ? .on : (matches > 0 ? .mixed : .off)
+                    }
+                    if let status = block.metadata.status, !statuses.contains(status) {
+                        let preserved = NSMenuItem(title: status, action: nil, keyEquivalent: "")
+                        preserved.state = .on; submenu.addItem(preserved)
+                    }
                     let item = NSMenuItem(title: "Status", action: nil, keyEquivalent: ""); item.submenu = submenu; menu.addItem(item)
                 }
                 if block.kind == .task { addAction("Toggle checked", value: "checked", to: menu) }
@@ -645,7 +741,7 @@ extension RichArticleView {
             if let id = item.representedObject as? String, let command = BlockCommand.all.first(where: { $0.id == id }) { apply(command, removingQuery: false) }
         }
         @objc func contextAction(_ item: NSMenuItem) {
-            guard let value = item.representedObject as? String, let (block, _) = current() else { return }
+            guard let value = item.representedObject as? String, let block = actionBlocks.first else { return }
             if value.hasPrefix("status:") { let status = String(value.dropFirst(7)); mutate(.status(status.isEmpty ? nil : status), name: "Change status"); return }
             if value.hasPrefix("format:") { let name = String(value.dropFirst(7)); if name == "link" { editLink() } else { format(name) }; return }
             switch value {
@@ -657,7 +753,7 @@ extension RichArticleView {
             case "outdent": mutate(.outdent, name: "Outdent block")
             case "checked": mutate(.checked, name: "Toggle task")
             case "collapse": mutate(.collapse, name: "Toggle children")
-            case "copy": NSPasteboard.general.clearContents(); NSPasteboard.general.setString(BlockDocumentCodec.readable(BlockDocument(blocks: [block])), forType: .string)
+            case "copy": copyBlocks()
             case "link":
                 guard let noteID = parent.noteID else { return }
                 transaction("Create block link") { document.originalSource = nil; return nil }

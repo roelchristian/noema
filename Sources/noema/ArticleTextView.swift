@@ -51,6 +51,12 @@ import VaultCore
     var activateBlock: ((UUID, BlockMutation) -> Void)?
     var pasteContent: ((NSPasteboard) -> Void)?
     var canReorder: ((UUID, UUID) -> Bool)?
+    var selectBlock: ((UUID, NSEvent.ModifierFlags) -> Void)?
+    var selectedBlockIDs: Set<UUID> = [] {
+        didSet {
+            for id in oldValue.symmetricDifference(selectedBlockIDs) { invalidateDecoration(for: id) }
+        }
+    }
     var blockRangeIndex: BlockTextStorage.RangeIndex?
     private var metadataPresentationCache: [Data: BlockMetadata] = [:]
     private func metadata(at location: Int, storage: NSTextStorage) -> BlockMetadata {
@@ -94,6 +100,64 @@ import VaultCore
     static let dragType = NSPasteboard.PasteboardType("com.noema.editor-block")
     private var tracking: NSTrackingArea?
     private var dragStart: (UUID, NSPoint)?
+    private var dragScrollTimer: Timer?
+    private var dragLocationInWindow: NSPoint?
+    private var activeDraggedID: UUID?
+
+    /// Shared hit/drawing geometry follows the first baseline and structural indent.
+    func gutterRect(for range: NSRange) -> NSRect {
+        let depth = textStorage?.attribute(.blockDepth, at: range.location, effectiveRange: nil) as? Int ?? 0
+        return NSRect(x: max(0, textContainerOrigin.x - 72 + CGFloat(depth * 24)),
+                      y: firstBaseline(for: range) - 17, width: 22, height: 24)
+    }
+
+    private var focusedBlockID: UUID? {
+        guard window?.firstResponder === self, selectedRange().length == 0,
+              let storage = textStorage, storage.length > 0 else { return nil }
+        return (storage.attribute(.blockID, at: min(selectedRange().location, storage.length - 1),
+                                  effectiveRange: nil) as? String).flatMap(UUID.init(uuidString:))
+    }
+
+    override func setSelectedRange(_ charRange: NSRange) {
+        let previous = focusedBlockID
+        super.setSelectedRange(charRange)
+        invalidateDecoration(for: previous)
+        invalidateDecoration(for: focusedBlockID)
+    }
+
+    private func stopBlockDrag() {
+        dragScrollTimer?.invalidate(); dragScrollTimer = nil
+        dragLocationInWindow = nil; activeDraggedID = nil; dragStart = nil
+        updateDropTarget(nil)
+    }
+
+    @objc private func scrollBlockDrag(_ timer: Timer) {
+        guard let location = dragLocationInWindow, let id = activeDraggedID,
+              let scroll = enclosingScrollView else { return }
+        let point = convert(location, from: nil)
+        let visible = visibleRect
+        let edge: CGFloat = 44
+        let distance: CGFloat
+        if point.y < visible.minY + edge { distance = -min(18, max(2, (visible.minY + edge - point.y) / 3)) }
+        else if point.y > visible.maxY - edge { distance = min(18, max(2, (point.y - visible.maxY + edge) / 3)) }
+        else { return }
+        let clip = scroll.contentView
+        let proposed = NSPoint(x: clip.bounds.minX, y: clip.bounds.minY + distance)
+        clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: proposed, size: clip.bounds.size)).origin)
+        scroll.reflectScrolledClipView(clip)
+        _ = updateBlockDrop(id, at: convert(location, from: nil))
+    }
+
+    private func updateBlockDrop(_ id: UUID, at point: NSPoint) -> NSDragOperation {
+        guard let target = blockAt(point), target != id, canReorder?(id, target) == true else {
+            updateDropTarget(nil); return []
+        }
+        let after = textStorage.flatMap { storage in
+            blockRange(for: target, storage: storage).map { point.y > rect(for: $0).midY }
+        } ?? false
+        updateDropTarget(target, after: after)
+        return .move
+    }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let tracking { removeTrackingArea(tracking) }
@@ -105,8 +169,13 @@ import VaultCore
         let index = min(characterIndexForInsertion(at: NSPoint(x: max(point.x, textContainerOrigin.x + 2), y: point.y)), storage.length - 1)
         return (storage.attribute(.blockID, at: index, effectiveRange: nil) as? String).flatMap(UUID.init(uuidString:))
     }
-    func rect(for range: NSRange) -> NSRect {
-        guard let layoutManager, let storage = textStorage, range.length > 0 else { return .zero }
+    func rect(for requestedRange: NSRange) -> NSRect {
+        guard let layoutManager, let storage = textStorage, requestedRange.length > 0,
+              requestedRange.location >= 0, requestedRange.location < storage.length else { return .zero }
+        // AppKit can update focus during storage replacement before the UUID range
+        // index has been rebuilt. Decoration geometry must use the current bytes.
+        let range = NSRange(location: requestedRange.location,
+                            length: min(requestedRange.length, storage.length - requestedRange.location))
         // Preserve all stored text, but don't draw an accent across trailing blank
         // lines or paragraph/line spacing. Empty blocks still get one text line.
         let text = (storage.string as NSString).substring(with: range) as NSString
@@ -249,9 +318,15 @@ import VaultCore
             for key in numberByDepth.keys where key > depth { numberByDepth[key] = nil }
             let rect = rect(for: range)
             let headingRect = semanticHeadingRect(for: range)
-            let decorationRect = headingRect.map { rect.union($0) } ?? rect
+            let decorationRect = (headingRect.map { rect.union($0) } ?? rect).union(gutterRect(for: range))
             guard decorationRect.intersects(dirtyRect) else { continue }
             let metadata = metadata(at: range.location, storage: storage)
+            if selectedBlockIDs.contains(id) {
+                theme.native(.accentPrimary).withAlphaComponent(0.10).setFill()
+                NSBezierPath(roundedRect: NSRect(x: gutterRect(for: range).minX, y: rect.minY - 3,
+                    width: max(22, bounds.width - textContainerOrigin.x - gutterRect(for: range).minX),
+                    height: rect.height + 6), xRadius: 4, yRadius: 4).fill()
+            }
             if kind == .code || kind == .callout || kind == .math {
                 theme.native(.accentPrimary).withAlphaComponent(theme.dark ? 0.08 : 0.04).setFill()
                 NSBezierPath(roundedRect: NSRect(x: textContainerOrigin.x - 8 + CGFloat(depth * 24), y: decorationRect.minY - 6, width: max(20, bounds.width - textContainerOrigin.x * 2 - CGFloat(depth * 24) + 16), height: decorationRect.height + 12), xRadius: 5, yRadius: 5).fill()
@@ -301,9 +376,13 @@ import VaultCore
                     (rendered as NSString).draw(in: previewRect, withAttributes: mathPreviewAttributes)
                 }
             }
-            if id == hoverID && !locked && isEditable {
+            if (id == hoverID || id == focusedBlockID || selectedBlockIDs.contains(id)) && !locked && isEditable {
+                let handle = gutterRect(for: range)
                 theme.nativeText(.textMuted).setFill()
-                for column in 0..<2 { for row in 0..<3 { NSBezierPath(ovalIn: NSRect(x: 14 + column * 5, y: Int(rect.minY) + 4 + row * 5, width: 2, height: 2)).fill() } }
+                for column in 0..<2 { for row in 0..<3 {
+                    NSBezierPath(ovalIn: NSRect(x: handle.midX - 4 + CGFloat(column * 5),
+                        y: handle.midY - 6 + CGFloat(row * 5), width: 2, height: 2)).fill()
+                } }
             }
             if id == dropID {
                 theme.native(.accentPrimary).setFill()
@@ -342,7 +421,14 @@ import VaultCore
         if locked { super.mouseDown(with: event); return }
         if !locked, let id = blockAt(point), let storage = textStorage,
            let range = blockRange(for: id, storage: storage) {
-            if point.x < 29, isEditable { dragStart = (id, point); setSelectedRange(NSRange(location: range.location, length: 0)); return }
+            if gutterRect(for: range).contains(point) {
+                dragStart = (id, point)
+                if !selectedBlockIDs.contains(id) || !event.modifierFlags.intersection([.shift, .command]).isEmpty {
+                    selectBlock?(id, event.modifierFlags)
+                }
+                // Handle gestures have their own UUID selection and never move the caret.
+                return
+            }
             let depth = storage.attribute(.blockDepth, at: range.location, effectiveRange: nil) as? Int ?? 0
             let accessoryX = textContainerOrigin.x + CGFloat(depth * 24) + 1
             let marker = markerRect(for: range, depth: depth).insetBy(dx: -3, dy: -3)
@@ -357,7 +443,7 @@ import VaultCore
         super.mouseDown(with: event)
     }
     override func mouseUp(with event: NSEvent) {
-        if dragStart != nil { dragStart = nil; if let menu = blockMenu?() { NSMenu.popUpContextMenu(menu, with: event, for: self) }; return }
+        if dragStart != nil { dragStart = nil; return }
         super.mouseUp(with: event)
     }
     override func mouseDragged(with event: NSEvent) {
@@ -372,7 +458,9 @@ import VaultCore
             ("Move block" as NSString).draw(at: NSPoint(x: 12, y: 6), withAttributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor]); return true
         }
         item.setDraggingFrame(NSRect(origin: point, size: image.size), contents: image)
-        beginDraggingSession(with: [item], event: event, source: self)
+        activeDraggedID = id
+        let session = beginDraggingSession(with: [item], event: event, source: self)
+        session.animatesToStartingPositionsOnCancelOrFail = true
     }
     override func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { context == .withinApplication ? .move : [] }
     override func ignoreModifierKeys(for session: NSDraggingSession) -> Bool { true }
@@ -383,22 +471,29 @@ import VaultCore
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard let id = draggedID(sender) else { return super.draggingUpdated(sender) }
-        let point = convert(sender.draggingLocation, from: nil)
-        guard let target = blockAt(point), canReorder?(id, target) == true else { updateDropTarget(nil); return [] }
-        let after = textStorage.flatMap { storage in
-            blockRange(for: target, storage: storage).map { point.y > rect(for: $0).midY }
-        } ?? false
-        updateDropTarget(target, after: after); return .move
+        activeDraggedID = id
+        dragLocationInWindow = sender.draggingLocation
+        if dragScrollTimer == nil {
+            let timer = Timer(timeInterval: 1.0 / 30, target: self, selector: #selector(scrollBlockDrag(_:)), userInfo: nil, repeats: true)
+            RunLoop.main.add(timer, forMode: .common)
+            dragScrollTimer = timer
+        }
+        return updateBlockDrop(id, at: convert(sender.draggingLocation, from: nil))
     }
-    override func draggingExited(_ sender: NSDraggingInfo?) { updateDropTarget(nil) }
+    override func draggingExited(_ sender: NSDraggingInfo?) { stopBlockDrag() }
+    override func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        stopBlockDrag()
+    }
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
         if draggedID(sender) != nil { return draggingUpdated(sender) == .move }
         return super.prepareForDragOperation(sender)
     }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard let id = draggedID(sender), let target = dropID else { return super.performDragOperation(sender) }
+        guard let id = draggedID(sender) else { return super.performDragOperation(sender) }
+        guard let target = dropID else { stopBlockDrag(); return false }
+        guard canReorder?(id, target) == true, activateBlock != nil else { stopBlockDrag(); return false }
         let after = dropAfter
-        updateDropTarget(nil)
+        stopBlockDrag()
         activateBlock?(id, after ? .reorderAfter(target) : .reorder(before: target)); return true
     }
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -414,6 +509,11 @@ import VaultCore
             return menu
         }
         let point = convert(event.locationInWindow, from: nil)
+        if let id = blockAt(point), let storage = textStorage,
+           let range = blockRange(for: id, storage: storage), gutterRect(for: range).contains(point) {
+            if !selectedBlockIDs.contains(id) { selectBlock?(id, event.modifierFlags) }
+            return blockMenu?()
+        }
         let clicked = min(characterIndexForInsertion(at: point), string.utf16.count)
         // Contextual Copy/Paste on a partial native selection must keep it. A
         // click elsewhere chooses that insertion point for subsequent actions.
