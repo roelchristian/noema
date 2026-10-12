@@ -19,6 +19,7 @@ public struct NoteRecord: Codable, Identifiable, Sendable, Equatable {
     public var relativePath: String
     public var contentHash: String
     public var lcc: String? = nil
+    public var lccClassification: LCCClassification? = nil
     public var aiTitleProvenance: SummaryProvenance? = nil
     public var aiLCCProvenance: SummaryProvenance? = nil
     public var editingLocked: Bool? = nil
@@ -34,9 +35,24 @@ public struct SummaryProvenance: Codable, Sendable, Equatable {
     public var model: String
     public var generatedAt: Date
     public var sourceRevision: String? = nil
-    public init(provider: String, model: String, generatedAt: Date, sourceRevision: String? = nil) {
+    /// Shared identity of published artifacts; unrelated to transient request authority.
+    public var generationID: UUID? = nil
+    public init(provider: String, model: String, generatedAt: Date, sourceRevision: String? = nil, generationID: UUID? = nil) {
         self.provider = provider; self.model = model; self.generatedAt = generatedAt
-        self.sourceRevision = sourceRevision
+        self.sourceRevision = sourceRevision; self.generationID = generationID
+    }
+}
+/// A locally verified generated subject classification. Legacy `lcc` values remain readable.
+public struct LCCClassification: Codable, Sendable, Equatable {
+    public var code: String
+    public var level: LCCClassificationLevel
+    public var caption: String
+    public var provenance: SummaryProvenance?
+    public var classifiedAt: Date?
+    public init(code: String, level: LCCClassificationLevel, caption: String,
+        provenance: SummaryProvenance? = nil, classifiedAt: Date? = nil) {
+        self.code = code; self.level = level; self.caption = caption
+        self.provenance = provenance; self.classifiedAt = classifiedAt
     }
 }
 public struct SourceMetadata: Codable, Identifiable, Sendable, Equatable {
@@ -47,6 +63,7 @@ public struct SourceMetadata: Codable, Identifiable, Sendable, Equatable {
     public var originURL: String?
     public var sha256: String
     public var lcc: String? = nil
+    public var lccClassification: LCCClassification? = nil
     public var aiTitleProvenance: SummaryProvenance? = nil
     public var aiLCCProvenance: SummaryProvenance? = nil
     public var aiSummary: String? = nil

@@ -505,7 +505,9 @@ public actor FileVaultRepository: VaultRepository {
         var updated = note
         updated.title = title; updated.body = body; updated.tags = normalizeTags(tags)
         if snapshot.notes.first(where: { $0.id == note.id })?.title != title { updated.aiTitleProvenance = nil }
-        if snapshot.notes.first(where: { $0.id == note.id })?.lcc != updated.lcc { updated.aiLCCProvenance = nil }
+        if snapshot.notes.first(where: { $0.id == note.id })?.lcc != updated.lcc {
+            updated.aiLCCProvenance = nil; updated.lccClassification = nil
+        }
         updated.updatedAt = preserveUpdatedAt ? note.updatedAt : timestamp()
         if updated.createdAt.isEmpty { updated.createdAt = updated.updatedAt }
         if normalized(title) != normalized(note.title), !updated.aliases.contains(note.title) { updated.aliases.append(note.title) }
@@ -1060,7 +1062,7 @@ public actor FileVaultRepository: VaultRepository {
             if pending.metadata.title != title { pending.metadata.aiTitleProvenance = nil }
             pending.metadata.title = title
             if let summary { pending.metadata.aiSummary = summary; pending.metadata.aiSummaryProvenance = nil }
-            if let cleanLCC { pending.metadata.lcc = cleanLCC; pending.metadata.aiLCCProvenance = nil }
+            if let cleanLCC { pending.metadata.lcc = cleanLCC; pending.metadata.aiLCCProvenance = nil; pending.metadata.lccClassification = nil }
             downloadingSources[source.id] = pending
             return pending
         }
@@ -1075,7 +1077,7 @@ public actor FileVaultRepository: VaultRepository {
         if metadata.title != title { metadata.aiTitleProvenance = nil }
         metadata.title = title
         if let summary { metadata.aiSummary = summary; metadata.aiSummaryProvenance = nil }
-        if let cleanLCC { metadata.lcc = cleanLCC; metadata.aiLCCProvenance = nil }
+        if let cleanLCC { metadata.lcc = cleanLCC; metadata.aiLCCProvenance = nil; metadata.lccClassification = nil }
         try contentStore.write(encoder.encode(metadata), at: path, condition: .replace(expected: bytes))
         return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue ?? (source.contentState == .notLoaded ? "Not verified" : source.availabilityIssue), contentState: source.contentState)
     }
@@ -1091,6 +1093,7 @@ public actor FileVaultRepository: VaultRepository {
         if var pending = downloadingSources[source.id] {
             pending.metadata.lcc = cleanLCC
             pending.metadata.aiLCCProvenance = nil
+            pending.metadata.lccClassification = nil
             downloadingSources[source.id] = pending
             return pending
         }
@@ -1105,6 +1108,7 @@ public actor FileVaultRepository: VaultRepository {
         }
         metadata.lcc = cleanLCC
         metadata.aiLCCProvenance = nil
+        metadata.lccClassification = nil
         try contentStore.write(encoder.encode(metadata), at: path, condition: .replace(expected: bytes))
         return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue ?? (source.contentState == .notLoaded ? "Not verified" : source.availabilityIssue), contentState: source.contentState)
     }
@@ -1140,7 +1144,7 @@ public actor FileVaultRepository: VaultRepository {
         let key = normalized(title)
         return notes.contains { normalized($0.title) == key || $0.aliases.contains { normalized($0) == key } }
     }
-    private func availablePath(title: String) -> String {
+    func availablePath(title: String) -> String {
         let clean = title.components(separatedBy: CharacterSet(charactersIn: "/:\\").union(.controlCharacters)).joined(separator: "-")
         let name = String(clean.prefix(100)).trimmingCharacters(in: CharacterSet(charactersIn: ". "))
         let base = name.isEmpty ? "Untitled" : name
