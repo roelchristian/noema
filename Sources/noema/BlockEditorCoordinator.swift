@@ -17,7 +17,7 @@ extension RichArticleView {
         var renderedHeadings: Bool?
         var rangeIndex: BlockTextStorage.RangeIndex?
         var deferredComposition = false
-        var lastText: String?
+        var lastDocument: BlockDocument?
         var lastTheme: NoemaTheme?
         var lastTypography: EditorTypography?
         var lastMacros: String?
@@ -78,14 +78,15 @@ extension RichArticleView {
             let offset = clip.bounds.minY
             Task { @MainActor [weak self] in self?.parent.onScrollOffset(offset) }
         }
-        func load(_ source: String) {
+        func load(_ value: BlockDocument) {
             publicationTask?.cancel()
             pendingSingleBlock = nil; deferredComposition = false
             clearBlockSelection()
-            session.load(BlockDocumentCodec.decode(source), identity: .init(pageID: parent.noteID, vaultID: parent.vaultID, sessionID: parent.sessionID), selection: view?.selectedRange() ?? NSRange(location: 0, length: 0))
-            lastText = source
+            session.load(value, identity: .init(pageID: parent.noteID, vaultID: parent.vaultID, sessionID: parent.sessionID), selection: view?.selectedRange() ?? NSRange(location: 0, length: 0))
+            lastDocument = value
             parent.onSemanticLoad?(self)
             suggestions.close(); render(selection: view?.selectedRange() ?? NSRange(location: 0, length: 0))
+            parent.onSessionReady?(self)
         }
         func render(selection: NSRange) {
             guard let view else { return }
@@ -172,39 +173,32 @@ extension RichArticleView {
         }
         func publish() {
             refreshSemanticRanges()
-            guard parent.text == lastText else { return }
-            session.selection = view?.selectedRange() ?? session.selection
-            let snapshot = session.snapshot()
-            guard session.accepts(snapshot) else { return }
             publicationTask?.cancel()
             publicationTask = Task { @MainActor [weak self] in
-                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
-                guard !Task.isCancelled else { return }
-                let source = await Task.detached(priority: .userInitiated) { BlockDocumentCodec.encode(snapshot.document) }.value
-                guard !Task.isCancelled, let self, self.parent.text == self.lastText,
-                      self.view?.hasMarkedText() != true, self.view?.isSettingMarkedText != true,
-                      self.parent.noteID == snapshot.identity.pageID,
-                      self.parent.vaultID == snapshot.identity.vaultID,
-                      self.parent.sessionID == snapshot.identity.sessionID,
-                      self.session.markPublished(snapshot) else { return }
-                self.lastText = source
-                if let onSnapshot = self.parent.onSnapshot { onSnapshot(snapshot, source) } else { self.parent.text = source }
+                guard !Task.isCancelled, let self,
+                      self.view?.hasMarkedText() != true, self.view?.isSettingMarkedText != true else { return }
+                self.publishSnapshot()
             }
             updatePalette(); updateWikiQuery()
         }
-        /// Explicit save/navigation boundary; ordinary typing never enters this path.
-        func flushPublication() {
-            publicationTask?.cancel()
-            guard parent.text == lastText else { return }
-            // A navigation/save boundary must preserve the currently visible
-            // marked text even before AppKit ends the composition transaction.
-            if deferredComposition || view?.hasMarkedText() == true || pendingSingleBlock != nil { capture() }
+        private func publishSnapshot() {
+            guard parent.document == lastDocument else { return }
             session.selection = view?.selectedRange() ?? session.selection
             let snapshot = session.snapshot()
-            guard parent.noteID == snapshot.identity.pageID, parent.vaultID == snapshot.identity.vaultID, parent.sessionID == snapshot.identity.sessionID,
+            guard parent.noteID == snapshot.identity.pageID,
+                  parent.vaultID == snapshot.identity.vaultID,
+                  parent.sessionID == snapshot.identity.sessionID,
                   session.markPublished(snapshot) else { return }
-            let source = BlockDocumentCodec.encode(snapshot.document)
-            lastText = source; if let onSnapshot = parent.onSnapshot { onSnapshot(snapshot, source) } else { parent.text = source }
+            lastDocument = snapshot.document
+            if let onSnapshot = parent.onSnapshot { onSnapshot(snapshot) }
+            else { parent.document = snapshot.document }
+        }
+        /// Save/navigation also preserves an in-progress native composition.
+        func flushPublication() {
+            invalidatePublication()
+            guard parent.document == lastDocument else { return }
+            if deferredComposition || view?.hasMarkedText() == true || pendingSingleBlock != nil { capture() }
+            publishSnapshot()
         }
         func invalidatePublication() { publicationTask?.cancel(); publicationTask = nil }
 
