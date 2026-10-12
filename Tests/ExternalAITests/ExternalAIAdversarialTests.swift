@@ -13,7 +13,7 @@ private final class AuditKeychain: ExternalAIKeychain, Sendable {
     func write(_ data: Data) throws { value.withLock { $0 = data } }
     func delete() throws { value.withLock { $0 = nil } }
 }
-private let auditResponse = Data(#"{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Approved summary"}]}]}"#.utf8)
+private let auditResponse = Data(#"{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{\"title\":null,\"summary\":\"Approved summary\",\"classification\":{\"code\":\"QA76\",\"level\":\"schedule\",\"rationale\":\"Computer science subject\"},\"body\":null}"}]}]}"#.utf8)
 private actor AuditTransport: OpenAITransporting {
     private(set) var count = 0
     var beforeResume: (@Sendable () async throws -> Void)?

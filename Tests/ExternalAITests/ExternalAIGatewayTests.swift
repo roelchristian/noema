@@ -13,7 +13,7 @@ private final class GatewayKeychain: ExternalAIKeychain, @unchecked Sendable {
     func write(_ value: Data) throws { data.withLock { $0 = value } }
     func delete() throws { data.withLock { $0 = nil } }
 }
-private let validResponse = Data(#"{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"A concise summary."}]}]}"#.utf8)
+private let validResponse = Data(#"{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{\"title\":null,\"summary\":\"A concise summary.\",\"classification\":{\"code\":\"QA76\",\"level\":\"schedule\",\"rationale\":\"Computer science subject\"},\"body\":null}"}]}]}"#.utf8)
 
 private actor GatewayMockTransport: OpenAITransporting {
     var requests: [URLRequest] = []
@@ -83,7 +83,7 @@ func gatewayDispatchesConfiguredReasoningEffort(effort: ExternalAIReasoningEffor
     #expect(sent.httpMethod == "POST")
     let body = try #require(sent.httpBody)
     let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
-    #expect(Set(object.keys) == ["model", "instructions", "input", "store", "max_output_tokens"])
+    #expect(Set(object.keys) == ["model", "instructions", "input", "store", "max_output_tokens", "text"])
     #expect(object["store"] as? Bool == false)
     #expect(object["input"] as? String == request.content)
     #expect(!String(decoding: body, as: UTF8.self).contains(request.authority.vaultID.uuidString))
@@ -316,4 +316,36 @@ func gatewayCancelledMetadataActionsNeverDispatch(action: ExternalAIAction) asyn
     }
     await #expect(throws: ExternalAIError.cancelled) { try await task.value }
     #expect(await mock.requests.isEmpty)
+}
+
+@Test func gatewayComposesAllArtifactsInOneInferenceAndRejectsArtifactSubstitution() async throws {
+    let output = #"{"title":"Computer Science","summary":"A concise summary.","classification":{"code":"QA76","level":"schedule","rationale":"Computer science subject"},"body":"# Computer Science\n\nA source-backed article."}"#
+    let body = try JSONSerialization.data(withJSONObject: ["object": "response", "status": "completed", "output": [
+        ["type": "message", "role": "assistant", "status": "completed", "content": [["type": "output_text", "text": output]]]]])
+    let mock = GatewayMockTransport(body: body)
+    let fixture = try await GatewayFixture(transport: mock)
+    let base = try fixture.request()
+    let request = try ExternalAISummaryRequest(authority: base.authority, target: base.target,
+        contentRevision: base.contentRevision, content: base.content, action: .composePage)
+    let result = try await fixture.gateway.composePage(request, consent: ExternalAIContentConsent(approving: request))
+    #expect(await mock.requests.count == 1)
+    #expect(result.title == "Computer Science")
+    #expect(result.lccSuggestion?.code == "QA76")
+    #expect(result.enrichment?.body?.contains("source-backed") == true)
+    try await fixture.gateway.validatePublication(of: result)
+    let forged = try ExternalAISummaryResult(request: request,
+        enrichment: ExternalAIEnrichment(title: result.title, summary: result.summary,
+            classification: result.lccSuggestion, body: "Unrelated substituted body", mode: .compose), provenance: result.provenance)
+    await #expect(throws: ExternalAIError.authorizationRevoked) { try await fixture.gateway.validatePublication(of: forged) }
+}
+
+@Test func gatewayPlainSummaryCannotBypassStructuredEnrichmentValidation() async throws {
+    let body = Data(#"{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"A concise summary."}]}]}"#.utf8)
+    let mock = GatewayMockTransport(body: body)
+    let fixture = try await GatewayFixture(transport: mock)
+    let request = try fixture.request()
+    await #expect(throws: ExternalAIError.invalidResponse) {
+        try await fixture.gateway.summarizePage(request, consent: ExternalAIContentConsent(approving: request))
+    }
+    #expect(await mock.requests.count == 1)
 }

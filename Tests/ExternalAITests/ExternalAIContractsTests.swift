@@ -98,7 +98,7 @@ struct ExternalAIContractsTests {
     let valid = try ExternalAIOutputValidation.lccSuggestion(from: #"{"code":"QA","rationale":"Mathematical subject."}"#)
     #expect(valid.code == "QA")
     #expect(!String(reflecting: valid).contains("Mathematical subject."))
-    for output in [#"{"code":"ZZ","rationale":"Unknown"}"#, #"{"code":"QA76","rationale":"Full number"}"#,
+    for output in [#"{"code":"ZZ","rationale":"Unknown"}"#, #"{"code":"QA999.123","rationale":"Unverified number"}"#,
                    #"{"code":"QA","rationale":""}"#, #"{"code":"QA","rationale":"<b>Topic</b>"}"#,
                    #"{"code":"QA","rationale":"Topic","extra":"secret"}"#, #"{"code":42,"rationale":"Topic"}"#,
                    #"{"code":"QA"}"#, #"```json {"code":"QA","rationale":"Topic"} ```"#] {
