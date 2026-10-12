@@ -2297,7 +2297,7 @@ struct AISuggestion: Identifiable, Sendable {
             }
             else if let source = sources.first(where: { $0.id == id }) {
                 var source = source
-                if source.contentState == .notLoaded, let repository {
+                if previewSource, source.contentState == .notLoaded, let repository {
                     do { source = try await repository.loadSource(id: source.id) }
                     catch { if isCompletionValid(completionTicket, operation: "select.loadSource.error") { errorMessage = error.localizedDescription }; return }
                     guard isCompletionValid(completionTicket, operation: "select.loadSource") else { return }
