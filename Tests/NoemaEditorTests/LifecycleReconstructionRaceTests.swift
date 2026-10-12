@@ -244,12 +244,12 @@ struct LifecycleReconstructionRaceTests {
         #expect(await model.closeVault(force: true))
     }
 
-    @Test(arguments: [false, true]) @MainActor
-    func importedPreviewCannotPresentAfterFinalPredicateRevokesLease(reopen: Bool) async throws {
+    @Test(arguments: [false, true], ["txt", "html", "pdf"]) @MainActor
+    func importedReaderCannotPresentAfterFinalPredicateRevokesLease(reopen: Bool, extensionName: String) async throws {
         let fixture = try fixture()
         defer { SourceReader.closeAll(); try? FileManager.default.removeItem(at: fixture.base) }
         let source = try await fixture.repository.importSource(data: Data("%PDF-1.4\nsynthetic private preview".utf8),
-            filename: "private.pdf", title: "Private preview", originURL: nil)
+            filename: "private." + extensionName, title: "Private preview", originURL: nil)
         let session = VaultSession(vaultID: UUID(), root: fixture.root, generation: 1)
         let gate = VaultAccessGate(initialState: .open(session))
         let store = GatedVaultContentStore(base: try PlaintextVaultContentStore(root: fixture.root), root: fixture.root,
@@ -258,7 +258,7 @@ struct LifecycleReconstructionRaceTests {
         await #expect(throws: VaultAccessError.self) {
             try await SourceReader.open(source, root: fixture.root, contentStore: store, isStillValid: {
                 let count = checks.withLock { $0 += 1; return $0 }
-                if count == 3 {
+                if count == (extensionName == "pdf" ? 3 : 2) {
                     // This predicate intentionally returns true: caller state is not authority.
                     if reopen { gate.updateState(.open(VaultSession(vaultID: session.vaultID, root: session.root, generation: 2))) }
                     else { gate.updateState(.locking(session)) }
@@ -266,7 +266,7 @@ struct LifecycleReconstructionRaceTests {
                 return true
             })
         }
-        #expect(checks.withLock { $0 } == 3)
+        #expect(checks.withLock { $0 } == (extensionName == "pdf" ? 3 : 2))
         #expect(SourceReader.openReaderIDs.isEmpty)
     }
 

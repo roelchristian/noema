@@ -70,6 +70,9 @@ import VaultCore
                 scoped?.stopAccessingSecurityScopedResource()
                 return
             }
+            if let gated = contentStore as? GatedVaultContentStore {
+                try gated.validateAccess(operation: "SourceReader.presentContent")
+            }
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.title = source.title; window.isReleasedWhenClosed = false
             let ext = url.pathExtension.lowercased()

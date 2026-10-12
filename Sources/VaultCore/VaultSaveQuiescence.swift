@@ -616,6 +616,13 @@ public final class VaultSaveQuiescenceCoordinator: Sendable {
             } catch {
                 if !context.isCommitted {
                     await repository.cancelSourceDownload(id: sourceID)
+                    guard context.commitState == .cancelledBeforeCommit else {
+                        // A failed preparation/publication can leave the only captured copy.
+                        context.recordQuiescenceFailure(.inFlightOperationFailed(
+                            operationID: context.id, kind: kind, message: error.localizedDescription
+                        ))
+                        throw error
+                    }
                     do {
                         _ = try await repository.cleanupInterruptedImportStaging(id: sourceID)
                     } catch let cleanupError {
@@ -816,21 +823,10 @@ public final class VaultSaveQuiescenceCoordinator: Sendable {
                         outcomes.append(.preservedToRecovery(noteID: draft.id, kind: ctx.kind))
                     } else if let importID = ctx.sourceImportID {
                         await repository.cancelSourceDownload(id: importID)
-                        do {
-                            let cleaned = try await collectStagingCleanup(repository: repository, importID: importID)
-                            for path in cleaned where !cleanedStagingPaths.contains(path) {
-                                cleanedStagingPaths.append(path)
-                            }
-                        } catch {
-                            throw VaultQuiescenceError.stagingCleanupFailed(
-                                path: "Sources/.import-\(importID.uuidString)",
-                                message: error.localizedDescription
-                            )
-                        }
-                        if !cancelledSourceImportIDs.contains(importID) {
-                            cancelledSourceImportIDs.append(importID)
-                        }
-                        outcomes.append(.cancelledBeforeCommit(operationID: ctx.id, kind: ctx.kind, draftPreserved: false))
+                        throw VaultQuiescenceError.inFlightOperationFailed(
+                            operationID: ctx.id, kind: ctx.kind,
+                            message: "Source import failed; interrupted staging is preserved."
+                        )
                     } else {
                         throw VaultQuiescenceError.inFlightOperationFailed(
                             operationID: ctx.id,
@@ -843,21 +839,24 @@ public final class VaultSaveQuiescenceCoordinator: Sendable {
                     outcomes.append(.completed(operationID: ctx.id, kind: ctx.kind))
                 }
             }
-            // 4a. Clean up any remaining active source downloads and leftover `.import-*` staging directories.
+            // 4a. Only repository-owned downloads establish cancellation cleanup ownership.
+            // UI snapshots can retain IDs after failed publication; preserve those copies.
+            let cancelledAllDownloads = await repository.cancelAllSourceDownloads()
             for downloadID in pendingState.activeDownloadSourceIDs {
                 await repository.cancelSourceDownload(id: downloadID)
                 if !cancelledSourceImportIDs.contains(downloadID) {
                     cancelledSourceImportIDs.append(downloadID)
                 }
             }
-            let cancelledAllDownloads = await repository.cancelAllSourceDownloads()
             for downloadID in cancelledAllDownloads where !cancelledSourceImportIDs.contains(downloadID) {
                 cancelledSourceImportIDs.append(downloadID)
             }
             do {
-                let sweptPaths = try await repository.cleanupAllInterruptedImportStaging()
-                for path in sweptPaths where !cleanedStagingPaths.contains(path) {
-                    cleanedStagingPaths.append(path)
+                for downloadID in Set(cancelledAllDownloads) {
+                    let paths = try await collectStagingCleanup(repository: repository, importID: downloadID)
+                    for path in paths where !cleanedStagingPaths.contains(path) {
+                        cleanedStagingPaths.append(path)
+                    }
                 }
             } catch {
                 throw VaultQuiescenceError.stagingCleanupFailed(

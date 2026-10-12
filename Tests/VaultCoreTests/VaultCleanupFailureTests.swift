@@ -123,7 +123,7 @@ struct VaultCleanupFailureTests {
         #expect(try await recovery.drafts().first?.body == "Pending committed body")
     }
 
-    @Test func failedImportReportsOriginalAndCleanupFailuresAndRetainsStagedContent() async throws {
+    @Test func cancelledImportReportsCleanupFailureAndRetainsStagedContent() async throws {
         let root = try fixtureRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try CleanupFailureStore(root: root)
@@ -138,10 +138,12 @@ struct VaultCleanupFailureTests {
         do {
             _ = try await manager.quiescenceCoordinator.performSourceImport(
                 sourceID: sourceID, repository: repo
-            ) { _ in
+            ) { context in
                 try repo.contentStore.createDirectory(at: staging)
                 try repo.contentStore.write(bytes, at: staging + "/original.txt", condition: .createOnly)
-                throw VaultError.storage("Injected preparation failure")
+                context.requestPreCommitCancellation()
+                try context.checkPreCommitCancellation()
+                return (bytes, "original.txt", "Cancelled", nil, false)
             }
             Issue.record("Both source import and cleanup failures must reach the caller")
         } catch let error as VaultQuiescenceError {
@@ -150,7 +152,7 @@ struct VaultCleanupFailureTests {
                 return
             }
             #expect(id == sourceID)
-            #expect(operationMessage.contains("Injected preparation failure"))
+            #expect(operationMessage.contains("cancel"))
             #expect(cleanupMessage.contains("Injected staging cleanup failure"))
         }
         #expect(try store.base.snapshot(at: staging) == .directory(["original.txt": bytes]))
@@ -165,10 +167,45 @@ struct VaultCleanupFailureTests {
                 Issue.record("Unexpected session error: \(error)")
                 return
             }
-            #expect(message.contains("Injected preparation failure"))
+            #expect(message.contains("cancel"))
             #expect(message.contains("Injected staging cleanup failure"))
         }
         #expect(await manager.state == .open(session))
         #expect(try store.base.read(at: staging + "/original.txt") == bytes)
+    }
+
+    @Test(arguments: [false, true])
+    func failedImportPreservesStagingAcrossLockRetryAndReopen(publicationFailure: Bool) async throws {
+        let root = try fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = VaultSessionManager()
+        let (_, _, repo) = try await manager.openRepository(root: root, create: true)
+        let sourceID = UUID()
+        let staging = "Sources/.import-\(sourceID.uuidString)"
+        let bytes = Data("Only captured import copy".utf8)
+        if publicationFailure {
+            try repo.contentStore.createDirectory(at: "Sources/" + sourceID.uuidString.lowercased())
+        }
+        await #expect(throws: (any Error).self) {
+            _ = try await manager.quiescenceCoordinator.performSourceImport(sourceID: sourceID, repository: repo) { _ in
+                if !publicationFailure {
+                    try repo.contentStore.createDirectory(at: staging)
+                    try repo.contentStore.write(bytes, at: staging + "/original.txt", condition: .createOnly)
+                    throw VaultError.storage("Injected preparation failure")
+                }
+                return (bytes, "original.txt", "Captured", nil, true)
+            }
+        }
+        #expect(try repo.contentStore.read(at: staging + "/original.txt") == bytes)
+        await #expect(throws: VaultSessionError.self) {
+            _ = try await manager.lockWithQuiescence(repository: repo, recovery: nil,
+                pendingState: VaultPendingEditorState(activeDownloadSourceIDs: [sourceID]))
+        }
+        #expect(await manager.state.phase == .open)
+        #expect(try repo.contentStore.read(at: staging + "/original.txt") == bytes)
+        _ = try await manager.lockWithQuiescence(repository: repo, recovery: nil,
+                pendingState: VaultPendingEditorState(activeDownloadSourceIDs: [sourceID]))
+        let (_, _, reopened) = try await manager.unlockRepository(root: root)
+        #expect(try reopened.contentStore.read(at: staging + "/original.txt") == bytes)
     }
 }

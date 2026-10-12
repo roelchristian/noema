@@ -226,7 +226,7 @@ struct VaultSaveQuiescenceTests {
         #expect(!conflictFiles.isEmpty)
     }
 
-    @Test func interruptedSourceImportsAndDownloadsAreCancelledAndStagingDirectoriesAreCleanedUpBeforeLocked() async throws {
+    @Test func cancelledImportsCleanOnlyOwnedStagingAndPreserveUnknownCopiesAcrossLockAndReopen() async throws {
         let (root, _, recovery) = try makeTempVaultAndRecovery()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
 
@@ -327,10 +327,12 @@ struct VaultSaveQuiescenceTests {
         #expect(report.cancelledSourceImportIDs.contains(pendingDownload.id))
         #expect(await repo.activeDownloadingSourceIDs.isEmpty)
 
-        // Verify no `.import-*` staging directories remain on disk!
+        // Only tracked cancelled staging is disposable; orphan bytes may be unique.
         let sourcesDir = root.appendingPathComponent("Sources")
         let remainingEntries = try FileManager.default.contentsOfDirectory(at: sourcesDir, includingPropertiesForKeys: nil)
-        #expect(!remainingEntries.contains(where: { $0.lastPathComponent.hasPrefix(".import-") }))
+        #expect(remainingEntries.filter { $0.lastPathComponent.hasPrefix(".import-") }.map(\.lastPathComponent) == [".import-" + orphanStagingID.uuidString])
+        #expect(try Data(contentsOf: root.appendingPathComponent(orphanStagingRelPath + "/original.txt")) == Data("partial bytes".utf8))
+        #expect(!report.cleanedStagingPaths.contains(orphanStagingRelPath))
 
         // Unlock and verify only the committed source exists in the vault.
         let unlocked = try await manager.unlock()
@@ -340,6 +342,7 @@ struct VaultSaveQuiescenceTests {
             accessGate: manager.accessGate
         )
         let scanned = try await unlockedRepo.scan()
+        #expect(try unlockedRepo.contentStore.read(at: orphanStagingRelPath + "/original.txt") == Data("partial bytes".utf8))
         #expect(scanned.sources.map(\.id) == [committedImportID])
         #expect(scanned.issues.isEmpty)
     }
