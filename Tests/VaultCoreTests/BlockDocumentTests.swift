@@ -275,3 +275,25 @@ import Testing
     #expect(blocks.flatMap(\.spans).contains { $0.wikiTarget == "Pertinax" })
     #expect(blocks.contains { $0.style == .code })
 }
+
+@Test func blockNoOpCommandsPreserveOriginalMarkdownAndIdentity() {
+    let source = "First  \nSecond\n    - Child\n"
+    let original = BlockDocumentCodec.decode(source)
+    let first = original.blocks[0].id, second = original.blocks[1].id
+    let child = original.blocks[1].children[0].id
+    let commands: [(BlockMutation, UUID)] = [
+        (.transform(.paragraph), first), (.semantic(nil), first), (.status(nil), first),
+        (.language(nil), first), (.mergeBackward, first), (.move(0), first),
+        (.move(-1), first), (.move(1), second), (.indent, first), (.outdent, first),
+        (.reorder(before: second), first), (.reorderAfter(first), second),
+        (.reorder(before: first), first), (.reorder(before: child), first),
+        (.reorder(before: UUID()), first), (.delete, UUID())
+    ]
+    for (command, id) in commands {
+        var document = original
+        #expect(document.apply(command, to: id) == nil)
+        #expect(document == original)
+        #expect(document.originalSource == source)
+        #expect(BlockDocumentCodec.encode(document) == source)
+    }
+}

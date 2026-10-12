@@ -16,7 +16,7 @@ extension BlockDocument {
     // Every structural operation is atomic on the value document, including entire subtrees.
     @discardableResult public mutating func apply(_ command: BlockMutation, to id: UUID) -> BlockCursor? {
         guard !unsupportedVersion, let path = path(to: id) else { return nil }
-        originalSource = nil
+        let before = blocks
         var cursor = BlockCursor(id)
         switch command {
         case .transform(let kind): update(id) { $0.kind = kind }
@@ -74,7 +74,7 @@ extension BlockDocument {
                 let value = list.remove(at: index); list[index - 1].children.append(value); list[index - 1].metadata.collapsed = false
             }
         case .outdent:
-            guard path.count > 1 else { return cursor }
+            guard path.count > 1 else { return nil }
             let parentIndex = path[path.count - 2], childIndex = path.last!
             siblings(at: Array(path.dropLast(2))) { list in
                 let value = list[parentIndex].children.remove(at: childIndex); list.insert(value, at: parentIndex + 1)
@@ -88,6 +88,9 @@ extension BlockDocument {
                 list.insert(value, at: targetIndex + (after ? 1 : 0))
             }
         }
+        // Invalid and ineffective commands preserve source bytes, identities and timestamps.
+        guard blocks != before else { return nil }
+        originalSource = nil
         return cursor
     }
     public func canReorder(_ id: UUID, before target: UUID) -> Bool {

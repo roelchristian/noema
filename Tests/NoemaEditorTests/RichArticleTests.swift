@@ -381,12 +381,19 @@ import VaultCore
 @Test @MainActor func editorLongDocumentRenderAndReload() {
     let blocks = (0..<1000).map { EditorBlock(runs: [RichRun("Paragraph \($0) with sufficient content for wrapping and editing.")]) }
     let document = BlockDocument(blocks: blocks)
-    let start = Date()
+    let clock = ContinuousClock()
+    let start = clock.now
     let rich = BlockTextStorage.render(document, theme: NoemaTheme())
+    let rendered = clock.now
     let captured = BlockTextStorage.capture(rich, previous: document)
+    let capturedAt = clock.now
+    let serialized = BlockDocumentCodec.encode(captured)
+    let encoded = clock.now
+    let decoded = BlockDocumentCodec.decode(serialized)
+    let decodedAt = clock.now
     #expect(captured.blocks == blocks)
-    #expect(BlockDocumentCodec.decode(BlockDocumentCodec.encode(captured)).blocks == blocks)
-    print("1,000-block render/capture/serialization: \(Date().timeIntervalSince(start)) s")
+    #expect(decoded.blocks == blocks)
+    print("BLOCK_SERVICE_BASELINE blocks=1000 utf16=\(rich.length) bytes=\(serialized.utf8.count) render=\(start.duration(to: rendered)) capture=\(rendered.duration(to: capturedAt)) encode=\(capturedAt.duration(to: encoded)) decode=\(encoded.duration(to: decodedAt))")
 }
 
 @Test @MainActor func editorCrossBlockReplacementPreservesSurvivingChildren() {
@@ -677,4 +684,25 @@ import VaultCore
     #expect(coordinator.document.block(blank.0)?.text.isEmpty == true)
     undo.redo()
     #expect(coordinator.document.block(blank.0)?.text == "A")
+}
+
+@Test @MainActor func editorNoOpMutationsPreserveDocumentBindingAndUndo() {
+    let source = "First  \nSecond\n"
+    let (coordinator, view, window) = editor(source)
+    defer { window.close() }
+    let original = coordinator.document
+    let selection = view.selectedRange()
+    let rendered = view.textStorage!.copy() as! NSAttributedString
+    var writes = 0
+    coordinator.parent = RichArticleView(text: Binding(get: { source }, set: { _ in writes += 1 }), reading: false, locked: false, action: nil, onBegin: {}, onEnd: {}, onWikiLink: { _ in })
+    let commands: [BlockMutation] = [.transform(.paragraph), .semantic(nil), .status(nil), .language(nil), .move(-1), .indent, .outdent, .mergeBackward, .reorder(before: original.blocks[1].id)]
+    for command in commands {
+        coordinator.mutate(command, name: "No change")
+        #expect(coordinator.document == original)
+        #expect(coordinator.lastText == source)
+        #expect(view.selectedRange() == selection)
+        #expect(view.textStorage!.isEqual(to: rendered))
+        #expect(view.undoManager?.canUndo == false)
+        #expect(writes == 0)
+    }
 }

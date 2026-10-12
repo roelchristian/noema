@@ -228,8 +228,14 @@ assertions without timing measurements or historical before/after comparisons.
 
 - 5,000-entry service benchmark targets cached loading below 2 s and search p95
   below 150 ms. Historical scan/index timings are not app launch/render latency.
-- A 1,000-block render/capture/serialize/reload pipeline is a service workload,
-  not sustained interactive typing frame-rate acceptance.
+- The existing 1,000-block fixture was measured on 2026-10-12 on Apple Silicon,
+  macOS 27.0 (26A428), Swift 6.2.4, debug SwiftPM. Three independent process
+  samples gave median (range): render: 109.56 ms (91.16–190.65); capture: 42.00 ms (30.91–59.30); encode: 34.98 ms (23.40–40.69); decode: 51.12 ms (40.30–100.06).
+  Reproduce after building with `./scripts/test.sh --skip-build --skip-update --filter editorLongDocumentRenderAndReload`.
+  Host load was uncontrolled; initial samples overlapped the editor test rerun.
+  These service measurements cover attributed-string rendering/capture and codec
+  encode/decode. They exclude text-view layout, keyboard events, undo, autosave
+  and filesystem delivery, and do not establish live typing frame-rate acceptance.
 - Sixteen synthetic source rows construct metadata without eager excerpt decoding.
   Unchanged synchronization must not rebuild/reformat/sort rows; the benchmark
   asserts exactly 16 row constructions across initial setup and 1,000 updates.

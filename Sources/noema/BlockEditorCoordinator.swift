@@ -116,9 +116,9 @@ extension RichArticleView {
         func transaction(_ name: String, _ change: () -> BlockCursor?) {
             guard let view, view.isEditable, !view.locked, !changing else { return }
             capture(); let before = Snapshot(document: document, selection: view.selectedRange())
-            view.breakUndoCoalescing()
             let cursor = change()
             guard document != before.document else { return }
+            view.breakUndoCoalescing()
             view.undoManager?.beginUndoGrouping()
             view.undoManager?.registerUndo(withTarget: self) { target in target.restore(before, name: name) }
             view.undoManager?.setActionName(name)
