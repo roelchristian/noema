@@ -39,6 +39,8 @@ struct ContentView: View {
     @State private var sourceTablePresentation = SourcesTablePresentation()
     @State private var renamingSource: SourceRecord?
     @State private var sourceName = ""
+    @State private var renamingPageID: UUID?
+    @State private var pageName = ""
     @State private var deletingSource: SourceRecord?
     @AppStorage(EditorPreferences.aiSummaryPlacementKey) private var aiSummaryPlacement = AISummaryPlacement.defaultValue.rawValue
     init(model: AppModel, paneState: WorkspacePaneState? = nil) {
@@ -91,6 +93,8 @@ struct ContentView: View {
         inspectorState.resetForSessionChange()
         renamingSource = nil
         sourceName = ""
+        renamingPageID = nil
+        pageName = ""
         deletingSource = nil
         showPermanentDeletion = false
         permanentDeletion = nil
@@ -188,6 +192,19 @@ struct ContentView: View {
         .confirmationDialog("Move this page to vault trash?", isPresented: $showTrashConfirmation) {
             Button("Move to Trash", role: .destructive) { model.trashPage(trashPageID) }
         } message: { Text("The Markdown file stays recoverable in the vault’s Removed Pages folder for 15 days, unless you restore or permanently delete it sooner.") }
+        .alert("Rename Page", isPresented: Binding(get: { model.isVaultAvailable && renamingPageID != nil }, set: { if !$0 { renamingPageID = nil } })) {
+            TextField("Page title", text: $pageName)
+            Button("Rename") {
+                if model.currentNote?.id == renamingPageID, !model.editingLocked, !model.externalChange {
+                    model.title = pageName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    model.edited()
+                    model.savePage()
+                }
+                renamingPageID = nil
+            }
+            .disabled(pageName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.currentNote?.id != renamingPageID || model.editingLocked || model.externalChange)
+            Button("Cancel", role: .cancel) { renamingPageID = nil }
+        } message: { Text("Existing links continue to resolve using the previous title as an alias.") }
         .alert("Rename Source", isPresented: Binding(get: { model.isVaultAvailable && renamingSource != nil }, set: { if !$0 { renamingSource = nil } })) {
             TextField("File Name", text: $sourceName)
             Button("Rename") {
@@ -1173,6 +1190,30 @@ struct ContentView: View {
                 .help("Return to Library (⌘[)")
                 .accessibilityLabel("Return to Library")
             }
+            if let note = model.currentNote {
+                ToolbarItem(id: "document.edit", placement: .primaryAction) {
+                    Button {
+                        if model.reading { model.beginEditing() } else { model.finishEditing() }
+                    } label: {
+                        Label(model.reading ? "Edit" : "Done", systemImage: model.reading ? "pencil" : "checkmark")
+                    }
+                    .labelStyle(.iconOnly)
+                    .disabled(model.editingLocked)
+                    .help(model.reading ? "Edit Page" : "Finish Editing")
+                    .accessibilityLabel(model.reading ? "Edit Page" : "Finish Editing")
+                }
+                ToolbarItem(id: "document.lock", placement: .primaryAction) {
+                    Button { model.toggleEditingLock() } label: {
+                        Label(note.isEditingLocked ? "Unlock Editing" : "Lock Editing", systemImage: note.isEditingLocked ? "lock.fill" : "lock.open")
+                    }
+                    .labelStyle(.iconOnly)
+                    .disabled(model.editingLockOperations.contains(note.id))
+                    .help(note.isEditingLocked ? "Unlock Editing" : "Lock Editing")
+                    .accessibilityLabel(note.isEditingLocked ? "Unlock Editing" : "Lock Editing")
+                    .accessibilityValue(note.isEditingLocked ? "Locked" : "Unlocked")
+                }
+                ToolbarSpacer(.fixed, placement: .primaryAction)
+            }
             ToolbarItem(placement: .primaryAction) {
                 ToolbarSearchView(model: model, availableWidth: workspaceWidth) {
                     showAllSearchResults = true
@@ -1201,6 +1242,37 @@ struct ContentView: View {
             ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
                 Menu {
+                    if let note = model.currentNote {
+                        Button {
+                            pageName = model.title
+                            renamingPageID = note.id
+                        } label: { Label("Rename Page…", systemImage: "pencil") }
+                        .disabled(model.editingLocked || model.externalChange)
+                        AISummaryMenuCommands(model: model, target: .page(note.id))
+                        Divider()
+                        Button(role: .destructive) {
+                            trashPageID = note.id
+                            showTrashConfirmation = true
+                        } label: { Label("Move Page to Trash…", systemImage: "trash") }
+                        Divider()
+                    } else if let source = model.currentSource {
+                        Button {
+                            sourceName = source.title
+                            renamingSource = source
+                        } label: { Label("Rename Source…", systemImage: "pencil") }
+                        AISummaryMenuCommands(model: model, target: .source(source.id))
+                        if source.metadata.storedFilename.hasSuffix(".md") {
+                            Picker("Source View", selection: $sourceOriginal) {
+                                Text("Read").tag(false)
+                                Text("Original").tag(true)
+                            }
+                        }
+                        Divider()
+                        Button(role: .destructive) { deletingSource = source } label: {
+                            Label("Delete Source…", systemImage: "trash")
+                        }
+                        Divider()
+                    }
                     workspaceCommandButton("Open Another Vault…", .openVault)
                     workspaceCommandButton("Reveal Vault in Finder", .revealVault)
                     workspaceCommandButton("Refresh from Files", .refresh)
@@ -1211,43 +1283,16 @@ struct ContentView: View {
                     workspaceCommandButton("Lock Vault", .lock)
                     workspaceCommandButton("Close Vault", .close)
                 } label: {
-                    Label("Vault Options", systemImage: "ellipsis")
+                    Label("Document and Vault Options", systemImage: "ellipsis")
                 } primaryAction: {
                     ToolbarSplitMenuPresenter.presentMenu(forSymbol: "ellipsis")
                 }
-                .help("Vault options")
-                .accessibilityLabel("Vault Options")
+                .help("Document and vault options")
+                .accessibilityLabel("Document and Vault Options")
             }
             ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) { inspectorToolbarToggle }
         }
-    }
-    // Document actions stay with the document heading; window actions live in the native toolbar.
-    private var headerActions: some View {
-        HStack(spacing: NoemaSpacing.sm) {
-            if model.isVaultAvailable, model.currentNote != nil {
-                if let id = model.currentNote?.id {
-                    AISummaryControls(model: model, target: .page(id))
-                    AIProviderBadge(provider: model.preferredAIProvider(for: .summarizePage))
-                    AISummaryStatus(model: model, target: .page(id))
-                }
-                Button { if model.reading { model.beginEditing() } else { model.finishEditing() } } label: {
-                    Label(model.reading ? "Edit" : "Done", systemImage: model.reading ? "pencil" : "checkmark")
-                }.disabled(model.editingLocked)
-                Button { model.toggleEditingLock() } label: {
-                    Label(model.currentNote?.isEditingLocked == true ? "Unlock Editing" : "Lock Editing", systemImage: model.currentNote?.isEditingLocked == true ? "lock.fill" : "lock.open")
-                }.help(model.currentNote?.isEditingLocked == true ? "Unlock Editing" : "Lock Editing")
-                .disabled(model.currentNote.map { model.editingLockOperations.contains($0.id) } ?? true)
-                Button { trashPageID = model.currentNote?.id; showTrashConfirmation = true } label: {
-                    Label("Move page to vault trash", systemImage: "trash")
-                }.help("Move page to vault trash")
-            } else if model.isVaultAvailable, model.currentSource?.metadata.storedFilename.hasSuffix(".md") == true {
-                Picker("Source view", selection: $sourceOriginal) {
-                    Text("Read").tag(false)
-                    Text("Original").tag(true)
-                }.pickerStyle(.segmented).frame(minWidth: 160)
-            }
-        }.labelStyle(.iconOnly).buttonStyle(.glass).fixedSize(horizontal: true, vertical: false)
     }
     private var pageFooter: some View {
         VStack(alignment: .leading, spacing: NoemaSpacing.md) {
