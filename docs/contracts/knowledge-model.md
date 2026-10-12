@@ -1,10 +1,12 @@
 # Canonical knowledge model
 
-Status: KNOW01 approved design contract. KNOW02 entity/relationship APIs and fresh
-schema-4 staging are implemented; KNOW03 semantic APIs and schema 5 remain pending.
-The decision is [0002](../decisions/0002-canonical-knowledge-model.md). The
-[storage boundary](storage-boundary.md) and [block editor](block-editor.md) remain
-binding for connection ownership, bytes, admission, content identity and editing.
+Status: approved KNOW01 contract, implemented by KNOW02/KNOW03 domain APIs and
+explicit schema-4/5 staging and matching manifest/database admission. Existing
+vault authority never upgrades on open. STOR02B production creation/defaults,
+explicit migration and standing device/archive/crash acceptance remain separate.
+The [decision](../decisions/0002-canonical-knowledge-model.md),
+[storage boundary](storage-boundary.md) and [block editor](block-editor.md) govern
+ownership, access, content identity and editing.
 
 ## Baseline and authority
 

@@ -73,16 +73,26 @@ Page provenance is an ordered `sources` UUID sequence in format 1 frontmatter or
 ## Canonical knowledge foundations
 
 The [knowledge model contract](contracts/knowledge-model.md) and
-[KNOW01 decision](decisions/0002-canonical-knowledge-model.md) define stable
-registered Person, Place and Concept identities, independent Question/Definition
-objects, typed relationships and overlapping block/inline annotations. KNOW02
-implements the entity/relationship foundation through `KnowledgeStore` in explicitly
-selected fresh schema-4 staging. Semantic objects and annotations remain KNOW03 work.
-The existing SQLite actor remains the sole connection/transaction owner. Schema 3
-retains its persisted meaning; KNOW02 adds schema 4 with `canonicalKnowledgeV1`,
-and KNOW03 adds schema 5 with `semanticAnnotationsV1`. Existing annotation
-extensions transfer explicitly to one relational authority with identity and opaque
-payload retention. No page-title identity, AI extraction or tagging UI is introduced.
+[KNOW01 decision](decisions/0002-canonical-knowledge-model.md) govern registered
+Person, Place and Concept identities, independent Question/Definition objects,
+typed relationships and overlapping block/inline annotations. KNOW02 and KNOW03
+implement these domain APIs in the existing SQLite actor through KnowledgeStore
+and SemanticStore; no additional connection or block-text authority is introduced.
+Schema 3 retains its meaning, schema 4 requires canonicalKnowledgeV1, and schema 5
+also requires semanticAnnotationsV1. Manifest, database identity and capability
+checks agree before admission; fresh staging is explicit, with no upgrade on open.
+
+SemanticPageEdit provides verified UTF-16/grapheme-safe editing, structural edits,
+undo and identity-safe page/block duplication with independent annotations and
+copied anchored objects. Use these semantic APIs for object-aware duplication;
+legacy document projections retain conservative unresolved copy provenance.
+Schema-5 annotations have one relational authority. Inline document extensions are
+load/export projections; unchanged whole-block anchors, exact edits and lifecycle
+revision rebasing publish transactionally. Stale/deleted evidence and tombstoned
+identities remain preserved. See the acceptance and lifecycle tests in VaultCoreTests.
+Production creation defaults, authority-changing migration, native tagging UI,
+complete archives, device/accessibility and crash-durability gates remain separate
+STOR02B/03 work. No AI extraction, inference or additional concrete types is added.
 
 ## Identity and evolution
 

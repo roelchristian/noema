@@ -52,5 +52,11 @@ public struct VaultStorageProvider: Sendable {
             schemaVersion: SQLiteBlockStore.knowledgeSchemaVersion, createIfMissing: createIfMissing)
     }
 
+    /// Schema 5 is initialized only through this explicit fresh staging route.
+    func makeSemanticStagingStore(url: URL, vaultID: UUID, createIfMissing: Bool = true) throws -> SQLiteBlockStore {
+        try SQLiteVaultMigration.requireLocalRoot(url.deletingLastPathComponent())
+        return try SQLiteBlockStore(canonicalStagingURL:url, vaultID:vaultID, requiredCapabilities:SQLiteBlockStore.semanticRequiredCapabilities, schemaVersion:SQLiteBlockStore.semanticSchemaVersion, createIfMissing:createIfMissing)
+    }
+
     public static let plaintext = VaultStorageProvider { try PlaintextVaultContentStore(root: $0) }
 }
