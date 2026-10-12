@@ -49,9 +49,9 @@
   },
   {
     "path": "Sources/VaultCore/VaultCreation.swift",
-    "statement": "defer { try? fm.removeItem(at: staging) }",
+    "statement": "try? fm.removeItem(at: staging)",
     "count": 1,
-    "reason": "Parent-owned staging creation, whole-vault publication and failed-staging cleanup outside the eventual vault-relative root."
+    "reason": "Parent-owned failed staging cleanup only after positively observing an empty directory. Nonempty or unreadable staging is preserved and reported to the caller."
   },
   {
     "path": "Sources/VaultCore/VaultCreation.swift",

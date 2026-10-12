@@ -37,10 +37,20 @@ extension FileVaultRepository {
                 }
                 let staging = parent.appendingPathComponent(".noema-create-\(UUID().uuidString)", isDirectory: true)
                 try fm.createDirectory(at: staging, withIntermediateDirectories: false)
-                defer { try? fm.removeItem(at: staging) }
-                _ = try FileVaultRepository.open(root: staging, create: true, storageProvider: storageProvider)
-                // moveItem refuses an occupied destination, including one created after the check.
-                try fm.moveItem(at: staging, to: destination)
+                do {
+                    _ = try FileVaultRepository.open(root: staging, create: true, storageProvider: storageProvider)
+                    // moveItem refuses an occupied destination, including one created after the check.
+                    try fm.moveItem(at: staging, to: destination)
+                } catch {
+                    // Ownership of a temporary root does not make its contents disposable.
+                    // Remove only a positively observed empty staging root; preserve partial
+                    // canonical writes and completed vaults when initialization/publication fails.
+                    if (try? fm.contentsOfDirectory(atPath: staging.path))?.isEmpty == true {
+                        try? fm.removeItem(at: staging)
+                        throw error
+                    }
+                    throw VaultError.storage("Vault creation failed. Staged content was preserved at \(staging.path). \(error.localizedDescription)")
+                }
                 return destination
             }
         }
