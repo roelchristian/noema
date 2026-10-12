@@ -8,7 +8,7 @@ public enum BlockStorageMode: String, Codable, Sendable {
 
 /// Opaque store-issued concurrency evidence, scoped to the vault, page and mode.
 /// Callers must not derive revisions from exported Markdown or editor timestamps.
-public struct BlockStoreRevision: Equatable, Sendable {
+public struct BlockStoreRevision: Codable, Equatable, Sendable {
     public let token: Data
     public init(token: Data) { self.token = token }
 }

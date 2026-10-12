@@ -24,6 +24,7 @@ struct ContentView: View {
     @State private var paneState: WorkspacePaneState
     @State private var workspaceWidth: CGFloat = 1280
     @State private var pageSortOrder: PageSortOrder = .updated
+    @State private var selectedSemanticStatus: String?
     @State private var selectedSemanticFilter: String?
     private var sourceSelection: UUID? { model.librarySourceSelection }
     private var sourceSelectionBinding: Binding<UUID?> {
@@ -94,7 +95,7 @@ struct ContentView: View {
         dismissedExternalChange = false
         sourceOriginal = false
         showAllSearchResults = false
-        selectedSemanticFilter = nil
+        selectedSemanticFilter = nil; selectedSemanticStatus = nil
     }
     private var workspacePresentation: some View {
         Group {
@@ -225,11 +226,16 @@ struct ContentView: View {
     }
     var body: some View {
         workspaceConfirmations
+        .onChange(of: model.semanticInspectionOpenRequest) {
+            guard case .page = inspectorContext else { return }
+            inspectorState.isVisible = true
+            inspectorState.selectTab(.insights, for: inspectorContext)
+        }
         .onChange(of: model.searchText) { model.queryChanged() }
         .onChange(of: model.body) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.title) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false; showAllSearchResults = false }
-        .onChange(of: model.scope) { showAllSearchResults = false; selectedSemanticFilter = nil }
+        .onChange(of: model.scope) { showAllSearchResults = false; selectedSemanticFilter = nil; selectedSemanticStatus = nil }
         .onChange(of: model.workspaceNavigationToken) { showAllSearchResults = false }
         .onChange(of: model.externalChange) { dismissedExternalChange = false }
         // UI.R.REM02: Reconcile even while the inspector is hidden or unmounted.
@@ -382,7 +388,7 @@ struct ContentView: View {
                 Section {
                     sidebarNavigationRow("Pages", symbol: "book.closed", scope: .wiki)
                     sidebarNavigationRow("Sources", symbol: "tray.full", scope: .sources)
-                    sidebarNavigationRow("Semantic Blocks", symbol: "tag", scope: .semantic)
+                    sidebarNavigationRow("Knowledge", symbol: "tag", scope: .semantic)
                 }
                 Section {
                     if model.sidebarRecentItems.isEmpty {
@@ -650,7 +656,7 @@ struct ContentView: View {
     private var pageLibraryContent: some View {
         VStack(spacing: 0) {
             if model.scope == .semantic {
-                semanticBlockList
+                KnowledgeLibraryView(model: model) { semanticBlockList }
             } else if model.rows.isEmpty {
                 ContentUnavailableView("\(model.scopeTitle) is empty", systemImage: model.scope == .sources ? "tray" : "doc.text.magnifyingglass", description: Text(model.scope == .sources ? "Import a text file or paste a source to begin." : "Create a page to start building your wiki."))
                     .frame(maxHeight: .infinity)
@@ -737,12 +743,16 @@ struct ContentView: View {
         }
         .background(theme.color(for: .canvas))
         .safeAreaBar(edge: .top) {
-            if model.scope == .semantic, (!model.semanticRows.isEmpty || model.busy) {
-                SemanticBlocksFilterBar(
-                    options: semanticFilterOptions,
-                    selectedSemantic: $selectedSemanticFilter,
-                    busy: model.busy
-                )
+            if model.scope == .semantic, model.knowledgeFamily == .blocks, (!model.semanticRows.isEmpty || model.busy) {
+                VStack(spacing: 0) {
+                    SemanticBlocksFilterBar(options: semanticFilterOptions, selectedSemantic: $selectedSemanticFilter, busy: model.busy)
+                    Picker("Block status", selection: $selectedSemanticStatus) {
+                        Text("All statuses").tag(nil as String?)
+                        ForEach(Array(Set(model.semanticRows.compactMap(\.status))).sorted(), id: \.self) { status in
+                            Text(status.capitalized).tag(status as String?)
+                        }
+                    }.pickerStyle(.menu).controlSize(.small).padding(.horizontal, NoemaSpacing.md).padding(.bottom, NoemaSpacing.sm)
+                }
             } else if (isPagesScope && !model.tags.isEmpty) || model.busy {
                 HStack(spacing: NoemaSpacing.sm) {
                     if isPagesScope && !model.tags.isEmpty {
@@ -921,7 +931,7 @@ struct ContentView: View {
         SemanticCollectionPresentation.availableFilters(from: model.semanticRows)
     }
     private var filteredSemanticRows: [SemanticBlockHit] {
-        SemanticCollectionPresentation.filteredRows(model.semanticRows, selectedSemantic: selectedSemanticFilter)
+        SemanticCollectionPresentation.filteredRows(model.semanticRows, selectedSemantic: selectedSemanticFilter, selectedStatus: selectedSemanticStatus)
     }
     private var semanticBlockList: some View {
         Group {
@@ -949,10 +959,11 @@ struct ContentView: View {
     }
     private var libraryCount: String {
         if model.scope == .semantic {
+            if model.knowledgeFamily != .blocks { return model.knowledgeFamily.rawValue }
             return SemanticCollectionPresentation.countLabel(
                 filteredCount: filteredSemanticRows.count,
                 totalCount: model.semanticRows.count,
-                selectedSemantic: selectedSemanticFilter
+                selectedSemantic: selectedSemanticFilter ?? selectedSemanticStatus
             )
         }
         let count = model.rows.count

@@ -354,6 +354,80 @@ public actor FileVaultRepository: VaultRepository {
         return try await save(note: note, title: title, body: body, tags: tags, preserveUpdatedAt: false)
     }
 
+    /// Recovery copies preservation data into fresh identities and publishes the entire page once.
+    public func recoverSemanticDraft(_ draft: DraftRecord) async throws -> NoteRecord {
+        try validateAccess(operation: "recoverSemanticDraft")
+        guard let original = draft.semanticEdit else { throw VaultError.invalid("The draft has no semantic state.") }
+        let vault = try await sqliteBlockStore.canonicalVaultRevision()
+        let pages = try await scan().notes
+        var title = draft.title + " (recovered)", suffix = 2
+        while titleExists(title, in: pages) { title = draft.title + " (recovered) \(suffix)"; suffix += 1 }
+        var objects: [UUID: SemanticObjectSnapshot] = [:]
+        for object in original.objects { objects[object.id] = .init(object: object, revision: .init(token: Data())) }
+        for annotation in original.annotations where annotation.referent.disposition != .unresolved {
+            let identity = annotation.referent.identity
+            if ["question", "definition"].contains(identity.kind), objects[identity.id] == nil {
+                objects[identity.id] = try await sqliteBlockStore.loadObject(id: identity.id)
+            }
+        }
+        let pageID = UUID()
+        var edit = try original.duplicatedPage(to: pageID, objects: Array(objects.values))
+        var entityRevisions: [UUID: BlockStoreRevision] = [:], objectRevisions: [UUID: BlockStoreRevision] = [:]
+        for annotation in edit.annotations where annotation.referent.disposition != .unresolved {
+            let identity = annotation.referent.identity
+            if ["question", "definition"].contains(identity.kind) {
+                if !edit.objects.contains(where: { $0.id == identity.id }) { objectRevisions[identity.id] = try await sqliteBlockStore.loadObject(id: identity.id).revision }
+            } else { entityRevisions[identity.id] = try await sqliteBlockStore.loadEntity(id: identity.id).revision }
+        }
+        for object in edit.objects {
+            for id in object.relatedEntityIDs + [object.subjectEntityID].compactMap({ $0 }) {
+                entityRevisions[id] = try await sqliteBlockStore.loadEntity(id: id).revision
+            }
+        }
+        var note = draft.note
+        note.id = pageID; note.title = title; note.aliases = []; note.tags = normalizeTags(draft.tags)
+        note.createdAt = timestamp(); note.updatedAt = note.createdAt; note.editingLocked = false
+        note.relativePath = "sqlite/" + pageID.uuidString.lowercased(); note.contentHash = ""
+        note.body = BlockDocumentCodec.encode(edit.document); note.inlineTags = MarkdownService.analyze(note.body).tags
+        edit.metadata = note
+        let result = try await sqliteBlockStore.saveSemanticPage(edit, condition: .createOnly,
+            expectedObjectRevisions: objectRevisions, expectedEntityRevisions: entityRevisions,
+            expectedVaultRevision: vault, operationID: UUID())
+        return semanticRecord(note, snapshot: result.value.snapshot)
+    }
+
+    private func semanticRecord(_ metadata: NoteRecord, snapshot: BlockStoreSnapshot) -> NoteRecord {
+        var record = metadata, portable = snapshot.document
+        if !portable.unsupportedVersion { portable.originalSource = nil }
+        record.body = BlockDocumentCodec.encode(portable)
+        record.contentHash = snapshot.revision.token.base64EncodedString()
+        record.inlineTags = MarkdownService.analyze(record.body).tags
+        return record
+    }
+
+    public func saveSemantic(note: NoteRecord, title: String, tags: [String], edit: SemanticPageEdit,
+        expectedPageRevision: BlockStoreRevision, expectedEntityRevisions: [UUID: BlockStoreRevision],
+        expectedObjectRevisions: [UUID: BlockStoreRevision], expectedVaultRevision: BlockStoreRevision) async throws -> (NoteRecord, SemanticPageSnapshot) {
+        try validateAccess(operation: "saveSemantic")
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { throw VaultError.invalid("A wiki page needs a title.") }
+        let pages = try await scan().notes
+        guard let current = pages.first(where: { $0.id == note.id }), !current.isEditingLocked,
+              edit.pageID == note.id else { throw VaultError.invalid("This page is unavailable or locked.") }
+        guard !titleExists(title, in: pages.filter { $0.id != note.id }) else { throw VaultError.duplicateTitle(title) }
+        var updated = note
+        updated.title = title; updated.tags = normalizeTags(tags); updated.updatedAt = timestamp()
+        updated.body = BlockDocumentCodec.encode(edit.document)
+        updated.inlineTags = MarkdownService.analyze(updated.body).tags
+        if current.title != title { updated.aiTitleProvenance = nil }
+        if normalized(title) != normalized(note.title), !updated.aliases.contains(note.title) { updated.aliases.append(note.title) }
+        var value = edit; value.metadata = updated
+        let result = try await sqliteBlockStore.saveSemanticPage(value, condition: .replace(expected: expectedPageRevision),
+            expectedObjectRevisions: expectedObjectRevisions, expectedEntityRevisions: expectedEntityRevisions,
+            expectedVaultRevision: expectedVaultRevision, operationID: UUID())
+        return (semanticRecord(updated, snapshot: result.value.snapshot), result.value)
+    }
+
     private func save(note: NoteRecord, title: String, body: String, tags: [String], preserveUpdatedAt: Bool) async throws -> NoteRecord {
         try validateAccess(operation: "save")
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)

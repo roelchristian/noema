@@ -14,6 +14,7 @@ struct SemanticBlockHit: Identifiable, Sendable {
     var pageTitle: String
     var semantic: String
     var preview: String
+    var status: String? = nil
     var id: String { "\(pageID):\(blockID)" }
     func matches(_ query: String) -> Bool {
         let searchable = "\(semantic) \(preview) \(pageTitle)"
@@ -29,7 +30,7 @@ struct SemanticBlockHit: Identifiable, Sendable {
                 let preview = block.text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
                 let searchable = "\(tag) \(preview) \(note.title)"
                 guard terms.allSatisfy({ searchable.localizedCaseInsensitiveContains($0) }) else { return nil }
-                return Self(pageID: note.id, blockID: block.id, pageTitle: note.title, semantic: tag, preview: preview)
+                return Self(pageID: note.id, blockID: block.id, pageTitle: note.title, semantic: tag, preview: preview, status: block.metadata.status)
             }
         }
     }
@@ -206,6 +207,11 @@ struct AISuggestion: Identifiable, Sendable {
     var trashedPages: [TrashedItem] = []
     private(set) var trashOperationInProgress = false
     var rows: [LibraryRow] = []
+    var knowledgeFamily: KnowledgeLibraryFamily = .blocks
+    var knowledgeCatalogue: KnowledgeCatalogueSnapshot?
+    var knowledgeCatalogueLoading = false
+    var knowledgeCatalogueError: String?
+    @ObservationIgnored private var knowledgeCatalogueTicket = UUID()
     var semanticRows: [SemanticBlockHit] = []
     private var semanticRowsRevision: UUID?
     private var semanticRowsEditorRevision: UUID?
@@ -274,6 +280,19 @@ struct AISuggestion: Identifiable, Sendable {
             }
         }
     }
+    @ObservationIgnored weak var semanticCoordinator: RichArticleView.Coordinator?
+    var pendingSemanticOccurrence: PendingSemanticOccurrence?
+    @ObservationIgnored private var semanticOccurrenceNavigationTicket = UUID()
+    var semanticInspectionPageID: UUID?
+    var semanticInspectionRecords: [SemanticInspectionRecord] = []
+    var semanticInspectionSelectionIDs: [UUID] = []
+    var semanticInspectionFocusID: UUID?
+    var semanticInspectionOpenRequest = UUID()
+    var semanticInspectionLoading = false
+    var semanticInspectionError: String?
+    @ObservationIgnored private var semanticInspectionTicket = UUID()
+    var canAnnotateSelection = false
+    var semanticSavedRevision: UInt64 = 0
     @ObservationIgnored var flushEditorPublication: (() -> Void)?
     var tagInput = "" { didSet { if tagInput != oldValue { cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate() } } }
     var preview: [PreviewBlock] = []
@@ -540,10 +559,10 @@ struct AISuggestion: Identifiable, Sendable {
     var editedTags: [String] { normalizeTags(tagInput.components(separatedBy: ",")) }
     var dirty: Bool {
         guard let note = currentNote else { return false }
-        return title != note.title || body != note.body || editedTags != note.tags
+        return title != note.title || body != note.body || editedTags != note.tags || (semanticCoordinator?.session.semanticEdit != nil && (semanticCoordinator?.session.revision ?? 0) != semanticSavedRevision)
     }
     var scopeTitle: String {
-        switch scope { case .wiki: "Pages"; case .sources: "Sources"; case .semantic: "Semantic Blocks"; case .trash: "Trash"; case .tag(let tag): "#" + tag }
+        switch scope { case .wiki: "Pages"; case .sources: "Sources"; case .semantic: "Knowledge"; case .trash: "Trash"; case .tag(let tag): "#" + tag }
     }
     var activeTagFilter: String? {
         if case .tag(let tag) = scope { return tag }
@@ -757,7 +776,12 @@ struct AISuggestion: Identifiable, Sendable {
     }
 
     private func clearSessionUIState() {
+        pendingSemanticOccurrence = nil; semanticOccurrenceNavigationTicket = UUID()
+        semanticInspectionTicket = UUID(); semanticInspectionRecords = []
+        semanticInspectionPageID = nil; semanticInspectionSelectionIDs = []; semanticInspectionFocusID = nil
+        semanticInspectionLoading = false; semanticInspectionError = nil; semanticCoordinator = nil
         libraryRowsRevision = nil; libraryRowsScope = nil; libraryRowsEditorRevision = nil
+        knowledgeCatalogueTicket = UUID(); knowledgeCatalogue = nil; knowledgeCatalogueLoading = false; knowledgeCatalogueError = nil
         semanticRowsRevision = nil; semanticRowsEditorRevision = nil
         notes = []; sources = []; rows = []; semanticRows = []; trashedPages = []; recoveredDrafts = []; damagedRecoveryEntries = []; issues = []
         dismissedVaultNotices = []
@@ -2334,6 +2358,7 @@ struct AISuggestion: Identifiable, Sendable {
     }
     func select(_ id: UUID?, scope targetScope: LibraryScope? = nil, block blockID: UUID? = nil, previewSource: Bool = false) {
         guard canInteractWithWorkspace, canOperateOnLoadedContent else { return }
+        pendingSemanticOccurrence = nil; semanticOccurrenceNavigationTicket = UUID()
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: id)
         Task {
             await waitForSave()
@@ -2412,6 +2437,9 @@ struct AISuggestion: Identifiable, Sendable {
         aiSummaryNotice = nil
         editorAction = nil
         if isDifferentPage {
+            semanticInspectionPageID = nil; semanticInspectionRecords = []
+            semanticInspectionSelectionIDs = []; semanticInspectionFocusID = nil
+            semanticInspectionTicket = UUID()
             backlinks = []
             outgoingLinkTargets = []
         }
@@ -2503,6 +2531,7 @@ struct AISuggestion: Identifiable, Sendable {
         requestAISuggestion(target: .source(source.id), action: .classifyLCC, provider: provider)
     }
     func openBlockURL(_ url: URL) {
+        pendingSemanticOccurrence = nil; semanticOccurrenceNavigationTicket = UUID()
         guard url.scheme == "noema", url.host == "page", let noteID = UUID(uuidString: url.lastPathComponent),
               let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "block" })?.value, let blockID = UUID(uuidString: value) else { return }
         guard isVaultAvailable, !busy, canInteractWithWorkspace else { pendingBlockURL = url; return }
@@ -2609,11 +2638,39 @@ struct AISuggestion: Identifiable, Sendable {
         saving = true; saveStatus = "Saving…"
         let trimmedLCC = lccInput.trimmingCharacters(in: .whitespacesAndNewlines)
         note.lcc = trimmedLCC.isEmpty ? nil : trimmedLCC
-        let draft = DraftRecord(note: note, title: title, body: body, tags: editedTags)
+        let editorSnapshot = semanticCoordinator?.session.snapshot()
+        var draft = DraftRecord(note: note, title: title, body: body, tags: editedTags)
+        draft.semanticEdit = editorSnapshot?.semanticEdit
         do {
-            wordCount = await Task.detached { BlockDocumentCodec.markdownBody(draft.body).split(whereSeparator: \.isWhitespace).count }.value
+            let draftBody = draft.body
+            wordCount = await Task.detached { BlockDocumentCodec.markdownBody(draftBody).split(whereSeparator: \.isWhitespace).count }.value
             try await recovery.store(draft)
-            let saved = try await repository.save(note: note, title: draft.title, body: draft.body, tags: draft.tags)
+            let saved: NoteRecord
+            if let snapshot = editorSnapshot, let edit = snapshot.semanticEdit,
+               let pageRevision = semanticCoordinator?.session.pageRevision {
+                let store = repository.sqliteBlockStore
+                var entities = snapshot.expectedEntityRevisions, objects = snapshot.expectedObjectRevisions
+                for annotation in edit.annotations where annotation.referent.disposition != .unresolved {
+                    let target = annotation.referent.identity
+                    if ["question", "definition"].contains(target.kind) {
+                        if objects[target.id] == nil, !edit.objects.contains(where: { $0.id == target.id }) { objects[target.id] = try await store.loadObject(id: target.id).revision }
+                    } else if entities[target.id] == nil { entities[target.id] = try await store.loadEntity(id: target.id).revision }
+                }
+                let vault = try await store.canonicalVaultRevision()
+                let result = try await repository.saveSemantic(note: note, title: draft.title, tags: draft.tags, edit: edit,
+                    expectedPageRevision: pageRevision, expectedEntityRevisions: entities,
+                    expectedObjectRevisions: objects, expectedVaultRevision: vault)
+                saved = result.0
+                guard generation == ticket, canOperateOnLoadedContent,
+                    semanticCoordinator?.session.identity == snapshot.identity else { saving = false; return false }
+                if semanticCoordinator?.session.acceptSemanticPublication(result.1, for: snapshot) == true {
+                    semanticCoordinator?.refreshSemanticRanges()
+                    semanticSavedRevision = snapshot.revision
+                    if semanticCoordinator?.session.revision == snapshot.revision { semanticCoordinator?.lastText = saved.body }
+                }
+            } else {
+                saved = try await repository.save(note: note, title: draft.title, body: draft.body, tags: draft.tags)
+            }
             guard generation == ticket, canOperateOnLoadedContent else { saving = false; return false }
             recordPageRename(saved.id, from: note.title, to: saved.title)
             if currentNote?.id == saved.id {
@@ -2850,7 +2907,7 @@ struct AISuggestion: Identifiable, Sendable {
         Task {
             if dirty, let note = currentNote, let recovery {
                 do {
-                    try await recovery.store(DraftRecord(note: note, title: title, body: body, tags: editedTags))
+                    try await recovery.store(DraftRecord(note: note, title: title, body: body, tags: editedTags, semanticEdit: semanticCoordinator?.session.semanticEdit))
                     let drafts = try await recovery.listing()
                     guard isCompletionValid(completionTicket, operation: "reloadDiskVersion.drafts") else { return }
                     applyRecoveryListing(drafts)
@@ -2877,8 +2934,14 @@ struct AISuggestion: Identifiable, Sendable {
             guard isCompletionValid(completionTicket, operation: "saveDraftAsNewPage.start"), let repository else { return }
             let originalID = recovered?.id ?? currentNote?.id
             do {
-                var note = try await repository.create(title: (recovered?.title ?? title) + " (recovered)", body: recovered?.body ?? body)
-                note = try await repository.save(note: note, title: note.title, body: note.body, tags: recovered?.tags ?? editedTags)
+                let preservationDraft = recovered ?? currentNote.map { DraftRecord(note: $0, title: title, body: body, tags: editedTags, semanticEdit: semanticCoordinator?.session.semanticEdit) }
+                let note: NoteRecord
+                if let preservationDraft, preservationDraft.semanticEdit != nil {
+                    note = try await repository.recoverSemanticDraft(preservationDraft)
+                } else {
+                    let created = try await repository.create(title: (recovered?.title ?? title) + " (recovered)", body: recovered?.body ?? body)
+                    note = try await repository.save(note: created, title: created.title, body: created.body, tags: recovered?.tags ?? editedTags)
+                }
                 if let originalID { try await recovery?.remove(originalID) }
                 let drafts = try await recovery?.listing() ?? RecoveryListing()
                 guard isCompletionValid(completionTicket, operation: "saveDraftAsNewPage") else { return }
@@ -3587,5 +3650,289 @@ extension AppModel {
             if aiPageOperationID == identity { errorMessage = Self.cloudError(error) }
             return false
         }
+    }
+}
+
+
+extension AppModel {
+    func configureSemanticEditor(_ coordinator: RichArticleView.Coordinator?) {
+        semanticCoordinator = coordinator; semanticSavedRevision = 0
+        guard let coordinator, let repository, let pageID = currentNote?.id else { return }
+        let identity = coordinator.session.identity, localRevision = coordinator.session.revision
+        Task { @MainActor [weak self, weak coordinator] in
+            do {
+                let snapshot = try await repository.sqliteBlockStore.loadSemanticPage(pageID: pageID)
+                guard let self, let coordinator else { return }
+                var loaded = snapshot.snapshot.document, visible = coordinator.document
+                loaded.originalSource = nil; visible.originalSource = nil
+                guard self.canOperateOnLoadedContent,
+                    coordinator.session.identity == identity, coordinator.session.revision == localRevision,
+                    BlockDocumentCodec.encode(visible) == BlockDocumentCodec.encode(loaded) else { return }
+                coordinator.session.load(snapshot, identity: identity, selection: coordinator.session.selection)
+                self.semanticSavedRevision = 0
+                coordinator.view?.locked = coordinator.parent.locked || coordinator.document.unsupportedVersion
+                coordinator.view?.isEditable = !coordinator.parent.reading && coordinator.view?.locked == false
+                coordinator.refreshSemanticRanges()
+                coordinator.updateAnnotationAvailability()
+                self.revealPendingSemanticOccurrence(in: coordinator)
+            } catch { self?.errorMessage = error.localizedDescription }
+        }
+    }
+    func annotationChoices() async throws -> [EditorAnnotationChoice] {
+        guard canOperateOnLoadedContent, let repository, let pageID = currentNote?.id else { throw VaultError.unavailable("The vault is unavailable.") }
+        let store = repository.sqliteBlockStore
+        let entities = try await store.searchEntities(query: "", limit: 1000)
+        let objects = try await store.objects(pageID: pageID)
+        return entities.filter { $0.entity.lifecycle == .live }.map(EditorAnnotationChoice.entity)
+            + objects.filter { $0.object.lifecycle == .live }.map(EditorAnnotationChoice.object)
+    }
+    func annotateSelection(_ coordinator: RichArticleView.Coordinator, _ blockID: UUID, _ range: NSRange,
+        _ choice: EditorAnnotationChoice, _ localRevision: UInt64) async throws {
+        guard canOperateOnLoadedContent, !reading, !editingLocked, !editorReadOnly, !saving,
+              coordinator === semanticCoordinator, coordinator.session.revision == localRevision,
+              let repository else { throw VaultError.invalid("The selection changed or the editor is unavailable.") }
+        let store = repository.sqliteBlockStore
+        let referent: SemanticReferent
+        let referentRevision: BlockStoreRevision?
+        var object: SemanticObject?
+        switch choice {
+        case .entity(let snapshot):
+            referent = .init(identity: .init(kind: snapshot.entity.typeKey, id: snapshot.entity.id)); referentRevision = snapshot.revision
+        case .object(let snapshot):
+            referent = .init(identity: .init(kind: snapshot.object.typeKey, id: snapshot.object.id)); referentRevision = snapshot.revision
+        case .newEntity(let typeKey, let label):
+            let vault = try await store.canonicalVaultRevision()
+            let created = try await store.createEntity(.init(typeKey: typeKey, label: label), expectedVaultRevision: vault, operationID: UUID())
+            referent = .init(identity: .init(kind: typeKey, id: created.value.entity.id)); referentRevision = created.value.revision
+        case .newObject(let typeKey, let text):
+            let value = SemanticObject(typeKey: typeKey, properties: typeKey == "question" ? .init(properties: ["questionText": .string(text)]) : .init(), definitionText: typeKey == "definition" ? text : nil, term: typeKey == "definition" ? text : nil)
+            object = value; referent = .init(identity: .init(kind: typeKey, id: value.id)); referentRevision = nil
+        }
+        guard coordinator.session.revision == localRevision, coordinator === semanticCoordinator,
+              canOperateOnLoadedContent, !saving else { throw VaultError.invalid("The selection changed. Select it again.") }
+        try coordinator.commitAnnotation(blockID: blockID, range: range, referent: referent, referentRevision: referentRevision, object: object)
+        edited()
+    }
+}
+
+
+extension AppModel {
+    var canEditSemanticTarget: Bool { canOperateOnLoadedContent && !editingLocked && !saving }
+    var canEditSemanticAssociation: Bool {
+        canEditSemanticTarget && !reading && semanticCoordinator?.session.semanticEdit != nil && semanticCoordinator?.view?.hasMarkedText() != true
+    }
+    func semanticSelectionChanged(_ ids: [UUID]) {
+        guard semanticInspectionSelectionIDs != ids else { return }
+        semanticInspectionSelectionIDs = ids
+    }
+    func inspectSemanticAssociation(_ id: UUID) {
+        guard canOperateOnLoadedContent, let pageID = currentNote?.id else { return }
+        semanticInspectionFocusID = id; semanticInspectionSelectionIDs = [id]
+        semanticInspectionOpenRequest = UUID()
+        Task { await refreshSemanticInspection(pageID: pageID) }
+    }
+    func refreshSemanticInspection(pageID: UUID) async {
+        guard canOperateOnLoadedContent, currentNote?.id == pageID, let repository else { return }
+        let ticket = UUID(), sessionID = sessionState.sessionID
+        semanticInspectionTicket = ticket; semanticInspectionLoading = true
+        do {
+            let store = repository.sqliteBlockStore
+            let annotations: [SemanticAnnotation]
+            if let editor = semanticCoordinator, editor.session.identity.pageID == pageID, let edit = editor.session.semanticEdit {
+                annotations = edit.annotations
+            } else { annotations = try await store.loadSemanticPage(pageID: pageID).annotations.map(\.annotation) }
+            var records: [SemanticInspectionRecord] = []
+            for annotation in annotations where annotation.anchorDisposition != .deleted {
+                let identity = annotation.referent.identity
+                var target: SemanticInspectionTarget = .unavailable(identity), subject: KnowledgeEntitySnapshot?, occurrences: [SemanticAnnotationSnapshot] = []
+                if annotation.referent.disposition != .unresolved {
+                    if ["question", "definition"].contains(identity.kind) {
+                        if let object = try? await store.loadObject(id: identity.id) {
+                            target = .object(object)
+                            if let id = object.object.subjectEntityID { subject = try? await store.loadEntity(id: id) }
+                        }
+                    } else if let entity = try? await store.loadEntity(id: identity.id) {
+                        target = .entity(entity); occurrences = try await store.occurrences(entityID: identity.id)
+                    }
+                }
+                let previews = try await semanticOccurrencePreviews(occurrences.map(\.annotation), store: store)
+                records.append(.init(annotation: annotation, target: target, subject: subject, occurrences: occurrences, occurrencePreviews: previews))
+            }
+            guard semanticInspectionTicket == ticket, sessionState.sessionID == sessionID,
+                currentNote?.id == pageID, canOperateOnLoadedContent else { return }
+            semanticInspectionPageID = pageID; semanticInspectionRecords = records; semanticInspectionLoading = false
+        } catch {
+            guard semanticInspectionTicket == ticket, currentNote?.id == pageID else { return }
+            semanticInspectionLoading = false; semanticInspectionError = error.localizedDescription
+        }
+    }
+    func semanticOccurrencePreviews(_ annotations: [SemanticAnnotation], store: SQLiteBlockStore) async throws -> [SemanticOccurrencePreview] {
+        let trashed = Set(try await store.allTrashedPages().map(\.id))
+        var pages: [UUID: (record: NoteRecord, snapshot: BlockStoreSnapshot)] = [:]
+        var unavailable = Set<UUID>()
+        var previews: [SemanticOccurrencePreview] = []
+        for annotation in annotations {
+            if let id = annotation.location.pageID, pages[id] == nil, !unavailable.contains(id) {
+                do { pages[id] = try await store.loadPage(pageID: id) }
+                catch { unavailable.insert(id) }
+            }
+            let page = annotation.location.pageID.flatMap { pages[$0] }
+            previews.append(.make(annotation: annotation, record: page?.record, snapshot: page?.snapshot,
+                trashed: annotation.location.pageID.map { trashed.contains($0) } ?? false))
+        }
+        return previews
+    }
+    func navigateSemanticAssociation(_ annotation: SemanticAnnotation) {
+        Task { _ = await navigateSemanticOccurrence(annotation) }
+    }
+    @discardableResult func navigateSemanticOccurrence(_ requested: SemanticAnnotation) async -> Bool {
+        guard canOperateOnLoadedContent, let repository, let pageID = requested.location.pageID else {
+            semanticInspectionError = "This occurrence has no available page location."; return false
+        }
+        let ticket = UUID(), sessionID = sessionState.sessionID
+        semanticOccurrenceNavigationTicket = ticket; semanticInspectionError = nil
+        guard await saveCurrent(), canOperateOnLoadedContent, sessionState.sessionID == sessionID else { return false }
+        do {
+            let store = repository.sqliteBlockStore
+            let semantic = try await store.loadSemanticPage(pageID: pageID)
+            guard semanticOccurrenceNavigationTicket == ticket, sessionState.sessionID == sessionID, canOperateOnLoadedContent else { return false }
+            guard let current = semantic.annotations.first(where: { $0.annotation.id == requested.id })?.annotation,
+                current.referent.identity == requested.referent.identity else {
+                semanticInspectionError = "This association is no longer at the captured location."; return false
+            }
+            let page = try await store.loadPage(pageID: pageID)
+            let trashed = try await store.allTrashedPages().contains { $0.id == pageID }
+            guard semantic.snapshot.revision == page.snapshot.revision else {
+                semanticInspectionError = "This page changed. Refresh its occurrences."; return false
+            }
+            let preview = SemanticOccurrencePreview.make(annotation: current, record: page.record, snapshot: page.snapshot, trashed: trashed)
+            guard preview.canNavigate, let blockID = current.location.blockID else {
+                semanticInspectionError = preview.state.rawValue + ". The preservation record is retained."; return false
+            }
+            guard semanticOccurrenceNavigationTicket == ticket, sessionState.sessionID == sessionID, canOperateOnLoadedContent else { return false }
+            pendingSemanticOccurrence = .init(pageID: pageID, blockID: blockID, annotationID: current.id)
+            if pageID == currentNote?.id, let coordinator = semanticCoordinator,
+                coordinator.session.pageRevision == page.snapshot.revision {
+                return revealPendingSemanticOccurrence(in: coordinator)
+            }
+            autosaveTask?.cancel(); scope = .wiki; searchText = ""; reading = true
+            if let index = notes.firstIndex(where: { $0.id == pageID }) { notes[index] = page.record } else { notes.append(page.record) }
+            selectedID = pageID; currentSource = nil; apply(page.record)
+            selectedSemanticID = "\(pageID):\(blockID)"
+            editorAction = EditorAction(operation: .block(blockID))
+            recordSidebarAccess(.semanticBlock(pageID: pageID, blockID: blockID))
+            return true
+        } catch {
+            if semanticOccurrenceNavigationTicket == ticket, sessionState.sessionID == sessionID {
+                semanticInspectionError = "Occurrence unavailable: " + error.localizedDescription
+            }
+            return false
+        }
+    }
+    @discardableResult func revealPendingSemanticOccurrence(in coordinator: RichArticleView.Coordinator) -> Bool {
+        guard let pending = pendingSemanticOccurrence, coordinator.session.identity.pageID == pending.pageID,
+            currentNote?.id == pending.pageID, let view = coordinator.view else { return false }
+        guard let entry = view.semanticRangeIndex.entriesByBlock[pending.blockID]?.first(where: { $0.annotation.id == pending.annotationID }) else {
+            pendingSemanticOccurrence = nil
+            semanticInspectionError = "This annotation cannot be displayed at its captured location."; return false
+        }
+        pendingSemanticOccurrence = nil
+        view.setSelectedRange(entry.range); view.scrollRangeToVisible(entry.range)
+        inspectSemanticAssociation(pending.annotationID)
+        return true
+    }
+    func saveInspectedTarget(_ target: SemanticInspectionTarget, name: String, detail: String, answered: Bool, answer: String) async -> Bool {
+        guard canEditSemanticTarget, let repository else { return false }
+        let pageID = currentNote?.id
+        semanticInspectionError = nil
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            semanticInspectionError = "Enter a name or question text."; return false
+        }
+        guard await saveCurrent(), currentNote?.id == pageID, canEditSemanticTarget else { return false }
+        let sessionID = sessionState.sessionID, saveGeneration = generation
+        saving = true
+        defer { if generation == saveGeneration { saving = false; if dirty { edited() } } }
+        do {
+            let store = repository.sqliteBlockStore, vault = try await repository.sqliteBlockStore.canonicalVaultRevision()
+            let identity: EntityIdentity, revision: BlockStoreRevision
+            switch target {
+            case .entity(let value):
+                let result = try await store.updateEntity(id: value.entity.id,
+                    patch: .init(label: name, description: detail.isEmpty ? nil : detail, clearDescription: detail.isEmpty),
+                    expected: value.revision, expectedVaultRevision: vault, operationID: UUID())
+                identity = .init(kind: result.value.entity.typeKey, id: result.value.entity.id); revision = result.value.revision
+            case .object(let value):
+                let patch = value.object.typeKey == "question" ? SemanticObjectPatch(questionStatus: answered ? .answered : .unanswered,
+                    answerText: answer, properties: ["questionText": .string(name)]) : SemanticObjectPatch(definitionText: detail, term: name)
+                let result = try await store.updateObject(id: value.object.id, patch: patch,
+                    expected: value.revision, expectedVaultRevision: vault, operationID: UUID())
+                identity = .init(kind: result.value.object.typeKey, id: result.value.object.id); revision = result.value.revision
+            case .unavailable: return false
+            }
+            guard sessionState.sessionID == sessionID, canOperateOnLoadedContent else { return false }
+            semanticCoordinator?.session.acceptReferentRevision(identity, revision: revision)
+            if let current = currentNote?.id { await refreshSemanticInspection(pageID: current) }
+            await refreshKnowledgeCatalogue()
+            return true
+        } catch { if sessionState.sessionID == sessionID { semanticInspectionError = error.localizedDescription }; return false }
+    }
+    func removeInspectedAssociation(_ id: UUID) async -> Bool {
+        await mutateInspectedAssociation(.remove(annotationID: id), referentRevision: nil)
+    }
+    func replaceInspectedAssociation(_ id: UUID, choice: EditorAnnotationChoice) async -> Bool {
+        switch choice {
+        case .entity(let value):
+            return await mutateInspectedAssociation(.replace(annotationID: id, referent: .init(identity: .init(kind: value.entity.typeKey, id: value.entity.id)), designation: value.entity.typeKey), referentRevision: value.revision)
+        case .object(let value):
+            return await mutateInspectedAssociation(.replace(annotationID: id, referent: .init(identity: .init(kind: value.object.typeKey, id: value.object.id)), designation: value.object.typeKey), referentRevision: value.revision)
+        default: semanticInspectionError = "Choose an existing canonical target."; return false
+        }
+    }
+    private func mutateInspectedAssociation(_ command: EditorAnnotationCommand, referentRevision: BlockStoreRevision?) async -> Bool {
+        guard canEditSemanticAssociation, let coordinator = semanticCoordinator, let pageID = currentNote?.id else { return false }
+        semanticInspectionError = nil
+        do {
+            try coordinator.commitAssociationCommand(command, referentRevision: referentRevision)
+            edited()
+            guard await saveCurrent() else { semanticInspectionError = errorMessage ?? "The association draft is preserved."; return false }
+            semanticInspectionSelectionIDs = []
+            await refreshSemanticInspection(pageID: pageID)
+            return true
+        } catch { semanticInspectionError = error.localizedDescription; return false }
+    }
+}
+
+
+extension AppModel {
+    func refreshKnowledgeCatalogue() async {
+        guard canOperateOnLoadedContent, let repository else { return }
+        let ticket = UUID(), sessionID = sessionState.sessionID
+        knowledgeCatalogueTicket = ticket; knowledgeCatalogueLoading = true; knowledgeCatalogueError = nil
+        do {
+            let catalogue = try await repository.sqliteBlockStore.knowledgeCatalogue()
+            guard knowledgeCatalogueTicket == ticket, sessionState.sessionID == sessionID, canOperateOnLoadedContent else { return }
+            knowledgeCatalogue = catalogue; knowledgeCatalogueLoading = false
+        } catch {
+            guard knowledgeCatalogueTicket == ticket, sessionState.sessionID == sessionID else { return }
+            knowledgeCatalogueLoading = false; knowledgeCatalogueError = error.localizedDescription
+        }
+    }
+    func catalogueOccurrencePreviews(target: SemanticInspectionTarget) async throws -> [SemanticOccurrencePreview] {
+        guard canOperateOnLoadedContent, let repository else { throw VaultError.unavailable("The vault is unavailable.") }
+        let store = repository.sqliteBlockStore
+        let annotations: [SemanticAnnotation]
+        switch target {
+        case .entity(let value): annotations = try await store.occurrences(entityID: value.entity.id).map(\.annotation)
+        case .object(let value): annotations = (try await store.knowledgeCatalogue()).annotations.map(\.annotation).filter { $0.referent.identity.id == value.object.id && $0.referent.identity.kind == value.object.typeKey }
+        case .unavailable: annotations = []
+        }
+        return try await semanticOccurrencePreviews(annotations, store: store)
+    }
+}
+
+extension AppModel {
+    func catalogueAnnotationPreview(_ annotation: SemanticAnnotation) async throws -> [SemanticOccurrencePreview] {
+        guard canOperateOnLoadedContent, let repository else { throw VaultError.unavailable("The vault is unavailable.") }
+        return try await semanticOccurrencePreviews([annotation], store: repository.sqliteBlockStore)
     }
 }

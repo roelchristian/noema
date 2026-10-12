@@ -84,6 +84,7 @@ extension RichArticleView {
             clearBlockSelection()
             session.load(BlockDocumentCodec.decode(source), identity: .init(pageID: parent.noteID, vaultID: parent.vaultID, sessionID: parent.sessionID), selection: view?.selectedRange() ?? NSRange(location: 0, length: 0))
             lastText = source
+            parent.onSemanticLoad?(self)
             suggestions.close(); render(selection: view?.selectedRange() ?? NSRange(location: 0, length: 0))
         }
         func render(selection: NSRange) {
@@ -109,6 +110,7 @@ extension RichArticleView {
             let limit = selection.length == 0 ? max(0, count - 1) : count
             let location = min(selection.location, limit)
             view.setSelectedRange(NSRange(location: location, length: min(selection.length, max(0, count - location))))
+            refreshSemanticRanges()
             session.selection = view.selectedRange(); lastTheme = parent.theme; lastTypography = parent.typography; changing = false; updateTypingAttributes()
         }
         /// Preference changes only replace attributes when the visible text is
@@ -156,6 +158,7 @@ extension RichArticleView {
             lastTypography = typography
             changing = false
             updateTypingAttributes()
+            refreshSemanticRanges()
             view.needsDisplay = true
         }
         func capture() {
@@ -168,6 +171,7 @@ extension RichArticleView {
             }
         }
         func publish() {
+            refreshSemanticRanges()
             guard parent.text == lastText else { return }
             session.selection = view?.selectedRange() ?? session.selection
             let snapshot = session.snapshot()
@@ -217,6 +221,7 @@ extension RichArticleView {
         func restore(_ snapshot: Snapshot, name: String, blockSelection: Set<UUID> = []) {
             guard let view, snapshot.identity == session.identity, snapshot.generation == session.generation else { return }
             session.selection = view.selectedRange()
+            updateAnnotationAvailability()
             let inverse = session.snapshot()
             let inverseBlocks = selectedBlockIDs
             view.undoManager?.registerUndo(withTarget: self) { target in target.restore(inverse, name: name, blockSelection: inverseBlocks) }
@@ -315,12 +320,15 @@ extension RichArticleView {
             changing = false
         }
         func textViewDidChangeSelection(_ notification: Notification) {
+            updateAnnotationAvailability()
             guard !changing, let view, !view.hasMarkedText(), !view.isSettingMarkedText else { return }
             if view.selectedRange().length == 0, view.string.hasSuffix("\n"), view.selectedRange().location == view.string.utf16.count {
                 changing = true; view.setSelectedRange(NSRange(location: max(0, view.string.utf16.count - 1), length: 0)); changing = false
             }
             clearBlockSelection()
             session.selection = view.selectedRange()
+            updateAnnotationAvailability()
+            parent.onSemanticSelection?(view.semanticAssociations(in: view.selectedRange()).map { $0.annotation.id })
             updateTypingAttributes(); updatePalette(); updateWikiQuery()
         }
         func updateTypingAttributes() {
@@ -455,6 +463,7 @@ extension RichArticleView {
                 case "u": format("underline"); return true
                 case "k": editLink(); return true
                 case "a":
+                    if shift && !option { annotateSelection(nil); return true }
                     if option { view.selectEntireDocument(nil) } else { view.selectAll(nil) }; return true
                 default: break
                 }
@@ -611,7 +620,7 @@ extension RichArticleView {
             view.window?.makeFirstResponder(view)
             switch operation {
             case .wrap(let prefix, _):
-                switch prefix { case "**": format("bold"); case "*": format("italic"); case "underline", "strike", "code", "math", "highlight": format(prefix); case "link": editLink(); case "block-actions": showBlockMenu(); default: view.insertText("[[", replacementRange: view.selectedRange()) }
+                switch prefix { case "**": format("bold"); case "*": format("italic"); case "underline", "strike", "code", "math", "highlight": format(prefix); case "link": editLink(); case "block-actions": showBlockMenu(); case "annotate-selection": annotateSelection(nil); default: view.insertText("[[", replacementRange: view.selectedRange()) }
             case .block(let id):
                 func expand(_ blocks: inout [EditorBlock]) -> Bool {
                     for index in blocks.indices {
@@ -683,6 +692,10 @@ extension RichArticleView {
         }
         func contextMenu() -> NSMenu {
             let menu = NSMenu()
+            let annotation = NSMenuItem(title: "Annotate Selection…", action: #selector(annotateSelection(_:)), keyEquivalent: "A")
+            annotation.target = self; annotation.keyEquivalentModifierMask = [.command, .shift]
+            annotation.isEnabled = annotationSelection() != nil
+            menu.addItem(annotation)
             let structure = NSMenu(), tags = NSMenu()
             for command in BlockCommand.all {
                 let item = NSMenuItem(title: command.title, action: #selector(contextCommand(_:)), keyEquivalent: "")

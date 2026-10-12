@@ -124,6 +124,7 @@ struct InsightsPanel: View {
                         }
                     }
 
+                    if isCurrent { SemanticInspectionSection(model: model, pageID: note.id).id("semantic-associations") }
                     InspectorSection(
                         title: "Semantic blocks",
                         count: snapshot.semanticBlockCount,
@@ -143,11 +144,18 @@ struct InsightsPanel: View {
                         }
                     }
                 }
+                .scrollTargetLayout()
                 .textSelection(.enabled)
                 .padding(.horizontal, NoemaMetrics.inspectorInset)
                 .padding(.vertical, NoemaSpacing.md)
             }
             .modifier(OptionalScrollPositionModifier(position: scrollPosition))
+            .onAppear {
+                if model.semanticInspectionFocusID != nil { scrollPosition?.wrappedValue.scrollTo(id: "semantic-associations", anchor: .top) }
+            }
+            .onChange(of: model.semanticInspectionOpenRequest) {
+                scrollPosition?.wrappedValue.scrollTo(id: "semantic-associations", anchor: .top)
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Insights panel")

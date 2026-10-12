@@ -189,9 +189,10 @@ public struct DraftRecord: Codable, Identifiable, Sendable {
     public var body: String
     public var tags: [String]
     public var capturedAt: String
+    public var semanticEdit: SemanticPageEdit? = nil
     public var id: UUID { note.id }
-    public init(note: NoteRecord, title: String, body: String, tags: [String]) {
-        self.note = note; self.title = title; self.body = body; self.tags = tags
+    public init(note: NoteRecord, title: String, body: String, tags: [String], semanticEdit: SemanticPageEdit? = nil) {
+        self.note = note; self.title = title; self.body = body; self.tags = tags; self.semanticEdit = semanticEdit
         self.capturedAt = timestamp()
     }
 }
