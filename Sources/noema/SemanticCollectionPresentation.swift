@@ -6,9 +6,6 @@ extension SemanticPresentation {
     var key: String { id }
 }
 
-extension SemanticBlockHit {
-    var status: String? { nil }
-}
 
 struct SemanticTypeFilterOption: Identifiable, Equatable, Sendable {
     let id: String
@@ -105,14 +102,11 @@ enum SemanticCollectionPresentation {
         return options
     }
 
-    static func filteredRows(_ rows: [SemanticBlockHit], selectedSemantic: String?) -> [SemanticBlockHit] {
-        guard let selectedSemantic else { return rows }
-        let target = selectedSemantic.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !target.isEmpty else { return rows }
-        return rows.filter { hit in
-            hit.semantic
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .caseInsensitiveCompare(target) == .orderedSame
+    static func filteredRows(_ rows: [SemanticBlockHit], selectedSemantic: String?, selectedStatus: String? = nil) -> [SemanticBlockHit] {
+        rows.filter { hit in
+            let designationMatches = selectedSemantic.map { hit.semantic.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare($0) == .orderedSame } ?? true
+            let statusMatches = selectedStatus.map { hit.status?.caseInsensitiveCompare($0) == .orderedSame } ?? true
+            return designationMatches && statusMatches
         }
     }
 

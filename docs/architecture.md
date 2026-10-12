@@ -73,8 +73,41 @@ Schema-5 annotations have one relational authority. Inline document extensions a
 load/export projections; unchanged whole-block anchors, exact edits and lifecycle
 revision rebasing publish transactionally. Stale/deleted evidence and tombstoned
 identities remain preserved. See the acceptance and lifecycle tests in VaultCoreTests.
-Native tagging UI, device/accessibility and crash-durability gates remain separate
-acceptance work. No AI extraction, inference or additional concrete types is added.
+Inline editor associations use typed `EditorSession` commands and coherent semantic
+page snapshots. Local mutation counters remain separate from opaque SQLite page
+revisions. Autosave publishes page metadata, content, annotation associations and
+staged Question/Definition objects through `saveSemanticPage`; removal transitions
+only the association. Native selection requires a nonempty, grapheme-safe UTF-16
+range within one block. `BlockTextStorage.SemanticRangeIndex` derives verified
+ranges from canonical records and the block range index. AppKit glyph geometry
+paints decorations separately from attributed text and persisted run styles;
+context menus enumerate all intersecting associations. Stale/revision-mismatched
+anchors and composition-pending text have no verified decoration. Content and
+semantic publication refresh the index; caret movements only query it. Undo retains current store revisions, and recovery copies
+content and associations to fresh page/block/object identities in one transaction,
+retaining the draft on failure. The native command is available after the coherent
+snapshot loads. The page Insight inspector resolves associations by canonical UUID,
+including shared entity names/descriptions/aliases and independent Question and
+Definition properties. Native context-menu inspection opens the matching entry;
+canonical target edits compare target/vault revisions, while association replacement
+and removal use the editor command, undo, recovery and semantic page save path.
+Canonical target edits retain the existing association IDs and refresh referent
+revision evidence for subsequent saves. Canonical entity occurrence queries include
+preserved stale/deleted associations. Compact previews retain captured context and
+identify unavailable blocks/pages and Trash explicitly. Occurrence navigation
+reloads the exact page and annotation UUID, validates current block/revision evidence,
+and selects the annotation's exact native range after editor admission. It never
+substitutes a text-search match for a missing or invalid location. Device accessibility and crash-durability
+acceptance remain separate.
+No AI extraction, inference or additional concrete types is added.
+
+The single Knowledge library retains four explicit record families: designated
+Semantic Blocks, independent Knowledge Entities, independent Question/Definition
+Semantic Objects, and canonical annotation associations. The bounded catalogue is
+read coherently through the existing SQLite actor; unassociated targets do not
+create pages or blocks. Catalogue inspection reuses canonical target editing and
+identity-based occurrence navigation. Block designation/status filters remain
+independent from entity/object lifecycle and annotation anchor state.
 
 ## Identity and evolution
 

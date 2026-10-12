@@ -105,14 +105,17 @@ public struct SemanticAnnotationSnapshot: Equatable, Sendable {
 public struct SemanticPageSnapshot: Equatable, Sendable {
     public let snapshot: BlockStoreSnapshot
     public let annotations: [SemanticAnnotationSnapshot]
-    public init(snapshot: BlockStoreSnapshot, annotations: [SemanticAnnotationSnapshot]) { self.snapshot = snapshot; self.annotations = annotations }
+    public let objects: [SemanticObjectSnapshot]
+    public init(snapshot: BlockStoreSnapshot, annotations: [SemanticAnnotationSnapshot], objects: [SemanticObjectSnapshot] = []) { self.snapshot = snapshot; self.annotations = annotations; self.objects = objects }
 }
-public struct SemanticPageEdit: Equatable, Sendable {
+public struct SemanticPageEdit: Codable, Equatable, Sendable {
     public var pageID: UUID
     public var document: BlockDocument
     public var annotations: [SemanticAnnotation]
     public var expectedAnnotationRevisions: [UUID: BlockStoreRevision]
     public var objects: [SemanticObject]
+    public var metadata: NoteRecord? = nil
+    enum CodingKeys: String, CodingKey { case pageID, document, annotations, expectedAnnotationRevisions, objects, metadata }
     var semanticMutationEvidence: AnnotationMutationEvidence? = nil
     public init(pageID: UUID, document: BlockDocument, annotations: [SemanticAnnotation], expectedAnnotationRevisions: [UUID: BlockStoreRevision] = [:], objects: [SemanticObject] = []) {
         self.pageID = pageID; self.document = document; self.annotations = annotations; self.expectedAnnotationRevisions = expectedAnnotationRevisions; self.objects = objects
@@ -120,6 +123,7 @@ public struct SemanticPageEdit: Equatable, Sendable {
 }
 public enum SemanticQuestionAssociation: Sendable { case explicit, derivedOccurrences }
 public protocol SemanticStore: Sendable {
+    func knowledgeCatalogue() async throws -> KnowledgeCatalogueSnapshot
     func saveAnnotation(_ annotation: SemanticAnnotation, condition: BlockStoreWriteCondition, expectedOwnerRevision: BlockStoreRevision, expectedReferentRevision: BlockStoreRevision?, expectedVaultRevision: BlockStoreRevision, operationID: UUID) async throws -> KnowledgeMutationResult<SemanticAnnotationSnapshot>
     func transitionAnnotation(id: UUID, to: AnnotationDisposition, expected: BlockStoreRevision, expectedOwnerRevision: BlockStoreRevision, expectedVaultRevision: BlockStoreRevision, operationID: UUID) async throws -> KnowledgeMutationResult<SemanticAnnotationSnapshot>
     func occurrences(entityID: UUID) async throws -> [SemanticAnnotationSnapshot]

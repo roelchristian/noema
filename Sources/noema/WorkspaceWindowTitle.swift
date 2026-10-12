@@ -52,7 +52,7 @@ struct WorkspaceWindowTitle: Equatable, Sendable {
                 switch scope {
                 case .wiki: title = "Pages"
                 case .sources: title = "Sources"
-                case .semantic: title = "Semantic Blocks"
+                case .semantic: title = "Knowledge"
                 case .trash: title = "Trash"
                 case .tag(let tag): title = "#" + tag
                 }
