@@ -38,7 +38,7 @@ private func temporaryFolder() throws -> URL {
     try await recovery.store(DraftRecord(note: note, title: note.title, body: "My unsaved edit", tags: []))
     await #expect(throws: (any Error).self) { try await repo.save(note: note, title: note.title, body: "My unsaved edit", tags: []) }
     #expect(try await repo.scan().notes.first?.body == external.body)
-    #expect(canonicalTestReadableBody(try await recovery.drafts().first?.body) == "My unsaved edit")
+    #expect(try await recovery.drafts().first?.body == "My unsaved edit")
     await #expect(throws: (any Error).self) { try await repo.trash(note: note) }
     let fresh = try #require(try await repo.scan().notes.first)
     try await repo.trash(note: fresh)
@@ -83,7 +83,7 @@ private func temporaryFolder() throws -> URL {
     _ = try await repo.save(note: note, title: note.title, body: "Competing revision", tags: [])
     await #expect(throws: (any Error).self) { try await repo.save(note: note, title: note.title, body: "Recover me", tags: []) }
     let reopened = try RecoveryStore(unguardedTestingDirectory: journalURL)
-    #expect(canonicalTestReadableBody(try await reopened.drafts().first?.body) == "Recover me")
+    #expect(try await reopened.drafts().first?.body == "Recover me")
     try await reopened.remove(note.id)
     #expect(try await reopened.drafts().isEmpty)
 }

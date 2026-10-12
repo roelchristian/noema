@@ -96,7 +96,7 @@ struct RecoveryStoreIsolationTests {
         #expect(try Data(contentsOf: directory.appendingPathComponent(note.id.uuidString + ".json")) == original)
         try await recovery.store(DraftRecord(note: note, title: note.title, body: "New unsaved work", tags: []))
         let listing = try await recovery.listing()
-        #expect(canonicalTestReadableBody(listing.drafts.first?.body) == "New unsaved work")
+        #expect(listing.drafts.first?.body == "New unsaved work")
         #expect(listing.damagedEntries.count == 1)
         let preserved = try #require(listing.damagedEntries.first)
         #expect(preserved.fileName.contains(".damaged-"))

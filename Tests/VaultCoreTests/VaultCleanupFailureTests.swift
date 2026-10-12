@@ -87,7 +87,7 @@ struct VaultCleanupFailureTests {
         }
         #expect(canonicalTestReadableBody(manager.quiescenceCoordinator.committedNotes[note.id]?.body) == "Durably saved")
         #expect(canonicalTestReadableBody(try await repo.scan().notes.first?.body) == "Durably saved")
-        #expect(canonicalTestReadableBody(try await recovery.drafts().first?.body) == "Durably saved")
+        #expect(try await recovery.drafts().first?.body == "Durably saved")
         do {
             _ = try await manager.lockWithQuiescence(repository: repo, recovery: recovery)
             Issue.record("A recorded recovery cleanup failure must abort locking")
@@ -135,7 +135,7 @@ struct VaultCleanupFailureTests {
         #expect(await manager.state == .open(session))
         #expect(canonicalTestReadableBody(manager.quiescenceCoordinator.committedNotes[note.id]?.body) == "Pending committed body")
         #expect(canonicalTestReadableBody(try await repo.scan().notes.first?.body) == "Pending committed body")
-        #expect(canonicalTestReadableBody(try await recovery.drafts().first?.body) == "Pending committed body")
+        #expect(try await recovery.drafts().first?.body == "Pending committed body")
     }
 
     @Test func cancelledImportReportsCleanupFailureAndRetainsStagedContent() async throws {

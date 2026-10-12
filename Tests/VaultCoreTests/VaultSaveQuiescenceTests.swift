@@ -117,7 +117,7 @@ struct VaultSaveQuiescenceTests {
         #expect(draftsAfterLock.count == 1)
         #expect(draftsAfterLock.first?.id == noteCancelled.id)
         #expect(draftsAfterLock.first?.title == "PreCommit Page Edited")
-        #expect(canonicalTestReadableBody(draftsAfterLock.first?.body) == "Unsaved body cancelled before commit")
+        #expect(draftsAfterLock.first?.body == "Unsaved body cancelled before commit")
 
         // Unlock and verify canonical storage state:
         let unlocked = try await manager.unlock()
@@ -216,7 +216,7 @@ struct VaultSaveQuiescenceTests {
         let preservedDrafts = try await recovery.drafts()
         #expect(preservedDrafts.count == 1)
         #expect(preservedDrafts.first?.id == savedNote.id)
-        #expect(canonicalTestReadableBody(preservedDrafts.first?.body) == "User local unsaved edit before lock")
+        #expect(preservedDrafts.first?.body == "User local unsaved edit before lock")
 
         // Revision rejection preserves the user's draft without writing legacy conflict copies.
         #expect(preservedDrafts.first?.body == "User local unsaved edit before lock")
