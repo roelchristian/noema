@@ -17,7 +17,7 @@ struct CloudSummaryAdversarialTests {
     @MainActor private func fixture() async throws -> (URL, AppModel, NoteRecord, FileVaultRepository) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-cloud-audit-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         var document = BlockDocumentCodec.decode("Captured page body")
         document.setAISummary("Original summary")
         let note = try await repository.create(title: "Captured", body: BlockDocumentCodec.encode(document))
@@ -74,7 +74,7 @@ struct CloudSummaryAdversarialTests {
         let destination = FileManager.default.temporaryDirectory.appendingPathComponent("noema-cloud-audit-target-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: destination) }
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-        let targetRepository = try FileVaultRepository.open(root: destination, create: true)
+        let targetRepository = try await openCanonicalAppFixture(root: destination, create: true)
         let target = try await targetRepository.create(title: "Destination", body: "Destination content")
         let latch = try await begin(model, note: note)
         await model.open(destination, create: false)
@@ -100,7 +100,7 @@ struct CloudSummaryAdversarialTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-cloud-page-cas-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         let note = try await repository.create(title: "Captured", body: "Original body")
         let snapshot = try await repository.pageSummarySnapshot(note)
         var changed = BlockDocumentCodec.decode(note.body)

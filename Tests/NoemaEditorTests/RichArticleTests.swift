@@ -61,7 +61,7 @@ import VaultCore
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaLCCTests-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: folder) }
-    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let repo = try await openCanonicalAppFixture(root: folder, create: true)
     let imported = try await repo.importSource(data: Data("Sample content".utf8), filename: "sample.txt", title: "Sample", originURL: nil)
     let updated = try await repo.renameSource(imported, title: "Renamed Sample", summary: "Concise summary.", lcc: "QA174")
     #expect(updated.metadata.title == "Renamed Sample")

@@ -31,13 +31,13 @@ private func knowledgeBoundarySQL(_ url: URL, _ sql: String) throws {
 @Test func knowledgeLockedSessionDeniesReadsAndWritesAndPreservesRevisions() async throws {
     let root = try knowledgeBoundaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
     let url = root.appendingPathComponent("blocks.sqlite"), vaultID = UUID()
-    let staging = try VaultStorageProvider.plaintext.makeKnowledgeStagingStore(url: url, vaultID: vaultID)
+    let staging = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: vaultID)
     try await staging.close()
     let session = VaultSession(vaultID: vaultID, root: root, generation: 1)
     let gate = VaultAccessGate(initialState: .open(session))
     var declaration = VaultCanonicalStorageDeclaration()
-    declaration.schemaVersion = 4
-    declaration.requiredCapabilities = SQLiteBlockStore.knowledgeRequiredCapabilities
+    declaration.schemaVersion = 5
+    declaration.requiredCapabilities = SQLiteBlockStore.semanticRequiredCapabilities
     var manifest = VaultManifest(id: vaultID)
     manifest.formatVersion = 2; manifest.storageMode = .sqliteBlocks; manifest.storage = declaration
     let store = try VaultStorageProvider.plaintext.makeBlockStore(url: url, sessionLease: session.lease, accessGate: gate, createIfMissing: false, manifest: manifest)
@@ -50,7 +50,7 @@ private func knowledgeBoundarySQL(_ url: URL, _ sql: String) throws {
         try await store.updateEntity(id: created.value.entity.id, patch: .init(label: "denied"), expected: created.value.revision, expectedVaultRevision: created.vaultRevision, operationID: deniedID)
     }
     try await store.close()
-    let preserved = try VaultStorageProvider.plaintext.makeKnowledgeStagingStore(url: url, vaultID: vaultID, createIfMissing: false)
+    let preserved = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: vaultID, createIfMissing: false)
     #expect(try await preserved.loadEntity(id: created.value.entity.id) == created.value)
     #expect(try await preserved.canonicalVaultRevision() == created.vaultRevision)
     #expect(try await preserved.committedKnowledgeEntityOperation(id: deniedID) == nil)

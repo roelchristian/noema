@@ -10,7 +10,7 @@ struct AIEnrichmentIntegrationTests {
     @MainActor private func fixture() async throws -> Fixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-enrichment-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         let note = try await repository.create(title: "Chosen Human Title", body: "Computer science evidence")
         let domain = "noema-enrichment-\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: domain))

@@ -4,16 +4,16 @@ import Testing
 @testable import VaultCore
 
 struct VaultAccessGateTests {
-    private func makeTempVault() throws -> URL {
+    private func makeTempVault() async throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("noema-gate-test-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        _ = try FileVaultRepository.open(root: root, create: true)
+        _ = try await canonicalSchema5TestRepository(root: root, create: true)
         return root
     }
 
     @Test func readsAndWritesAreDeniedWhileLockedAndManifestInspectionRemainsOutsideProtectedAPI() async throws {
-        let root = try makeTempVault()
+        let root = try await makeTempVault()
         defer { try? FileManager.default.removeItem(at: root) }
 
         let manager = VaultSessionManager()
@@ -44,7 +44,7 @@ struct VaultAccessGateTests {
 
         // Direct protected VaultContentStore reads and writes are denied while locked.
         let gatedStore = try #require(repo.contentStore as? GatedVaultContentStore)
-        #expect(throws: VaultAccessError.sessionLocked(vaultID: session.vaultID, root: session.root, operation: "read Wiki/Protected Page.md")) {
+        #expect(throws: VaultAccessError.sessionLocked(vaultID: session.vaultID, root: session.root, operation: "read " + note.relativePath)) {
             _ = try gatedStore.read(at: note.relativePath)
         }
         #expect(throws: VaultAccessError.sessionLocked(vaultID: session.vaultID, root: session.root, operation: "read vault.json")) {
@@ -96,8 +96,8 @@ struct VaultAccessGateTests {
     }
 
     @Test func staleSessionTokensAreRejectedAfterUnlockAndVaultSwitch() async throws {
-        let rootA = try makeTempVault()
-        let rootB = try makeTempVault()
+        let rootA = try await makeTempVault()
+        let rootB = try await makeTempVault()
         defer {
             try? FileManager.default.removeItem(at: rootA)
             try? FileManager.default.removeItem(at: rootB)
@@ -132,7 +132,7 @@ struct VaultAccessGateTests {
 
         // Fresh generation 2 repository succeeds.
         let updatedPage = try await repoGen2.save(note: page, title: page.title, body: "Body v2", tags: [])
-        #expect(updatedPage.body == "Body v2")
+        #expect(canonicalTestReadableBody(updatedPage.body) == "Body v2")
 
         // Switch from Vault A (generation 2) to Vault B (generation 3).
         try await manager.close()
@@ -147,7 +147,7 @@ struct VaultAccessGateTests {
     }
 
     @Test func queuedAndSuspendedOperationsCrossingLockBoundariesAreRejectedWhenIOExecutes() async throws {
-        let root = try makeTempVault()
+        let root = try await makeTempVault()
         defer { try? FileManager.default.removeItem(at: root) }
 
         let manager = VaultSessionManager()
@@ -156,7 +156,7 @@ struct VaultAccessGateTests {
         let shouldBlockFirstNoteRead = Mutex(true)
 
         let (_, _, repo) = try await manager.openRepository(root: root) { operation in
-            if operation.hasPrefix("read Wiki/"), shouldBlockFirstNoteRead.withLock({
+            if operation.hasPrefix("read Sources/"), shouldBlockFirstNoteRead.withLock({
                 if $0 { $0 = false; return true }
                 return false
             }) {
@@ -175,9 +175,10 @@ struct VaultAccessGateTests {
         // Create initial note while open ( disable blocking until after creation ).
         shouldBlockFirstNoteRead.withLock { $0 = false }
         let note = try await repo.create(title: "Boundary Page", body: "Original")
+        let source = try await repo.importSource(data: Data("Unchanged source original".utf8), filename: "boundary.txt", title: "Boundary Source", originURL: nil)
         shouldBlockFirstNoteRead.withLock { $0 = true }
 
-        // 1. Start a repository save that enters actor execution while `.open`, then pauses right before reading the note.
+        // 1. Start a canonical save while `.open`, then pause its mandatory source scan before reading an original.
         // 2. Queue a second repository operation (`create`) behind it while `.open`.
         let inFlightSave = Task {
             try await repo.save(note: note, title: note.title, body: "In-flight save crossing lock", tags: [])
@@ -240,13 +241,14 @@ struct VaultAccessGateTests {
         )
         let finalScan = try await finalRepo.scan()
         #expect(finalScan.notes.count == 1)
-        #expect(finalScan.notes.first?.body == "Original")
-        #expect(finalScan.sources.isEmpty)
+        #expect(canonicalTestReadableBody(finalScan.notes.first?.body) == "Original")
+        #expect(finalScan.sources.map(\.id) == [source.id])
+        #expect(finalScan.sources.first?.body == "Unchanged source original")
     }
 
     @Test func wrongVaultAccessIsRejectedAcrossRepositoriesStoresAndLeases() async throws {
-        let rootA = try makeTempVault()
-        let rootB = try makeTempVault()
+        let rootA = try await makeTempVault()
+        let rootB = try await makeTempVault()
         defer {
             try? FileManager.default.removeItem(at: rootA)
             try? FileManager.default.removeItem(at: rootB)
@@ -314,7 +316,7 @@ struct VaultAccessGateTests {
     }
 
     @Test func lockAdmissionBarrierAtomicallyRejectsNewOperationsAndDrainsAdmittedOperations() async throws {
-        let root = try makeTempVault()
+        let root = try await makeTempVault()
         defer { try? FileManager.default.removeItem(at: root) }
 
         let manager = VaultSessionManager()
@@ -436,8 +438,8 @@ struct VaultAccessGateTests {
     }
 
     @Test func lockAdmissionBarrierHandlesCancellationAbandonedRegistrationsAndInvalidLeasesWithoutLeaksOrDeadlocks() async throws {
-        let rootA = try makeTempVault()
-        let rootB = try makeTempVault()
+        let rootA = try await makeTempVault()
+        let rootB = try await makeTempVault()
         defer {
             try? FileManager.default.removeItem(at: rootA)
             try? FileManager.default.removeItem(at: rootB)

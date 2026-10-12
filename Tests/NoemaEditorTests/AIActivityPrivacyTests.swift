@@ -23,7 +23,7 @@ extension VaultUIIntegrationTests {
         let folder = base.appendingPathComponent("Vault")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
-        let repository = try FileVaultRepository.open(root: folder, create: true)
+        let repository = try await openCanonicalAppFixture(root: folder, create: true)
         let note = try await repository.create(title: "Sensitive activity title", body: "Private body")
         let model = AppModel()
         model.localStorageRoot = base.appendingPathComponent("Local")

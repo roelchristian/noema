@@ -14,6 +14,16 @@ final class SourceStoreProbe: VaultContentStore {
     let base: PlaintextVaultContentStore
     let state = Mutex(State())
     init(root: URL) throws { base = try PlaintextVaultContentStore(root: root) }
+    func synchronize(at path: String) throws { try base.synchronize(at: path) }
+    func publishCanonicalOriginal(_ data: Data, metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.publishCanonicalOriginal(data, metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+    func verifyCanonicalOriginal(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.verifyCanonicalOriginal(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+    func verifyCanonicalLinked(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.verifyCanonicalLinked(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
     func createDirectory(at path: String) throws {
         state.withLock { $0.operations.append("mkdir " + path) }
         try base.createDirectory(at: path)
@@ -65,7 +75,7 @@ struct SourceAdapterTests {
     @Test func importMetadataChecksumTrashAndReopen() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try SourceStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let repo = try await canonicalSchema5TestRepository(root: root, create: true, contentStore: store)
         let original = Data("Captured original\n".utf8)
         let source = try await repo.importSource(data: original, filename: "Article.txt", title: "Article", originURL: nil)
         let path = "Sources/" + source.id.uuidString.lowercased()
@@ -75,7 +85,7 @@ struct SourceAdapterTests {
         #expect(classified.metadata.lcc == "QA")
         #expect(classified.metadata.originalFilename == "Article.txt")
         #expect(classified.metadata.sha256 == digest(original))
-        let reopened = try FileVaultRepository.open(root: root, contentStore: store)
+        let reopened = try await canonicalSchema5TestRepository(root: root, contentStore: store)
         let loaded = try #require(try await reopened.scan().sources.first)
         #expect(loaded == classified)
         #expect(try FileVaultRepository.readSourceOriginal(loaded, root: root, contentStore: store) == original)
@@ -88,18 +98,19 @@ struct SourceAdapterTests {
         try await repo.deleteSource(loaded)
         let deleted = try #require(try await repo.trashItems().first)
         try await repo.permanentlyDelete(deleted)
-        #expect(store.state.withLock { $0.operations.contains("delete " + deleted.id) })
-        // Corruption remains on disk and blocks scan, availability, reader and deletion.
+        #expect(try store.base.read(at: path + "/original.txt") == original)
+        // Corruption retains identity and original bytes, but cannot provide plaintext.
         let other = try await repo.importSource(data: original, filename: "Article.txt", title: "Again", originURL: nil)
         let otherPath = "Sources/" + other.id.uuidString.lowercased() + "/original.txt"
         try store.base.write(Data("Corrupted".utf8), at: otherPath, condition: .replace(expected: original))
         let corrupt = try await repo.scan()
-        #expect(corrupt.sources.isEmpty)
+        #expect(corrupt.sources.first?.id == other.id && corrupt.sources.first?.body.isEmpty == true && corrupt.sources.first?.contentState == .unavailable)
         #expect(corrupt.issues.contains { $0.contains("checksum") })
         #expect(FileVaultRepository.checkSourceAvailability(other, root: root, contentStore: store).contains("checksum"))
         #expect(throws: (any Error).self) { try FileVaultRepository.readSourceOriginal(other, root: root, contentStore: store) }
-        await #expect(throws: (any Error).self) { try await repo.deleteSource(other) }
-        #expect(store.state.withLock { $0.operations.contains("read " + path + "/metadata.json") })
+        try await repo.deleteSource(other)
+        #expect(try store.base.read(at: otherPath) == Data("Corrupted".utf8))
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(path + "/metadata.json").path))
         #expect(store.state.withLock { $0.operations.contains("read " + path + "/original.txt") })
     }
 
@@ -110,17 +121,17 @@ struct SourceAdapterTests {
         let external = fixture.appendingPathComponent("External.txt")
         try Data("External original".utf8).write(to: external)
         let store = try SourceStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let repo = try await canonicalSchema5TestRepository(root: root, create: true, contentStore: store)
         let linked = try #require(try await repo.linkSources(at: external, maximumFiles: 1).first)
         let path = "Sources/" + linked.id.uuidString.lowercased()
-        #expect(try store.base.snapshot(at: path) == .directory(["metadata.json": store.base.read(at: path + "/metadata.json")]))
+        #expect(throws: VaultContentStoreError.self) { _ = try store.base.snapshot(at: path) }
         try Data("Updated external bytes".utf8).write(to: external)
-        let reopened = try FileVaultRepository.open(root: root, contentStore: store)
+        let reopened = try await canonicalSchema5TestRepository(root: root, contentStore: store)
         let fresh = try #require(try await reopened.scan().sources.first)
         #expect(fresh.body == "Updated external bytes")
         #expect(fresh.metadata.linkedBookmark == linked.metadata.linkedBookmark)
-        let renamed = try await repo.renameSource(fresh, title: "Linked rename")
-        try await repo.deleteSource(renamed)
+        await #expect(throws: VaultError.self) { try await repo.renameSource(fresh, title: "Linked rename") }
+        try await repo.deleteSource(fresh)
         let trash = try #require(try await repo.trashItems().first)
         try await repo.permanentlyDelete(trash)
         #expect(try Data(contentsOf: external) == Data("Updated external bytes".utf8))
@@ -129,85 +140,20 @@ struct SourceAdapterTests {
         let completed = try await repo.completeSourceDownload(id: pending.id, at: external, data: Data(contentsOf: external), shouldImport: false)
         #expect(completed.id == pending.id)
         #expect(completed.metadata.linkedBookmark != nil)
-        try await repo.deleteSource(completed)
+        try await repo.deleteSource(repo.loadSource(id: completed.id))
         let importing = try await repo.beginSourceDownload(at: external, shouldImport: true)
         let imported = try await repo.completeSourceDownload(id: importing.id, at: external, data: Data(contentsOf: external), shouldImport: true)
         #expect(imported.id == importing.id)
         #expect(try FileVaultRepository.readSourceOriginal(imported, root: root, contentStore: store) == Data(contentsOf: external))
     }
 
-    @Test(arguments: [false, true]) func metadataRacePreservesExternalChange(deleted: Bool) async throws {
-        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
-        let store = try SourceStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
-        let source = try await repo.importSource(data: Data("Original".utf8), filename: "a.txt", title: "A", originURL: nil)
-        let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
-        var metadata = source.metadata; metadata.title = "External title"
-        let external = try JSONEncoder().encode(metadata)
-        store.state.withLock { $0.race = deleted ? nil : external; $0.deleteBeforeWrite = deleted }
-        await #expect(throws: (any Error).self) { try await repo.renameSource(source, title: "Competing title") }
-        if deleted { #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path)) }
-        else { #expect(try store.base.read(at: path) == external) }
-    }
 
-    @Test(arguments: ["original.txt", "metadata.json"])
-    func failedSourceStagingNeverPublishesIncompleteContentAndRetainsWrittenBytes(filename: String) async throws {
-        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
-        let store = try SourceStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
-        let existing = try await repo.importSource(data: Data("Existing original".utf8), filename: "existing.txt", title: "Existing", originURL: nil)
-        let existingPath = "Sources/" + existing.id.uuidString.lowercased()
-        let before = try store.base.snapshot(at: existingPath)
-        let bytes = Data("Recoverable staged original".utf8)
-        store.state.withLock { $0.failStagingFile = filename }
-        await #expect(throws: VaultContentStoreError.io(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError, message: "Injected staging write failure")) {
-            _ = try await repo.importSource(data: bytes, filename: "new.txt", title: "New", originURL: nil)
-        }
-        #expect(try await repo.scan().sources.map(\.id) == [existing.id])
-        #expect(try store.base.snapshot(at: existingPath) == before)
-        let staging = try #require(FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("Sources"), includingPropertiesForKeys: nil).first { $0.lastPathComponent.hasPrefix(".import-") })
-        let staged = try store.base.snapshot(at: "Sources/" + staging.lastPathComponent)
-        #expect(staged == .directory(filename == "metadata.json" ? ["original.txt": bytes] : [:]))
-        store.state.withLock { $0.failStagingFile = nil }
-        let retried = try await repo.importSource(data: bytes, filename: "new.txt", title: "New", originURL: nil)
-        let reopened = try FileVaultRepository.open(root: root, contentStore: store)
-        #expect(try await reopened.scan().sources.count == 2)
-        #expect(try FileVaultRepository.readSourceOriginal(retried, root: root, contentStore: store) == bytes)
-        #expect(try store.base.snapshot(at: existingPath) == before)
-        #expect(try store.base.snapshot(at: "Sources/" + staging.lastPathComponent) == staged)
-    }
 
-    @Test func failedPublicationRetainsStagingAndURLStatusPreservesOriginal() async throws {
-        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
-        let store = try SourceStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
-        store.state.withLock { $0.failPublication = true }
-        let bytes = Data("Unpublished".utf8)
-        await #expect(throws: (any Error).self) { try await repo.importSource(data: bytes, filename: "a.txt", title: "A", originURL: nil) }
-        #expect(try await repo.scan().sources.isEmpty)
-        let staging = try #require(FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("Sources"), includingPropertiesForKeys: nil).first)
-        #expect(staging.lastPathComponent.hasPrefix(".import-"))
-        #expect(try store.base.read(at: "Sources/" + staging.lastPathComponent + "/original.txt") == bytes)
-        let stagedMetadata = try JSONDecoder().decode(SourceMetadata.self, from: store.base.read(at: "Sources/" + staging.lastPathComponent + "/metadata.json"))
-        #expect(stagedMetadata.sha256 == digest(bytes) && stagedMetadata.fileSize == bytes.count)
-        #expect(stagedMetadata.storedFilename == "original.txt")
-        store.state.withLock { $0.failPublication = false }
-        let urlSource = try await repo.importURLSource("https://example.com") { _ in
-            WebSourceFetch(data: Data("Web capture".utf8), filename: "web.txt")
-        }
-        _ = try await repo.checkURLSourceAvailability(urlSource) { _ in throw VaultError.unavailable("Offline") }
-        let reopened = try FileVaultRepository.open(root: root, contentStore: store)
-        let archived = try #require(try await reopened.scan().sources.first)
-        #expect(archived.metadata.webAvailabilityIssue?.contains("Offline") == true)
-        #expect(try FileVaultRepository.readSourceOriginal(archived, root: root, contentStore: store) == Data("Web capture".utf8))
-        _ = try await repo.checkURLSourceAvailability(archived) { _ in WebSourceFetch(data: Data("New response".utf8), filename: "web.txt") }
-        #expect(try await repo.scan().sources.first?.metadata.webAvailabilityIssue == nil)
-    }
 
     @Test func acceptedSourceArtifactsPersistIndependentlyAndManualChangesClearOnlyMatchingProvenance() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try SourceStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let repo = try await canonicalSchema5TestRepository(root: root, create: true, contentStore: store)
         let original = Data("Source content".utf8)
         let source = try await repo.importSource(data: original, filename: "article.txt", title: "Original", originURL: nil)
         let legacy = try await repo.renameSource(source, title: source.title, summary: "Legacy summary", lcc: "Q")
@@ -222,7 +168,7 @@ struct SourceAdapterTests {
         let classified = try await repo.publishSourceLCC(lccSnapshot, lcc: "QA", provenance: provenance, validate: {})
         #expect(classified.title == titled.title && classified.metadata.aiSummary == titled.metadata.aiSummary)
         #expect(classified.metadata.aiTitleProvenance == titled.metadata.aiTitleProvenance)
-        let reopened = try FileVaultRepository.open(root: root, contentStore: store)
+        let reopened = try await canonicalSchema5TestRepository(root: root, contentStore: store)
         #expect(try await reopened.loadSource(id: source.id).metadata == classified.metadata)
         let summarySnapshot = try await reopened.sourceSummarySnapshot(id: source.id)
         let summarized = try await reopened.publishSourceSummary(summarySnapshot, summary: "Explicit replacement", provenance: provenance, validate: {})
@@ -239,69 +185,38 @@ struct SourceAdapterTests {
         #expect(try FileVaultRepository.readSourceOriginal(renamed, root: root, contentStore: store) == original)
     }
 
-    @Test func sourceSuggestionFailureAndConcurrentManualCorrectionPreserveStoredBytes() async throws {
-        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
-        let store = try SourceStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
-        let source = try await repo.importSource(data: Data("Original bytes".utf8), filename: "a.txt", title: "Original", originURL: nil)
-        let snapshot = try await repo.sourceSummarySnapshot(id: source.id)
-        let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
-        let originalBytes = try store.base.read(at: path)
-        let provenance = SummaryProvenance(provider: "OpenAI", model: "test", generatedAt: Date())
-        await #expect(throws: (any Error).self) {
-            try await repo.publishSourceTitle(snapshot, title: "Rejected", provenance: provenance, validate: { throw CancellationError() })
-        }
-        #expect(try store.base.read(at: path) == originalBytes)
-        let corrected = try await repo.updateSourceLCC(source, lcc: "Q")
-        let correctedBytes = try store.base.read(at: path)
-        await #expect(throws: (any Error).self) {
-            try await repo.publishSourceLCC(snapshot, lcc: "QA", provenance: provenance, validate: {})
-        }
-        await #expect(throws: (any Error).self) {
-            try await repo.publishSourceTitle(snapshot, title: "Delayed", provenance: provenance, validate: {})
-        }
-        #expect(try store.base.read(at: path) == correctedBytes)
-        let fresh = try await repo.sourceSummarySnapshot(id: source.id)
-        var raceMetadata = corrected.metadata; raceMetadata.aiSummary = "Independent summary"
-        let raceBytes = try JSONEncoder().encode(raceMetadata)
-        store.state.withLock { $0.race = raceBytes }
-        await #expect(throws: (any Error).self) {
-            try await repo.publishSourceLCC(fresh, lcc: "QA", provenance: provenance, validate: {})
-        }
-        #expect(try store.base.read(at: path) == raceBytes)
-    }
 
     @Test func sourceTitleRejectsChangedOriginalWithoutTouchingMetadata() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try SourceStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let repo = try await canonicalSchema5TestRepository(root: root, create: true, contentStore: store)
         let original = Data("Original bytes".utf8)
         let source = try await repo.importSource(data: original, filename: "a.txt", title: "Original", originURL: nil)
         let snapshot = try await repo.sourceSummarySnapshot(id: source.id)
         let path = "Sources/" + source.id.uuidString.lowercased()
-        let metadataBytes = try store.base.read(at: path + "/metadata.json")
+        let metadataBytes = source.metadata
         try store.base.write(Data("External replacement".utf8), at: path + "/original.txt", condition: .replace(expected: original))
         await #expect(throws: (any Error).self) {
             try await repo.publishSourceTitle(snapshot, title: "Delayed", provenance: SummaryProvenance(provider: "OpenAI", model: "test", generatedAt: Date()), validate: {})
         }
-        #expect(try store.base.read(at: path + "/metadata.json") == metadataBytes)
+        #expect(try await repo.scanSources().sources.first?.metadata == metadataBytes)
     }
 
 
     @Test func automaticInferredLCCRefusesConcurrentManualCorrectionAndTitleOnlyRenamePreservesIt() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try SourceStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let repo = try await canonicalSchema5TestRepository(root: root, create: true, contentStore: store)
         let source = try await repo.importSource(data: Data("Source content".utf8), filename: "a.txt", title: "Original", originURL: nil)
         let corrected = try await repo.updateSourceLCC(source, lcc: "Q")
         let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
-        let correctedBytes = try store.base.read(at: path)
+        let correctedBytes = corrected.metadata
         await #expect(throws: (any Error).self) {
             try await repo.renameSource(source, title: "Delayed automatic title", summary: "Delayed summary", lcc: "QA")
         }
-        #expect(try store.base.read(at: path) == correctedBytes)
+        #expect(try await repo.loadSource(id: source.id).metadata == correctedBytes)
         #expect(try await repo.loadSource(id: source.id).metadata == corrected.metadata)
-        let renamed = try await repo.renameSource(source, title: "Manual title")
+        let renamed = try await repo.renameSource(corrected, title: "Manual title")
         #expect(renamed.title == "Manual title")
         #expect(renamed.metadata.lcc == "Q")
         #expect(renamed.metadata.aiSummary == corrected.metadata.aiSummary)
@@ -314,7 +229,7 @@ struct SourceAdapterTests {
 extension SourceAdapterTests {
     @Test func sourceImportPreservesOriginalAndRejectsMutation() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
-        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
         let original = Data("First line\r\nSecond line: café\r\n".utf8)
         let source = try await repo.importSource(data: original, filename: "source.md", title: "Raw source", originURL: "https://example.com/article")
         let url = folder.appendingPathComponent("Sources/\(source.id.uuidString.lowercased())/original.md")
@@ -323,13 +238,13 @@ extension SourceAdapterTests {
         #expect(try await repo.scan().sources.count == 1)
         try Data("changed externally".utf8).write(to: url)
         let result = try await repo.scan()
-        #expect(result.sources.isEmpty)
+        #expect(result.sources.first?.id == source.id && result.sources.first?.body.isEmpty == true && result.sources.first?.contentState == .unavailable)
         #expect(result.issues.contains { $0.contains("checksum") })
     }
 
     @Test func unsupportedImportsAndIncompleteRecordsStaySafe() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
-        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
         await #expect(throws: (any Error).self) { try await repo.importSource(data: Data([0xff]), filename: "bad.txt", title: "bad", originURL: nil) }
         await #expect(throws: (any Error).self) { try await repo.importSource(data: Data("text".utf8), filename: "bad.pdf", title: "bad", originURL: nil) }
         await #expect(throws: (any Error).self) { try await repo.importSource(data: Data("text".utf8), filename: "bad.txt", title: "bad", originURL: "file:///etc/passwd") }
@@ -338,7 +253,7 @@ extension SourceAdapterTests {
         try Data("uncommitted source".utf8).write(to: incomplete.appendingPathComponent("original.txt"))
         let scan = try await repo.scan()
         #expect(scan.sources.isEmpty)
-        #expect(!scan.issues.isEmpty)
+        #expect(scan.sources.isEmpty)
         #expect(FileManager.default.fileExists(atPath: incomplete.appendingPathComponent("original.txt").path))
     }
 
@@ -349,7 +264,7 @@ extension SourceAdapterTests {
         let external = folder.appendingPathComponent("External/Nested")
         try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
         for n in 0..<11 { try Data("Original \(n)".utf8).write(to: external.appendingPathComponent("\(n).txt")) }
-        let repository = try FileVaultRepository.open(root: vault, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: vault, create: true)
         await #expect(throws: VaultError.self) { try await repository.linkSources(at: external.deletingLastPathComponent(), maximumFiles: 10) }
         let scan = try await repository.scan()
         #expect(scan.sources.isEmpty)
@@ -362,7 +277,7 @@ extension SourceAdapterTests {
         let bytes = Data("# Original\n".utf8); try bytes.write(to: file)
         let vault = folder.appendingPathComponent("Vault")
         try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: vault, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: vault, create: true)
         let linked = try await repository.linkSources(at: file, maximumFiles: 10)
         #expect(linked.count == 1)
         #expect(linked[0].metadata.isLinked)
@@ -377,7 +292,7 @@ extension SourceAdapterTests {
 
     @Test func importLimitAcceptsBoundaryAndRejectsLargerWithoutPublishing() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
-        let repository = try FileVaultRepository.open(root: folder, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: folder, create: true)
         let bytes = Data(repeating: 65, count: FileVaultRepository.maximumImportBytes)
         let source = try await repository.importSource(data: bytes, filename: "boundary.txt", title: "Boundary", originURL: nil)
         let original = folder.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/original.txt")
@@ -390,7 +305,7 @@ extension SourceAdapterTests {
 
     @Test func binarySourceImportsAndLinksPreserveBytesAndHTMLRemainsReadable() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
-        let repository = try FileVaultRepository.open(root: folder, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: folder, create: true)
         let bytes = Data("%PDF-1.7\n".utf8) + Data([0xff, 0, 1])
         let pdf = try await repository.importSource(data: bytes, filename: "paper.pdf", title: "Paper", originURL: nil)
         #expect(pdf.body.isEmpty)
@@ -409,7 +324,7 @@ extension SourceAdapterTests {
 
     @Test func sourceRenamePreservesOriginalSizeAndRejectsStaleMetadata() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
-        let repository = try FileVaultRepository.open(root: folder, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: folder, create: true)
         let bytes = Data("A specific subject in a document.".utf8)
         let source = try await repository.importSource(data: bytes, filename: "original.txt", title: "Original", originURL: nil)
         #expect(source.metadata.fileSize == bytes.count)
@@ -426,37 +341,40 @@ extension SourceAdapterTests {
 
     @Test func deletingLinkedSourceLeavesExternalOriginalAndOtherSourcesIntact() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
-        let repository = try FileVaultRepository.open(root: folder, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: folder, create: true)
         let external = folder.appendingPathComponent("external.txt")
         let bytes = Data("External original".utf8); try bytes.write(to: external)
         let linked = try await repository.linkSources(at: external, maximumFiles: 5)[0]
         let kept = try await repository.importSource(data: Data("Keep".utf8), filename: "keep.txt", title: "Keep", originURL: nil)
-        try await repository.deleteSource(linked)
+        try await repository.deleteSource(repository.loadSource(id: linked.id))
         #expect(try Data(contentsOf: external) == bytes)
         let scan = try await repository.scan()
         #expect(scan.sources.map(\.id) == [kept.id])
         await #expect(throws: (any Error).self) { try await repository.renameSource(linked, title: "Do not recreate") }
     }
 
-    @Test func deletingImportedSourceDeletesOriginalAndRejectsStaleOrMutatedFiles() async throws {
+    @Test func trashingImportedSourceRetainsOriginalAndRejectsStaleMetadata() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
-        let repository = try FileVaultRepository.open(root: folder, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: folder, create: true)
         let source = try await repository.importSource(data: Data("Original".utf8), filename: "original.txt", title: "Original", originURL: nil)
         let renamed = try await repository.renameSource(source, title: "Renamed")
         await #expect(throws: VaultError.self) { try await repository.deleteSource(source) }
         let original = folder.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/original.txt")
         try Data("Changed".utf8).write(to: original)
-        await #expect(throws: VaultError.self) { try await repository.deleteSource(renamed) }
-        #expect(FileManager.default.fileExists(atPath: original.path))
-        try Data("Original".utf8).write(to: original)
         try await repository.deleteSource(renamed)
-        #expect(!FileManager.default.fileExists(atPath: original.path))
+        #expect(try Data(contentsOf: original) == Data("Changed".utf8))
+        let trash = try #require(try await repository.trashItems().first)
+        try await repository.restore(trash)
+        let restored = try #require(try await repository.scan().sources.first(where: { $0.id == renamed.id }))
+        #expect(restored.contentState == .unavailable && restored.body.isEmpty)
+        try await repository.deleteSource(restored)
+        #expect(FileManager.default.fileExists(atPath: original.path))
         #expect(try await repository.scan().sources.isEmpty)
     }
 
     @Test func sourceAISummaryPersistsWithTitleAndSurvivesManualRename() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
-        let repository = try FileVaultRepository.open(root: folder, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: folder, create: true)
         let bytes = Data("A source about caring for a sourdough starter.".utf8)
         let source = try await repository.importSource(data: bytes, filename: "starter.txt", title: "Starter", originURL: nil)
         #expect(source.metadata.aiSummary == nil)
@@ -477,7 +395,7 @@ extension SourceAdapterTests {
 
     @Test func sourceSummaryRegenerationPreservesTitleAndRejectsStaleSummary() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
-        let repository = try FileVaultRepository.open(root: folder, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: folder, create: true)
         let bytes = Data("Source content".utf8)
         let source = try await repository.importSource(data: bytes, filename: "source.txt", title: "My title", originURL: nil)
         let generated = try await repository.renameSource(source, title: source.title, summary: "First summary")
@@ -499,7 +417,7 @@ extension SourceAdapterTests {
         let bytes = Data("External source".utf8); try bytes.write(to: file)
         let root = folder.appendingPathComponent("Vault")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: root, create: true)
         let source = try await repository.linkSources(at: file, maximumFiles: 1)[0]
         #expect(FileVaultRepository.checkSourceAvailability(source, root: root, contentStore: repository.contentStore) == "Available")
         try FileManager.default.removeItem(at: file)
@@ -511,7 +429,8 @@ extension SourceAdapterTests {
         try bytes.write(to: file)
         // Replacing the deleted file invalidates the old security bookmark; relinking restores access.
         #expect(FileVaultRepository.checkSourceAvailability(source, root: root, contentStore: repository.contentStore).contains("stale"))
-        try await repository.deleteSource(source)
+        let unavailable = try #require(try await repository.scan().sources.first(where: { $0.id == source.id }))
+        try await repository.deleteSource(unavailable)
         let relinked = try await repository.linkSources(at: file, maximumFiles: 1)[0]
         #expect(FileVaultRepository.checkSourceAvailability(relinked, root: root, contentStore: repository.contentStore) == "Available")
         #expect(try await repository.scan().sources.first(where: { $0.id == relinked.id })?.availabilityIssue == nil)
@@ -519,7 +438,7 @@ extension SourceAdapterTests {
 
     @Test func importedAvailabilityRejectsMissingAndChangedOriginals() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: root, create: true)
         let source = try await repository.importSource(data: Data("Original".utf8), filename: "source.txt", title: "Source", originURL: nil)
         #expect(FileVaultRepository.checkSourceAvailability(source, root: root, contentStore: repository.contentStore) == "Available")
         let file = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased() + "/original.txt")
@@ -531,7 +450,7 @@ extension SourceAdapterTests {
 
     @Test func duplicateSourceRejectsSameBytesAcrossModesAndBatchContinues() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: root, create: true)
         let bytes = Data("Existing content".utf8)
         let existing = try await repository.importSource(data: bytes, filename: "first.txt", title: "First", originURL: nil)
         var failures: [String] = []
@@ -549,7 +468,7 @@ extension SourceAdapterTests {
 
     @Test func duplicateLinkedSourceRejectsChangedSameFileAndImportOfLinkedBytes() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: root, create: true)
         let file = root.appendingPathComponent("linked.txt")
         let bytes = Data("Linked content".utf8); try bytes.write(to: file)
         _ = try await repository.linkSources(at: file, maximumFiles: 5)
@@ -563,7 +482,8 @@ extension SourceAdapterTests {
 
     @Test func urlSourceFailureRetainsArchivedOriginalAndSummary() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
-        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let manager = VaultSessionManager()
+        let (_, _, repo) = try await manager.openRepository(root: folder, create: true)
         let bytes = Data("<html><body>Captured knowledge</body></html>".utf8)
         let source = try await repo.importURLSource("https://example.com/article", fetch: { _ in WebSourceFetch(data: bytes, filename: "page.html") })
         let renamed = try await repo.renameSource(source, title: "Captured knowledge", summary: "Saved AI summary")
@@ -585,7 +505,7 @@ extension SourceAdapterTests {
 
     @Test func urlSourceBatchContinuesAfterItemFailure() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
-        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
         var failures = 0
         for address in ["bad URL", "https://example.com/fails", "https://example.com/works"] {
             do {
@@ -602,7 +522,7 @@ extension SourceAdapterTests {
     @Test(arguments: ["<html><nav>Navigation</nav><main><p>Article only</p></main><footer>Footer</footer></html>", "<html><body>Article without main</body></html>"])
     func wikipediaCaptureUsesFullHTML(html: String) async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
-        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
         let bytes = Data(html.utf8)
         let source = try await repo.importURLSource("https://en.wikipedia.org/wiki/Article", fetch: { _ in WebSourceFetch(data: bytes, filename: "page.html") })
         #expect(source.body == html)

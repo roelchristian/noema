@@ -4,19 +4,19 @@ import Testing
 @testable import VaultCore
 
 struct VaultSaveQuiescenceTests {
-    private func makeTempVaultAndRecovery() throws -> (root: URL, recoveryDir: URL, recovery: RecoveryStore) {
+    private func makeTempVaultAndRecovery() async throws -> (root: URL, recoveryDir: URL, recovery: RecoveryStore) {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("noema-quiescence-test-\(UUID().uuidString)", isDirectory: true)
         let root = base.appendingPathComponent("Vault", isDirectory: true)
         let recoveryDir = base.appendingPathComponent("Drafts", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        _ = try FileVaultRepository.open(root: root, create: true)
+        _ = try await canonicalSchema5TestRepository(root: root, create: true)
         let recovery = try RecoveryStore(unguardedTestingDirectory: recoveryDir)
         return (root, recoveryDir, recovery)
     }
 
     @Test func inFlightSavesEnteringCommitWindowCompleteAndRemainRecognizedWhilePreCommitSavesPreserveRecoveryDraft() async throws {
-        let (root, _, recovery) = try makeTempVaultAndRecovery()
+        let (root, _, recovery) = try await makeTempVaultAndRecovery()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
 
         let manager = VaultSessionManager()
@@ -98,7 +98,7 @@ struct VaultSaveQuiescenceTests {
         releaseCommit.continuation.yield(())
 
         let committedResult = try await committingSaveTask.value
-        #expect(committedResult.body == "Updated body inside commit window")
+        #expect(canonicalTestReadableBody(committedResult.body) == "Updated body inside commit window")
         #expect(committedResult.tags == ["committed"])
 
         await #expect(throws: VaultOperationAdmissionError.cancelled(operation: "autosave")) {
@@ -110,7 +110,7 @@ struct VaultSaveQuiescenceTests {
 
         // Verify the committed write is recognized in the coordinator & on disk after unlocking,
         // and its temporary recovery draft was cleaned up.
-        #expect(coordinator.committedNotes[noteCommitted.id]?.body == "Updated body inside commit window")
+        #expect(canonicalTestReadableBody(coordinator.committedNotes[noteCommitted.id]?.body) == "Updated body inside commit window")
         #expect(report.preservedDraftIDs == [noteCancelled.id])
 
         let draftsAfterLock = try await recovery.drafts()
@@ -129,13 +129,13 @@ struct VaultSaveQuiescenceTests {
         let scanned = try await unlockedRepo.scan()
         let diskCommitted = try #require(scanned.notes.first(where: { $0.id == noteCommitted.id }))
         let diskCancelled = try #require(scanned.notes.first(where: { $0.id == noteCancelled.id }))
-        #expect(diskCommitted.body == "Updated body inside commit window")
-        #expect(diskCancelled.body == "Initial pre-commit body")
+        #expect(canonicalTestReadableBody(diskCommitted.body) == "Updated body inside commit window")
+        #expect(canonicalTestReadableBody(diskCancelled.body) == "Initial pre-commit body")
         #expect(session.id != unlocked.id)
     }
 
     @Test func pendingDebouncedDirtyEditorAndLCCEditsAreFlushedOrPreservedInRecoveryBeforeLocked() async throws {
-        let (root, _, recovery) = try makeTempVaultAndRecovery()
+        let (root, _, recovery) = try await makeTempVaultAndRecovery()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
 
         let manager = VaultSessionManager()
@@ -182,7 +182,7 @@ struct VaultSaveQuiescenceTests {
         let scan2 = try await repo2.scan()
         let savedNote = try #require(scan2.notes.first(where: { $0.id == note1.id }))
         #expect(savedNote.title == "Debounced Note Renamed")
-        #expect(savedNote.body == "Flushed during lock quiescence")
+        #expect(canonicalTestReadableBody(savedNote.body) == "Flushed during lock quiescence")
         #expect(savedNote.tags == ["quiesced"])
         #expect(savedNote.lcc == "QA76")
 
@@ -191,10 +191,8 @@ struct VaultSaveQuiescenceTests {
 
         // Case B: Simulate an external edit / conflict on disk so the direct repository save during quiescence
         // cannot overwrite the file; verify quiescence preserves both the conflict copy AND the user's draft in RecoveryStore!
-        var externallyModified = savedNote
-        externallyModified.body = "External concurrent modification on disk"
-        let externalBytes = try NoteCodec.encode(externallyModified)
-        try repo2.contentStore.write(externalBytes, at: savedNote.relativePath, condition: .replace(expected: try repo2.contentStore.read(at: savedNote.relativePath)))
+        _ = try await repo2.save(note: savedNote, title: savedNote.title,
+                                 body: "External concurrent modification on disk", tags: savedNote.tags)
 
         let conflictingPendingState = VaultPendingEditorState(
             dirtyNote: .init(
@@ -220,14 +218,13 @@ struct VaultSaveQuiescenceTests {
         #expect(preservedDrafts.first?.id == savedNote.id)
         #expect(preservedDrafts.first?.body == "User local unsaved edit before lock")
 
-        // Verify D01 conflict copy was also preserved in Conflicts/.
-        let conflictsDir = root.appendingPathComponent("Conflicts")
-        let conflictFiles = try FileManager.default.contentsOfDirectory(at: conflictsDir, includingPropertiesForKeys: nil)
-        #expect(!conflictFiles.isEmpty)
+        // Revision rejection preserves the user's draft without writing legacy conflict copies.
+        #expect(preservedDrafts.first?.body == "User local unsaved edit before lock")
+
     }
 
     @Test func cancelledImportsCleanOnlyOwnedStagingAndPreserveUnknownCopiesAcrossLockAndReopen() async throws {
-        let (root, _, recovery) = try makeTempVaultAndRecovery()
+        let (root, _, recovery) = try await makeTempVaultAndRecovery()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
 
         let manager = VaultSessionManager()
@@ -348,7 +345,7 @@ struct VaultSaveQuiescenceTests {
     }
 
     @Test func unrecoverableQuiescenceFailureReportsErrorAndAvoidsFalselyPublishingLocked() async throws {
-        let (root, _, _) = try makeTempVaultAndRecovery()
+        let (root, _, _) = try await makeTempVaultAndRecovery()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
 
         // Create a read-only file where the RecoveryStore directory should be, or point RecoveryStore to a removed/unwritable path

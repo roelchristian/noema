@@ -79,7 +79,7 @@ struct CloudConsentPolicyIntegrationTests {
     @MainActor private func fixture() async throws -> ConsentFixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-consent-flow-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         let note = try await repository.create(title: "Human title", body: "Selected content")
         let domain = "noema-consent-flow-defaults-\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: domain))

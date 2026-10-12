@@ -103,7 +103,7 @@ import VaultCore
         let root = base.appendingPathComponent("Vault")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         let page = try await repository.create(title: "Session fixture", body: "Original")
         let model = AppModel(); model.localStorageRoot = base.appendingPathComponent("Local")
         model.persistSecurityScopedBookmark = false
@@ -125,7 +125,7 @@ import VaultCore
         view.undoManager?.beginUndoGrouping()
         view.insertText("Saved ", replacementRange: NSRange(location: 0, length: 0))
         view.undoManager?.endUndoGrouping()
-        #expect(model.body == "Original")
+        #expect(BlockDocumentCodec.markdownBody(model.body) == "Original")
         #expect(await model.saveCurrent())
         var batch = try await repository.scan()
         #expect(BlockDocumentCodec.decode(try #require(batch.notes.first(where: { $0.id == page.id })).body).blocks.first?.text == "Saved Original")

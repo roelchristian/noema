@@ -8,6 +8,17 @@ Reference environment: Apple Silicon, macOS 27.0, Swift 6.2.4, macOS SDK 26.2.
 Prior native runs establish the domain acceptance stated below; they are not claims
 that a later change has been tested. Rerun the relevant commands for each PR.
 
+## STOR02B–STOR03 acceptance scope
+
+The production baseline is format 2, directly initialized schema 5. Historical
+Markdown/schema-1–4 vaults are intentionally unsupported. The repository demo and its
+content-only checks are retired; canonical fixtures are generated in temporary roots.
+Native archive APIs include committed SQLite and controlled originals/preservation,
+with RecoveryStore drafts and linked originals explicitly excluded. Independent
+storage review and integrated test results must be recorded in the PR; implementation
+alone is not acceptance. Standing device/accessibility, process-termination, power-loss,
+filesystem-failure and linked-source acceptance gaps remain open.
+
 ## Reproducible checks
 
 Run from the repository root:
@@ -206,7 +217,7 @@ reader closing and availability; this does not sign off interrupted cleanup conf
 | --- | --- |
 | Publication / [SourceAdapterTests](../Tests/VaultCoreTests/SourceAdapterTests.swift): `failedPublicationRetainsStagingAndURLStatusPreservesOriginal` | No incomplete source publishes; staging retains exact original and checksum/size metadata; URL failures retain captured bytes on reopen. |
 | Staging / same suite: `failedSourceStagingNeverPublishesIncompleteContentAndRetainsWrittenBytes(filename:)` | Original/metadata write failures preserve prior source snapshots; metadata failure retains staged original; original failure leaves empty stage. Retry/reopen recover full input without changing failed-stage bytes. |
-| Move / [TrashAdapterTests](../Tests/VaultCoreTests/TrashAdapterTests.swift): `failedTrashPreservesCurrentBytes(mode:)`, `legacyFailedMoveAndCollisionKeepBothVersions` | Failed/colliding moves preserve source and occupied destination bytes; failed legacy migration retains original, retry preserves both versions. |
+| Move / [TrashAdapterTests](../Tests/VaultCoreTests/TrashAdapterTests.swift): `canonicalTrashRestoreAndPermanentDeletionPreserveIdentityAndRejectStaleRevision` | Canonical revision checks reject stale Trash actions; restore preserves page identity and content. Legacy filesystem Trash migration is retired. |
 | Snapshot / [VaultContentStoreTests](../Tests/VaultCoreTests/VaultContentStoreTests.swift), TrashAdapterTests `restoreAndDeleteRejectChangesInsideAdapter(deleting:)`, SourceAdapterTests `metadataRacePreservesExternalChange(deleted:)` | Create-only/stale replacement, move/delete and flat-directory checks preserve current bytes. External metadata changes survive rejection; deleted files stay absent. |
 | Partial deletion / TrashAdapterTests `partialFilesystemDeletionReportsFailureAndPreservesRemainingRecoverableOriginal` | Empty Trash reports injected failure after metadata deletion; surviving original remains exact on reopen. Damaged record cannot restore; retention preserves bytes and metadata needs repair. |
 | Recovery / [WikiPageAdapterTests](../Tests/VaultCoreTests/WikiPageAdapterTests.swift): `racePreservesCanonicalAndRecoveryDraft(deleted:)`, VaultSaveQuiescenceTests | External canonical edits/deletions remain; conflicts and reopened journals retain exact draft identity/body. Durable saves finish, cancelled pre-commit work preserves canonical bytes and recovery content. |
@@ -417,10 +428,10 @@ run or repeat prior PR validation. Actual STOR.01 commands/outcomes belong in it
 
 | Implemented guarantee | Regression evidence | Remaining limit |
 | --- | --- | --- |
-| Relational document reconstruction, incremental writes and schema rejection | [SQLiteBlockStoreTests](../Tests/VaultCoreTests/SQLiteBlockStoreTests.swift): `sqliteBlocksReconstructAndWriteOnlyAffectedRows`, `sqliteBlocksRollbackAndRejectFutureSchema`, `sqliteSchemaUpgradePreservesPagesAndTrashCyclesResetRetentionIdentity` | Arbitrary future JSON fields are not losslessly retained; current schema has page-only authority. |
+| Relational document reconstruction, incremental writes and schema rejection | [SQLiteBlockStoreTests](../Tests/VaultCoreTests/SQLiteBlockStoreTests.swift): `sqliteBlocksReconstructAndWriteOnlyAffectedRows`, `sqliteBlocksRollbackAndRejectFutureSchema`, `sqliteTrashCyclesResetRetentionIdentity` | Arbitrary future JSON fields are not losslessly retained; current schema has page-only authority. |
 | Atomic metadata/document publication, revisions and session authority | Same suite: `sqlitePagePublicationValidationRollsBackMetadataAndBlocks`, `sqliteConnectionsRejectStaleWritesAndReadCoherentPageSnapshots`, `sqliteBlocksRejectRevokedSessionWithoutMutatingPage`, `sqliteCancelledPublicationPreservesLastAcknowledgedRevision` | These transactions do not span separately file-backed source originals/metadata or external files. |
 | WAL-inclusive backup and retirement | Same suite: `sqliteWALBackupIncludesAcknowledgedRevisionAndRejectsOverwrite`; repository checkpoint/close lifecycle | SQLite backup is database-only; synthetic cancellation/faults do not prove process-crash or power-loss durability. |
-| Explicit conversion with verified backup and conditional manifest-last cutover | [SQLiteVaultMigrationTests](../Tests/VaultCoreTests/SQLiteVaultMigrationTests.swift): original/backup preservation, interrupted publication retry, source/manifest changes, occupied/symlink/missing database and known cloud-root rejection | Filesystem rename/atomic write alone does not establish power-loss durability or universal third-party synchronizer detection. |
+| Explicit conversion with verified backup and conditional manifest-last cutover | [VaultCreationTests](../Tests/VaultCoreTests/VaultCreationTests.swift): original/backup preservation, interrupted publication retry, source/manifest changes, occupied/symlink/missing database and known cloud-root rejection | Filesystem rename/atomic write alone does not establish power-loss durability or universal third-party synchronizer detection. |
 | Format-aware page operations and explicit Markdown interchange | [SQLiteRepositoryTests](../Tests/VaultCoreTests/SQLiteRepositoryTests.swift): `explicitMarkdownRoundTripPreservesIDsAndMetadata`, `externalMarkdownRequiresExplicitRevisionCheckedImport` | Native interoperability UI, complete archive/restoration and multi-device SQLite replication remain unavailable. |
 
 STOR.01 changes documentation and approves future requirements only. Schema-3

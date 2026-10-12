@@ -7,7 +7,7 @@ struct RecoveryStoreIsolationTests {
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("recovery-isolation-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: root, create: true)
         let directory = root.appendingPathComponent("Drafts")
         let recovery = try RecoveryStore(unguardedTestingDirectory: directory)
         var drafts: [DraftRecord] = []
@@ -35,7 +35,7 @@ struct RecoveryStoreIsolationTests {
         }
 
         let restored = try await repository.create(title: "Recovered", body: drafts[0].body)
-        #expect(restored.body == "Only unsaved copy 0")
+        #expect(canonicalTestReadableBody(restored.body) == "Only unsaved copy 0")
         try await recovery.remove(drafts[0].id)
         #expect(try await recovery.listing().drafts.count == 2)
         #expect(try Data(contentsOf: corrupt) == original)
@@ -83,7 +83,7 @@ struct RecoveryStoreIsolationTests {
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("recovery-collision-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: root, create: true)
         let note = try await repository.create(title: "Page", body: "Original")
         let directory = root.appendingPathComponent("Drafts")
         let recovery = try RecoveryStore(unguardedTestingDirectory: directory)
@@ -112,7 +112,7 @@ struct RecoveryStoreIsolationTests {
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("recovery-entry-errors-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: root, create: true)
         let note = try await repository.create(title: "Page", body: "Original")
         let directory = root.appendingPathComponent("Drafts")
         let recovery = try RecoveryStore(unguardedTestingDirectory: directory)
@@ -146,7 +146,7 @@ struct RecoveryStoreIsolationTests {
             .appendingPathComponent("recovery-stale-retry-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await canonicalSchema5TestRepository(root: root, create: true)
         let note = try await repository.create(title: "Page", body: "Committed original")
         let directory = root.appendingPathComponent("Drafts")
         let recovery = try RecoveryStore(unguardedTestingDirectory: directory)
@@ -155,23 +155,18 @@ struct RecoveryStoreIsolationTests {
         let journalURL = directory.appendingPathComponent(note.id.uuidString + ".json")
         let journalBytes = try Data(contentsOf: journalURL)
         var external = note
-        external.body = "Newer external version"
-        let canonicalBytes = try NoteCodec.encode(external)
-        let canonicalURL = root.appendingPathComponent(note.relativePath)
-        try canonicalBytes.write(to: canonicalURL, options: .atomic)
+        external = try await repository.save(note: note, title: note.title, body: "Newer external version", tags: [])
 
         // Reopening must not grant an old draft authority to replace a newer external file.
-        for candidate in [repository, try FileVaultRepository.open(root: root)] {
+        for candidate in [repository, try await canonicalSchema5TestRepository(root: root)] {
             do {
                 _ = try await candidate.save(note: draft.note, title: draft.title, body: draft.body, tags: draft.tags)
                 Issue.record("Expected a stale recovery conflict")
-            } catch VaultError.conflict(let path) {
-                let preserved = try NoteCodec.decode(Data(contentsOf: URL(fileURLWithPath: path)),
-                    path: note.relativePath, vaultID: candidate.manifest.id)
-                #expect(preserved.id == note.id)
-                #expect(preserved.body == draft.body)
+            } catch VaultError.conflict(let message) {
+                #expect(!message.isEmpty)
+                #expect(try await recovery.drafts().first?.body == draft.body)
             }
-            #expect(try Data(contentsOf: canonicalURL) == canonicalBytes)
+            #expect(try await candidate.scan().notes.first?.body == external.body)
             #expect(try Data(contentsOf: journalURL) == journalBytes)
             let reopened = try RecoveryStore(unguardedTestingDirectory: directory)
             #expect(try await reopened.drafts().first?.id == note.id)

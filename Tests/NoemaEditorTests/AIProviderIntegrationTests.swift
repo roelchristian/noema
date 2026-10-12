@@ -18,7 +18,7 @@ struct AIProviderIntegrationTests {
     @MainActor private func fixture() async throws -> ProviderFixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-provider-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         var document = BlockDocumentCodec.decode("Selected page content")
         document.setAISummary("Prior summary")
         let note = try await repository.create(title: "Fixture", body: BlockDocumentCodec.encode(document))

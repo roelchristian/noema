@@ -136,12 +136,13 @@ struct SettingsWindowStateTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
 
-        let repository = try FileVaultRepository.open(root: root, create: true)
-        let note = try await repository.create(title: "Settings Test Page", body: "Initial body")
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
+        let created = try await repository.create(title: "Settings Test Page", body: "Initial body")
         let model = AppModel()
         model.localStorageRoot = base
         model.persistSecurityScopedBookmark = false
         await model.open(root, create: false)
+        let note = try #require(model.notes.first { $0.id == created.id })
         model.currentNote = note
         model.selectedID = note.id
         model.reading = false
@@ -193,7 +194,7 @@ struct SettingsWindowStateTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
 
-        _ = try FileVaultRepository.open(root: root, create: true)
+        _ = try await openCanonicalAppFixture(root: root, create: true)
         let model = AppModel()
         model.localStorageRoot = base
         model.persistSecurityScopedBookmark = false
@@ -230,8 +231,8 @@ struct SettingsWindowStateTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
 
-        let repository = try FileVaultRepository.open(root: root, create: true)
-        let note = try await repository.create(
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
+        let created = try await repository.create(
             title: "Architecture & Design Notes",
             body: "## System Settings Redesign\n\nSettings is now a native modal sheet attached to the workspace."
         )
@@ -239,6 +240,7 @@ struct SettingsWindowStateTests {
         model.localStorageRoot = base
         model.persistSecurityScopedBookmark = false
         await model.open(root, create: false)
+        let note = try #require(model.notes.first { $0.id == created.id })
         model.currentNote = note
         model.selectedID = note.id
 

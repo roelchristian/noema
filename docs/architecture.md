@@ -1,40 +1,23 @@
 # Noema architecture
 
-## Canonical storage reconciliation (STOR.01)
+## Canonical storage authority (STOR02B–STOR03)
 
-The implementation baseline is `890898fbe0d1511e64dd3e41f932be1147bb79b3`,
-including EDT.BLK09–14. This is a page-first SQLite implementation with distinct
-file-backed source and preservation authorities. Its current boundary is implemented;
-the expansion below is a future implementation requirement. Source and tests govern
-when older D-series or EDT.BLK proposals disagree with this baseline.
+Every newly created vault uses format 2 with a mandatory schema-5 SQLite declaration.
+`SQLiteBlockStore` owns the sole connection, schema and transactions for pages, blocks,
+page metadata, source metadata/relationships, logical Trash, tombstones, conflicts,
+knowledge entities/aliases/relations, questions/definitions and annotations. Manifest,
+`user_version`, database vault UUID and capabilities must agree before admission.
+Schema 5 is initialized directly. Historical formats and schemas 1–4 are deliberately
+unsupported; opening them rejects without mutation. Markdown is import/export only.
 
-| Surface | Current authority and evidence | Approved target / disposition |
-| --- | --- | --- |
-| Pages, block documents and page Trash | Format 2 `blocks.sqlite`, schema `user_version=2`; actor-owned `SQLiteBlockStore` and `SQLiteRepositoryTests`. Implemented and verified by the named automated scenarios, subject to [acceptance limits](validation.md#sqlite-storage-acceptance). | Retain relational blocks, opaque revisions and incremental writes; extend the existing store rather than replace it. |
-| Source metadata, originals and page references | `Sources/<UUID>/metadata.json` and checksum-verified bytes through `VaultContentStore`; ordered source UUID references are in canonical page metadata. Implemented but limited: separate stores have no compound transaction. | STOR.02 moves structured source metadata and relationships to SQLite only after explicit authority transition; imported originals remain controlled immutable blobs, linked originals externally owned. |
-| Conflicts, source Trash and retained legacy page Trash | Repository-owned file preservation and retention ledger. Implemented but limited; SQLite page Trash does not make all preservation metadata database-owned. | Canonical logical Trash, tombstones and conflict disposition become SQLite-owned; unique preserved bytes remain recoverable. |
-| Creation and conversion | `VaultCreation` creates Markdown format 1; `SQLiteVaultMigration` implements explicit verified manifest-last page conversion. | STOR.02 changes the eligible local creation default; existing vaults never convert on open. STOR.03 supplies explicit expanded-authority migration and complete restoration verification. |
-| Document compatibility | `BlockDocument`/codec retain supported kinds, runs, tree, semantic extension map, source spellings and recovery payload. Bounded opaque optional JSON now round-trips in domain scopes; expanded writable payloads require explicit schema 3. Production schema-3 admission remains closed. | Versioned opaque optional extensions and required-feature rejection are specified in [block-editor.md](contracts/block-editor.md); preservation-only reads grant no save authority. |
-| Complete archive and annotations | Live-page Markdown export and SQLite backup exist; neither is a complete archive. Complete archive remains unimplemented; inline annotation domain records and conservative persistence invalidation exist in the explicit staging foundation. | STOR.03 owns complete archive/restore; annotations remain a deferred extension, independent of formatting-run identity. |
-| Search, activity and drafts | App-local `SQLiteSearchIndex`, metadata-only `SQLiteAIActivityStore`, and preservation-only `RecoveryStore`. Implemented with different lifecycle rules. | Search/embeddings remain rebuildable; activity is independent history; drafts retain separate preservation authority until explicit commitment/discard. |
-| Older “v1 only”, file-only canonical authority and hypothetical SQLite proposals | Contradictory or superseded by format-2 code and SQLite tests at this baseline. | Replace with the present authority map; E-series encryption and device/crash acceptance remain future gates. |
-
-The target keeps manifest format 2 and `storageMode: sqliteBlocks`, but requires a
-nested storage declaration with schema version 3 and `canonicalMetadataV1` among
-its required capabilities, agreeing with database vault identity/capabilities.
-Current clients reject this nested declaration before opening format 2. Table
-addition alone never changes existing authority; schema 2 remains page-only.
-The [canonical storage decision](decisions/0001-canonical-sqlite-authority.md) and
-[versioned ownership contract](contracts/storage-boundary.md) specify the exact
-discriminator, integrity rules and explicit migration gate. No runtime
-schema, manifest, migration or creation default changes occur in STOR.01.
-
-STOR02A adds an internal explicit schema-3 staging foundation and bounded
-versioned JSON preservation in the existing domain/store. Its compound source/page
-API admits receipt-verified imported and linked sources in explicitly initialized
-canonical repositories. Schema-2-to-3 authority-changing migration and final
-acceptance remain incomplete; existing format 1/2 behavior and creation defaults
-remain unchanged. See the [current foundation and remaining gates](contracts/storage-boundary.md#canonical-persistence-implementation-stor02a).
+Imported originals remain immutable, checksum-verified controlled vault bytes through
+`VaultContentStore`; linked originals stay externally owned and read-only. RecoveryStore
+remains a separate preservation authority for unsaved drafts. Search is rebuildable;
+AI activity is application-local history. Native version-1 archives use the SQLite
+backup API and preserve controlled original/preservation files with integrity entries.
+Restore is explicit, validated and create-only. External originals and app-local drafts
+are excluded and disclosed. Encryption, cloud synchronization and actual process-crash,
+power-loss and device/accessibility acceptance remain outstanding.
 
 ## Where things live
 
@@ -90,9 +73,8 @@ Schema-5 annotations have one relational authority. Inline document extensions a
 load/export projections; unchanged whole-block anchors, exact edits and lifecycle
 revision rebasing publish transactionally. Stale/deleted evidence and tombstoned
 identities remain preserved. See the acceptance and lifecycle tests in VaultCoreTests.
-Production creation defaults, authority-changing migration, native tagging UI,
-complete archives, device/accessibility and crash-durability gates remain separate
-STOR02B/03 work. No AI extraction, inference or additional concrete types is added.
+Native tagging UI, device/accessibility and crash-durability gates remain separate
+acceptance work. No AI extraction, inference or additional concrete types is added.
 
 ## Identity and evolution
 

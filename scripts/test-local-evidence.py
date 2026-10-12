@@ -139,14 +139,14 @@ class LocalEvidenceTests(unittest.TestCase):
         self.assertTrue((hardlinked / 'diagnostics.log').exists())
 
     def test_nonmanaged_fixtures_and_vault_never_touched(self):
-        for path in ('Tests/fixtures', 'Examples/Demo Vault', 'Resources/Brand', 'validation/fixtures'):
+        for path in ('Tests/fixtures', 'Examples/Protected Fixture', 'Resources/Brand', 'validation/fixtures'):
             target = self.repo / path
             target.mkdir(parents=True)
             (target / '.complete').touch()
             (target / 'keep.png').write_bytes(b'canonical')
         self.run_dir('eligible')
         self.run_cleanup('--force')
-        for path in ('Tests/fixtures', 'Examples/Demo Vault', 'Resources/Brand', 'validation/fixtures'):
+        for path in ('Tests/fixtures', 'Examples/Protected Fixture', 'Resources/Brand', 'validation/fixtures'):
             self.assertEqual((self.repo / path / 'keep.png').read_bytes(), b'canonical')
 
     def test_path_swap_during_deletion_cannot_follow_symlink(self):

@@ -120,7 +120,7 @@ extension VaultUIIntegrationTests {
             let root = base.appendingPathComponent("Vault")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: base) }
-            let repository = try FileVaultRepository.open(root: root, create: true)
+            let repository = try await openCanonicalAppFixture(root: root, create: true)
             let local = base.appendingPathComponent("Local")
             let drafts = local.appendingPathComponent("KnowledgeVault/\(repository.manifest.id.uuidString)/Drafts")
             _ = try RecoveryStore(unguardedTestingDirectory: drafts)
@@ -163,7 +163,7 @@ extension VaultUIIntegrationTests {
                 SourceReader.closeAll()
                 try? FileManager.default.removeItem(at: base)
             }
-            let repository = try FileVaultRepository.open(root: root, create: true)
+            let repository = try await openCanonicalAppFixture(root: root, create: true)
             let note = try await repository.create(title: "Command Page", body: "Saved command body")
             let model = AppModel()
             model.localStorageRoot = base
@@ -206,7 +206,7 @@ extension VaultUIIntegrationTests {
             let root = base.appendingPathComponent("Vault")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: base) }
-            let repository = try FileVaultRepository.open(root: root, create: true)
+            let repository = try await openCanonicalAppFixture(root: root, create: true)
             let note = try await repository.create(title: "Toolbar Page", body: "Toolbar test body")
             let model = AppModel()
             model.localStorageRoot = base
@@ -267,14 +267,16 @@ extension VaultUIIntegrationTests {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: base) }
 
-            let repository = try FileVaultRepository.open(root: root, create: true)
-            let first = try await repository.create(title: "First Page", body: "Original first body")
-            let second = try await repository.create(title: "Second Page", body: "Second body")
+            let repository = try await openCanonicalAppFixture(root: root, create: true)
+            let createdFirst = try await repository.create(title: "First Page", body: "Original first body")
+            let createdSecond = try await repository.create(title: "Second Page", body: "Second body")
             let model = AppModel()
             model.localStorageRoot = base
             model.persistSecurityScopedBookmark = false
             await model.open(root, create: false)
             #expect(model.isVaultAvailable)
+            let first = try #require(model.notes.first { $0.id == createdFirst.id })
+            let second = try #require(model.notes.first { $0.id == createdSecond.id })
 
             model.currentNote = first
             model.selectedID = first.id
@@ -306,7 +308,7 @@ extension VaultUIIntegrationTests {
             model.reading = false
             #expect(!model.canFormatDocument)
             model.format("**", "**")
-            #expect(model.body == "Original first body")
+            #expect(BlockDocumentCodec.markdownBody(model.body) == "Original first body")
 
             model.newPage()
             try await Task.sleep(for: .milliseconds(50))

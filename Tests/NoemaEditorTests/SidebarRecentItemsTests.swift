@@ -64,7 +64,7 @@ struct SidebarRecentItemsNavigationTests {
         let root = base.appendingPathComponent("Vault")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { SourceReader.closeAll(); try? FileManager.default.removeItem(at: base) }
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         var metadata = BlockMetadata(); metadata.semantic = "definition"
         let block = EditorBlock(runs: [RichRun("A focused semantic definition")], metadata: metadata)
         let note = try await repository.create(title: "Parent page", body: BlockDocumentCodec.encode(BlockDocument(blocks: [block])))
@@ -113,8 +113,8 @@ struct SidebarRecentItemsNavigationTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: otherRoot, withIntermediateDirectories: true)
         defer { SourceReader.closeAll(); try? FileManager.default.removeItem(at: base) }
-        let repository = try FileVaultRepository.open(root: root, create: true)
-        _ = try FileVaultRepository.open(root: otherRoot, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
+        _ = try await openCanonicalAppFixture(root: otherRoot, create: true)
         let note = try await repository.create(title: "Original title", body: "Body")
         let suite = "SidebarRecentItems-" + UUID().uuidString
         let defaults = try #require(UserDefaults(suiteName: suite))

@@ -22,12 +22,12 @@ private final class SearchTestIndex: SearchIndex, Sendable {
 
 extension VaultUIIntegrationTests {
 struct SearchModelTests {
-    private func makeVault() throws -> URL {
+    private func makeVault() async throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("NoemaSearchModel-" + UUID().uuidString)
             .appendingPathComponent("Vault")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        _ = try FileVaultRepository.open(root: root, create: true)
+        _ = try await openCanonicalAppFixture(root: root, create: true)
         return root
     }
 
@@ -40,9 +40,9 @@ struct SearchModelTests {
     }
 
     @Test @MainActor func populatedVaultScopesPreserveQueryLibraryAndDocumentAndKeepExcerpts() async throws {
-        let root = try makeVault()
+        let root = try await makeVault()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        let repo = try FileVaultRepository.open(root: root)
+        let repo = try await openCanonicalAppFixture(root: root)
         var metadata = BlockMetadata(); metadata.semantic = "claim"
         let block = EditorBlock(runs: [RichRun("Nebula evidence")], metadata: metadata)
         let page = try await repo.create(title: "Nebula page", body: BlockDocumentCodec.encode(BlockDocument(blocks: [block])))
@@ -79,9 +79,9 @@ struct SearchModelTests {
     }
 
     @Test @MainActor func quickOpenMatchesTitlesAndAliasesButNeverBodiesOrBlocksAndClearsAtLifecycle() async throws {
-        let root = try makeVault()
+        let root = try await makeVault()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        let repo = try FileVaultRepository.open(root: root)
+        let repo = try await openCanonicalAppFixture(root: root)
         let page = try await repo.create(title: "Nebula title", body: "Bodyonly nebula text")
         _ = try await repo.create(title: "Other", body: "Nebula body match")
         _ = try await repo.importSource(data: Data("Nebula body match".utf8), filename: "source.txt", title: "Nebula source", originURL: nil)
@@ -112,9 +112,9 @@ struct SearchModelTests {
     }
 
     @Test @MainActor func failedSearchHasItsOwnStateAndDoesNotReplaceDocumentError() async throws {
-        let root = try makeVault()
+        let root = try await makeVault()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        let repo = try FileVaultRepository.open(root: root)
+        let repo = try await openCanonicalAppFixture(root: root)
         let page = try await repo.create(title: "Nebula", body: "A searchable page")
         let model = AppModel()
         model.localStorageRoot = root.deletingLastPathComponent(); model.persistSecurityScopedBookmark = false
@@ -141,9 +141,9 @@ struct SearchModelTests {
     }
 
     @Test @MainActor func supersededQueryModeScopeAndSelectionCannotPublishEvenWhenTextReturnsToSameValue() async throws {
-        let root = try makeVault()
+        let root = try await makeVault()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        let repo = try FileVaultRepository.open(root: root)
+        let repo = try await openCanonicalAppFixture(root: root)
         let old = try await repo.create(title: "Old", body: "Old body")
         let newer = try await repo.create(title: "Newer", body: "Newer body")
         final class Gate: Sendable {
@@ -196,9 +196,9 @@ struct SearchModelTests {
 
     @Test(arguments: [0, 1, 2]) @MainActor
     func catalogAndEditorChangesRejectSuspendedResultsBeforeViewRefresh(change: Int) async throws {
-        let root = try makeVault()
+        let root = try await makeVault()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        let repo = try FileVaultRepository.open(root: root)
+        let repo = try await openCanonicalAppFixture(root: root)
         let page = try await repo.create(title: "Snapshot Page", body: "Snapshot original content")
         final class Gate: Sendable {
             let entered = AsyncStream.makeStream(of: Void.self)
@@ -243,9 +243,9 @@ struct SearchModelTests {
     }
 
     @Test @MainActor func activeSearchKeepsCompleteLibraryRowsFreshAcrossScopeAndContentChanges() async throws {
-        let root = try makeVault()
+        let root = try await makeVault()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        let repo = try FileVaultRepository.open(root: root)
+        let repo = try await openCanonicalAppFixture(root: root)
         let match = try await repo.create(title: "Match", body: "Original body")
         let other = try await repo.create(title: "Other", body: "Unrelated content")
         let source = try await repo.importSource(data: Data("Source text".utf8), filename: "source.txt", title: "Unrelated source", originURL: nil)

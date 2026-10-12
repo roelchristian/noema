@@ -204,7 +204,7 @@ KNOW02 creates schema 4 requiring deterministic set
 The nested manifest `storage.schemaVersion`, `PRAGMA user_version`, vault UUID and
 database required-capability set must agree before writable admission. Unknown or
 missing required capabilities and unsupported payload versions deny writes before
-schema changes or publication. Existing schema 2/3 retains its own reader route.
+schema changes or publication. Only schema 5 is admitted in production; historical schemas reject without mutation.
 
 Schema 3's singular `vault_state.capability = canonicalMetadataV1` retains its
 meaning. Schema 4 adds an explicitly versioned `required_capabilities` set and
@@ -214,14 +214,10 @@ Capability presence denotes actually implemented preservation/writes, not a prom
 No schema-4 semantic tables or semantic feature activation is assumed by KNOW02;
 KNOW03's new relational authority therefore requires schema 5.
 
-Initial implementations may initialize only fresh verified staging databases and
-reject knowledge APIs on existing schema 3/4 with an explicit transition-required
-error. Any schema-3→4 or schema-4→5 conversion must be explicitly invoked: backup
-API consistent snapshot, inventory/revision recheck, separately built verified
-staging DB, preservation verification, close staging connection, conditional DB
-publication and manifest-last cutover with retained recovery evidence. No automatic
-upgrade on open, production migration or writable downgrade is authorized here.
-Never force a prior schema version or reload old Wiki/source files as authority.
+Production initializes fresh schema 5 directly. Historical schema 1–4 upgrade routes
+are retired by STOR02B–STOR03; no automatic or explicit historical migration is
+supported. Internal fresh constructors provide test isolation only. Opening never
+reinterprets old Wiki/source files as canonical authority.
 
 Schema 5 transfers existing document-extension annotations once into independent
 records with their original UUIDs, exact anchors/dispositions and unknown JSON.

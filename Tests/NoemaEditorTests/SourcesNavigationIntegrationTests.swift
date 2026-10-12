@@ -21,7 +21,7 @@ struct SourcesNavigationIntegrationTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try SummaryStoreProbe(root: root)
-        let repository = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let repository = try await openCanonicalAppFixture(root: root, create: true, contentStore: store)
         let pdf = PDFDocument()
         pdf.insert(PDFPage(), at: 0)
         let original = try #require(pdf.dataRepresentation())
@@ -45,10 +45,10 @@ struct SourcesNavigationIntegrationTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: otherRoot, withIntermediateDirectories: true)
         defer { SourceReader.closeAll(); try? FileManager.default.removeItem(at: base) }
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         let source = try await repository.importSource(data: Data("Unique searchable source content".utf8), filename: "fixture.txt", title: "Original Source", originURL: nil)
         _ = try await repository.create(title: "Fixture Page", body: "Page excerpt remains available")
-        _ = try FileVaultRepository.open(root: otherRoot, create: true)
+        _ = try await openCanonicalAppFixture(root: otherRoot, create: true)
         let model = AppModel()
         model.localStorageRoot = base
         model.persistSecurityScopedBookmark = false
@@ -127,7 +127,7 @@ struct SourcesNavigationIntegrationTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { SourceReader.closeAll(); try? FileManager.default.removeItem(at: root) }
         let store = try NavigationSourceStore(root: root)
-        let repository = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let repository = try await openCanonicalAppFixture(root: root, create: true, contentStore: store)
         let bytes = Data("Fresh selected source text".utf8)
         let source = try await repository.importSource(data: bytes, filename: "source.txt", title: "Source", originURL: nil)
         let model = AppModel(storageProvider: VaultStorageProvider { _ in store })
@@ -139,18 +139,21 @@ struct SourcesNavigationIntegrationTests {
         model.changeScope(.sources)
         model.select(source.id)
         await waitUntil { model.currentSource?.contentState == .notLoaded }
-        #expect(model.currentSource?.availabilityIssue == "Not verified")
+        #expect(model.currentSource?.availabilityIssue == nil)
+        #expect(model.currentSource?.contentState == .notLoaded)
         #expect(model.body.isEmpty)
         model.updateSourceLCC(metadata.sources[0], lcc: "QA")
         for _ in 0..<100 {
             if try await repository.scanSources().sources.first?.metadata.lcc == "QA" { break }
             try await Task.sleep(for: .milliseconds(10))
         }
-        // Wait for the index actor after the metadata write, while the UI still has a notLoaded record.
-        try await Task.sleep(for: .milliseconds(30))
-        await waitUntil { model.currentSource?.contentState == .loaded && !model.preview.isEmpty }
+        // A metadata-only save also materializes the selected inspector through refresh.
+        await waitUntil { model.currentSource?.contentState == .loaded && model.body == source.body && !model.preview.isEmpty }
         #expect(model.errorMessage == nil)
-        #expect(model.currentSource?.contentState == .loaded && model.body == source.body && !model.preview.isEmpty)
+        #expect(model.currentSource?.contentState == .loaded)
+        #expect(model.body == source.body)
+        #expect(!model.preview.isEmpty)
+        #expect(model.currentSource?.metadata.lcc == "QA")
         #expect(try await repository.scanSources().sources.first?.metadata.lcc == "QA")
         #expect(try await model.sourceSummaryContent(metadata.sources[0], root: root).contains("Fresh selected"))
         await model.refresh()
@@ -179,10 +182,14 @@ struct SourcesNavigationIntegrationTests {
         try store.base.write(Data("Corruption".utf8), at: original, condition: .replace(expected: bytes))
         await model.refresh()
         await waitUntil {
-            model.sources.isEmpty && model.currentSource == nil && model.selectedID == nil &&
+            model.currentSource?.contentState == .unavailable &&
             model.body.isEmpty && model.preview.isEmpty && model.sourceAvailability.isEmpty
         }
-        #expect(model.sources.isEmpty && model.currentSource == nil && model.selectedID == nil)
+        // Canonical source identity survives corruption; its plaintext becomes unavailable.
+        #expect(model.sources.map(\.id) == [source.id])
+        #expect(model.currentSource?.id == source.id && model.selectedID == source.id)
+        #expect(model.currentSource?.contentState == .unavailable)
+        #expect(model.currentSource?.availabilityIssue?.contains("checksum") == true)
         #expect(model.body.isEmpty && model.preview.isEmpty && model.sourceAvailability.isEmpty)
         #expect(await model.closeVault())
     }
@@ -191,7 +198,7 @@ struct SourcesNavigationIntegrationTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-linked-preview-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { SourceReader.closeAll(); try? FileManager.default.removeItem(at: root) }
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         let external = root.appendingPathComponent("Linked.txt")
         try Data("First linked content".utf8).write(to: external)
         let source = try #require(try await repository.linkSources(at: external, maximumFiles: 1).first)
@@ -220,6 +227,16 @@ private final class NavigationSourceStore: VaultContentStore {
     private func validate(_ path: String) throws {
         if path.contains("/original."), unavailable.withLock({ $0 }) { throw VaultContentStoreError.unavailable(path) }
     }
+    func synchronize(at path: String) throws { try base.synchronize(at: path) }
+    func publishCanonicalOriginal(_ data: Data, metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.publishCanonicalOriginal(data, metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+    func verifyCanonicalOriginal(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.verifyCanonicalOriginal(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+    func verifyCanonicalLinked(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.verifyCanonicalLinked(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
     func createDirectory(at path: String) throws { try base.createDirectory(at: path) }
     func read(at path: String) throws -> Data { try validate(path); return try base.read(at: path) }
     func changeToken(at path: String) throws -> VaultContentChangeToken? { try validate(path); return try base.changeToken(at: path) }
@@ -233,6 +250,16 @@ private final class SummaryStoreProbe: VaultContentStore {
     let base: PlaintextVaultContentStore
     let reads = Mutex([String]())
     init(root: URL) throws { base = try PlaintextVaultContentStore(root: root) }
+    func synchronize(at path: String) throws { try base.synchronize(at: path) }
+    func publishCanonicalOriginal(_ data: Data, metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.publishCanonicalOriginal(data, metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+    func verifyCanonicalOriginal(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.verifyCanonicalOriginal(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+    func verifyCanonicalLinked(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.verifyCanonicalLinked(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
     func createDirectory(at path: String) throws { try base.createDirectory(at: path) }
     func read(at path: String) throws -> Data {
         reads.withLock { $0.append(path) }
