@@ -9,17 +9,45 @@ public enum KnowledgeStoreError: Error, Equatable, Sendable {
     case unsupportedPayload, transitionRequired, leaseLost, invalidProperty(String)
 }
 
-public struct KnowledgeEntityType: Codable, Equatable, Sendable {
+public struct KnowledgeTypeDescriptor: Codable, Equatable, Sendable {
     public var key: String
     public var version: Int
-    public init(key: String, version: Int = 1) { self.key = key; self.version = version }
+    public var metadata: PersistencePayload
+    public var unknownFields: [String: JSONValue] = [:]
+    public init(key: String, version: Int = 1, metadata: PersistencePayload = .init()) {
+        self.key = key; self.version = version; self.metadata = metadata
+    }
+    private static let keys: Set<String> = ["key", "version", "metadata"]
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: PersistenceCodingKey.self)
+        key = try c.decode(String.self, forKey: .init("key")); version = try c.decode(Int.self, forKey: .init("version"))
+        metadata = try c.decodeIfPresent(PersistencePayload.self, forKey: .init("metadata")) ?? .init()
+        unknownFields = try decodeUnknownFields(c, known: Self.keys)
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: PersistenceCodingKey.self)
+        try c.encode(key, forKey: .init("key")); try c.encode(version, forKey: .init("version"))
+        try c.encode(metadata, forKey: .init("metadata"))
+        try encodeUnknownFields(unknownFields, known: Self.keys, into: &c)
+    }
+}
+public struct KnowledgeEntityType: Codable, Equatable, Sendable {
+    public var descriptor: KnowledgeTypeDescriptor
+    public var key: String { descriptor.key }
+    public var version: Int { descriptor.version }
+    public init(key: String, version: Int = 1, metadata: PersistencePayload = .init()) { descriptor = .init(key: key, version: version, metadata: metadata) }
     public static let initial: [Self] = ["person", "place", "concept"].map { .init(key: $0) }
+    public init(from decoder: any Decoder) throws { descriptor = try .init(from: decoder) }
+    public func encode(to encoder: any Encoder) throws { try descriptor.encode(to: encoder) }
 }
 public struct KnowledgeRelationType: Codable, Equatable, Sendable {
-    public var key: String
-    public var version: Int
-    public init(key: String, version: Int = 1) { self.key = key; self.version = version }
+    public var descriptor: KnowledgeTypeDescriptor
+    public var key: String { descriptor.key }
+    public var version: Int { descriptor.version }
+    public init(key: String, version: Int = 1, metadata: PersistencePayload = .init()) { descriptor = .init(key: key, version: version, metadata: metadata) }
     public static let initial: [Self] = [.init(key: "relatedTo")]
+    public init(from decoder: any Decoder) throws { descriptor = try .init(from: decoder) }
+    public func encode(to encoder: any Encoder) throws { try descriptor.encode(to: encoder) }
 }
 
 public struct KnowledgeAlias: Codable, Equatable, Sendable, Identifiable {
@@ -32,7 +60,7 @@ public struct KnowledgeAlias: Codable, Equatable, Sendable, Identifiable {
     }
     public func validateWritable() throws {
         try knowledgeValidateLabel(label)
-        try payload?.validateWritable()
+        if let payload { try knowledgeValidateProperties(payload) }
         try validateUnknownScope(unknownFields, known: Self.keys)
     }
     private static let keys: Set<String> = ["id", "label", "payload"]
@@ -209,5 +237,5 @@ private func knowledgeValidateLabel(_ label: String) throws {
 private func knowledgeValidateProperties(_ payload: PersistencePayload) throws {
     try payload.validateWritable()
     let reserved: Set<String> = ["id", "typeKey", "predicate", "sourceID", "targetID", "revision", "vaultRevision", "lifecycle", "createdAt", "modifiedAt"]
-    for key in payload.properties.keys where reserved.contains(key) { throw KnowledgeStoreError.invalidProperty(key) }
+    for key in Set(payload.properties.keys).union(payload.unknownFields.keys) where reserved.contains(key) { throw KnowledgeStoreError.invalidProperty(key) }
 }
