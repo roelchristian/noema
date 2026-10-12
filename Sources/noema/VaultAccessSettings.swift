@@ -1,4 +1,5 @@
 import SwiftUI
+import VaultCore
 
 /// Shared feedback for an operation awaiting the native macOS authentication dialog.
 struct VaultAuthenticationProgress: View {
@@ -27,10 +28,14 @@ struct VaultAuthenticationProgress: View {
 }
 
 struct VaultAccessSettings: View {
-    @Bindable var model: AppModel
+    var model: AppModel?
     @State private var changing = false
 
-    private var authenticationRequired: Binding<Bool> {
+    init(model: AppModel? = nil) {
+        self.model = model
+    }
+
+    private func authenticationRequired(for model: AppModel) -> Binding<Bool> {
         Binding(get: { model.vaultAccessAuthenticationRequired }, set: { required in
             guard model.isVaultAvailable, !changing, !model.isVaultAuthenticationPending else { return }
             changing = true
@@ -41,29 +46,79 @@ struct VaultAccessSettings: View {
         })
     }
 
-    var body: some View {
-        Section("Vault access on this Mac") {
+    private var vaultDisplayName: String {
+        guard let model else { return "No vault open" }
+        if model.isVaultAvailable || model.isLocked {
+            return model.vaultName
+        }
+        switch model.sessionState {
+        case .open, .opening, .locking, .locked, .unlocking:
+            return model.vaultName
+        case .closed:
+            return "No vault open"
+        }
+    }
+
+    private var accessStatusDescription: String {
+        guard let model else { return "Closed" }
+        switch model.sessionState {
+        case .opening:
+            return "Opening…"
+        case .locking:
+            return "Locking…"
+        case .unlocking:
+            return "Unlocking…"
+        case .locked:
+            return "Locked"
+        case .open:
+            return model.isVaultAvailable ? "Unlocked" : "Opening…"
+        case .closed:
             if model.isVaultAvailable {
-                Text(model.vaultName).font(.headline)
-                Toggle("Require authentication to open or unlock this vault", isOn: authenticationRequired)
+                return "Unlocked"
+            }
+            if model.isLocked {
+                return "Locked"
+            }
+            return "Closed"
+        }
+    }
+
+    var body: some View {
+        Section("Current Vault") {
+            LabeledContent("Vault", value: vaultDisplayName)
+            LabeledContent("Status", value: accessStatusDescription)
+        }
+
+        Section("Authentication") {
+            if let model, model.isVaultAvailable {
+                Toggle("Require authentication to open or unlock this vault", isOn: authenticationRequired(for: model))
                     .disabled(changing || model.busy || model.isVaultAuthenticationPending)
-                Text("Changing this preference requires macOS authentication. It applies to this vault on this Mac, including reopening it and restarting Noema.")
-                    .font(.callout).foregroundStyle(.secondary)
+                Text("Changing this preference requires macOS authentication. It applies to this vault on this Mac when opening, unlocking, or reopening it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else {
-                Text("Open and unlock a vault to view or change its access preference.")
+                Text("Open and unlock a vault to view or change its access authentication preference on this Mac.")
                     .foregroundStyle(.secondary)
             }
-            Text("This gate protects against casual access through Noema. Vault files, search indexes, and recovery drafts remain plaintext and readable on disk. It does not protect against filesystem or process access.")
-                .font(.caption).foregroundStyle(.secondary)
-            if model.isVaultAuthenticationPending {
+
+            if let model, model.isVaultAuthenticationPending {
                 VaultAuthenticationProgress(model: model)
             } else if changing {
                 NoemaLoadingStatus("Updating vault access preference…")
             }
-            if let error = model.errorMessage {
-                Text(error).font(.callout).foregroundStyle(.secondary)
+
+            if let error = model?.errorMessage {
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+
+        Section("Security Limitations") {
+            Text("This setting is an application access gate in Noema, not filesystem encryption. Vault files, SQLite databases, search indexes, and recovery drafts remain plaintext and readable on disk.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
