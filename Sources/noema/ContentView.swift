@@ -1177,6 +1177,7 @@ struct ContentView: View {
                     showAllSearchResults = true
                 }
             }
+            ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     workspaceCommandButton("Blank Page", .newPage)
@@ -1187,11 +1188,16 @@ struct ContentView: View {
                     workspaceCommandButton("Source from Files…", .addSource)
                     workspaceCommandButton("Source by URL…", .addURLSource)
                     workspaceCommandButton("Paste a Source…", .pasteSource)
-                } label: { Label("Add Page or Source", systemImage: "plus") }
+                } label: {
+                    Label("Add Page or Source", systemImage: "plus")
+                } primaryAction: {
+                    model.performWorkspaceCommand(.newPage)
+                }
                 .disabled(!model.canPerformWorkspaceCommand(.newPage))
                 .help("Add a page or source")
                 .accessibilityLabel("Add Page or Source")
             }
+            ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     workspaceCommandButton("Open Another Vault…", .openVault)
@@ -1203,10 +1209,15 @@ struct ContentView: View {
                     Divider()
                     workspaceCommandButton("Lock Vault", .lock)
                     workspaceCommandButton("Close Vault", .close)
-                } label: { Label("Vault Options", systemImage: "ellipsis.circle") }
+                } label: {
+                    Label("Vault Options", systemImage: "ellipsis")
+                } primaryAction: {
+                    ToolbarSplitMenuPresenter.presentMenu(forSymbol: "ellipsis")
+                }
                 .help("Vault options")
                 .accessibilityLabel("Vault Options")
             }
+            ToolbarSpacer(.fixed, placement: .primaryAction)
             ToolbarItem(placement: .primaryAction) { inspectorToolbarToggle }
         }
     }
@@ -1614,6 +1625,49 @@ private struct SidebarMaterialView: NSViewRepresentable {
         nsView.material = .sidebar
         nsView.blendingMode = .behindWindow
         nsView.state = .followsWindowActiveState
+    }
+}
+
+@MainActor enum ToolbarSplitMenuPresenter {
+    static func findSegmentedControl(forSymbol symbolName: String, in window: NSWindow?) -> NSSegmentedControl? {
+        guard let root = window?.contentView?.superview else { return nil }
+        let controls = segmentedControls(in: root).filter {
+            $0.segmentCount == 2 && $0.menu(forSegment: 1) != nil
+        }
+        if let event = NSApp.currentEvent, event.window === window {
+            for control in controls {
+                let point = control.convert(event.locationInWindow, from: nil)
+                if control.bounds.contains(point) {
+                    return control
+                }
+            }
+        }
+        return controls.first {
+            $0.image(forSegment: 0)?.description.contains("symbol = \(symbolName)") == true
+        }
+    }
+
+    @discardableResult
+    static func presentMenu(forSymbol symbolName: String, in window: NSWindow? = nil) -> Bool {
+        let targetWindow = window ?? NSApp.currentEvent?.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+        guard let control = findSegmentedControl(forSymbol: symbolName, in: targetWindow),
+              let menu = control.menu(forSegment: 1) else {
+            return false
+        }
+        let origin = NSPoint(x: 0, y: control.isFlipped ? control.bounds.maxY + 4 : control.bounds.minY - 4)
+        menu.popUp(positioning: nil, at: origin, in: control)
+        return true
+    }
+
+    private static func segmentedControls(in view: NSView) -> [NSSegmentedControl] {
+        var result: [NSSegmentedControl] = []
+        if let segmented = view as? NSSegmentedControl {
+            result.append(segmented)
+        }
+        for subview in view.subviews {
+            result.append(contentsOf: segmentedControls(in: subview))
+        }
+        return result
     }
 }
 

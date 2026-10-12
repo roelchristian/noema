@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import VaultCore
 @testable import noema
@@ -196,5 +198,50 @@ extension VaultUIIntegrationTests {
             #expect(model.sessionPhase == .closed && !model.workspaceCommandPending)
             #expect(model.sessionTransitionErrors.isEmpty)
         }
+
+        @Test @MainActor
+        func toolbarSplitDropdownsUseSegmentedCaretAndExposeMenus() async throws {
+            let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaToolbarSplit-\(UUID())")
+            let root = base.appendingPathComponent("Vault")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: base) }
+            _ = try FileVaultRepository.open(root: root, create: true)
+            let model = AppModel()
+            model.localStorageRoot = base
+            model.persistSecurityScopedBookmark = false
+            await model.open(root, create: false)
+            #expect(model.isVaultAvailable)
+            _ = NSApplication.shared
+            let controller = NSHostingController(rootView: ContentView(model: model))
+            let window = NSWindow(contentViewController: controller)
+            window.styleMask = [.titled, .closable, .resizable]
+            window.isReleasedWhenClosed = false
+            window.setContentSize(NSSize(width: 960, height: 620))
+            window.makeKeyAndOrderFront(nil)
+            defer { window.contentViewController = nil; window.close() }
+            try await Task.sleep(for: .milliseconds(100))
+            window.displayIfNeeded()
+
+            let addControl = try #require(ToolbarSplitMenuPresenter.findSegmentedControl(forSymbol: "plus", in: window))
+            #expect(addControl.segmentCount == 2)
+            #expect(!addControl.showsMenuIndicator(forSegment: 0))
+            #expect(addControl.showsMenuIndicator(forSegment: 1))
+            let addMenu = try #require(addControl.menu(forSegment: 1))
+            addMenu.delegate?.menuNeedsUpdate?(addMenu)
+            #expect(addMenu.items.map(\.title).contains("Blank Page"))
+
+            let vaultControl = try #require(ToolbarSplitMenuPresenter.findSegmentedControl(forSymbol: "ellipsis", in: window))
+            #expect(vaultControl.segmentCount == 2)
+            #expect(!vaultControl.showsMenuIndicator(forSegment: 0))
+            #expect(vaultControl.showsMenuIndicator(forSegment: 1))
+            let vaultMenu = try #require(vaultControl.menu(forSegment: 1))
+            vaultMenu.delegate?.menuNeedsUpdate?(vaultMenu)
+            #expect(vaultMenu.items.map(\.title).contains("Open Another Vault…"))
+            #expect(vaultMenu.items.map(\.title).contains("Close Vault"))
+
+            let close = try #require(model.performWorkspaceCommand(.close))
+            await close.value
+        }
     }
 }
+
