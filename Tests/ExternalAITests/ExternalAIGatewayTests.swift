@@ -41,7 +41,8 @@ private struct GatewayFixture {
     let gateway: ExternalAIGateway
     init(transport: GatewayMockTransport, gate: VaultAccessGate? = nil, session: VaultSession? = nil,
          configuration: ExternalAIModelConfiguration = .default,
-         activityRecorder: AIActivityRecorder? = nil, pricingCatalogue: AIUsagePricingCatalogue = .unpriced) async throws {
+         activityRecorder: AIActivityRecorder? = nil, pricingCatalogue: AIUsagePricingCatalogue = .unpriced,
+         debugDiagnostics: ExternalAIDebugDiagnostics? = nil) async throws {
         self.session = session ?? VaultSession(vaultID: UUID(), root: URL(fileURLWithPath: "/tmp/gateway-test"), generation: 4)
         self.gate = gate ?? VaultAccessGate(initialState: .open(self.session))
         broker = ExternalAICredentialBroker(keychain: GatewayKeychain())
@@ -50,7 +51,7 @@ private struct GatewayFixture {
                                          authenticator: GatewayAuthenticator(), observeSystemEvents: false)
         gateway = ExternalAIGateway(credentialBroker: broker, sessionManager: manager,
                                   accessGate: self.gate, configuration: configuration, transport: transport,
-                                  activityRecorder: activityRecorder, pricingCatalogue: pricingCatalogue)
+                                  activityRecorder: activityRecorder, pricingCatalogue: pricingCatalogue, debugDiagnostics: debugDiagnostics)
     }
     func request(content: String = "selected document text", target: ExternalAISummaryTarget = .page(UUID())) throws -> ExternalAISummaryRequest {
         try ExternalAISummaryRequest(authority: ExternalAIVaultAuthority(session: session), target: target,
@@ -461,4 +462,29 @@ func gatewayCancelledMetadataActionsNeverDispatch(action: ExternalAIAction) asyn
         enrichment: ExternalAIEnrichment(title: "Title", summary: "Summary", classification: nil,
             body: "Draft body", mode: .compose), provenance: ExternalAIProvenance(model: "gpt-4.1-mini"))
     await #expect(throws: ExternalAIError.authorizationRevoked) { try await fixture.gateway.publicationPermit(for: unissued) }
+}
+
+@Test(arguments: ["envelope", "output", "http"])
+func gatewayDebugCapturesRejectedResponseWithoutChangingSanitizedError(stage: String) async throws {
+    let body: Data
+    if stage == "output" {
+        body = Data(#"{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{\"title\":null,\"summary\":\"\",\"classification\":null,\"body\":null}"}]}]}"#.utf8)
+    } else {
+        body = Data(#"{"synthetic":"invalid-provider-output"}"#.utf8)
+    }
+    let status = stage == "http" ? 400 : 200
+    let diagnostics = ExternalAIDebugDiagnostics()
+    let fixture = try await GatewayFixture(transport: GatewayMockTransport(statuses: [status], body: body),
+                                           debugDiagnostics: diagnostics)
+    diagnostics.enable(for: try #require(fixture.gate.currentLease))
+    let request = try fixture.request()
+    let failure: ExternalAIError = stage == "http" ? .providerRejected : .invalidResponse
+    await #expect(throws: failure) {
+        try await fixture.gateway.summarizePage(request, consent: ExternalAIContentConsent(approving: request))
+    }
+    #expect(diagnostics.report?.contains(String(decoding: body, as: UTF8.self)) == true)
+    #expect(diagnostics.report?.contains("HTTP status: \(status)") == true)
+    let expectedStage = stage == "http" ? "HTTP status" : (stage == "output" ? "Action output validation" : "Responses envelope")
+    #expect(diagnostics.report?.contains("Stage: \(expectedStage)") == true)
+    #expect(!failure.localizedDescription.contains("invalid-provider-output"))
 }

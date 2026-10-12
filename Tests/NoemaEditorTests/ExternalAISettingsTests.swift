@@ -96,4 +96,32 @@ struct ExternalAISettingsTests {
         #expect(loaded.model == "gpt-6-luna")
         #expect(loaded.reasoningEffort == .low)
     }
+
+    @Test @MainActor
+    func debugModeIsTransientAndEndsWithTheVaultSession() throws {
+        let domain = "noema-external-ai-debug-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let gate = VaultAccessGate()
+        let service = ExternalAIService(accessGate: gate, defaults: defaults)
+        #expect(!service.debugModeEnabled)
+        #expect(!service.canEnableDebugMode)
+        service.setDebugMode(true)
+        #expect(!service.debugModeEnabled)
+        let session = VaultSession(vaultID: UUID(), root: URL(fileURLWithPath: "/tmp/debug-settings"), generation: 1)
+        gate.updateState(.open(session))
+        #expect(service.canEnableDebugMode)
+        service.setDebugMode(true)
+        #expect(service.debugModeEnabled)
+        #expect(service.debugReport == nil)
+        #expect((defaults.persistentDomain(forName: domain) ?? [:]).isEmpty)
+        let relaunched = ExternalAIService(accessGate: gate, defaults: defaults)
+        #expect(!relaunched.debugModeEnabled)
+        service.setDebugMode(false)
+        #expect(!service.debugModeEnabled)
+        service.setDebugMode(true)
+        gate.updateState(.closed)
+        #expect(!service.debugModeEnabled)
+        #expect(service.debugReport == nil)
+    }
 }

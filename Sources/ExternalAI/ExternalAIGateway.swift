@@ -11,6 +11,7 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
     private let gate: VaultAccessGate
     private let transport: any OpenAITransporting
     private let activityRecorder: AIActivityRecorder?
+    private let debugDiagnostics: ExternalAIDebugDiagnostics?
     private let pricingCatalogue: AIUsagePricingCatalogue
     public let configuration: ExternalAIModelConfiguration
     private var consumedConsent: Set<UUID> = []
@@ -27,20 +28,23 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
 
     public init(credentialBroker: ExternalAICredentialBroker, sessionManager: ExternalAISessionManager,
                 accessGate: VaultAccessGate, configuration: ExternalAIModelConfiguration = .default,
-                activityRecorder: AIActivityRecorder? = .shared, pricingCatalogue: AIUsagePricingCatalogue = .unpriced) {
+                activityRecorder: AIActivityRecorder? = .shared, pricingCatalogue: AIUsagePricingCatalogue = .unpriced,
+                debugDiagnostics: ExternalAIDebugDiagnostics? = nil) {
         broker = credentialBroker
         sessions = sessionManager
         gate = accessGate
         self.configuration = configuration
         self.activityRecorder = activityRecorder
         self.pricingCatalogue = pricingCatalogue
+        self.debugDiagnostics = debugDiagnostics
         transport = OpenAITransport()
     }
 
     init(credentialBroker: ExternalAICredentialBroker, sessionManager: ExternalAISessionManager,
          accessGate: VaultAccessGate, configuration: ExternalAIModelConfiguration = .default,
          transport: any OpenAITransporting, activityRecorder: AIActivityRecorder? = .shared,
-         pricingCatalogue: AIUsagePricingCatalogue = .unpriced) {
+         pricingCatalogue: AIUsagePricingCatalogue = .unpriced,
+         debugDiagnostics: ExternalAIDebugDiagnostics? = nil) {
         broker = credentialBroker
         sessions = sessionManager
         gate = accessGate
@@ -48,6 +52,7 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
         self.transport = transport
         self.activityRecorder = activityRecorder
         self.pricingCatalogue = pricingCatalogue
+        self.debugDiagnostics = debugDiagnostics
     }
 
     public func summarizePage(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult {
@@ -180,7 +185,7 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
             let cancellationScope = ExternalAIRequestCancellation<String>()
             let cancellation = try sessions.registerCancellation(for: capability) { cancellationScope.cancel() }
             defer { sessions.unregisterCancellation(cancellation) }
-            let worker = Task { [broker, sessions, gate, transport] in
+            let worker = Task { [broker, sessions, gate, transport, debugDiagnostics] in
                 var attempt = 0
                 while true {
                     try Task.checkCancellation()
@@ -212,8 +217,26 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
                             }
                             return response
                         }
-                        try Self.checkStatus(response.statusCode)
-                        let summary = try Self.output(from: response.body, action: request.action, mode: request.mode)
+                        let summary: String
+                        var debugStage = "HTTP status"
+                        do {
+                            try Self.checkStatus(response.statusCode)
+                            if debugDiagnostics?.isEnabled == true {
+                                debugStage = "Responses envelope"
+                                let structured = [.summarizePage, .summarizeSource, .composePage].contains(request.action)
+                                _ = try Self.summary(from: response.body, maximumTextBytes: structured
+                                    ? ExternalAILimits.maximumEnrichmentBytes : ExternalAILimits.maximumSummaryBytes)
+                                debugStage = "Action output validation"
+                            }
+                            summary = try Self.output(from: response.body, action: request.action, mode: request.mode)
+                        } catch {
+                            // Admission serializes capture with locking; disabled inspection retains nothing.
+                            try? gate.withOpenSession(lease: lease, operation: "externalAI.debug") {
+                                debugDiagnostics?.record(body: response.body, status: response.statusCode,
+                                    failure: sanitized(error), action: request.action, lease: lease, stage: debugStage)
+                            }
+                            throw error
+                        }
                         try await sessions.validate(capability)
                         try Task.checkCancellation()
                         return summary

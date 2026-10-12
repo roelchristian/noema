@@ -10,6 +10,10 @@ final class ExternalAIService {
     static let modelPreferenceKey = "externalAIModel"
     static let reasoningPreferenceKey = "externalAIReasoningEffort"
 
+    private let debugDiagnostics = ExternalAIDebugDiagnostics()
+    @ObservationIgnored private var debugObservation: UUID?
+    private var debugRefresh = 0
+
     let credentialBroker: ExternalAICredentialBroker
     let sessionManager: ExternalAISessionManager
     private(set) var gateway: ExternalAIGateway
@@ -36,12 +40,36 @@ final class ExternalAIService {
         let sessions = ExternalAISessionManager(accessGate: accessGate, credentialBroker: broker)
         sessionManager = sessions
         gateway = ExternalAIGateway(credentialBroker: broker, sessionManager: sessions,
-                                   accessGate: accessGate, configuration: configuration, activityRecorder: activityRecorder)
+                                   accessGate: accessGate, configuration: configuration, activityRecorder: activityRecorder,
+                                   debugDiagnostics: debugDiagnostics)
     }
 
     deinit {
+        if let debugObservation { accessGate.removeSessionInvalidator(debugObservation) }
         if let consentObservation { accessGate.removeSessionInvalidator(consentObservation) }
     }
+
+    var canEnableDebugMode: Bool { _ = debugRefresh; return accessGate.currentLease != nil }
+    var debugModeEnabled: Bool { _ = debugRefresh; return debugDiagnostics.isEnabled }
+    var debugReport: String? { _ = debugRefresh; return debugDiagnostics.report }
+
+    func setDebugMode(_ enabled: Bool) {
+        debugDiagnostics.disable()
+        if let debugObservation { accessGate.removeSessionInvalidator(debugObservation) }
+        debugObservation = nil
+        if enabled, let lease = accessGate.currentLease {
+            debugDiagnostics.enable(for: lease)
+            debugObservation = accessGate.registerSessionInvalidator(lease: lease) { [debugDiagnostics, weak self] in
+                debugDiagnostics.disable()
+                // Refresh visible Settings promptly without retaining response text in a task.
+                Task { @MainActor [weak self] in self?.debugStateChanged() }
+            }
+        }
+        debugRefresh += 1
+    }
+
+    private func debugStateChanged() { debugRefresh += 1 }
+    func clearDebugReport() { debugDiagnostics.clear(); debugStateChanged() }
 
     func setConsentPolicy(_ policy: OpenAIConsentPolicy) {
         guard consentPolicy != policy else { return }
@@ -115,6 +143,7 @@ final class ExternalAIService {
     }
 
     func refreshStatus() async {
+        debugRefresh += 1
         credentialStatus = await credentialBroker.status()
         authorizationState = await sessionManager.state
     }
@@ -147,7 +176,8 @@ final class ExternalAIService {
         clearConsentSession()
         configuration = selected
         gateway = ExternalAIGateway(credentialBroker: credentialBroker, sessionManager: sessionManager,
-                                   accessGate: accessGate, configuration: selected, activityRecorder: activityRecorder)
+                                   accessGate: accessGate, configuration: selected, activityRecorder: activityRecorder,
+                                   debugDiagnostics: debugDiagnostics)
         authorizationState = .revoked
     }
 

@@ -16,6 +16,8 @@ Run commands at the repository root. The build packages and locally signs a sand
 
 External AI keys in these ad-hoc builds use the local login Keychain, with access restricted to the creating app. After rebuilding, an inaccessible saved key can be removed in OpenAI connection settings and saved again for the new build. Noema suppresses login-Keychain password dialogs for credential operations; if the Keychain is locked, unlock it separately in Keychain Access. A certificate-signed distribution requires provisioned app identity entitlements for the data-protection Keychain; changing signing modes does not migrate credentials. See the [credential contract](contracts/external-ai.md#authorization-lifecycle-contract).
 
+To inspect an OpenAI validation failure, open **Settings → Intelligence → OpenAI connection**, enable **OpenAI debug mode** while a vault is unlocked, retry the action, then expand **Latest rejected OpenAI response**. The raw bounded response can include private content. Debugging lasts only for the current vault session; disabling it or ending that session clears the response. It is never saved to logs or history.
+
 ## Repository retention
 
 Permanent content is source, tests, fixtures, canonical resources, current contracts and reproducible procedures. PRs retain concise commands/outcomes, environment, exceptions and unresolved acceptance. Logs, screenshots, benchmark samples, transcripts, investigations and intermediate reports are temporary local evidence.

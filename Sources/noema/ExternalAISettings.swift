@@ -63,6 +63,25 @@ struct ExternalAISettings: View {
                  ? "Low is Noema's default. None uses no reasoning; Medium allows more reasoning and can take longer and use more tokens. Changes are saved automatically and revoke session access."
                  : "Reasoning effort selection is available for gpt-6-luna. Your selection is retained when switching models.")
                 .font(.caption).foregroundStyle(.secondary)
+            Toggle("OpenAI debug mode", isOn: Binding(
+                get: { service.debugModeEnabled }, set: { service.setDebugMode($0) }))
+                .disabled(!service.canEnableDebugMode)
+            Text("Enable with an unlocked vault, then retry the failing action. Shows the latest rejected response, which may contain private content. Kept only in memory; locking, closing or switching vaults turns debugging off and clears it. No API key or request headers are captured.")
+                .font(.caption).foregroundStyle(.secondary)
+            if service.debugModeEnabled {
+                if let report = service.debugReport {
+                    DisclosureGroup("Latest rejected OpenAI response") {
+                        ScrollView {
+                            Text(report).font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        }.frame(maxHeight: 260)
+                    }
+                    Button("Clear debug response") { service.clearDebugReport() }
+                } else {
+                    Text("Waiting for a rejected response. Retry the action, then return here.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             SecureField(service.credentialStatus?.isAvailable == true ? "Replacement API key" : "OpenAI API key", text: $enteredKey)
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
