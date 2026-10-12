@@ -174,6 +174,8 @@ import VaultCore
     view.undoManager?.endUndoGrouping()
     #expect(!view.hasMarkedText())
     #expect(view.string == "Fi日本語ond\nLast\n")
+    #expect(coordinator.document.blocks.count == 2)
+    #expect(coordinator.document.blocks.first?.text == "Fi日本語ond")
     #expect(coordinator.document.blocks.first?.id == originalID)
     #expect(coordinator.document.block(lastID)?.text == "Last")
     #expect(coordinator.document.flattened.map(\.text).joined() == "Fi日本語ondLast")
