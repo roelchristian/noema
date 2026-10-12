@@ -75,8 +75,9 @@ Page provenance is an ordered `sources` UUID sequence in format 1 frontmatter or
 The [knowledge model contract](contracts/knowledge-model.md) and
 [KNOW01 decision](decisions/0002-canonical-knowledge-model.md) define stable
 registered Person, Place and Concept identities, independent Question/Definition
-objects, typed relationships and overlapping block/inline annotations. They are
-implementation contracts for KNOW02/03, not runtime capabilities of this baseline.
+objects, typed relationships and overlapping block/inline annotations. KNOW02
+implements the entity/relationship foundation through `KnowledgeStore` in explicitly
+selected fresh schema-4 staging. Semantic objects and annotations remain KNOW03 work.
 The existing SQLite actor remains the sole connection/transaction owner. Schema 3
 retains its persisted meaning; KNOW02 adds schema 4 with `canonicalKnowledgeV1`,
 and KNOW03 adds schema 5 with `semanticAnnotationsV1`. Existing annotation

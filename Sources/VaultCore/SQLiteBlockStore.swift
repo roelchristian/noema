@@ -15,7 +15,7 @@ private final class BlockSQLiteConnection: @unchecked Sendable {
     deinit { if let pointer { sqlite3_close_v2(pointer) } }
 }
 
-public actor SQLiteBlockStore: BlockStore {
+public actor SQLiteBlockStore: BlockStore, KnowledgeStore {
     public nonisolated let mode = BlockStorageMode.sqliteBlocks
     public nonisolated let sessionLease: VaultSessionLease?
     public nonisolated let accessGate: VaultAccessGate?
@@ -25,6 +25,8 @@ public actor SQLiteBlockStore: BlockStore {
     private let decoder = JSONDecoder()
     public static let schemaVersion = 2
     public static let expandedSchemaVersion = 3
+    public static let knowledgeSchemaVersion = 4
+    public static let knowledgeRequiredCapabilities = ["canonicalKnowledgeV1", "canonicalMetadataV1"]
     private let canonicalVaultID: UUID?
 
     /// Canonical production access requires the admitted vault's current lease.
@@ -50,7 +52,7 @@ public actor SQLiteBlockStore: BlockStore {
     }
     /// Expanded authority is opt-in and cannot reinterpret an existing page-only DB.
     init(url: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate,
-                canonicalVaultID: UUID, requiredCapabilities: [String] = ["canonicalMetadataV1"],
+                canonicalVaultID: UUID, requiredCapabilities: [String] = ["canonicalMetadataV1"], schemaVersion: Int = 3,
                 createIfMissing: Bool = false) throws {
         try accessGate.validate(lease: sessionLease, targetRoot: sessionLease.root, targetVaultID: canonicalVaultID, operation: "blockStore.openCanonical")
         try SQLiteVaultMigration.requireLocalRoot(sessionLease.root)
@@ -59,17 +61,17 @@ public actor SQLiteBlockStore: BlockStore {
         self.canonicalVaultID = canonicalVaultID; self.sessionLease = sessionLease; self.accessGate = accessGate
         databaseURL = url.standardizedFileURL.resolvingSymlinksInPath()
         connection = try BlockSQLiteConnection(url: url, createIfMissing: createIfMissing)
-        try Self.prepare(connection, initializeIfNeeded: createIfMissing, canonicalVaultID: canonicalVaultID, requiredCapabilities: requiredCapabilities)
+        try Self.prepare(connection, initializeIfNeeded: createIfMissing, canonicalVaultID: canonicalVaultID, requiredCapabilities: requiredCapabilities, expectedSchemaVersion: schemaVersion)
     }
     /// Only explicit staging/test construction may initialize expanded authority.
     init(canonicalStagingURL url: URL, vaultID: UUID,
-         requiredCapabilities: [String] = ["canonicalMetadataV1"], createIfMissing: Bool = true) throws {
+         requiredCapabilities: [String] = ["canonicalMetadataV1"], schemaVersion: Int = 3, createIfMissing: Bool = true) throws {
         canonicalVaultID = vaultID; sessionLease = nil; accessGate = nil
         databaseURL = url.standardizedFileURL.resolvingSymlinksInPath()
         connection = try BlockSQLiteConnection(url: url, createIfMissing: createIfMissing)
-        try Self.prepare(connection, initializeIfNeeded: createIfMissing, canonicalVaultID: vaultID, requiredCapabilities: requiredCapabilities)
+        try Self.prepare(connection, initializeIfNeeded: createIfMissing, canonicalVaultID: vaultID, requiredCapabilities: requiredCapabilities, expectedSchemaVersion: schemaVersion)
     }
-    private static func prepare(_ connection: BlockSQLiteConnection, initializeIfNeeded: Bool, canonicalVaultID: UUID? = nil, requiredCapabilities: [String] = []) throws {
+    private static func prepare(_ connection: BlockSQLiteConnection, initializeIfNeeded: Bool, canonicalVaultID: UUID? = nil, requiredCapabilities: [String] = [], expectedSchemaVersion: Int = 3) throws {
         guard let db = connection.pointer else { throw VaultError.storage("Block database closed.") }
         func exec(_ sql: String) throws {
             guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw VaultError.storage(String(cString: sqlite3_errmsg(db))) }
@@ -85,7 +87,8 @@ public actor SQLiteBlockStore: BlockStore {
         }
         var version = try readVersion()
         if canonicalVaultID != nil {
-            guard requiredCapabilities == ["canonicalMetadataV1"], version == 0 || version == expandedSchemaVersion else { throw VaultError.invalid("Canonical authority requires explicit schema 3; existing authority is never upgraded on open.") }
+            guard (expectedSchemaVersion == 3 && requiredCapabilities == ["canonicalMetadataV1"]) || (expectedSchemaVersion == 4 && requiredCapabilities == knowledgeRequiredCapabilities) else { throw VaultError.invalid("Unsupported canonical schema/capability declaration.") }
+            guard version == 0 || version == expectedSchemaVersion else { throw VaultError.invalid("Canonical authority transition required; existing authority is never upgraded on open.") }
         }
         if canonicalVaultID != nil, version == 0 {
             var tables: OpaquePointer?
@@ -93,9 +96,9 @@ public actor SQLiteBlockStore: BlockStore {
             defer { sqlite3_finalize(tables) }
             guard sqlite3_step(tables) == SQLITE_ROW, sqlite3_column_int(tables, 0) == 0 else { throw VaultError.invalid("Canonical staging cannot reinterpret an unversioned database.") }
         }
-        guard version >= 0, version <= (canonicalVaultID == nil ? schemaVersion : expandedSchemaVersion) else { throw VaultError.invalid("Unsupported block database schema version.") }
+        guard version >= 0, version <= (canonicalVaultID == nil ? schemaVersion : expectedSchemaVersion) else { throw VaultError.invalid("Unsupported block database schema version.") }
         guard version != 0 || initializeIfNeeded else { throw VaultError.invalid("The block database has no supported schema.") }
-        if let canonicalVaultID, version == expandedSchemaVersion {
+        if let canonicalVaultID, version == expectedSchemaVersion {
             var state: OpaquePointer?
             guard sqlite3_prepare_v2(db, "SELECT vault_id,capability,payload_version FROM vault_state WHERE singleton=1", -1, &state, nil) == SQLITE_OK, let state else { throw VaultError.invalid("Canonical vault state missing.") }
             defer { sqlite3_finalize(state) }
@@ -103,6 +106,7 @@ public actor SQLiteBlockStore: BlockStore {
                   sqlite3_column_text(state, 0).map({ String(cString: $0) }) == canonicalVaultID.uuidString,
                   sqlite3_column_text(state, 1).map({ String(cString: $0) }) == "canonicalMetadataV1",
                   sqlite3_column_int(state, 2) == 1 else { throw VaultError.invalid("Canonical identity/capability/payload mismatch.") }
+            if expectedSchemaVersion == 4 { try validateKnowledgeCapabilities(db, expected: requiredCapabilities) }
         }
         try exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=1000; PRAGMA temp_store=MEMORY;")
         if version == 0 {
@@ -141,7 +145,11 @@ public actor SQLiteBlockStore: BlockStore {
                     sqlite3_bind_text(insert, 1, canonicalVaultID.uuidString, -1, transient)
                     sqlite3_bind_text(insert, 2, UUID().uuidString, -1, transient)
                     guard sqlite3_step(insert) == SQLITE_DONE else { throw VaultError.storage("Cannot initialize canonical identity.") }
-                    try exec("PRAGMA user_version=3; COMMIT")
+                    if expectedSchemaVersion == 4 {
+                        try exec(knowledgeSchema)
+                        try exec("ALTER TABLE vault_state ADD COLUMN required_capabilities BLOB NOT NULL DEFAULT '[\"canonicalKnowledgeV1\",\"canonicalMetadataV1\"]'")
+                    }
+                    try exec("PRAGMA user_version=\(expectedSchemaVersion); COMMIT")
                 } catch { try? exec("ROLLBACK"); throw error }
             }
             var state: OpaquePointer?
@@ -160,6 +168,33 @@ public actor SQLiteBlockStore: BlockStore {
     CREATE TABLE tombstones(entity_id TEXT NOT NULL, entity_kind TEXT NOT NULL CHECK(entity_kind IN ('page','source')), last_revision BLOB NOT NULL, deleted_at REAL NOT NULL, disposition TEXT NOT NULL, PRIMARY KEY(entity_id,entity_kind));
     CREATE TABLE conflicts(id TEXT PRIMARY KEY, target_id TEXT NOT NULL, target_kind TEXT NOT NULL CHECK(target_kind IN ('page','source')), base_revision BLOB, payload_version INTEGER NOT NULL, preserved_payload BLOB NOT NULL, created_at REAL NOT NULL, disposition TEXT NOT NULL, revision BLOB NOT NULL);
     CREATE TABLE committed_operations(operation_id TEXT PRIMARY KEY, source_id TEXT NOT NULL, source_revision BLOB NOT NULL, page_id TEXT, page_revision BLOB, vault_revision BLOB NOT NULL);
+    """
+    private static func validateKnowledgeCapabilities(_ db: OpaquePointer, expected: [String]) throws {
+        var query: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT required_capabilities FROM vault_state WHERE singleton=1", -1, &query, nil) == SQLITE_OK, let query else { throw VaultError.invalid("Knowledge capabilities missing.") }
+        defer { sqlite3_finalize(query) }
+        guard sqlite3_step(query) == SQLITE_ROW, let bytes = sqlite3_column_blob(query, 0) else { throw VaultError.invalid("Knowledge capabilities missing.") }
+        let data = Data(bytes: bytes, count: Int(sqlite3_column_bytes(query, 0)))
+        guard let capabilities = try? JSONDecoder().decode([String].self, from: data), capabilities == expected else { throw VaultError.invalid("Knowledge capability mismatch.") }
+        for (table, keys) in [("knowledge_entity_types", ["concept", "person", "place"]), ("knowledge_relation_types", ["relatedTo"])] {
+            var registry: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT key,version FROM \(table) ORDER BY key", -1, &registry, nil) == SQLITE_OK, let registry else { throw VaultError.invalid("Knowledge registry missing.") }
+            defer { sqlite3_finalize(registry) }
+            var stored: [String] = []
+            while true { let status = sqlite3_step(registry); if status == SQLITE_DONE { break }; guard status == SQLITE_ROW, sqlite3_column_int(registry, 1) == 1, let key = sqlite3_column_text(registry, 0) else { throw VaultError.invalid("Unsupported required knowledge registry.") }; stored.append(String(cString: key)) }
+            guard stored == keys else { throw VaultError.invalid("Unsupported required knowledge registry.") }
+        }
+
+    }
+    private static let knowledgeSchema = """
+    CREATE TABLE knowledge_entity_types(key TEXT PRIMARY KEY, version INTEGER NOT NULL, descriptor BLOB NOT NULL);
+    CREATE TABLE knowledge_relation_types(key TEXT PRIMARY KEY, version INTEGER NOT NULL, descriptor BLOB NOT NULL);
+    INSERT INTO knowledge_entity_types VALUES('person',1,'{}'),('place',1,'{}'),('concept',1,'{}');
+    INSERT INTO knowledge_relation_types VALUES('relatedTo',1,'{}');
+    CREATE TABLE knowledge_entities(id TEXT PRIMARY KEY, type_key TEXT NOT NULL REFERENCES knowledge_entity_types(key), revision BLOB NOT NULL, lifecycle TEXT NOT NULL CHECK(lifecycle IN ('live','tombstoned')), payload BLOB NOT NULL);
+    CREATE TABLE knowledge_entity_aliases(id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES knowledge_entities(id) ON DELETE RESTRICT, payload BLOB NOT NULL);
+    CREATE TABLE knowledge_relations(id TEXT PRIMARY KEY, predicate TEXT NOT NULL REFERENCES knowledge_relation_types(key), source_id TEXT NOT NULL REFERENCES knowledge_entities(id) ON DELETE RESTRICT, target_id TEXT NOT NULL REFERENCES knowledge_entities(id) ON DELETE RESTRICT, revision BLOB NOT NULL, lifecycle TEXT NOT NULL CHECK(lifecycle IN ('live','tombstoned')), payload BLOB NOT NULL);
+    CREATE TABLE knowledge_operations(operation_id TEXT PRIMARY KEY, result_kind TEXT NOT NULL, result_payload BLOB NOT NULL, record_revision BLOB NOT NULL, vault_revision BLOB NOT NULL);
     """
     private func validate(_ operation: String) throws {
         if let accessGate, let sessionLease {
@@ -725,6 +760,208 @@ public actor SQLiteBlockStore: BlockStore {
         try Task.checkCancellation()
         guard sqlite3_close(destinationDB) == SQLITE_OK else { throw VaultError.storage("Could not close database backup.") }
         output.pointer = nil
+    }
+
+    private func requireKnowledge() throws {
+        try validate("knowledge.read")
+        guard canonicalVaultID != nil else { throw KnowledgeStoreError.transitionRequired }
+        let query = try statement("PRAGMA user_version"); defer { sqlite3_finalize(query) }
+        guard sqlite3_step(query) == SQLITE_ROW, sqlite3_column_int(query, 0) == Self.knowledgeSchemaVersion else { throw KnowledgeStoreError.transitionRequired }
+    }
+    private func checkedKnowledgeRevision(_ expected: BlockStoreRevision) throws {
+        guard try vaultRevision() == expected else { throw KnowledgeStoreError.staleRevision }
+    }
+    private func entityInTransaction(id: UUID) throws -> KnowledgeEntitySnapshot {
+        let query = try statement("SELECT revision,payload,type_key,lifecycle FROM knowledge_entities WHERE id=?", [.text(id.uuidString)])
+        defer { sqlite3_finalize(query) }
+        let step = sqlite3_step(query)
+        if step == SQLITE_DONE { throw KnowledgeStoreError.notFound(id) }
+        guard step == SQLITE_ROW else { throw failure() }
+        var entity = try decoder.decode(KnowledgeEntity.self, from: knowledgeRecordData(blob(query, 1), fields: ["id": id.uuidString, "typeKey": text(query, 2), "lifecycle": text(query, 3)]))
+        guard entity.id == id, entity.typeKey == text(query, 2), entity.lifecycle.rawValue == text(query, 3), entity.aliases.isEmpty else { throw VaultError.invalid("Knowledge relational identity/payload mismatch.") }
+        try entity.validateWritable()
+        let aliases = try statement("SELECT payload,id FROM knowledge_entity_aliases WHERE entity_id=? ORDER BY id", [.text(id.uuidString)])
+        defer { sqlite3_finalize(aliases) }
+        entity.aliases = []
+        while true { let status = sqlite3_step(aliases); if status == SQLITE_DONE { break }; guard status == SQLITE_ROW else { throw failure() }; let alias = try decoder.decode(KnowledgeAlias.self, from: blob(aliases, 0)); guard alias.id.uuidString == text(aliases, 1) else { throw VaultError.invalid("Knowledge alias identity mismatch.") }; try alias.validateWritable(); entity.aliases.append(alias) }
+        return .init(entity: entity, revision: .init(token: blob(query, 0)))
+    }
+    private func relationInTransaction(id: UUID) throws -> KnowledgeRelationSnapshot {
+        let query = try statement("SELECT revision,payload,predicate,source_id,target_id,lifecycle FROM knowledge_relations WHERE id=?", [.text(id.uuidString)])
+        defer { sqlite3_finalize(query) }
+        let step = sqlite3_step(query)
+        if step == SQLITE_DONE { throw KnowledgeStoreError.notFound(id) }
+        guard step == SQLITE_ROW else { throw failure() }
+        let relation = try decoder.decode(KnowledgeRelation.self, from: knowledgeRecordData(blob(query, 1), fields: ["id": id.uuidString, "predicate": text(query, 2), "sourceID": text(query, 3), "targetID": text(query, 4), "lifecycle": text(query, 5)]))
+        guard relation.id == id, relation.predicate == text(query, 2), relation.sourceID.uuidString == text(query, 3), relation.targetID.uuidString == text(query, 4), relation.lifecycle.rawValue == text(query, 5) else { throw VaultError.invalid("Knowledge relational identity/payload mismatch.") }
+        try relation.validateWritable()
+        return .init(relation: relation, revision: .init(token: blob(query, 0)))
+    }
+    private func knowledgeRecordPayload<T: Encodable>(_ record: T, omitting keys: Set<String>) throws -> Data {
+        var fields = try decoder.decode([String: JSONValue].self, from: encoder.encode(record))
+        for key in keys { fields.removeValue(forKey: key) }
+        return try encoder.encode(fields)
+    }
+    private func knowledgeRecordData(_ payload: Data, fields relational: [String: String]) throws -> Data {
+        var fields = try decoder.decode([String: JSONValue].self, from: payload)
+        for (key, value) in relational {
+            guard fields[key] == nil else { throw VaultError.invalid("Knowledge payload duplicates relational identity.") }
+            fields[key] = .string(value)
+        }
+        return try encoder.encode(fields)
+    }
+    private func persistKnowledgeEntity(_ entity: KnowledgeEntity, inserting: Bool) throws -> KnowledgeEntitySnapshot {
+        try entity.validateWritable()
+        let revision = BlockStoreRevision(token: Data(UUID().uuidString.utf8))
+        var payload = entity; payload.aliases = []
+        if inserting {
+            let existing = try statement("SELECT 1 FROM knowledge_entities WHERE id=?", [.text(entity.id.uuidString)]); defer { sqlite3_finalize(existing) }
+            guard sqlite3_step(existing) == SQLITE_DONE else { throw KnowledgeStoreError.identityConflict(entity.id) }
+            try run("INSERT INTO knowledge_entities(id,type_key,revision,lifecycle,payload) VALUES(?,?,?,?,?)", [.text(entity.id.uuidString),.text(entity.typeKey),.blob(revision.token),.text(entity.lifecycle.rawValue),.blob(try knowledgeRecordPayload(payload, omitting: ["id", "typeKey", "lifecycle"]))])
+        } else {
+            try run("UPDATE knowledge_entities SET revision=?,lifecycle=?,payload=? WHERE id=?", [.blob(revision.token),.text(entity.lifecycle.rawValue),.blob(try knowledgeRecordPayload(payload, omitting: ["id", "typeKey", "lifecycle"])),.text(entity.id.uuidString)])
+        }
+        return .init(entity: entity, revision: revision)
+    }
+    private func recordKnowledgeOperation<T: Codable>(_ value: T, revision: BlockStoreRevision, kind: String, operationID: UUID) throws -> BlockStoreRevision {
+        let revisionVault = try advanceVaultRevision()
+        try run("INSERT INTO knowledge_operations(operation_id,result_kind,result_payload,record_revision,vault_revision) VALUES(?,?,?,?,?)", [.text(operationID.uuidString),.text(kind),.blob(try encoder.encode(value)),.blob(revision.token),.blob(revisionVault.token)])
+        return revisionVault
+    }
+    private func checkKnowledgeOperation(_ operationID: UUID) throws {
+        let query = try statement("SELECT 1 FROM knowledge_operations WHERE operation_id=?", [.text(operationID.uuidString)]); defer { sqlite3_finalize(query) }
+        guard sqlite3_step(query) == SQLITE_DONE, try operationInTransaction(id: operationID) == nil else { throw VaultError.conflict("Operation already committed; inspect its outcome.") }
+    }
+    public func loadEntity(id: UUID) throws -> KnowledgeEntitySnapshot {
+        try requireKnowledge(); return try readTransaction { try entityInTransaction(id: id) }
+    }
+    public func createEntity(_ entity: KnowledgeEntity, expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<KnowledgeEntitySnapshot> {
+        try requireKnowledge()
+        return try transaction {
+            try checkedKnowledgeRevision(expectedVaultRevision); try checkKnowledgeOperation(operationID)
+            guard entity.lifecycle == .live else { throw VaultError.invalid("A new entity must be live.") }
+            var entity = entity; entity.createdAt = Date(); entity.modifiedAt = entity.createdAt
+            let snapshot = try persistKnowledgeEntity(entity, inserting: true)
+            for alias in entity.aliases { try run("INSERT INTO knowledge_entity_aliases(id,entity_id,payload) VALUES(?,?,?)", [.text(alias.id.uuidString),.text(entity.id.uuidString),.blob(try encoder.encode(alias))]) }
+            let vault = try recordKnowledgeOperation(entity, revision: snapshot.revision, kind: "entity", operationID: operationID)
+            return .init(value: snapshot, vaultRevision: vault, operationID: operationID)
+        }
+    }
+    public func searchEntities(query: String, limit: Int) throws -> [KnowledgeEntitySnapshot] {
+        try requireKnowledge()
+        guard limit > 0, limit <= 1000 else { throw VaultError.invalid("Knowledge search limit must be 1...1000.") }
+        return try readTransaction {
+            let statement = try statement("SELECT id FROM knowledge_entities ORDER BY id"); defer { sqlite3_finalize(statement) }
+            var result: [KnowledgeEntitySnapshot] = []
+            while result.count < limit {
+                let status = sqlite3_step(statement); if status == SQLITE_DONE { break }; guard status == SQLITE_ROW, let id = UUID(uuidString: text(statement, 0)) else { throw failure() }
+                let current = try entityInTransaction(id: id)
+                if current.entity.label.localizedCaseInsensitiveContains(query) || current.entity.aliases.contains(where: { $0.label.localizedCaseInsensitiveContains(query) }) || query.isEmpty { result.append(current) }
+            }
+            return result
+        }
+    }
+    private func mutateEntity(id: UUID, expected: BlockStoreRevision, expectedVaultRevision: BlockStoreRevision, operationID: UUID, permitTombstone: Bool = false, mutation: (inout KnowledgeEntity) throws -> Void) throws -> KnowledgeMutationResult<KnowledgeEntitySnapshot> {
+        try requireKnowledge()
+        return try transaction {
+            try checkedKnowledgeRevision(expectedVaultRevision); try checkKnowledgeOperation(operationID)
+            let current = try entityInTransaction(id: id)
+            var entity = current.entity
+            guard current.revision == expected else { throw KnowledgeStoreError.staleRevision }
+            guard permitTombstone || current.entity.lifecycle == .live else { throw KnowledgeStoreError.tombstoned(id) }
+            try mutation(&entity); entity.modifiedAt = Date()
+            let snapshot = try persistKnowledgeEntity(entity, inserting: false)
+            let vault = try recordKnowledgeOperation(snapshot.entity, revision: snapshot.revision, kind: "entity", operationID: operationID)
+            return .init(value: snapshot, vaultRevision: vault, operationID: operationID)
+        }
+    }
+    public func updateEntity(id: UUID, patch: KnowledgeEntityPatch, expected: BlockStoreRevision, expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<KnowledgeEntitySnapshot> {
+        try mutateEntity(id: id, expected: expected, expectedVaultRevision: expectedVaultRevision, operationID: operationID) { entity in
+            entity = try patch.applying(to: entity)
+        }
+    }
+    public func addAlias(entityID: UUID, alias: KnowledgeAlias, expected: BlockStoreRevision, expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<KnowledgeEntitySnapshot> {
+        try mutateEntity(id: entityID, expected: expected, expectedVaultRevision: expectedVaultRevision, operationID: operationID) { entity in
+            try alias.validateWritable()
+            try run("INSERT INTO knowledge_entity_aliases(id,entity_id,payload) VALUES(?,?,?)", [.text(alias.id.uuidString),.text(entityID.uuidString),.blob(try encoder.encode(alias))])
+            entity.aliases.append(alias); entity.aliases.sort { $0.id.uuidString < $1.id.uuidString }
+        }
+    }
+    public func removeAlias(entityID: UUID, aliasID: UUID, expected: BlockStoreRevision, expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<KnowledgeEntitySnapshot> {
+        try mutateEntity(id: entityID, expected: expected, expectedVaultRevision: expectedVaultRevision, operationID: operationID) { entity in
+            guard entity.aliases.contains(where: { $0.id == aliasID }) else { throw KnowledgeStoreError.notFound(aliasID) }
+            try run("DELETE FROM knowledge_entity_aliases WHERE id=? AND entity_id=?", [.text(aliasID.uuidString),.text(entityID.uuidString)])
+            entity.aliases.removeAll { $0.id == aliasID }
+        }
+    }
+    public func transitionEntity(id: UUID, to lifecycle: KnowledgeLifecycle, expected: BlockStoreRevision, expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<KnowledgeEntitySnapshot> {
+        try mutateEntity(id: id, expected: expected, expectedVaultRevision: expectedVaultRevision, operationID: operationID, permitTombstone: true) { $0.lifecycle = lifecycle }
+    }
+    public func createRelation(_ relation: KnowledgeRelation, expectedSource: BlockStoreRevision, expectedTarget: BlockStoreRevision, expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<KnowledgeRelationSnapshot> {
+        try requireKnowledge()
+        return try transaction {
+            try checkedKnowledgeRevision(expectedVaultRevision); try checkKnowledgeOperation(operationID); try relation.validateWritable()
+            let source = try entityInTransaction(id: relation.sourceID), target = try entityInTransaction(id: relation.targetID)
+            guard source.revision == expectedSource, target.revision == expectedTarget else { throw KnowledgeStoreError.staleRevision }
+            guard source.entity.lifecycle == .live, target.entity.lifecycle == .live, relation.lifecycle == .live else { throw VaultError.invalid("New relations require live endpoints.") }
+            let existing = try statement("SELECT 1 FROM knowledge_relations WHERE id=?", [.text(relation.id.uuidString)]); defer { sqlite3_finalize(existing) }
+            guard sqlite3_step(existing) == SQLITE_DONE else { throw KnowledgeStoreError.identityConflict(relation.id) }
+            var relation = relation; relation.createdAt = Date(); relation.modifiedAt = relation.createdAt
+            let revision = BlockStoreRevision(token: Data(UUID().uuidString.utf8))
+            try run("INSERT INTO knowledge_relations(id,predicate,source_id,target_id,revision,lifecycle,payload) VALUES(?,?,?,?,?,?,?)", [.text(relation.id.uuidString),.text(relation.predicate),.text(relation.sourceID.uuidString),.text(relation.targetID.uuidString),.blob(revision.token),.text(relation.lifecycle.rawValue),.blob(try knowledgeRecordPayload(relation, omitting: ["id", "predicate", "sourceID", "targetID", "lifecycle"]))])
+            let vault = try recordKnowledgeOperation(relation, revision: revision, kind: "relation", operationID: operationID)
+            return .init(value: .init(relation: relation, revision: revision), vaultRevision: vault, operationID: operationID)
+        }
+    }
+    public func queryRelations(entityID: UUID, direction: KnowledgeRelationDirection) throws -> [KnowledgeRelationSnapshot] {
+        try requireKnowledge()
+        return try readTransaction {
+            _ = try entityInTransaction(id: entityID)
+            let predicate: String
+            switch direction { case .outgoing: predicate = "source_id=?"; case .incoming: predicate = "target_id=?"; case .both: predicate = "source_id=? OR target_id=?" }
+            let values: [Value] = direction == .both ? [.text(entityID.uuidString),.text(entityID.uuidString)] : [.text(entityID.uuidString)]
+            let query = try statement("SELECT id FROM knowledge_relations WHERE \(predicate) ORDER BY id LIMIT 1000", values); defer { sqlite3_finalize(query) }
+            var result: [KnowledgeRelationSnapshot] = []
+            while true { let status = sqlite3_step(query); if status == SQLITE_DONE { break }; guard status == SQLITE_ROW, let id = UUID(uuidString: text(query, 0)) else { throw failure() }; result.append(try relationInTransaction(id: id)) }
+            return result
+        }
+    }
+    public func transitionRelation(id: UUID, to lifecycle: KnowledgeLifecycle, expected: BlockStoreRevision, expectedSource: BlockStoreRevision, expectedTarget: BlockStoreRevision, expectedVaultRevision: BlockStoreRevision, operationID: UUID) throws -> KnowledgeMutationResult<KnowledgeRelationSnapshot> {
+        try requireKnowledge()
+        return try transaction {
+            try checkedKnowledgeRevision(expectedVaultRevision); try checkKnowledgeOperation(operationID)
+            let current = try relationInTransaction(id: id)
+            var relation = current.relation
+            guard current.revision == expected, try entityInTransaction(id: current.relation.sourceID).revision == expectedSource, try entityInTransaction(id: current.relation.targetID).revision == expectedTarget else { throw KnowledgeStoreError.staleRevision }
+            relation.lifecycle = lifecycle; relation.modifiedAt = Date()
+            let revision = BlockStoreRevision(token: Data(UUID().uuidString.utf8))
+            try run("UPDATE knowledge_relations SET revision=?,lifecycle=?,payload=? WHERE id=?", [.blob(revision.token),.text(lifecycle.rawValue),.blob(try knowledgeRecordPayload(relation, omitting: ["id", "predicate", "sourceID", "targetID", "lifecycle"])),.text(id.uuidString)])
+            let vault = try recordKnowledgeOperation(relation, revision: revision, kind: "relation", operationID: operationID)
+            return .init(value: .init(relation: relation, revision: revision), vaultRevision: vault, operationID: operationID)
+        }
+    }
+    public func resolveEntity(id: UUID) throws -> KnowledgeEntityResolution {
+        try requireKnowledge()
+        return try readTransaction {
+            do { let current = try entityInTransaction(id: id); return current.entity.lifecycle == .live ? .live(current) : .tombstoned(current) }
+            catch KnowledgeStoreError.notFound { return .unresolved(id) }
+        }
+    }
+    public func committedKnowledgeEntityOperation(id: UUID) throws -> KnowledgeMutationResult<KnowledgeEntitySnapshot>? {
+        try requireKnowledge()
+        return try readTransaction {
+            let query = try statement("SELECT result_payload,record_revision,vault_revision FROM knowledge_operations WHERE operation_id=? AND result_kind='entity'", [.text(id.uuidString)]); defer { sqlite3_finalize(query) }
+            let status = sqlite3_step(query); if status == SQLITE_DONE { return nil }; guard status == SQLITE_ROW else { throw failure() }
+            return .init(value: .init(entity: try decoder.decode(KnowledgeEntity.self, from: blob(query, 0)), revision: .init(token: blob(query, 1))), vaultRevision: .init(token: blob(query, 2)), operationID: id)
+        }
+    }
+    public func committedKnowledgeRelationOperation(id: UUID) throws -> KnowledgeMutationResult<KnowledgeRelationSnapshot>? {
+        try requireKnowledge()
+        return try readTransaction {
+            let query = try statement("SELECT result_payload,record_revision,vault_revision FROM knowledge_operations WHERE operation_id=? AND result_kind='relation'", [.text(id.uuidString)]); defer { sqlite3_finalize(query) }
+            let status = sqlite3_step(query); if status == SQLITE_DONE { return nil }; guard status == SQLITE_ROW else { throw failure() }
+            return .init(value: .init(relation: try decoder.decode(KnowledgeRelation.self, from: blob(query, 0)), revision: .init(token: blob(query, 1))), vaultRevision: .init(token: blob(query, 2)), operationID: id)
+        }
     }
 
     /// Resource retirement remains permitted after the session lease is revoked.

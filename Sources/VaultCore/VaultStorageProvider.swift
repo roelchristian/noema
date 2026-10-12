@@ -20,7 +20,7 @@ public struct VaultStorageProvider: Sendable {
                   let sessionLease, let accessGate else { throw VaultError.invalid("Canonical admission requires matching session authority.") }
             try SQLiteVaultMigration.requireLocalRoot(url.deletingLastPathComponent())
             return try SQLiteBlockStore(url: url, sessionLease: sessionLease, accessGate: accessGate,
-                canonicalVaultID: manifest.id, requiredCapabilities: declaration.requiredCapabilities,
+                canonicalVaultID: manifest.id, requiredCapabilities: declaration.requiredCapabilities, schemaVersion: declaration.schemaVersion,
                 createIfMissing: createIfMissing)
         }
         if let sessionLease, let accessGate {
@@ -42,6 +42,14 @@ public struct VaultStorageProvider: Sendable {
         try SQLiteVaultMigration.requireLocalRoot(url.deletingLastPathComponent())
         return try SQLiteBlockStore(canonicalStagingURL: url, vaultID: vaultID,
                                     createIfMissing: createIfMissing)
+    }
+
+    /// Explicit fresh staging only; opening schema 3 never converts its authority.
+    func makeKnowledgeStagingStore(url: URL, vaultID: UUID, createIfMissing: Bool = true) throws -> SQLiteBlockStore {
+        try SQLiteVaultMigration.requireLocalRoot(url.deletingLastPathComponent())
+        return try SQLiteBlockStore(canonicalStagingURL: url, vaultID: vaultID,
+            requiredCapabilities: SQLiteBlockStore.knowledgeRequiredCapabilities,
+            schemaVersion: SQLiteBlockStore.knowledgeSchemaVersion, createIfMissing: createIfMissing)
     }
 
     public static let plaintext = VaultStorageProvider { try PlaintextVaultContentStore(root: $0) }
