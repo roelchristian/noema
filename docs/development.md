@@ -66,7 +66,7 @@ For a quick tour, open `Examples/Demo Vault`. Keep your personal content vaults 
 ### Vaults
 - **Create a vault:** Click **Create a vault** (default name **My Knowledge Vault**) and choose a parent folder such as **iCloud Drive / Noema**. Creation publishes a complete plaintext v1 folder only after confirmation and rejects occupied names. Optionally enable **Require authentication in Noema** before creation: Noema then authenticates before showing the new vault. Cancelling authentication preserves the created folder and its preference for a later **Open Vault** retry. **Encrypted vault** remains unavailable; encryption and recovery-key protection are separate future work.
 - **Access authentication:** **Settings → Vault access on this Mac** changes the open vault's preference after native macOS authentication. Enabled vaults require a fresh attempt on initial opening, unlocking, reopening after close, or restarting Noema; selecting the same locked folder to restore permission follows the same requirement. Existing vaults default to disabled. The preference is stored locally under the vault UUID and does not travel with the folder to another Mac. This protects casual access through Noema; editable preferences, direct filesystem access and compromised process code remain outside the boundary. Files, indexes, drafts and previews remain plaintext. Native prompt/accessibility acceptance remains [pending](validation.md#native-authentication-device-acceptance).
-- **Vault menu, session locking & notices:** The vault-name menu at the bottom of the sidebar (and the **Vault** menu bar item) groups **Open Vault in Finder**, **Refresh from Files**, **Lock Vault** / **Unlock Vault** (`⌥⌘L`), **Close Vault** (`⇧⌘W`), **Trash** (with item count), recoverable drafts, vault notices, and **Open / Create Vault…**. Locking a vault flushes or journals pending edits, closes open source readers and Settings (including its attached sheet), detaches the search index and file watcher, clears loaded notes and sources from memory, and revokes in-app session access until unlocked (application-level access revocation; files on disk remain plaintext v1 until cryptographic vault storage is enabled). Global Settings can be reopened while locked. Error banners and vault notices can be dismissed individually or with **Dismiss All** for the current session.
+- **Vault menu, session locking & notices:** The vault-name menu at the bottom of the sidebar (and the **Vault** menu bar item) groups **Open Vault in Finder**, **Refresh from Files**, **Lock Vault** / **Unlock Vault** (`⌥⌘L`), **Close Vault** (`⇧⌘W`), **Trash** (with item count), recoverable drafts, vault notices, and **Open / Create Vault…**. Locking a vault flushes or journals pending edits, closes open source readers and Settings (including its attached sheet), detaches the search index and file watcher, clears loaded notes and sources from memory, and revokes in-app session access until unlocked (application-level access revocation; Markdown or SQLite/WAL and source files remain plaintext until cryptographic vault storage is enabled). Global Settings can be reopened while locked. Error banners and vault notices can be dismissed individually or with **Dismiss All** for the current session.
 
 ### Pages
 - **Browse & organize:** Select **Pages** to search, sort (by update date or title), and filter by tag in the main workspace. The native sidebar keeps **Pages**, **Sources** and **Semantic Blocks** visible above a shared **Recent Items** list of up to ten successfully opened items. Recent block entries jump to their parent page and block; source entries open a native preview. History stores identifiers locally per vault and is hidden while locked. Create a blank page (`⌘N`) or use **New Personal Page** for an Overview / Personal context / Connections template.
@@ -113,7 +113,7 @@ Select text and activate hyperlinks with ordinary clicks while reading. Press **
 
 - **Markdown compatibility:** Plain text, Markdown, and RTF paste preserve supported formatting (with original RTF retained in metadata for recovery). Blocks persist as readable Markdown with a versioned JSON envelope in a trailing HTML comment. Opening ordinary external Markdown does not rewrite it, and external Markdown edits take precedence over a stale envelope. See [block editor contract](contracts/block-editor.md) for details.
 
-## Portable file format
+## Portable Markdown file format
 
 ```text
 My Vault/
@@ -140,7 +140,16 @@ closed Markdown vault. It verifies a full pre-conversion backup and imported blo
 records in staging, publishes `blocks.sqlite`, then conditionally changes `vault.json`
 to format 2 with `storageMode: sqliteBlocks`. Original Markdown pages remain intact;
 format 2 scans use the database as the sole page authority. Source originals and
-metadata continue through the existing content adapter. Reopen after conversion.
+metadata, source Trash and preserved conflicts continue through the existing content
+adapter. Database `user_version=2` owns page metadata, blocks and page Trash only.
+Reopen after conversion. Noema Markdown export/import is explicit interoperability;
+a live-page Markdown bundle or database-only snapshot is not a complete vault archive.
+
+The [STOR.01 ownership contract](contracts/storage-boundary.md) approves a future
+explicit schema-3/capability transition and a SQLite creation default only for verified
+eligible local roots. Neither is active: creation still publishes format 1, and opening
+existing format 1/2 vaults never changes their authority. The [architecture](architecture.md)
+distinguishes implemented storage from the deferred complete archive/restore contract.
 Conversion rejects future block envelopes, symlinks, nonlocal volumes and known
 cloud-provider roots. Arbitrary third-party sync folders cannot be identified by
 filesystem attributes alone; callers must choose an independently local vault.

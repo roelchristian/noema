@@ -398,16 +398,38 @@ old offscreen glass ambiguity or validate live menu/alert/sheet presentation.
 
 The [external AI contract](contracts/external-ai.md) defines the in-process boundary and residual risks. Credential, authorization, gateway and actual URLSession adversarial suites use synthetic keys and intercepted/mock transport. AI integration tests cover strict one-inference enrichment/composition, request-mode consent, title preservation/collisions, typed classification/provenance, legacy decoding, conditional writes, unavailable classification, stale leases/edits, cancellation and source relationships. Consent policy tests cover explicit-action dispatch and real vault lock/unlock grant resets. Classification tests validate the finite exact locally verified schedule headings plus supported outlines; they do not establish full LCC coverage. URL policy tests reject private/reserved destinations and unsafe redirects, while DNS rebinding remains a documented transport limitation. These scenarios do not establish hardware authentication, signed-Keychain access, system-event delivery, live-provider/native-model behavior or interactive sheet acceptance. Standing device, accessibility and crash-durability gates remain pending; see the device/provider checklist above.
 
+## SQLite storage acceptance
+
+At baseline `890898fbe0d1511e64dd3e41f932be1147bb79b3`, EDT.BLK09–14 implement
+local format-2 pages rather than a hypothetical SQLite design. The following named
+fixtures establish scenario coverage; this standing inventory does not claim a fresh
+run or repeat prior PR validation. Actual STOR.01 commands/outcomes belong in its PR.
+
+| Implemented guarantee | Regression evidence | Remaining limit |
+| --- | --- | --- |
+| Relational document reconstruction, incremental writes and schema rejection | [SQLiteBlockStoreTests](../Tests/VaultCoreTests/SQLiteBlockStoreTests.swift): `sqliteBlocksReconstructAndWriteOnlyAffectedRows`, `sqliteBlocksRollbackAndRejectFutureSchema`, `sqliteSchemaUpgradePreservesPagesAndTrashCyclesResetRetentionIdentity` | Arbitrary future JSON fields are not losslessly retained; current schema has page-only authority. |
+| Atomic metadata/document publication, revisions and session authority | Same suite: `sqlitePagePublicationValidationRollsBackMetadataAndBlocks`, `sqliteConnectionsRejectStaleWritesAndReadCoherentPageSnapshots`, `sqliteBlocksRejectRevokedSessionWithoutMutatingPage`, `sqliteCancelledPublicationPreservesLastAcknowledgedRevision` | These transactions do not span separately file-backed source originals/metadata or external files. |
+| WAL-inclusive backup and retirement | Same suite: `sqliteWALBackupIncludesAcknowledgedRevisionAndRejectsOverwrite`; repository checkpoint/close lifecycle | SQLite backup is database-only; synthetic cancellation/faults do not prove process-crash or power-loss durability. |
+| Explicit conversion with verified backup and conditional manifest-last cutover | [SQLiteVaultMigrationTests](../Tests/VaultCoreTests/SQLiteVaultMigrationTests.swift): original/backup preservation, interrupted publication retry, source/manifest changes, occupied/symlink/missing database and known cloud-root rejection | Filesystem rename/atomic write alone does not establish power-loss durability or universal third-party synchronizer detection. |
+| Format-aware page operations and explicit Markdown interchange | [SQLiteRepositoryTests](../Tests/VaultCoreTests/SQLiteRepositoryTests.swift): `explicitMarkdownRoundTripPreservesIDsAndMetadata`, `externalMarkdownRequiresExplicitRevisionCheckedImport` | Native interoperability UI, complete archive/restoration and multi-device SQLite replication remain unavailable. |
+
+STOR.01 changes documentation and approves future requirements only. Schema-3
+source/preservation authority, eligible-local SQLite default creation and complete
+archive/restore are not implemented or accepted by this review. Device/accessibility,
+actual crash/power-loss, native editor performance and real-provider/two-Mac Markdown
+transport acceptance remain open; SQLite live databases must never use file-copy sync.
+Session locking/native authentication provide no encryption.
+
 ## D05 compatibility and preservation acceptance
 
-Production supports plaintext Markdown format 1 only. This matrix names automated
+Production supports plaintext Markdown format 1 and explicitly converted local SQLite page format 2 (database schema 2). This matrix names automated
 scenarios; source coverage does not establish a fresh passing run. PR validation
 records actual execution and the independent storage review.
 
 | Guarantee | Exact regression evidence / disposition |
 | --- | --- |
 | Legacy canonical bytes, identity and opaque optional YAML | `VaultTests.legacyManifestAndCanonicalBytesSurviveOpeningAndScanning`; `WikiPageAdapterTests.legacyProvenanceIsAbsentAndUnknownFrontmatterSurvives`; `BlockDocumentTests.blockNoOpCommandsPreserveOriginalMarkdownAndIdentity` |
-| Unknown format, mode or required schema rejects before mutation | `VaultTests.unsupportedStorageDeclarationsRejectWithoutMutating`, `futureVaultVersionsRejectWithoutMutation`; no SQLite/encrypted production mode enabled |
+| Unknown format, mode or required schema rejects before mutation | `VaultTests.unsupportedStorageDeclarationsRejectWithoutMutating`, `futureVaultVersionsRejectWithoutMutation`; unsupported declarations fail closed before database construction; encryption is unavailable |
 | Future required document features preserve original source read-only | `BlockDocumentTests.blockFutureFormatAndMalformedDataRemainRecoverable` |
 | Creation collision, partial initialization and cleanup | `VaultCreationTests.creationPublicationCollisionPreservesInitializedStagingAndOccupiedDestination`, `failedInitializationRemovesOnlyEmptyOwnedStaging`: preserve nonempty staging; reject occupied retry before staging |
 | Unavailable, denied, damaged or missing manifest never authorizes accidental creation | `VaultTests.unavailableManifestAndPermissionFailureRemainDistinctWithoutInitialization` (open/preflight, create false/true), `damagedManifestRejectionPreservesBytesAndCanRetryAfterRepair`, `missingManifestInNonemptyRootCannotBeInitialized` |
@@ -417,7 +439,7 @@ records actual execution and the independent storage review.
 | Admitted commit windows and unsaved recovery survive lock failure | `VaultSaveQuiescenceTests.inFlightSavesEnteringCommitWindowCompleteAndRemainRecognizedWhilePreCommitSavesPreserveRecoveryDraft`; `VaultCleanupFailureTests.committedSaveReportsRecoveryCleanupFailureAndAbortsLockWithoutLosingCommit` |
 | Damaged recovery peers, identity isolation and repeated stale recovery | `RecoveryStoreIsolationTests.oneCorruptEntryDoesNotBlockSeveralValidDraftsAndOriginalBytesSurviveReopening`, `identityMismatchAndUnreadableEntryAreReportedWithoutBlockingPeers`, `repeatedStaleRecoveryAttemptsPreserveExternalCanonicalAndJournalBytes`; `VaultAccessGateTests.wrongVaultAccessIsRejectedAcrossRepositoriesStoresAndLeases` |
 | External edits, source publication and unavailable-source retry | `WikiPageAdapterTests.racePreservesCanonicalAndRecoveryDraft`; `SourceAdapterTests.metadataRacePreservesExternalChange`, `failedPublicationRetainsStagingAndURLStatusPreservesOriginal`, `availabilityChecksRetainBrokenLinkedSourcesAndRecover` |
-| Migration authority, recovery inventory and rollback prerequisites | [Block storage implementation gate](contracts/block-editor.md#storage-decision-and-implementation-gate-edtblk01) and [recovery limits](contracts/block-editor.md#recovery-authority-and-current-guarantees); EDT.BLK owns SQLite implementation, E-series owns encryption |
+| Migration authority, recovery inventory and rollback prerequisites | [Block storage implementation gate](contracts/block-editor.md#storage-decision-and-implementation-gate-edtblk01) and [recovery limits](contracts/block-editor.md#recovery-authority-and-current-guarantees); explicit page conversion is implemented, expanded canonical authority and complete archive/restore remain STOR.02–03 work, E-series owns encryption |
 
 D06 still requires real-provider/iCloud, native-authentication, accessibility and
 actual process-crash/power-loss acceptance. Synthetic fixtures do not close these
