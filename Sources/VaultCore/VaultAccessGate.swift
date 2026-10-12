@@ -1428,6 +1428,34 @@ public final class GatedVaultContentStore: VaultContentStore, Sendable {
         try base.move(from: source, to: destination, expected: expected)
     }
 
+    public func synchronize(at path: String) throws {
+        try validateAccess(operation: "synchronize \(path)")
+        try base.synchronize(at: path)
+        try validateAccess(operation: "synchronize.complete \(path)")
+    }
+
+    public func publishCanonicalOriginal(_ data: Data, metadata: SourceMetadata,
+                                         vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try validateAccess(operation: "canonicalOriginal.publish")
+        let receipt = try base.publishCanonicalOriginal(data, metadata: metadata, vaultID: vaultID, operationID: operationID)
+        try validateAccess(operation: "canonicalOriginal.publish.complete")
+        return receipt.validating { try self.validateAccess(operation: "canonicalOriginal.receipt") }
+    }
+    public func verifyCanonicalOriginal(metadata: SourceMetadata, vaultID: UUID,
+                                        operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try validateAccess(operation: "canonicalOriginal.verify")
+        let receipt = try base.verifyCanonicalOriginal(metadata: metadata, vaultID: vaultID, operationID: operationID)
+        try validateAccess(operation: "canonicalOriginal.verify.complete")
+        return receipt.validating { try self.validateAccess(operation: "canonicalOriginal.receipt") }
+    }
+    public func verifyCanonicalLinked(metadata: SourceMetadata, vaultID: UUID,
+                                      operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try validateAccess(operation: "canonicalLinked.verify")
+        let receipt = try base.verifyCanonicalLinked(metadata: metadata, vaultID: vaultID, operationID: operationID)
+        try validateAccess(operation: "canonicalLinked.verify.complete")
+        return receipt.validating { try self.validateAccess(operation: "canonicalLinked.receipt") }
+    }
+
     public func delete(at path: String, expected: VaultContentSnapshot) throws {
         try validateAccess(operation: "delete \(path)")
         try base.delete(at: path, expected: expected)

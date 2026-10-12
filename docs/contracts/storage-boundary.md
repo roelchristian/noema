@@ -78,6 +78,38 @@ See [SQLiteBlockStoreTests](../../Tests/VaultCoreTests/SQLiteBlockStoreTests.swi
 for affected-row, rollback, coherent-snapshot, corruption, upgrade, cancellation and
 WAL-backup scenarios; these tests do not establish arbitrary power-loss behavior.
 
+### Canonical persistence implementation (STOR02A)
+
+Explicit fresh schema-3 initialization and manifest/database UUID/capability checks
+now admit canonical repositories. Existing schema 1/2 remains page-only; creation
+still defaults to Markdown. No existing vault changes authority on open.
+`VaultStorageProvider` owns SQLite construction. Schema-3 metadata and ordered
+source relationships, logical source Trash, tombstones and inline conflict records
+are SQLite-owned. Imported originals remain controlled immutable adapter bytes;
+linked originals remain externally owned and read-only. Obsolete metadata files
+never override schema-3 source records.
+
+Source publication uses adapter-minted source/vault/operation-bound receipts.
+Regular payloads require F_FULLFSYNC, directory entries require fsync, and retained
+Source Publications evidence plus checksum/size checks are revalidated at execution
+and COMMIT. Unknown sync providers fail closed. Physical originals remain retained
+after logical purge; live source relationships restrict purge. Imported descriptors
+cannot change under an existing UUID. Conflict disposition keeps original payload
+bytes and checks conflict/target revisions atomically.
+
+Domain optional JSON survives known-field edits. Annotation transforms use exact
+revision/text evidence for grapheme-safe UTF-16 edits, split/merge and duplicates;
+bare replacements preserve stale/deleted anchors. Annotated page purge rejects
+until explicit independent preservation exists. Unknown SQL wrapper keys fail
+closed rather than disappearing.
+
+Remaining acceptance: verified schema-2-to-3 authority-changing migration with
+receipt-bound interruption recovery is unavailable; schema 2 remains readable.
+Linked-source unavailability and crash/power-loss/filesystem acceptance require
+additional review. Fresh canonical staging is available, but STOR02A completion
+and STOR02B admission remain withheld pending those requirements. No migration
+prototype is part of runtime.
+
 ### Required authority discriminator and explicit upgrade
 
 The minimum future expanded-authority baseline is SQL schema 3. Retain manifest

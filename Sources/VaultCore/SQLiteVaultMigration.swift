@@ -49,7 +49,7 @@ public enum SQLiteVaultMigration {
         guard manifest.isSupported else { throw VaultError.invalid("This vault uses an unsupported format version.") }
         if manifest.storageMode == .sqliteBlocks {
             try requirePublishedDatabase(root: root)
-            let database = try makeDatabase(url: root.appendingPathComponent(VaultManifest.sqliteDatabasePath), sessionLease: sessionLease, accessGate: accessGate, createIfMissing: false)
+            let database = try storageProvider.makeBlockStore(url: root.appendingPathComponent(VaultManifest.sqliteDatabasePath), sessionLease: sessionLease, accessGate: accessGate, createIfMissing: false, manifest: manifest)
             let count = try await database.allPages().count
             try await database.close()
             return SQLiteVaultMigrationResult(manifest: manifest, importedPageCount: count, backupPath: nil)
@@ -92,7 +92,7 @@ public enum SQLiteVaultMigration {
             }
         }
         let stagingPath = "\(run)/blocks.sqlite"
-        let database = try makeDatabase(url: root.appendingPathComponent(stagingPath), sessionLease: sessionLease, accessGate: accessGate)
+        let database = try storageProvider.makeBlockStore(url: root.appendingPathComponent(stagingPath), sessionLease: sessionLease, accessGate: accessGate)
         do {
             for (record, document) in pages {
                 _ = try await database.savePage(record: record, document: document, condition: .createOnly)
@@ -144,11 +144,6 @@ public enum SQLiteVaultMigration {
         try store.write(publishedManifest, at: "vault.json", condition: .replace(expected: manifestBytes))
         manifest.formatVersion = 2; manifest.storageMode = .sqliteBlocks
         return SQLiteVaultMigrationResult(manifest: manifest, importedPageCount: pages.count, backupPath: backup)
-    }
-
-    private static func makeDatabase(url: URL, sessionLease: VaultSessionLease?, accessGate: VaultAccessGate?, createIfMissing: Bool = true) throws -> SQLiteBlockStore {
-        if let sessionLease, let accessGate { return try SQLiteBlockStore(url: url, sessionLease: sessionLease, accessGate: accessGate, createIfMissing: createIfMissing) }
-        return try SQLiteBlockStore(unguardedTestingURL: url, createIfMissing: createIfMissing)
     }
 
     private static func rejectFutureEnvelopes(_ source: String, path: String) throws {

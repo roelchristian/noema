@@ -16,6 +16,7 @@ extension BlockDocument {
     // Every structural operation is atomic on the value document, including entire subtrees.
     @discardableResult public mutating func apply(_ command: BlockMutation, to id: UUID) -> BlockCursor? {
         guard !unsupportedVersion, let path = path(to: id) else { return nil }
+        let previous = self
         let before = blocks
         var cursor = BlockCursor(id)
         switch command {
@@ -26,6 +27,8 @@ extension BlockDocument {
         case .collapse: update(id) { $0.metadata.collapsed.toggle() }
         case .language(let language): update(id) { $0.metadata.language = language }
         case .split(let requested):
+            let splitOffset = min(max(requested, 0), block(id)!.utf16Count)
+            guard InlineAnnotationTarget.validRange(NSRange(location: splitOffset, length: 0), in: block(id)!.text) else { return nil }
             siblings(at: Array(path.dropLast())) { list in
                 let index = path.last!, block = list[index], offset = min(max(requested, 0), block.utf16Count)
                 if block.text.isEmpty && block.kind.isList { list[index].kind = .paragraph; return }
@@ -39,6 +42,9 @@ extension BlockDocument {
                 let index = path.last!
                 if list[index].kind != .paragraph { list[index].kind = .paragraph; return }
                 guard index > 0 else { return }
+                // Unknown owning-block semantics cannot be reassigned to the survivor.
+                let removing = list[index]
+                guard removing.extensions == nil, removing.unknownFields.isEmpty, removing.metadata.extensions == nil, removing.metadata.unknownFields.isEmpty else { return }
                 let removed = list.remove(at: index), offset = list[index - 1].utf16Count
                 list[index - 1].runs += removed.runs; list[index - 1].children += removed.children
                 list[index - 1].modifiedAt = Date(); cursor = BlockCursor(list[index - 1].id, offset: offset)
@@ -91,6 +97,7 @@ extension BlockDocument {
         // Invalid and ineffective commands preserve source bytes, identities and timestamps.
         guard blocks != before else { return nil }
         originalSource = nil
+        transformAnnotations(for: command, owner: id, cursor: cursor, previous: previous)
         return cursor
     }
     public func canReorder(_ id: UUID, before target: UUID) -> Bool {

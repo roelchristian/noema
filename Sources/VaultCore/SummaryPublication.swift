@@ -18,6 +18,7 @@ public struct SourceSummarySnapshot: Sendable {
     let metadataBytes: Data
     let metadataToken: VaultContentChangeToken?
     let originalToken: VaultContentChangeToken?
+    var canonicalRevision: BlockStoreRevision? = nil
 }
 
 extension FileVaultRepository {
@@ -39,10 +40,22 @@ extension FileVaultRepository {
         return PageSummarySnapshot(note: actual, bytes: bytes, token: after)
     }
 
-    public func sourceSummarySnapshot(id: UUID) throws -> SourceSummarySnapshot {
+    public func sourceSummarySnapshot(id: UUID) async throws -> SourceSummarySnapshot {
         try validateAccess(operation: "sourceSummarySnapshot")
         try Task.checkCancellation()
-        let source = try loadSource(id: id, verifyOriginal: true)
+        let source = try await loadSource(id: id, verifyOriginal: true)
+        if manifest.canonicalStorage {
+            let captured = try await canonicalSourceMetadata(id: id)
+            let before = try summaryOriginalToken(source)
+            let original = try Self.readSourceOriginal(source, root: root, contentStore: contentStore)
+            let after = try summaryOriginalToken(source)
+            guard before == after, try await canonicalSourceMetadata(id: id).revision == captured.revision else {
+                throw VaultContentStoreError.stale("canonical source")
+            }
+            return SourceSummarySnapshot(source: SourceRecord(metadata: captured.metadata, body: source.body),
+                original: original, metadataBytes: try JSONEncoder().encode(captured.metadata),
+                metadataToken: nil, originalToken: after, canonicalRevision: captured.revision)
+        }
         let path = "Sources/" + id.uuidString.lowercased() + "/metadata.json"
         let metadataBefore = try contentStore.changeToken(at: path)
         let bytes = try contentStore.read(at: path)
@@ -97,9 +110,16 @@ extension FileVaultRepository {
 
     public func publishSourceSummary(_ snapshot: SourceSummarySnapshot, summary: String,
         provenance: SummaryProvenance, validate: @escaping @Sendable () throws -> Void
-    ) throws -> SourceRecord {
+    ) async throws -> SourceRecord {
         try validateAccess(operation: "publishSourceArtifact")
         try Task.checkCancellation()
+        if manifest.canonicalStorage {
+            var metadata = snapshot.source.metadata
+            var provenance = provenance
+            provenance.sourceRevision = provenance.sourceRevision ?? snapshot.sourceRevision
+            metadata.aiSummary = summary; metadata.aiSummaryProvenance = provenance
+            return try await publishSourceMetadata(snapshot, metadata: metadata, validate: validate)
+        }
         let source = snapshot.source
         let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
         guard try contentStore.read(at: path) == snapshot.metadataBytes,
@@ -152,7 +172,7 @@ extension FileVaultRepository {
     public func publishSourceEnrichment(_ snapshot: SourceSummarySnapshot, summary: String,
         classification: LCCClassification?, title: String? = nil, provenance: SummaryProvenance,
         validate: @escaping @Sendable () throws -> Void
-    ) throws -> SourceRecord {
+    ) async throws -> SourceRecord {
         let provenance = try enrichmentProvenance(provenance, revision: snapshot.sourceRevision)
         let classification = try verifiedClassification(classification, provenance: provenance)
         var metadata = snapshot.source.metadata
@@ -165,7 +185,7 @@ extension FileVaultRepository {
         metadata.aiSummary = summary; metadata.aiSummaryProvenance = provenance
         metadata.lcc = classification?.code; metadata.lccClassification = classification
         metadata.aiLCCProvenance = classification == nil ? nil : provenance
-        return try publishSourceMetadata(snapshot, metadata: metadata, validate: validate)
+        return try await publishSourceMetadata(snapshot, metadata: metadata, validate: validate)
     }
 
     /// A reviewed draft is encoded fully before a single create-only canonical write.
@@ -192,14 +212,20 @@ extension FileVaultRepository {
         note.lcc = classification?.code; note.lccClassification = classification
         note.aiLCCProvenance = classification == nil ? nil : provenance
         let data = try NoteCodec.encode(note)
-        if let source { try validateSourceSnapshot(source) }
+        if let source { try await validateSourceSnapshot(source) }
         try Task.checkCancellation()
         try validate()
         try validateAccess(operation: "createEnrichedPage.write")
         if let sqliteBlockStore {
             note.relativePath = "sqlite/" + note.id.uuidString.lowercased()
             note.inlineTags = MarkdownService.analyze(note.body).tags
-            _ = try await sqliteBlockStore.savePage(record: note, document: BlockDocumentCodec.decode(note.body), condition: .createOnly, validating: validate)
+            if manifest.canonicalStorage, let source {
+                guard let revision = source.canonicalRevision else { throw VaultError.invalid("Missing source revision.") }
+                try await canonicalPublishSourceAndPage(metadata: source.source.metadata, expected: revision,
+                    page: CanonicalPagePublication(record: note, document: BlockDocumentCodec.decode(note.body), condition: .createOnly), validating: validate)
+            } else {
+                _ = try await sqliteBlockStore.savePage(record: note, document: BlockDocumentCodec.decode(note.body), condition: .createOnly, validating: validate)
+            }
             return try await sqliteBlockStore.loadPage(pageID: note.id).record
         }
         try contentStore.write(data, at: note.relativePath, condition: .createOnly)
@@ -207,9 +233,19 @@ extension FileVaultRepository {
         return try NoteCodec.decode(data, path: note.relativePath, vaultID: manifest.id)
     }
 
-    public func validateSourceSnapshot(_ snapshot: SourceSummarySnapshot) throws {
+    public func validateSourceSnapshot(_ snapshot: SourceSummarySnapshot) async throws {
         try validateAccess(operation: "validateSourceSnapshot")
         try Task.checkCancellation()
+        if manifest.canonicalStorage {
+            guard let revision = snapshot.canonicalRevision,
+                  try await canonicalSourceMetadata(id: snapshot.source.id).revision == revision,
+                  try summaryOriginalToken(snapshot.source) == snapshot.originalToken,
+                  try Self.readSourceOriginal(snapshot.source, root: root, contentStore: contentStore) == snapshot.original,
+                  try summaryOriginalToken(snapshot.source) == snapshot.originalToken else {
+                throw VaultContentStoreError.stale("canonical source")
+            }
+            return
+        }
         let source = snapshot.source
         let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
         guard try contentStore.read(at: path) == snapshot.metadataBytes,
@@ -295,21 +331,21 @@ extension FileVaultRepository {
 
     public func publishSourceTitle(_ snapshot: SourceSummarySnapshot, title: String,
         provenance: SummaryProvenance, validate: @escaping @Sendable () throws -> Void
-    ) throws -> SourceRecord {
+    ) async throws -> SourceRecord {
         var metadata = snapshot.source.metadata
         metadata.title = try acceptedTitle(title)
         metadata.aiTitleProvenance = acceptedProvenance(provenance, revision: snapshot.sourceRevision)
-        return try publishSourceMetadata(snapshot, metadata: metadata, validate: validate)
+        return try await publishSourceMetadata(snapshot, metadata: metadata, validate: validate)
     }
 
     public func publishSourceLCC(_ snapshot: SourceSummarySnapshot, lcc: String,
         provenance: SummaryProvenance, validate: @escaping @Sendable () throws -> Void
-    ) throws -> SourceRecord {
+    ) async throws -> SourceRecord {
         var metadata = snapshot.source.metadata
         metadata.lcc = try acceptedLCC(lcc)
         metadata.lccClassification = nil
         metadata.aiLCCProvenance = acceptedProvenance(provenance, revision: snapshot.sourceRevision)
-        return try publishSourceMetadata(snapshot, metadata: metadata, validate: validate)
+        return try await publishSourceMetadata(snapshot, metadata: metadata, validate: validate)
     }
 
     private func acceptedTitle(_ value: String) throws -> String {
@@ -367,9 +403,16 @@ extension FileVaultRepository {
 
     private func publishSourceMetadata(_ snapshot: SourceSummarySnapshot, metadata: SourceMetadata,
         validate: @escaping @Sendable () throws -> Void
-    ) throws -> SourceRecord {
+    ) async throws -> SourceRecord {
         try validateAccess(operation: "publishSourceArtifact")
         try Task.checkCancellation()
+        if manifest.canonicalStorage {
+            try await validateSourceSnapshot(snapshot)
+            guard let revision = snapshot.canonicalRevision else { throw VaultError.invalid("Missing canonical source revision.") }
+            try await canonicalUpdateSource(metadata: metadata, expected: revision, validating: validate)
+            return SourceRecord(metadata: metadata, body: snapshot.source.body,
+                availabilityIssue: snapshot.source.availabilityIssue, contentState: snapshot.source.contentState)
+        }
         let source = snapshot.source
         let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
         guard try contentStore.read(at: path) == snapshot.metadataBytes,

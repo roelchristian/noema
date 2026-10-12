@@ -2,22 +2,42 @@ import Foundation
 import CryptoKit
 
 public enum EntryKind: String, Codable, Sendable { case wiki, source }
+public struct VaultCanonicalStorageDeclaration: Codable, Sendable, Equatable {
+    public var mode: String = "sqliteBlocks"
+    public var schemaVersion: Int = 3
+    public var database: String = "blocks.sqlite"
+    public var localOnly: Bool = true
+    public var requiredCapabilities: [String] = ["canonicalMetadataV1"]
+    public init() {}
+    public var isSupported: Bool {
+        mode == "sqliteBlocks" && schemaVersion == 3 && database == "blocks.sqlite" && localOnly && requiredCapabilities == ["canonicalMetadataV1"]
+    }
+}
 public struct VaultManifest: Codable, Sendable {
     public static let sqliteDatabasePath = "blocks.sqlite"
     public var formatVersion: Int = 1
     public var id: UUID
     public var storageMode: BlockStorageMode = .markdown
+    public var storage: VaultCanonicalStorageDeclaration? = nil
+    public var canonicalStorage: Bool { storage != nil }
     public var isSupported: Bool {
-        (formatVersion == 1 && storageMode == .markdown) ||
-        (formatVersion == 2 && storageMode == .sqliteBlocks)
+        (formatVersion == 1 && storageMode == .markdown && storage == nil) ||
+        (formatVersion == 2 && storageMode == .sqliteBlocks && (storage == nil || storage?.isSupported == true))
     }
     public init(id: UUID = UUID()) { self.id = id }
-    private enum CodingKeys: String, CodingKey { case formatVersion, id, storageMode }
+    private enum CodingKeys: String, CodingKey { case formatVersion, id, storageMode, storage }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         formatVersion = try values.decode(Int.self, forKey: .formatVersion)
         id = try values.decode(UUID.self, forKey: .id)
         storageMode = try values.decodeIfPresent(BlockStorageMode.self, forKey: .storageMode) ?? .markdown
+        if values.contains(.storage), !(try values.decodeNil(forKey: .storage)) {
+            enum DeclarationKey: String, CodingKey { case mode, schemaVersion, database, localOnly, requiredCapabilities }
+            let declaration = try values.nestedContainer(keyedBy: DeclarationKey.self, forKey: .storage)
+            if formatVersion == 1, try declaration.decode(String.self, forKey: .mode) == "markdown",
+               declaration.allKeys == [.mode] { storage = nil }
+            else { storage = try values.decode(VaultCanonicalStorageDeclaration.self, forKey: .storage) }
+        }
     }
 }
 public struct NoteRecord: Codable, Identifiable, Sendable, Equatable {
@@ -40,6 +60,8 @@ public struct NoteRecord: Codable, Identifiable, Sendable, Equatable {
     public var sourceIDs: [UUID]? = nil
     public var linkedSourceIDs: [UUID] { sourceIDs ?? [] }
     public var originalHeader: String?
+    public var extensions: PersistencePayload? = nil
+    public var unknownFields: [String: JSONValue] = [:]
     public var allTags: [String] { Array(Set(tags + inlineTags)).sorted() }
 }
 /// Portable generation facts for an accepted AI artifact; no request authority or secret.
@@ -86,6 +108,8 @@ public struct SourceMetadata: Codable, Identifiable, Sendable, Equatable {
     public var fileSize: Int? = nil
     public var linkedBookmark: Data? = nil
     public var isLinked: Bool { linkedBookmark != nil }
+    public var extensions: PersistencePayload? = nil
+    public var unknownFields: [String: JSONValue] = [:]
     public var storedFilename: String
 }
 public enum SourceContentState: String, Codable, Sendable {

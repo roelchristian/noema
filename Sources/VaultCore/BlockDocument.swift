@@ -1,6 +1,8 @@
 import Foundation
 
 public struct InlineStyle: Codable, Equatable, Sendable {
+    public var extensions: PersistencePayload?
+    public var unknownFields: [String: JSONValue] = [:]
     public var bold = false
     public var italic = false
     public var underline = false
@@ -12,22 +14,12 @@ public struct InlineStyle: Codable, Equatable, Sendable {
     public var link: String?
     public var wikiTarget: String?
     public init() {}
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        bold = try container.decodeIfPresent(Bool.self, forKey: .bold) ?? false
-        italic = try container.decodeIfPresent(Bool.self, forKey: .italic) ?? false
-        underline = try container.decodeIfPresent(Bool.self, forKey: .underline) ?? false
-        strike = try container.decodeIfPresent(Bool.self, forKey: .strike) ?? false
-        code = try container.decodeIfPresent(Bool.self, forKey: .code) ?? false
-        math = try container.decodeIfPresent(Bool.self, forKey: .math) ?? false
-        rawMath = try container.decodeIfPresent(String.self, forKey: .rawMath)
-        highlight = try container.decodeIfPresent(Bool.self, forKey: .highlight) ?? false
-        link = try container.decodeIfPresent(String.self, forKey: .link)
-        wikiTarget = try container.decodeIfPresent(String.self, forKey: .wikiTarget)
-    }
+
 }
 
 public struct RichRun: Codable, Equatable, Sendable {
+    public var extensions: PersistencePayload?
+    public var unknownFields: [String: JSONValue] = [:]
     public var text: String
     public var style: InlineStyle
     public init(_ text: String, style: InlineStyle = .init()) { self.text = text; self.style = style }
@@ -46,6 +38,8 @@ public struct BlockKind: RawRepresentable, Codable, Hashable, Sendable {
 }
 
 public struct BlockMetadata: Codable, Equatable, Sendable {
+    public var extensions: PersistencePayload?
+    public var unknownFields: [String: JSONValue] = [:]
     public var semantic: String?
     public var status: String?
     public var checked = false
@@ -57,6 +51,8 @@ public struct BlockMetadata: Codable, Equatable, Sendable {
 }
 
 public struct EditorBlock: Identifiable, Codable, Equatable, Sendable {
+    public var extensions: PersistencePayload?
+    public var unknownFields: [String: JSONValue] = [:]
     public var id: UUID
     public var kind: BlockKind
     public var runs: [RichRun]
@@ -95,7 +91,9 @@ public struct EditorBlock: Identifiable, Codable, Equatable, Sendable {
             let length = run.text.utf16.count
             let intersection = NSIntersectionRange(range, NSRange(location: offset, length: length))
             if intersection.length > 0 {
-                result.append(RichRun((run.text as NSString).substring(with: NSRange(location: intersection.location - offset, length: intersection.length)), style: run.style))
+                var slice = run
+                slice.text = (run.text as NSString).substring(with: NSRange(location: intersection.location - offset, length: intersection.length))
+                result.append(slice)
             }
             offset += length
         }
@@ -104,6 +102,10 @@ public struct EditorBlock: Identifiable, Codable, Equatable, Sendable {
 }
 
 public struct BlockDocument: Codable, Equatable, Sendable {
+    // Process-local evidence is intentionally excluded from the durable document envelope.
+    var annotationMutationEvidence: AnnotationMutationEvidence?
+    public var extensions: PersistencePayload?
+    public var unknownFields: [String: JSONValue] = [:]
     public var blocks: [EditorBlock]
     public var trailingNewline: Bool
     public var recoveredMetadata: String?
@@ -177,7 +179,14 @@ public enum BlockDocumentCodec {
                 markdown = body
                 if let envelope = try? JSONDecoder().decode(Envelope.self, from: data),
                    envelope.hash == digest(Data(markdown.utf8)), valid(envelope.document) {
-                    return sanitized(envelope.document)
+                    var document = sanitized(envelope.document)
+                    do { try document.validateWritablePayloads(requireKnownBlockKinds: false) }
+                    catch { document.unsupportedVersion = true; document.originalSource = source }
+                    return document
+                }
+                // Matching bytes with an unpreservable payload cannot grant save authority.
+                if header["hash"] as? String == digest(Data(markdown.utf8)) {
+                    var document = parse(markdown); document.unsupportedVersion = true; document.originalSource = source; return document
                 }
                 // External text wins. Keep the stale payload in the next save for manual recovery.
                 recovered = encoded

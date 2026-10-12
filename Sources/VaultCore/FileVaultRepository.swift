@@ -37,7 +37,7 @@ public actor FileVaultRepository: VaultRepository {
     private var cacheInvalidatorID: UUID?
     private var downloadingSources: [UUID: SourceRecord] = [:]
     private let fm = FileManager.default
-    private let encoder: JSONEncoder = {
+    let encoder: JSONEncoder = {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; return encoder
     }()
 
@@ -103,7 +103,7 @@ public actor FileVaultRepository: VaultRepository {
         // v1 has no required storage schema. A declaration must not silently select
         // a future authority merely because Codable ignores unknown fields.
         let declaration = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        if let storage = declaration?["storage"] {
+        if let storage = declaration?["storage"], !manifest.canonicalStorage {
             guard manifest.formatVersion == 1, let storage = storage as? [String: Any],
                   storage["mode"] as? String == "markdown",
                   storage["schemaVersion"] == nil,
@@ -222,7 +222,7 @@ public actor FileVaultRepository: VaultRepository {
             guard let sessionLease, let accessGate else {
                 throw VaultAccessError.missingLease(operation: "blockStore.open")
             }
-            blocks = try SQLiteBlockStore(url: database, sessionLease: sessionLease, accessGate: accessGate, createIfMissing: false)
+            blocks = try storageProvider.makeBlockStore(url: database, sessionLease: sessionLease, accessGate: accessGate, createIfMissing: false, manifest: manifest)
         } else { blocks = nil }
         return FileVaultRepository(
             root: root,
@@ -303,7 +303,7 @@ public actor FileVaultRepository: VaultRepository {
         try Task.checkCancellation()
         try validateAccess(operation: "scan")
         if let sqliteBlockStore {
-            var batch = try scanSources(loading: sourceLoading)
+            var batch = try await scanSources(loading: sourceLoading)
             batch.notes = try await sqliteBlockStore.allPages()
             batch.notes.sort { $0.updatedAt > $1.updatedAt }
             try validateAccess(operation: "scan.complete")
@@ -360,7 +360,7 @@ public actor FileVaultRepository: VaultRepository {
         }
         cache = cache.filter { seenPaths.contains($0.key) }
         if let enumerationError { throw VaultError.storage(enumerationError) }
-        let sourceBatch = try scanSources(loading: sourceLoading)
+        let sourceBatch = try await scanSources(loading: sourceLoading)
         result.sources = sourceBatch.sources
         result.issues += sourceBatch.issues
         result.sourceVerification = sourceBatch.sourceVerification
@@ -379,8 +379,9 @@ public actor FileVaultRepository: VaultRepository {
 
     /// Discovery exposes explicit metadata-only records. Complete scans preserve the legacy
     /// full-content contract; verifyOriginals deliberately bypasses change-indicator reuse.
-    public func scanSources(loading: SourceLoadingPolicy = .metadataOnly, sourceID: UUID? = nil) throws -> ScanBatch {
-        try SourceScanPerformance.measure("Source Scan") { try discoverSources(loading: loading, sourceID: sourceID) }
+    public func scanSources(loading: SourceLoadingPolicy = .metadataOnly, sourceID: UUID? = nil) async throws -> ScanBatch {
+        if manifest.canonicalStorage { return try await canonicalScanSources(loading: loading, sourceID: sourceID) }
+        return try SourceScanPerformance.measure("Source Scan") { try discoverSources(loading: loading, sourceID: sourceID) }
     }
 
     private func discoverSources(loading: SourceLoadingPolicy, sourceID: UUID?) throws -> ScanBatch {
@@ -498,8 +499,8 @@ public actor FileVaultRepository: VaultRepository {
     }
 
     /// Demand-driven loading by identity always rediscovers current metadata through the store.
-    public func loadSource(id: UUID, verifyOriginal: Bool = false) throws -> SourceRecord {
-        let batch = try scanSources(loading: verifyOriginal ? .verifyOriginals : .complete, sourceID: id)
+    public func loadSource(id: UUID, verifyOriginal: Bool = false) async throws -> SourceRecord {
+        let batch = try await scanSources(loading: verifyOriginal ? .verifyOriginals : .complete, sourceID: id)
         guard let source = batch.sources.first(where: { $0.id == id }), source.contentState == .loaded else {
             throw VaultError.unavailable(batch.issues.first ?? "Source is unavailable. Refresh the vault.")
         }
@@ -674,6 +675,7 @@ public actor FileVaultRepository: VaultRepository {
         var databasePages: [TrashedPage] = []
         if let sqliteBlockStore {
             databasePages = try await sqliteBlockStore.allTrashedPages().map { TrashedPage(note: $0) }
+            if manifest.canonicalStorage { return databasePages }
         }
         let directory = root.appendingPathComponent(Self.trashDirectoryName)
         try ensureTrashDirectory()
@@ -735,6 +737,7 @@ public actor FileVaultRepository: VaultRepository {
         }
         guard !titleExists(page.note.title, in: snapshot.notes) else { throw VaultError.duplicateTitle(page.note.title) }
         if let sqliteBlockStore {
+            if manifest.canonicalStorage && !page.id.hasPrefix("sqlite/") { throw VaultError.invalid("File-backed Trash has no canonical authority.") }
             if page.id.hasPrefix("sqlite/") {
                 _ = try await sqliteBlockStore.setTrashed(pageID: page.note.id, expected: sqliteRevision(page.note), trashed: false)
             } else {
@@ -758,6 +761,12 @@ public actor FileVaultRepository: VaultRepository {
     public func permanentlyDelete(_ page: TrashedPage) async throws {
         try validateAccess(operation: "permanentlyDelete")
         guard page.canPermanentlyDelete else { throw VaultError.invalid("This trashed page could not be read. Refresh Trash before deleting it.") }
+        if manifest.canonicalStorage, let sqliteBlockStore {
+            let collection = try await sqliteBlockStore.canonicalVaultRevision()
+            try await sqliteBlockStore.purgeCanonicalEntity(id: page.note.id, kind: .page,
+                expected: sqliteRevision(page.note), expectedVaultRevision: collection)
+            return
+        }
         if let sqliteBlockStore, page.id.hasPrefix("sqlite/") {
             _ = try await sqliteBlockStore.delete(pageID: page.note.id, expected: sqliteRevision(page.note))
             return
@@ -810,7 +819,15 @@ public actor FileVaultRepository: VaultRepository {
         return url
     }
 
-    private func rejectDuplicateSource(checksum: String, linkedURL: URL? = nil, excludingID: UUID? = nil) throws {
+    private func rejectDuplicateSource(checksum: String, linkedURL: URL? = nil, excludingID: UUID? = nil) async throws {
+        if manifest.canonicalStorage {
+            for snapshot in try await sqliteBlockStore!.sourceSnapshots() {
+                let metadata = try snapshot.source.sourceMetadata()
+                guard metadata.id != excludingID else { continue }
+                if !checksum.isEmpty && metadata.sha256 == checksum { throw VaultError.invalid("File already added as a source.") }
+            }
+            return
+        }
         let directories = try fm.contentsOfDirectory(at: root.appendingPathComponent("Sources"), includingPropertiesForKeys: nil)
         for directory in directories {
             guard let id = UUID(uuidString: directory.lastPathComponent), id != excludingID else { continue }
@@ -838,9 +855,9 @@ public actor FileVaultRepository: VaultRepository {
         }
     }
 
-    public func importSource(data: Data, filename: String, title: String, originURL: String?) throws -> SourceRecord {
+    public func importSource(data: Data, filename: String, title: String, originURL: String?) async throws -> SourceRecord {
         try validateAccess(operation: "importSource")
-        return try publishSource(data: data, filename: filename, title: title, originURL: originURL, isURLSource: false)
+        return try await publishSource(data: data, filename: filename, title: title, originURL: originURL, isURLSource: false)
     }
 
     public func importURLSource(_ address: String, fetch: @Sendable (URL) async throws -> WebSourceFetch = WebSourceFetcher.fetch) async throws -> SourceRecord {
@@ -848,7 +865,7 @@ public actor FileVaultRepository: VaultRepository {
         let url = try WebSourceFetcher.validatedURL(address)
         let fetched = try await fetch(url)
         try validateAccess(operation: "importURLSource")
-        return try publishSource(data: fetched.data, filename: fetched.filename, title: url.host ?? address, originURL: url.absoluteString, isURLSource: true)
+        return try await publishSource(data: fetched.data, filename: fetched.filename, title: url.host ?? address, originURL: url.absoluteString, isURLSource: true)
     }
 
     public func checkURLSourceAvailability(_ source: SourceRecord, fetch: @Sendable (URL) async throws -> WebSourceFetch = WebSourceFetcher.fetch) async throws -> String {
@@ -858,6 +875,11 @@ public actor FileVaultRepository: VaultRepository {
         do { _ = try await fetch(WebSourceFetcher.validatedURL(address)); issue = nil }
         catch { issue = "Archived fetch · Unavailable: " + error.localizedDescription }
         try validateAccess(operation: "checkURLSourceAvailability")
+        if manifest.canonicalStorage {
+            var metadata = source.metadata; metadata.webAvailabilityIssue = issue
+            _ = try await canonicalReplaceSource(source, metadata: metadata)
+            return issue ?? "Available"
+        }
         let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
         let bytes = try contentStore.read(at: path)
         var metadata = try JSONDecoder().decode(SourceMetadata.self, from: bytes)
@@ -867,10 +889,10 @@ public actor FileVaultRepository: VaultRepository {
         return issue ?? "Available"
     }
 
-    private func publishSource(id: UUID = UUID(), capturedAt: String? = nil, data: Data, filename: String, title: String, originURL: String?, isURLSource: Bool) throws -> SourceRecord {
+    private func publishSource(id: UUID = UUID(), capturedAt: String? = nil, data: Data, filename: String, title: String, originURL: String?, isURLSource: Bool) async throws -> SourceRecord {
         try validateAccess(operation: "publishSource")
         guard data.count <= Self.maximumImportBytes else { throw VaultError.invalid("Files larger than 2 MB must be linked instead of imported.") }
-        try rejectDuplicateSource(checksum: digest(data), excludingID: id)
+        try await rejectDuplicateSource(checksum: digest(data), excludingID: id)
         let body = try Self.sourceText(data, filename: filename)
         let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
         let storedExtension = ext.isEmpty ? "bin" : ext
@@ -879,7 +901,8 @@ public actor FileVaultRepository: VaultRepository {
         }
         var metadata = SourceMetadata(id: id, title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent : title, capturedAt: capturedAt ?? timestamp(), originalFilename: URL(fileURLWithPath: filename).lastPathComponent, originURL: originURL?.isEmpty == true ? nil : originURL, sha256: digest(data), fileSize: data.count, storedFilename: "original.\(storedExtension)")
         metadata.isURLSource = isURLSource ? true : nil
-        try stageSource(metadata, original: data)
+        if manifest.canonicalStorage { try await canonicalPublish(metadata: metadata, original: data) }
+        else { try stageSource(metadata, original: data) }
         return SourceRecord(metadata: metadata, body: body)
     }
 
@@ -991,7 +1014,7 @@ public actor FileVaultRepository: VaultRepository {
         return try coordinatedRead(url)
     }
 
-    public func beginSourceDownload(at url: URL, shouldImport: Bool) throws -> SourceRecord {
+    public func beginSourceDownload(at url: URL, shouldImport: Bool) async throws -> SourceRecord {
         try validateAccess(operation: "beginSourceDownload")
         let targetURL = Self.logicalCloudURL(url)
         var st = stat()
@@ -1012,7 +1035,7 @@ public actor FileVaultRepository: VaultRepository {
                 throw VaultError.invalid("Files larger than 2 MB must be linked instead of imported.")
             }
         }
-        try rejectDuplicateSource(checksum: "", linkedURL: targetURL)
+        try await rejectDuplicateSource(checksum: "", linkedURL: targetURL)
         let id = UUID()
         let ext = targetURL.pathExtension.lowercased()
         let storedExtension = ext.isEmpty ? "bin" : ext
@@ -1034,7 +1057,7 @@ public actor FileVaultRepository: VaultRepository {
         return source
     }
 
-    public func completeSourceDownload(id: UUID, at url: URL, data: Data, shouldImport: Bool) throws -> SourceRecord {
+    public func completeSourceDownload(id: UUID, at url: URL, data: Data, shouldImport: Bool) async throws -> SourceRecord {
         try validateAccess(operation: "completeSourceDownload")
         guard let pending = downloadingSources[id] else {
             throw VaultError.invalid("Source download is no longer active.")
@@ -1042,7 +1065,7 @@ public actor FileVaultRepository: VaultRepository {
         let targetURL = Self.logicalCloudURL(url)
         defer { downloadingSources.removeValue(forKey: id) }
         if shouldImport {
-            return try publishSource(
+            return try await publishSource(
                 id: id,
                 capturedAt: pending.metadata.capturedAt,
                 data: data,
@@ -1052,7 +1075,7 @@ public actor FileVaultRepository: VaultRepository {
                 isURLSource: false
             )
         }
-        try rejectDuplicateSource(checksum: digest(data), linkedURL: targetURL, excludingID: id)
+        try await rejectDuplicateSource(checksum: digest(data), linkedURL: targetURL, excludingID: id)
         let body = try Self.sourceText(data, filename: targetURL.lastPathComponent)
         let bookmark = try Self.makeBookmarkData(for: targetURL)
         let metadata = SourceMetadata(
@@ -1066,7 +1089,7 @@ public actor FileVaultRepository: VaultRepository {
             linkedBookmark: bookmark,
             storedFilename: pending.metadata.storedFilename
         )
-        try stageSource(metadata)
+        if manifest.canonicalStorage { try await canonicalPublish(metadata: metadata) } else { try stageSource(metadata) }
         return SourceRecord(metadata: metadata, body: body)
     }
 
@@ -1093,9 +1116,9 @@ public actor FileVaultRepository: VaultRepository {
         title: String,
         originURL: String?,
         isURLSource: Bool
-    ) throws -> SourceRecord {
+    ) async throws -> SourceRecord {
         try validateAccess(operation: "importSource")
-        return try publishSource(
+        return try await publishSource(
             id: id,
             capturedAt: capturedAt,
             data: data,
@@ -1117,7 +1140,7 @@ public actor FileVaultRepository: VaultRepository {
         return true
     }
 
-    public func linkSources(at url: URL, maximumFiles: Int) throws -> [SourceRecord] {
+    public func linkSources(at url: URL, maximumFiles: Int) async throws -> [SourceRecord] {
         try validateAccess(operation: "linkSources")
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
@@ -1126,16 +1149,17 @@ public actor FileVaultRepository: VaultRepository {
         guard values.isRegularFile == true, values.isSymbolicLink != true else { throw VaultError.invalid("Choose files only. Folder linking is no longer supported.") }
         let files = [url]
         // Validate every member before publishing any records.
-        let prepared = try files.sorted { $0.path < $1.path }.map { file -> SourceRecord in
+        var prepared: [SourceRecord] = []
+        for file in files.sorted(by: { $0.path < $1.path }) {
             let data = try Self.coordinatedRead(file)
-            try rejectDuplicateSource(checksum: digest(data), linkedURL: file)
+            try await rejectDuplicateSource(checksum: digest(data), linkedURL: file)
             let body = try Self.sourceText(data, filename: file.lastPathComponent)
             let bookmark = try Self.makeBookmarkData(for: file)
             let metadata = SourceMetadata(id: UUID(), title: file.deletingPathExtension().lastPathComponent, capturedAt: timestamp(), originalFilename: file.lastPathComponent, originURL: nil, sha256: digest(data), fileSize: data.count, linkedBookmark: bookmark, storedFilename: "original." + file.pathExtension.lowercased())
-            return SourceRecord(metadata: metadata, body: body)
+            prepared.append(SourceRecord(metadata: metadata, body: body))
         }
         for source in prepared {
-            try stageSource(source.metadata)
+            if manifest.canonicalStorage { try await canonicalPublish(metadata: source.metadata) } else { try stageSource(source.metadata) }
         }
         return prepared
     }
@@ -1145,11 +1169,11 @@ public actor FileVaultRepository: VaultRepository {
         if let sourceID { sourceCache.remove(sourceID) }
     }
 
-    public func renameSource(_ source: SourceRecord, title: String, summary: String? = nil) throws -> SourceRecord {
-        try renameSource(source, title: title, summary: summary, lcc: nil)
+    public func renameSource(_ source: SourceRecord, title: String, summary: String? = nil) async throws -> SourceRecord {
+        try await renameSource(source, title: title, summary: summary, lcc: nil)
     }
 
-    public func renameSource(_ source: SourceRecord, title: String, summary: String? = nil, lcc: String? = nil) throws -> SourceRecord {
+    public func renameSource(_ source: SourceRecord, title: String, summary: String? = nil, lcc: String? = nil) async throws -> SourceRecord {
         try validateAccess(operation: "renameSource")
         sourceCache.remove(source.id)
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1169,6 +1193,13 @@ public actor FileVaultRepository: VaultRepository {
             downloadingSources[source.id] = pending
             return pending
         }
+        if manifest.canonicalStorage {
+            var metadata = source.metadata
+            metadata.title = title; metadata.aiTitleProvenance = nil
+            if let summary { metadata.aiSummary = summary; metadata.aiSummaryProvenance = nil }
+            if let cleanLCC { metadata.lcc = cleanLCC; metadata.aiLCCProvenance = nil; metadata.lccClassification = nil }
+            return try await canonicalReplaceSource(source, metadata: metadata)
+        }
         let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
         let bytes = try contentStore.read(at: path)
         var metadata = try JSONDecoder().decode(SourceMetadata.self, from: bytes)
@@ -1185,7 +1216,7 @@ public actor FileVaultRepository: VaultRepository {
         return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue ?? (source.contentState == .notLoaded ? "Not verified" : source.availabilityIssue), contentState: source.contentState)
     }
 
-    public func updateSourceLCC(_ source: SourceRecord, lcc: String?) throws -> SourceRecord {
+    public func updateSourceLCC(_ source: SourceRecord, lcc: String?) async throws -> SourceRecord {
         try validateAccess(operation: "updateSourceLCC")
         sourceCache.remove(source.id)
         let normalizedLCC = lcc?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1199,6 +1230,11 @@ public actor FileVaultRepository: VaultRepository {
             pending.metadata.lccClassification = nil
             downloadingSources[source.id] = pending
             return pending
+        }
+        if manifest.canonicalStorage {
+            var metadata = source.metadata; metadata.lcc = cleanLCC
+            metadata.aiLCCProvenance = nil; metadata.lccClassification = nil
+            return try await canonicalReplaceSource(source, metadata: metadata)
         }
         let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
         let bytes = try contentStore.read(at: path)
@@ -1216,8 +1252,14 @@ public actor FileVaultRepository: VaultRepository {
         return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: metadata.webAvailabilityIssue ?? (source.contentState == .notLoaded ? "Not verified" : source.availabilityIssue), contentState: source.contentState)
     }
 
-    public func deleteSource(_ source: SourceRecord) throws {
+    public func deleteSource(_ source: SourceRecord) async throws {
         try validateAccess(operation: "deleteSource")
+        if manifest.canonicalStorage {
+            let current = try await canonicalSourceMetadata(id: source.id)
+            guard current.metadata == source.metadata else { throw VaultError.conflict("Source changed.") }
+            _ = try await sqliteBlockStore!.setSourceTrashed(id: source.id, expected: current.revision, trashed: true)
+            return
+        }
         sourceCache.remove(source.id)
         if downloadingSources.removeValue(forKey: source.id) != nil {
             let directory = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
@@ -1388,6 +1430,15 @@ extension FileVaultRepository {
     public func trashItems() async throws -> [TrashedItem] {
         try validateAccess(operation: "trashItems")
         var items = try await trashedPages().map(TrashedItem.page)
+        if manifest.canonicalStorage {
+            for snapshot in try await sqliteBlockStore!.sourceSnapshots(includeTrashed: true) where snapshot.trashed {
+                let metadata = try snapshot.source.sourceMetadata()
+                items.append(.source(TrashedSource(id: "sqlite/source/" + metadata.id.uuidString,
+                    source: SourceRecord(metadata: metadata, body: "", contentState: .notLoaded),
+                    contentHash: snapshot.revision.token.base64EncodedString())))
+            }
+            return items
+        }
         for url in try fm.contentsOfDirectory(at: root.appendingPathComponent(Self.trashDirectoryName), includingPropertiesForKeys: nil) where url.pathExtension == "source" {
             let path = Self.trashDirectoryName + "/" + url.lastPathComponent
             var hash = ""
@@ -1415,10 +1466,15 @@ extension FileVaultRepository {
         case .page(let page): try await restore(page)
         case .source(let entry):
             guard entry.readIssue == nil, let source = entry.source else { throw VaultError.invalid("Repair this source before restoring it.") }
+            if manifest.canonicalStorage {
+                _ = try await sqliteBlockStore!.setSourceTrashed(id: source.id,
+                    expected: BlockStoreRevision(token: Data(base64Encoded: entry.contentHash) ?? Data()), trashed: false)
+                return
+            }
             sourceCache.remove(source.id)
             let destination = root.appendingPathComponent("Sources/" + source.id.uuidString.lowercased())
             guard destination.deletingLastPathComponent().resolvingSymlinksInPath() == destination.deletingLastPathComponent() else { throw VaultError.invalid("Unsafe Sources directory.") }
-            try rejectDuplicateSource(checksum: source.metadata.sha256)
+            try await rejectDuplicateSource(checksum: source.metadata.sha256)
             try contentStore.move(from: entry.id, to: "Sources/" + source.id.uuidString.lowercased(), expected: checkedSourceSnapshot(entry.id, hash: entry.contentHash))
         }
     }
@@ -1427,6 +1483,14 @@ extension FileVaultRepository {
         switch item {
         case .page(let page): try await permanentlyDelete(page)
         case .source(let source):
+            if manifest.canonicalStorage {
+                guard let record = source.source else { throw VaultError.invalid("Unreadable source cannot be deleted.") }
+                let collection = try await sqliteBlockStore!.canonicalVaultRevision()
+                try await sqliteBlockStore!.purgeCanonicalEntity(id: record.id, kind: .source,
+                    expected: BlockStoreRevision(token: Data(base64Encoded: source.contentHash) ?? Data()),
+                    expectedVaultRevision: collection)
+                return
+            }
             guard !source.contentHash.isEmpty else { throw VaultError.invalid("Unreadable source cannot be deleted.") }
             try contentStore.delete(at: source.id, expected: checkedSourceSnapshot(source.id, hash: source.contentHash))
         }
@@ -1440,6 +1504,7 @@ extension FileVaultRepository {
     }
     public func expireTrash(now: Date = Date()) async throws -> [String] {
         try validateAccess(operation: "expireTrash")
+        if manifest.canonicalStorage { return try await canonicalExpireTrash(now: now) }
         let items = try await trashItems()
         let ledger = root.appendingPathComponent("Trash Retention.json")
         guard ledger.resolvingSymlinksInPath() == ledger else { throw VaultError.invalid("Unsafe trash retention file.") }
