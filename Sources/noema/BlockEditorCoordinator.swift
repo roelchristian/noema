@@ -3,16 +3,27 @@ import VaultCore
 
 extension RichArticleView {
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
-        struct Snapshot { var document: BlockDocument; var selection: NSRange }
+        typealias Snapshot = EditorSession.DocumentSnapshot
         var parent: RichArticleView
         weak var view: ArticleTextView?
-        var document = BlockDocument()
+        let session = EditorSession()
+        var document: BlockDocument {
+            get { session.document }
+            set { session.replaceDocument(newValue) }
+        }
+        var publicationTask: Task<Void, Never>?
+        var presentationDocument: BlockDocument { parent.hidesAISummary && document.aiSummary != nil ? document.withoutAISummary : document }
+        var renderedDocument: BlockDocument?
+        var renderedHeadings: Bool?
+        var rangeIndex: BlockTextStorage.RangeIndex?
+        var deferredComposition = false
         var lastText: String?
         var lastTheme: NoemaTheme?
         var lastTypography: EditorTypography?
         var lastMacros: String?
         var lastAction: UUID?
         var changing = false
+        var presentationRefreshPending = false
         let palette = BlockPalette()
         lazy var suggestions = BlockSuggestionPanel(palette: palette)
         var slashRange: NSRange?
@@ -33,18 +44,36 @@ extension RichArticleView {
             Task { @MainActor [weak self] in self?.parent.onScrollOffset(offset) }
         }
         func load(_ source: String) {
-            document = BlockDocumentCodec.decode(source); lastText = source
+            publicationTask?.cancel()
+            pendingSingleBlock = nil; deferredComposition = false
+            session.load(BlockDocumentCodec.decode(source), identity: .init(pageID: parent.noteID, vaultID: parent.vaultID, sessionID: parent.sessionID), selection: view?.selectedRange() ?? NSRange(location: 0, length: 0))
+            lastText = source
             suggestions.close(); render(selection: view?.selectedRange() ?? NSRange(location: 0, length: 0))
         }
         func render(selection: NSRange) {
             guard let view else { return }
             changing = true
             view.typography = parent.typography
-            view.textStorage?.setAttributedString(BlockTextStorage.render(document, theme: parent.theme, showSemanticHeadings: view.showSemanticHeadings, typography: parent.typography))
+            if let storage = view.textStorage {
+                if let previous = renderedDocument, let rangeIndex, renderedHeadings == view.showSemanticHeadings {
+                    let oldRange = rangeIndex.ordered.first(where: { id, _ in previous.block(id) != presentationDocument.block(id) })?.1
+                    if let oldRange { view.invalidateDecorations(in: oldRange) }
+                    let affected = BlockTextStorage.apply(document: presentationDocument, previous: previous, to: storage, index: rangeIndex, theme: parent.theme, showSemanticHeadings: view.showSemanticHeadings, typography: parent.typography)
+                    view.invalidateDecorations(in: affected)
+                } else {
+                    storage.setAttributedString(BlockTextStorage.render(presentationDocument, theme: parent.theme, showSemanticHeadings: view.showSemanticHeadings, typography: parent.typography))
+                    rangeIndex = BlockTextStorage.RangeIndex(storage)
+                }
+                renderedDocument = presentationDocument
+                renderedHeadings = view.showSemanticHeadings
+                view.blockRangeIndex = rangeIndex
+            }
             view.updateSemanticHeadingTopInset()
-            let location = min(selection.location, max(0, view.string.utf16.count - 1))
-            view.setSelectedRange(NSRange(location: location, length: min(selection.length, max(0, view.string.utf16.count - 1 - location))))
-            lastTheme = parent.theme; lastTypography = parent.typography; changing = false; updateTypingAttributes(); view.needsDisplay = true
+            let count = view.string.utf16.count
+            let limit = selection.length == 0 ? max(0, count - 1) : count
+            let location = min(selection.location, limit)
+            view.setSelectedRange(NSRange(location: location, length: min(selection.length, max(0, count - location))))
+            session.selection = view.selectedRange(); lastTheme = parent.theme; lastTypography = parent.typography; changing = false; updateTypingAttributes()
         }
         /// Preference changes only replace attributes when the visible text is
         /// unchanged. Native undo entries and all selected character ranges stay
@@ -53,7 +82,7 @@ extension RichArticleView {
             guard let view, let storage = view.textStorage else { return }
             let typography = typography ?? parent.typography
             view.typography = typography
-            let rendered = BlockTextStorage.render(document, theme: parent.theme,
+            let rendered = BlockTextStorage.render(presentationDocument, theme: parent.theme,
                 showSemanticHeadings: view.showSemanticHeadings, typography: typography)
             let selections = view.selectedRanges
             let affinity = view.selectionAffinity
@@ -71,6 +100,10 @@ extension RichArticleView {
                 // legal ranges while allowing that existing content refresh.
                 storage.setAttributedString(rendered)
             }
+            rangeIndex?.rebuild(storage)
+            view.blockRangeIndex = rangeIndex
+            renderedDocument = presentationDocument
+            renderedHeadings = view.showSemanticHeadings
             view.updateSemanticHeadingTopInset()
             let count = storage.length
             view.setSelectedRanges(selections.map { value in
@@ -90,32 +123,72 @@ extension RichArticleView {
             view.needsDisplay = true
         }
         func capture() {
-            if let storage = view?.textStorage { document = BlockTextStorage.capture(storage, previous: document) }
+            if let storage = view?.textStorage {
+                var captured = BlockTextStorage.capture(storage, previous: presentationDocument)
+                if parent.hidesAISummary, let summary = document.aiSummary { captured.blocks.insert(summary, at: 0) }
+                document = captured
+                rangeIndex?.rebuild(storage)
+                pendingSingleBlock = nil; deferredComposition = false
+            }
         }
         func publish() {
-            lastText = BlockDocumentCodec.encode(document); parent.text = lastText ?? ""
-            view?.needsDisplay = true; updatePalette(); updateWikiQuery()
+            guard parent.text == lastText else { return }
+            session.selection = view?.selectedRange() ?? session.selection
+            let snapshot = session.snapshot()
+            guard session.accepts(snapshot) else { return }
+            publicationTask?.cancel()
+            publicationTask = Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+                guard !Task.isCancelled else { return }
+                let source = await Task.detached(priority: .userInitiated) { BlockDocumentCodec.encode(snapshot.document) }.value
+                guard !Task.isCancelled, let self, self.parent.text == self.lastText,
+                      self.view?.hasMarkedText() != true, self.view?.isSettingMarkedText != true,
+                      self.parent.noteID == snapshot.identity.pageID,
+                      self.parent.vaultID == snapshot.identity.vaultID,
+                      self.parent.sessionID == snapshot.identity.sessionID,
+                      self.session.markPublished(snapshot) else { return }
+                self.lastText = source
+                if let onSnapshot = self.parent.onSnapshot { onSnapshot(snapshot, source) } else { self.parent.text = source }
+            }
+            updatePalette(); updateWikiQuery()
         }
+        /// Explicit save/navigation boundary; ordinary typing never enters this path.
+        func flushPublication() {
+            publicationTask?.cancel()
+            guard parent.text == lastText else { return }
+            // A navigation/save boundary must preserve the currently visible
+            // marked text even before AppKit ends the composition transaction.
+            if deferredComposition || view?.hasMarkedText() == true || pendingSingleBlock != nil { capture() }
+            session.selection = view?.selectedRange() ?? session.selection
+            let snapshot = session.snapshot()
+            guard parent.noteID == snapshot.identity.pageID, parent.vaultID == snapshot.identity.vaultID, parent.sessionID == snapshot.identity.sessionID,
+                  session.markPublished(snapshot) else { return }
+            let source = BlockDocumentCodec.encode(snapshot.document)
+            lastText = source; if let onSnapshot = parent.onSnapshot { onSnapshot(snapshot, source) } else { parent.text = source }
+        }
+        func invalidatePublication() { publicationTask?.cancel(); publicationTask = nil }
+
         func current() -> (EditorBlock, NSRange)? {
             guard let view, let storage = view.textStorage, storage.length > 0 else { return nil }
             let location = min(view.selectedRange().location, storage.length - 1)
-            guard let (id, range) = BlockTextStorage.ranges(storage).first(where: { NSLocationInRange(location, $0.1) }), let block = document.block(id) else { return nil }
+            guard let (id, range) = rangeIndex?.block(at: location), let block = document.block(id) else { return nil }
             return (block, range)
         }
         func selection(for cursor: BlockCursor) -> NSRange {
-            guard let storage = view?.textStorage, let range = BlockTextStorage.ranges(storage).first(where: { $0.0 == cursor.id })?.1 else { return NSRange(location: 0, length: 0) }
+            guard view?.textStorage != nil, let range = rangeIndex?.range(for: cursor.id) else { return NSRange(location: 0, length: 0) }
             return NSRange(location: range.location + min(max(0, cursor.offset), range.length - 1), length: 0)
         }
         func restore(_ snapshot: Snapshot, name: String) {
-            guard let view else { return }
-            let inverse = Snapshot(document: document, selection: view.selectedRange())
+            guard let view, snapshot.identity == session.identity, snapshot.generation == session.generation else { return }
+            session.selection = view.selectedRange()
+            let inverse = session.snapshot()
             view.undoManager?.registerUndo(withTarget: self) { target in target.restore(inverse, name: name) }
-            document = snapshot.document; render(selection: snapshot.selection); publish()
+            session.restore(snapshot, name: name); render(selection: snapshot.selection); publish()
             view.undoManager?.setActionName(name)
         }
         func transaction(_ name: String, _ change: () -> BlockCursor?) {
-            guard let view, view.isEditable, !view.locked, !changing else { return }
-            capture(); let before = Snapshot(document: document, selection: view.selectedRange())
+            guard let view, view.isEditable, !view.locked, !changing, !view.hasMarkedText(), !view.isSettingMarkedText else { return }
+            capture(); session.selection = view.selectedRange(); let before = session.snapshot()
             let cursor = change()
             guard document != before.document else { return }
             view.breakUndoCoalescing()
@@ -140,20 +213,24 @@ extension RichArticleView {
         }
         func textDidChange(_ notification: Notification) {
             guard let view, !changing, !view.locked else { return }
-            if let (id, location) = pendingSingleBlock, let storage = view.textStorage, location < storage.length {
+            if view.hasMarkedText() || view.isSettingMarkedText { deferredComposition = true; return }
+            if !deferredComposition, let (id, location) = pendingSingleBlock, let storage = view.textStorage, location < storage.length {
                 var range = NSRange()
                 let actualID = (storage.attribute(.blockID, at: location, longestEffectiveRange: &range, in: NSRange(location: 0, length: storage.length)) as? String).flatMap(UUID.init(uuidString:))
                 if actualID == id {
                     var content = range; if (storage.string as NSString).substring(with: range).hasSuffix("\n") { content.length -= 1 }
                     let runs = BlockTextStorage.runs(storage, range: content)
-                    document.update(id) { $0.runs = runs }
+                    session.updateRuns(id, runs: runs, selection: view.selectedRange()); rangeIndex?.applyLocalEdit(blockID: id, delta: range.length - (rangeIndex?.range(for: id)?.length ?? range.length))
                 } else { capture() }
             } else { capture() }
             pendingSingleBlock = nil
+            deferredComposition = false
+            renderedDocument = presentationDocument
             if let storage = view.textStorage {
                 changing = true
-                BlockTextStorage.updateParagraphRhythm(storage, typography: parent.typography)
-                if view.showSemanticHeadings { BlockTextStorage.updateSemanticHeadingSpacing(storage, typography: parent.typography) }
+                let affected = current().flatMap { rangeIndex?.rhythmAffectedRange(for: $0.0.id, storage: storage) }
+                BlockTextStorage.updateParagraphRhythm(storage, in: affected, index: rangeIndex, typography: parent.typography)
+                if view.showSemanticHeadings { BlockTextStorage.updateSemanticHeadingSpacing(storage, in: affected, index: rangeIndex, typography: parent.typography) }
                 changing = false
             }
             view.updateSemanticHeadingTopInset()
@@ -161,22 +238,44 @@ extension RichArticleView {
             // preference change. Reapply the currently displayed typography to
             // those runs without registering another edit or discarding redo.
             if view.undoManager?.isUndoing == true || view.undoManager?.isRedoing == true {
-                refreshPresentation(typography: lastTypography)
+                refreshActiveBlockPresentation()
             }
+            if presentationRefreshPending {
+                presentationRefreshPending = false
+                refreshPresentation(); lastMacros = parent.texMacros
+            }
+            if let affected = current()?.1 { view.invalidateDecorations(in: affected) }
             if let (block, _) = current(), block.kind != .code, block.kind != .math, let command = BlockCommand.shortcut(block.text) {
                 transaction(command.title) { document.update(block.id) { $0.runs = [] }; return document.apply(command.mutation, to: block.id) }
             } else if !convertInlineAtCaret() { publish() }
             updateTypingAttributes()
         }
+        private func refreshActiveBlockPresentation() {
+            guard let view, let storage = view.textStorage, let (block, range) = current() else { return }
+            let depth = storage.attribute(.blockDepth, at: range.location, effectiveRange: nil) as? Int ?? 0
+            let typography = lastTypography ?? parent.typography
+            let rendered = BlockTextStorage.renderBlock(block, depth: depth, theme: parent.theme, typography: typography)
+            guard rendered.string == (storage.string as NSString).substring(with: range) else { return }
+            changing = true; storage.beginEditing()
+            rendered.enumerateAttributes(in: NSRange(location: 0, length: rendered.length)) { attributes, part, _ in
+                storage.setAttributes(attributes, range: NSRange(location: range.location + part.location, length: part.length))
+            }
+            storage.endEditing()
+            let affected = rangeIndex?.rhythmAffectedRange(for: block.id, storage: storage)
+            BlockTextStorage.updateParagraphRhythm(storage, in: affected, index: rangeIndex, typography: typography)
+            if view.showSemanticHeadings { BlockTextStorage.updateSemanticHeadingSpacing(storage, in: affected, index: rangeIndex, typography: typography) }
+            changing = false
+        }
         func textViewDidChangeSelection(_ notification: Notification) {
-            guard !changing else { return }
-            if let view, view.selectedRange().length == 0, view.string.hasSuffix("\n"), view.selectedRange().location == view.string.utf16.count {
+            guard !changing, let view, !view.hasMarkedText(), !view.isSettingMarkedText else { return }
+            if view.selectedRange().length == 0, view.string.hasSuffix("\n"), view.selectedRange().location == view.string.utf16.count {
                 changing = true; view.setSelectedRange(NSRange(location: max(0, view.string.utf16.count - 1), length: 0)); changing = false
             }
+            session.selection = view.selectedRange()
             updateTypingAttributes(); updatePalette(); updateWikiQuery()
         }
         func updateTypingAttributes() {
-            guard let view, let storage = view.textStorage, storage.length > 0 else { return }
+            guard let view, !view.hasMarkedText(), !view.isSettingMarkedText, let storage = view.textStorage, storage.length > 0 else { return }
             let location = min(view.selectedRange().location, storage.length - 1)
             var attrs = storage.attributes(at: location, effectiveRange: nil)
             if view.selectedRange().length == 0, location > 0,
@@ -204,11 +303,14 @@ extension RichArticleView {
         }
         func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
             guard !document.unsupportedVersion, !parent.locked else { return false }
+            if textView.hasMarkedText() || view?.isSettingMarkedText == true {
+                deferredComposition = true; pendingSingleBlock = nil; return true
+            }
             guard let (block, blockRange) = current() else { return true }
             if block.kind == .divider { return false }
-            pendingSingleBlock = NSMaxRange(range) <= NSMaxRange(blockRange) - 1 ? (block.id, blockRange.location) : nil
+            pendingSingleBlock = range.location >= blockRange.location && NSMaxRange(range) <= NSMaxRange(blockRange) - 1 ? (block.id, blockRange.location) : nil
             // Cross-block replacements merge the selected text and preserve surviving descendants.
-            if NSMaxRange(range) >= NSMaxRange(blockRange) && range.length > 0 {
+            if !textView.hasMarkedText(), NSMaxRange(range) >= NSMaxRange(blockRange) && range.length > 0 {
                 transaction("Replace selection") {
                     let runs = [RichRun(replacementString ?? "", style: BlockTextStorage.style(textView.typingAttributes))]
                     return replaceSelection(with: runs, range: range)
@@ -216,6 +318,12 @@ extension RichArticleView {
                 return false
             }
             return true
+        }
+        func prepareMarkedReplacement(_ range: NSRange) -> NSRange {
+            guard let view, let (_, blockRange) = current(), range.length > 0,
+                  NSMaxRange(range) >= NSMaxRange(blockRange) else { return range }
+            transaction("Replace composition selection") { replaceSelection(with: [], range: range) }
+            return view.selectedRange()
         }
         func updatePalette() {
             guard let view, view.isEditable, !view.locked, current()?.0.kind != .code, current()?.0.kind != .math,
@@ -277,7 +385,7 @@ extension RichArticleView {
                 case "u": format("underline"); return true
                 case "k": editLink(); return true
                 case "a":
-                    view.setSelectedRange(option ? NSRange(location: 0, length: view.string.utf16.count - 1) : NSRange(location: range.location, length: range.length - 1)); return true
+                    if option { view.selectEntireDocument(nil) } else { view.selectAll(nil) }; return true
                 default: break
                 }
                 if option {
@@ -304,7 +412,7 @@ extension RichArticleView {
             case 48:
                 if block.kind == .code || block.kind == .math { return false }
                 mutate(shift ? .outdent : .indent, name: shift ? "Outdent block" : "Indent block"); return true
-            case 53: dismissPalette(); parent.onEnd(); return true
+            case 53: dismissPalette(); flushPublication(); parent.onEnd(); return true
             default: break
             }
             return false

@@ -72,6 +72,7 @@ them. Long-document fixture coverage does not establish sustained typing/frame t
 - End-to-end VoiceOver and OS Reduce Transparency/Reduce Motion/Increase Contrast
   combinations across all five themes (System, Midnight Iris, Forest, Amber, Rose)
   in Light and Dark remain pending.
+- Native input device acceptance remains pending: real CJK candidate windows, accented dead keys, emoji input, dictation, read-mode drag selection/hyperlink activation and clipboard interoperability across applications. Synthetic `NSTextInputClient` composition and UTF-16 replacement tests do not certify OS input services.
 - Native block pointer drag/drop acceptance remains incomplete: keyboard/menu
   reordering and undo are tested, but live pointer attempts did not complete a drop.
 - Formal cached launch-to-render timing and sustained long-document typing/frame

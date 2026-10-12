@@ -14,6 +14,135 @@ extension NSAttributedString.Key {
 }
 
 @MainActor enum BlockTextStorage {
+    /// Stable ID lookup and UTF-16 prefix sums. Typing updates one length in
+    /// O(log n), without rescanning attributed-string block markers.
+    @MainActor final class RangeIndex {
+        private var ids: [UUID] = []
+        private var positions: [UUID: Int] = [:]
+        private var lengths: [Int] = []
+        private var sums: [Int] = [0]
+        private var numbers: [Int] = []
+        init(_ storage: NSAttributedString) { rebuild(storage) }
+        var count: Int { ids.count }
+        func rebuild(_ storage: NSAttributedString) {
+            let values = BlockTextStorage.ranges(storage)
+            ids = values.map(\.0); lengths = values.map { $0.1.length }
+            positions = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($0.element, $0.offset) })
+            sums = Array(repeating: 0, count: ids.count + 1)
+            var numberByDepth: [Int: Int] = [:]
+            numbers = values.map { _, range in
+                let depth = storage.attribute(.blockDepth, at: range.location, effectiveRange: nil) as? Int ?? 0
+                let kind = storage.attribute(.blockKind, at: range.location, effectiveRange: nil) as? String
+                numberByDepth[depth] = kind == BlockKind.numbered.rawValue ? (numberByDepth[depth] ?? 0) + 1 : 0
+                for nested in numberByDepth.keys where nested > depth { numberByDepth[nested] = nil }
+                return numberByDepth[depth] ?? 0
+            }
+            for (offset, length) in lengths.enumerated() { add(length, at: offset) }
+        }
+        private func add(_ delta: Int, at index: Int) {
+            var cursor = index + 1
+            while cursor < sums.count { sums[cursor] += delta; cursor += cursor & -cursor }
+        }
+        private func prefix(_ count: Int) -> Int {
+            var cursor = count, result = 0
+            while cursor > 0 { result += sums[cursor]; cursor -= cursor & -cursor }
+            return result
+        }
+        func number(for id: UUID) -> Int {
+            positions[id].map { numbers[$0] } ?? 0
+        }
+        func range(for id: UUID) -> NSRange? {
+            guard let index = positions[id] else { return nil }
+            return NSRange(location: prefix(index), length: lengths[index])
+        }
+        func block(at location: Int) -> (UUID, NSRange)? {
+            guard location >= 0, location < prefix(ids.count) else { return nil }
+            // Fenwick binary lifting finds the containing prefix in O(log n).
+            var offset = 0, consumed = 0, step = 1
+            while step < sums.count { step <<= 1 }
+            while step > 0 {
+                let candidate = offset + step
+                if candidate < sums.count, consumed + sums[candidate] <= location {
+                    offset = candidate; consumed += sums[candidate]
+                }
+                step >>= 1
+            }
+            return (ids[offset], NSRange(location: consumed, length: lengths[offset]))
+        }
+        func applyLocalEdit(blockID: UUID, delta: Int) {
+            guard let index = positions[blockID], lengths[index] + delta > 0 else { return }
+            lengths[index] += delta; add(delta, at: index)
+        }
+        var ordered: [(UUID, NSRange)] {
+            var location = 0
+            return ids.enumerated().map { index, id in
+                defer { location += lengths[index] }
+                return (id, NSRange(location: location, length: lengths[index]))
+            }
+        }
+        func intersecting(_ range: NSRange) -> [(UUID, NSRange)] {
+            guard let (first, _) = block(at: range.location), let start = positions[first] else { return [] }
+            var result: [(UUID, NSRange)] = [], location = prefix(start)
+            for index in start..<ids.count {
+                if location >= NSMaxRange(range), !result.isEmpty { break }
+                result.append((ids[index], NSRange(location: location, length: lengths[index])))
+                location += lengths[index]
+            }
+            return result
+        }
+        /// Include the next content block: its boundary spacing depends on the
+        /// edited predecessor even when empty Markdown separators intervene.
+        func rhythmAffectedRange(for id: UUID, storage: NSAttributedString) -> NSRange? {
+            guard let position = positions[id], let start = range(for: id) else { return nil }
+            var end = NSMaxRange(start)
+            for offset in (position + 1)..<ids.count {
+                let next = NSRange(location: end, length: lengths[offset])
+                end = NSMaxRange(next)
+                if !BlockTextStorage.isEmptySeparator(storage, range: next) { break }
+            }
+            return NSRange(location: start.location, length: end - start.location)
+        }
+        func previousRole(before id: UUID, storage: NSAttributedString) -> EditorTypography.Role? {
+            guard let index = positions[id], index > 0 else { return nil }
+            for offset in stride(from: index - 1, through: 0, by: -1) {
+                let range = NSRange(location: prefix(offset), length: lengths[offset])
+                if BlockTextStorage.isEmptySeparator(storage, range: range) { continue }
+                let kind = BlockKind(rawValue: storage.attribute(.blockKind, at: range.location, effectiveRange: nil) as? String ?? "paragraph")
+                return EditorTypography.role(for: kind)
+            }
+            return nil
+        }
+    }
+    private static var metadataCache: [(BlockMetadata, Data)] = []
+    private static var mathCache: [String: String] = [:]
+    private static func encodedStyle(_ style: InlineStyle) -> Data? {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(style)
+    }
+    private static var cachedMacroSource = ""
+    private static var cachedMacros: [TeXMacro] = []
+    static func renderedMath(_ raw: String, display: Bool, defaults: UserDefaults = .standard) -> String {
+        // Reading one preferences string is cheap; decode macros only when it
+        // changes. Its bytes also version every mathematical presentation.
+        let source = defaults.string(forKey: TeXMacroStore.defaultsKey) ?? ""
+        if source != cachedMacroSource {
+            cachedMacroSource = source
+            cachedMacros = TeXMacroStore.load(from: defaults)
+            mathCache.removeAll(keepingCapacity: true)
+        }
+        let key = String(display) + raw + "\u{0}" + source
+        if let rendered = mathCache[key] { return rendered }
+        let rendered = TeXMath.render(raw, display: display, macros: cachedMacros)
+        if mathCache.count >= 256 { mathCache.removeAll(keepingCapacity: true) }
+        mathCache[key] = rendered
+        return rendered
+    }
+    private static func encodedMetadata(_ metadata: BlockMetadata) -> Data? {
+        if let cached = metadataCache.first(where: { $0.0 == metadata }) { return cached.1 }
+        guard let encoded = try? JSONEncoder().encode(metadata) else { return nil }
+        if metadataCache.count >= 32 { metadataCache.removeFirst() }
+        metadataCache.append((metadata, encoded)); return encoded
+    }
     struct VisibleBlock { var block: EditorBlock; var depth: Int; var number: Int }
     static func visible(_ document: BlockDocument) -> [VisibleBlock] {
         func walk(_ blocks: [EditorBlock], depth: Int) -> [VisibleBlock] {
@@ -39,15 +168,15 @@ extension NSAttributedString.Key {
            block.originalMarkdown?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
             attrs[.markdownSeparator] = true
         }
-        attrs[.inlineStyle] = try? JSONEncoder().encode(InlineStyle())
-        attrs[.blockMetadata] = try? JSONEncoder().encode(block.metadata)
+        attrs[.inlineStyle] = encodedStyle(InlineStyle())
+        attrs[.blockMetadata] = encodedMetadata(block.metadata)
         if let semantic = block.metadata.semantic { attrs[.semanticTag] = semantic }
         return attrs
     }
     static func attributes(_ style: InlineStyle, block: EditorBlock, depth: Int, theme: NoemaTheme, typography: EditorTypography = .init()) -> [NSAttributedString.Key: Any] {
         var attrs = base(block, depth: depth, theme: theme, typography: typography)
         attrs[.font] = typography.font(for: EditorTypography.role(for: block.kind), style: style)
-        attrs[.inlineStyle] = try? JSONEncoder().encode(style)
+        attrs[.inlineStyle] = encodedStyle(style)
         if style.underline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
         if style.strike { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
         if style.highlight || style.code || style.math { attrs[.backgroundColor] = theme.native(.graphHighlight).withAlphaComponent(theme.dark ? 0.22 : 0.10) }
@@ -59,14 +188,23 @@ extension NSAttributedString.Key {
         return attrs
     }
     static func render(_ document: BlockDocument, theme: NoemaTheme, showSemanticHeadings: Bool = false, typography: EditorTypography = .init()) -> NSAttributedString {
+        let result = renderVisible(visible(document), theme: theme, typography: typography)
+        updateParagraphRhythm(result, typography: typography)
+        if showSemanticHeadings { updateSemanticHeadingSpacing(result, typography: typography) }
+        return result
+    }
+    static func renderBlock(_ block: EditorBlock, depth: Int, theme: NoemaTheme, typography: EditorTypography) -> NSAttributedString {
+        renderVisible([VisibleBlock(block: block, depth: depth, number: 0)], theme: theme, typography: typography)
+    }
+    private static func renderVisible(_ values: [VisibleBlock], theme: NoemaTheme, typography: EditorTypography) -> NSMutableAttributedString {
         let result = NSMutableAttributedString(string: "")
-        for value in visible(document) {
+        for value in values {
             let block = value.block
             for run in block.runs {
                 var attrs = attributes(run.style, block: block, depth: value.depth, theme: theme, typography: typography)
                 let displayString: String
                 if run.style.math, let raw = run.style.rawMath {
-                    let rendered = TeXMath.render(raw, display: false)
+                    let rendered = renderedMath(raw, display: false)
                     displayString = rendered.isEmpty ? run.text : rendered
                     attrs[.renderedMath] = displayString
                 } else {
@@ -76,17 +214,63 @@ extension NSAttributedString.Key {
             }
             result.append(NSAttributedString(string: "\n", attributes: base(block, depth: value.depth, theme: theme, typography: typography)))
         }
-        updateParagraphRhythm(result, typography: typography)
-        if showSemanticHeadings { updateSemanticHeadingSpacing(result, typography: typography) }
         return result
+    }
+    /// Replace only the changed visible span. Structural changes invalidate the
+    /// index; unchanged prefix/suffix attributed runs retain native storage.
+    @discardableResult static func apply(document: BlockDocument, previous: BlockDocument,
+        to storage: NSMutableAttributedString, index: RangeIndex, theme: NoemaTheme,
+        showSemanticHeadings: Bool = false, typography: EditorTypography = .init()) -> NSRange {
+        let before = visible(previous), after = visible(document)
+        func same(_ lhs: VisibleBlock, _ rhs: VisibleBlock) -> Bool {
+            lhs.block.id == rhs.block.id && lhs.block.kind == rhs.block.kind && lhs.block.runs == rhs.block.runs
+                && lhs.block.metadata == rhs.block.metadata && lhs.depth == rhs.depth && lhs.number == rhs.number
+        }
+        var prefix = 0
+        while prefix < min(before.count, after.count), same(before[prefix], after[prefix]) { prefix += 1 }
+        var suffix = 0
+        while suffix < min(before.count, after.count) - prefix,
+              same(before[before.count - suffix - 1], after[after.count - suffix - 1]) { suffix += 1 }
+        guard prefix < before.count || prefix < after.count else { return NSRange(location: 0, length: 0) }
+        let start = prefix < before.count ? index.range(for: before[prefix].block.id)?.location ?? storage.length : storage.length
+        let end = suffix > 0 ? index.range(for: before[before.count - suffix].block.id)?.location ?? storage.length : storage.length
+        let replacement = renderVisible(Array(after[prefix..<(after.count - suffix)]), theme: theme, typography: typography)
+        storage.replaceCharacters(in: NSRange(location: start, length: max(0, end - start)), with: replacement)
+        // Local block-content and metadata changes keep the prefix index. A
+        // structural change (including numbering/depth) rebuilds it once.
+        let sameStructure = before.count == after.count && zip(before, after).allSatisfy { lhs, rhs in
+            lhs.block.id == rhs.block.id && lhs.block.kind == rhs.block.kind && lhs.depth == rhs.depth && lhs.number == rhs.number
+        }
+        if sameStructure {
+            let oldLengths = before[prefix..<(before.count - suffix)].map { index.range(for: $0.block.id)?.length ?? 0 }
+            let newLengths = ranges(replacement).map { $0.1.length }
+            for (offset, value) in after[prefix..<(after.count - suffix)].enumerated() {
+                index.applyLocalEdit(blockID: value.block.id, delta: newLengths[offset] - oldLengths[offset])
+            }
+        } else { index.rebuild(storage) }
+        // A following separator has no role of its own; include the next
+        // content block so changing a heading cannot leave stale body spacing.
+        let tail = index.block(at: min(start + max(0, replacement.length - 1), max(0, storage.length - 1)))
+        let tailRange = tail.flatMap { id, range in
+            replacement.length > 0 || isEmptySeparator(storage, range: range)
+                ? index.rhythmAffectedRange(for: id, storage: storage) : range
+        }
+        let affected = NSRange(location: start, length: max(replacement.length, (tailRange.map(NSMaxRange) ?? start) - start))
+        updateParagraphRhythm(storage, in: affected, index: index, typography: typography)
+        if showSemanticHeadings { updateSemanticHeadingSpacing(storage, in: affected, index: index, typography: typography) }
+        return affected
     }
     /// Normalize paragraph attributes after rendering and native editing. A
     /// newline inside one block keeps its line rhythm, without another block gap.
-    static func updateParagraphRhythm(_ storage: NSMutableAttributedString, typography: EditorTypography = .init()) {
+    static func updateParagraphRhythm(_ storage: NSMutableAttributedString, in affectedRange: NSRange? = nil, index: RangeIndex? = nil, typography: EditorTypography = .init()) {
         var previous: EditorTypography.Role?
         let text = storage.string as NSString
         var changes: [(NSRange, NSMutableParagraphStyle)] = []
-        for (_, blockRange) in ranges(storage) {
+        let blocks = affectedRange.flatMap { range in index.map { $0.intersecting(range) } } ?? ranges(storage)
+        if let id = blocks.first?.0, let index, affectedRange != nil {
+            previous = index.previousRole(before: id, storage: storage)
+        }
+        for (_, blockRange) in blocks {
             let kind = BlockKind(rawValue: storage.attribute(.blockKind, at: blockRange.location, effectiveRange: nil) as? String ?? "paragraph")
             let role = EditorTypography.role(for: kind)
             let first = NSIntersectionRange(text.paragraphRange(for: NSRange(location: blockRange.location, length: 0)), blockRange)
@@ -116,9 +300,13 @@ extension NSAttributedString.Key {
 
     // Reserve display space only above the first paragraph. Labels never enter
     // the editable string, selection offsets, clipboard, or canonical document.
-    static func updateSemanticHeadingSpacing(_ storage: NSMutableAttributedString, in affectedRange: NSRange? = nil, typography: EditorTypography = .init()) {
+    static func updateSemanticHeadingSpacing(_ storage: NSMutableAttributedString, in affectedRange: NSRange? = nil, index: RangeIndex? = nil, typography: EditorTypography = .init()) {
         var previous: EditorTypography.Role?
-        for (_, range) in ranges(storage) {
+        let blocks = affectedRange.flatMap { range in index.map { $0.intersecting(range) } } ?? ranges(storage)
+        if let id = blocks.first?.0, let index, affectedRange != nil {
+            previous = index.previousRole(before: id, storage: storage)
+        }
+        for (_, range) in blocks {
             let kind = BlockKind(rawValue: storage.attribute(.blockKind, at: range.location, effectiveRange: nil) as? String ?? "paragraph")
             let role = EditorTypography.role(for: kind)
             let separator = isEmptySeparator(storage, range: range)
