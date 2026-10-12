@@ -329,3 +329,54 @@ func benchmarkFiveThousandEntries() async throws {
     }
     #expect(!FileManager.default.fileExists(atPath: folder.path))
 }
+
+
+@Test(arguments: [
+    #"{"mode":"sqliteBlocks","schemaVersion":1,"database":"vault.sqlite","localOnly":true}"#,
+    #"{"mode":"unknown"}"#, #"{"mode":"markdown","schemaVersion":99}"#,
+    #"{"mode":"markdown","schemaVersion":1}"#, #"{"mode":1}"#,
+    #"{"schemaVersion":1}"#, #"null"#, #""markdown""#
+])
+func unsupportedStorageDeclarationsRejectWithoutMutating(storage: String) throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let bytes = Data("{\"formatVersion\":1,\"id\":\"\(UUID().uuidString)\",\"storage\":\(storage)}".utf8)
+    let url = root.appendingPathComponent("vault.json")
+    try bytes.write(to: url)
+    #expect(throws: VaultError.self) { try FileVaultRepository.inspectManifest(at: root) }
+    #expect(throws: VaultError.self) { try FileVaultRepository.preflightOpen(root: root) }
+    #expect(throws: VaultError.self) { try FileVaultRepository.open(root: root, create: true) }
+    #expect(try Data(contentsOf: url) == bytes)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["vault.json"])
+}
+
+@Test(arguments: ["", #", "storage":{"mode":"markdown"}"#])
+func legacyManifestAndCanonicalBytesSurviveOpeningAndScanning(storage: String) async throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let vaultID = UUID(), pageID = UUID()
+    let manifest = Data("{\"formatVersion\":1,\"id\":\"\(vaultID.uuidString)\",\"optionalFutureHint\":{\"opaque\":true}\(storage)}".utf8)
+    try manifest.write(to: root.appendingPathComponent("vault.json"))
+    try FileManager.default.createDirectory(at: root.appendingPathComponent("Wiki"), withIntermediateDirectories: false)
+    let page = Data("---\nid: \(pageID.uuidString)\ntitle: Legacy\nfuture_property: opaque\n---\n# Body\n\nUnchanged text.\n".utf8)
+    let pageURL = root.appendingPathComponent("Wiki/Legacy.md")
+    try page.write(to: pageURL)
+    let repository = try FileVaultRepository.open(root: root)
+    let note = try #require(try await repository.scan().notes.first)
+    #expect(repository.manifest.id == vaultID)
+    #expect(note.id == pageID)
+    #expect(BlockDocumentCodec.encode(BlockDocumentCodec.decode(note.body)) == note.body)
+    let encoded = try NoteCodec.encode(note)
+    #expect(String(decoding: encoded, as: UTF8.self).contains("future_property: opaque"))
+    #expect(try Data(contentsOf: pageURL) == page)
+    #expect(try Data(contentsOf: root.appendingPathComponent("vault.json")) == manifest)
+}
+
+@Test(arguments: [2, 99])
+func futureVaultVersionsRejectWithoutMutation(version: Int) throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let bytes = Data("{\"formatVersion\":\(version),\"id\":\"\(UUID().uuidString)\"}".utf8)
+    let url = root.appendingPathComponent("vault.json")
+    try bytes.write(to: url)
+    #expect(throws: VaultError.self) { try FileVaultRepository.open(root: root, create: true) }
+    #expect(try Data(contentsOf: url) == bytes)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["vault.json"])
+}

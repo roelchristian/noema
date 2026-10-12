@@ -76,6 +76,18 @@ public actor FileVaultRepository: VaultRepository {
         guard manifest.formatVersion == 1 else {
             throw VaultError.invalid("This vault uses an unsupported format version.")
         }
+        // v1 has no required storage schema. A declaration must not silently select
+        // a future authority merely because Codable ignores unknown fields.
+        let declaration = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        if let storage = declaration?["storage"] {
+            guard let storage = storage as? [String: Any],
+                  storage["mode"] as? String == "markdown",
+                  storage["schemaVersion"] == nil,
+                  storage["database"] == nil,
+                  storage["localOnly"] == nil else {
+                throw VaultError.invalid("This vault uses an unsupported or malformed storage declaration.")
+            }
+        }
         return manifest
     }
 
