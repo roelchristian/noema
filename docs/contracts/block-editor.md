@@ -2,7 +2,7 @@
 
 ## Storage decision and implementation gate (EDT.BLK01)
 
-**Status: implemented for explicit local page conversion (EDT.BLK09–11).**
+**Status: implemented page persistence, durability and interchange (EDT.BLK09–14).**
 Markdown format 1 remains supported. Format 2 selects an actor-owned
 `SQLiteBlockStore` through repository construction. The page-only implementation
 below replaces the earlier proposed combined page/source database contract;
@@ -32,6 +32,10 @@ transaction; sequential `BlockStore` calls do not establish that guarantee.
 | `sqliteBlocks` | `vault.json` format 2 declares `storageMode: "sqliteBlocks"` alongside the vault UUID. The fixed `blocks.sqlite` database is the sole authority for page metadata, ordered block records and page trash state. Sources retain existing original/metadata files. | Explicit local conversion only; format 1 clients reject it. Preserved Wiki files are migration backups, never fallback live pages. Unknown format/mode/schema rejects writable open. |
 
 The v2 manifest is a routing/identity contract, not a second page-content store.
+STOR.01 retains this page-only authority. Future expanded authority requires the
+explicit schema-3 transition and required manifest authority capability specified in
+[storage-boundary.md](storage-boundary.md); merely adding tables or opening a vault
+does not transfer file-backed source, conflict or Trash authority.
 Only the fixed contained database path is permitted. SQLite schema version is stored in `PRAGMA user_version`; future schema versions
 reject writable open. A missing/damaged DB never authorizes importing an old Wiki directory as
 canonical fallback. There is no mirrored Markdown write, background two-way sync,
@@ -97,14 +101,152 @@ projections are derived. They never replace originals and remain distinguishable
 from personal interpretation. Semantic designation/status remains independent of
 structural kind; retain unknown semantic strings and extension metadata.
 
-String-backed `BlockKind` permits an unknown kind to survive current decoding.
-Future adapters must preserve its kind, rich runs, children, timestamps and extension
-payload, with a literal/fallback presentation instead of silently coercing it to a
-paragraph. Clients must retain unknown JSON fields opaquely alongside the document
-or reject writes; the current Codable model alone does not preserve arbitrary future
-fields. Unsupported required document/schema versions open only through a supported
-read-only preservation route or fail closed. Export must retain the lossless envelope
-and warn when a selected lossy format cannot represent unknown types/metadata.
+String-backed `BlockKind` preserves unknown kind strings; semantic/status strings
+and `BlockMetadata.extra` preserve supported string values. Unknown kinds use a
+fallback presentation without discarding their runs, descendants or metadata.
+These mechanisms do **not** preserve arbitrary unknown JSON properties: current
+`Codable` decoding can discard them. The `BlockStore` protocol's opaque-field
+preservation requirement exceeds the present implementation for arbitrary future
+fields. Such preservation is an STOR.02 compatibility prerequisite, not a verified
+current guarantee. Current unsupported envelope versions set `unsupportedVersion`,
+retain `originalSource`, and block ordinary mutations/import/save; unsupported
+SQLite schema versions reject open. No general preservation-only SQLite reader is
+implemented.
+
+### Supported document round-trip invariants
+
+`BlockDocument` remains the AppKit-independent content value, reconstructed from
+one authority. For valid supported values, `SQLiteBlockStore.save` followed by
+`load` must equal the input document, including:
+
+- Every block UUID, kind string, ordered parent/child tree and rich run sequence;
+  each run's exact text and supported inline style/link/math properties.
+- Entire `BlockMetadata`: semantic/status, checked/collapsed, language/icon and
+  `extra` string map; created/modified timestamps and original Markdown spelling,
+  signature, indentation and depth.
+- Document properties: trailing newline, recovered metadata, unsupported-version
+  state and original source, when present and valid for the selected operation.
+  Writable saves reject `unsupportedVersion` rather than clearing it.
+
+`pages.properties` encodes the document with `blocks = []`; the `blocks` rows
+alone own its tree. `semantic` is the full metadata JSON blob, not only a semantic
+label; `extensions` stores the four original-spelling fields. This division is
+not two complete authoritative documents. Future opaque payloads must use the
+same per-document/per-row ownership and incremental changed-row comparison.
+Repository `savePage` publishes page metadata and document together. Plain
+`BlockStore.save` preserves existing page metadata; it does not invent it.
+Repository `loadPage` creates portable body text from the snapshot, clears the
+supported document's import-only `originalSource` in that projection, and exposes
+the opaque revision as content-hash evidence. Therefore portable `NoteRecord`
+body equality is distinct from exact `BlockStore` document equality.
+
+A supported Noema envelope has version 1, a checksum of readable Markdown and a
+valid nonempty tree of unique block IDs. `decode(encode(document))` preserves
+supported content; encoding clears import-only `originalSource` once an envelope
+is required. Untouched plain imports retain their original bytes when their
+source signatures and spelling still match. A supported Noema page export/import
+preserves page and block identities, known metadata and recovered payloads through
+`NoteCodec` plus this envelope. Readable export intentionally loses identities and
+editor metadata and must report its warning. A checksum mismatch gives edited
+readable text precedence and retains the stale encoded payload for recovery; it
+cannot promise prior block identity retention for text reparsed without a valid
+envelope. Unsupported required metadata must not be promoted to an editable save.
+
+`EditorSession` carries one mutable document, selection and local mutation
+revision; its identity and reload generation scope asynchronous snapshots.
+Only the current unpublished revision is accepted. This local counter is **not**
+a `BlockStoreRevision`; the repository/save path retains captured canonical
+concurrency evidence. Native undo restores content/selection at a new local
+revision. Effective structural mutations clear import-only source state; invalid
+or no-op commands preserve the complete value and create no dirty change.
+Movement/reparenting keeps UUIDs; duplicate creates fresh subtree UUIDs. Splitting
+keeps the original block ID on the prefix and allocates the suffix ID; merging
+into a previous paragraph keeps that survivor's ID and moves descendants.
+Current UTF-16 slicing checks bounds but does not itself enforce grapheme
+boundaries. Annotation-safe boundary validation remains future work.
+
+Existing evidence is in [BlockDocumentTests](../../Tests/VaultCoreTests/BlockDocumentTests.swift),
+[EditorSessionTests](../../Tests/VaultCoreTests/EditorSessionTests.swift),
+[SQLiteBlockStoreTests](../../Tests/VaultCoreTests/SQLiteBlockStoreTests.swift) and
+[SQLiteRepositoryTests](../../Tests/VaultCoreTests/SQLiteRepositoryTests.swift).
+Their supported fixtures do not establish arbitrary future-field preservation.
+
+### Future payload compatibility gate (STOR.02)
+
+Before new writable payloads ship, define a versioned JSON extension object at
+each owning document, block, run/style and page-metadata scope. Known fields have
+one typed authority; unrecognized optional extension keys retain their JSON values
+opaquely in that scope, including objects/arrays, without promotion to known
+fields. Re-encoding may canonicalize JSON spelling but must preserve values and
+identity associations. Enforce documented payload size/depth limits on admission;
+excess or malformed content rejects writable open and retains original bytes.
+Do not truncate an extension to satisfy a limit.
+
+A payload version and required-feature list must distinguish optional preserved
+data from semantics required to edit safely. Unknown required features,
+unsupported writable payload/database versions, and unpreservable unknown fields
+reject writes before mutation/publication. Supported optional extensions survive
+unchanged load/save/export/import, including edits to other known fields and
+incremental updates; collisions with known fields reject rather than overwrite.
+A preservation-only read exposes original bytes plus an explicit nonwritable
+capability. Decoding successfully, rendering a fallback or retaining a recovery
+copy never grants save authority. Older clients must be excluded by the durable
+manifest/schema capability gate before they can destructively rewrite newer
+payloads. No duplicate serialized block-content store is added for this purpose.
+
+### Deferred inline annotation contract
+
+Annotations are semantic records separate from formatting runs. Splitting/coalescing
+runs for style changes must not create, destroy or rename an annotation. The minimal
+future versioned document extension contains records with `id` (annotation UUID),
+`pageID`, `blockID`, typed designation string, optional stable `targetEntityID`,
+opaque optional payload, created/modified metadata, expected canonical page revision
+and a target object. No annotation table or tagging UI is introduced by STOR.01.
+A future relational mapping must preserve these identities and targeting semantics
+without cascading away unresolved preservation records.
+
+Target version 1 addresses a single block's concatenated run text with a UTF-16
+half-open range, start/end insertion affinity, exact quoted text, bounded surrounding
+context and a digest of the exact referenced text/revision. Persist an explicit
+`resolved`, `stale` or `deleted` disposition. Identity persists when position changes.
+Offsets must be in bounds and on extended-grapheme boundaries; reject boundaries
+inside a surrogate pair, combining sequence or emoji sequence. Preserve original
+Unicode sequences; no implicit NFC/NFD normalization is allowed. An explicit
+normalization operation must transform anchors in the same document mutation or
+mark them stale. Reattachment based only on matching words or approximate offsets
+is prohibited; ambiguity requires explicit user disposition.
+
+Overlaps are allowed as independent records, including identical ranges and
+crossing ranges; designation rules may reject a prohibited combination explicitly.
+They neither alter rich-run style authority nor imply a semantic priority. Initial
+range affinity excludes text inserted exactly at either edge (start moves after
+insertion, end stays before it). Edits strictly before the range shift it by their
+UTF-16 delta; edits after it preserve it. Interior insertions extend it only when
+recorded by the same revision-checked edit transformation. A replacement/deletion
+intersecting its original selected text marks it stale unless an explicit semantic
+operation supplies a verified replacement target. A bare whole-block replacement
+cannot infer survival from similar text.
+
+| Mutation | Required future annotation disposition |
+| --- | --- |
+| Sibling move, indent/outdent, kind/style change | Keep annotation/page/block identity and range when exact text is unchanged. |
+| Split | Keep annotation ID and map to prefix/suffix owner and offset when wholly contained; a range crossing the split becomes stale with preserved original target until an explicit versioned multi-span operation resolves it. |
+| Merge | Keep annotation IDs; anchors from the removed block map to the survivor with the exact pre-merge UTF-16 prefix offset and updated revision. Any ambiguous target remains stale. |
+| Duplicate subtree/page | Allocate fresh annotation and copied block/page IDs; keep optional entity targets only where the designation permits it, and retain provenance to the originals. |
+| Delete block/page | Retain annotation identity and original target as deleted preservation metadata; do not attach it to a replacement block or discard it through a foreign-key cascade. Undo restores the matching identity/target. |
+
+Document text/structure and annotation transformations publish in one page transaction
+under expected canonical revision and current session authority. Undo/redo restores
+both in the same session mutation. Updating position requires new consistency evidence;
+a revision mismatch preserves the old record and rejects publication. A stale anchor
+is visible preservation state, never a silently resolved reference.
+
+STOR.02 / P0 must implement payload/capability gates before expanded authority; its
+P1 integration must preserve the existing editor/repository seam and compound page
+revision semantics. STOR.03 / P0 must exercise existing v1/v2 compatibility and
+Noema archive restoration with unknown optional/required payloads and stable IDs;
+P1 adds adversarial interruption and stale-anchor acceptance. Annotation consumers
+and their storage schema remain deferred until a separately reviewed feature.
 
 ### Explicit migration and rollback specification
 
