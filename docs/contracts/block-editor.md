@@ -142,6 +142,32 @@ local-root rejection, interrupted migration/commit, backup restoration and lock/
 interleavings. Device, accessibility, crash/power-loss and two-Mac transport acceptance
 remain standing gaps in [validation](../validation.md); service tests do not close them.
 
+## Recovery authority and current guarantees
+
+A committed canonical page, an unsaved editor draft and a preserved conflicting
+version are independent content. Capture timestamps do not grant a draft authority
+to overwrite canonical bytes. Recovery into the original page uses the repository's
+expected-content check; a newer external edit rejects that write and retains the
+external page, recovery journal and conflict copy. Reopening does not waive this
+check. Saving as a new page is an explicit separate disposition with a new identity.
+Derived search data can be rebuilt and must never supersede these copies.
+
+[RecoveryStoreIsolationTests](../../Tests/VaultCoreTests/RecoveryStoreIsolationTests.swift)
+covers corrupt/mismatched peer isolation, retained bytes across session changes and
+repeated stale recovery attempts across reopen. [WikiPageAdapterTests](../../Tests/VaultCoreTests/WikiPageAdapterTests.swift)
+covers edits/deletions racing the adapter commit, while
+[VaultSaveQuiescenceTests](../../Tests/VaultCoreTests/VaultSaveQuiescenceTests.swift)
+covers durable commit draining, pre-commit journaling and failed journaling returning
+the session to open. These synthetic fixtures do not establish process-crash durability.
+
+Current recovery journals serialize operations in their actor and validate the
+session lease. A valid same-page journal write replaces the previous valid draft;
+deletion checks decoded identity, not an expected draft revision. Callers must retain
+existing save/quiescence serialization. Compare-and-swap between independently
+competing journal writers and idempotent retry of recovery-as-new-page publication
+are not current guarantees; future EDT.BLK/E-series recovery design must address
+these before introducing additional writers or migration replay.
+
 ## Current Markdown editor compatibility
 
 The editor retains a single native AppKit text system and the `AppModel.body` / repository / recovery path.
