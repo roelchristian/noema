@@ -1,9 +1,10 @@
 # Canonical storage boundary contract
 
 Canonical byte routing and exception ownership below govern current implementation.
-The STOR.01 specification distinguishes implemented schema 2 from the proposed
-expanded-authority schema 3; no authority transition or runtime migration is
-authorized by documenting that target. Historical inventories and execution
+Schema 2 retains page-only authority. STOR02A implements explicit fresh schema-3
+canonical staging; production admission and authority-changing migration remain
+gated below. The KNOW01 knowledge contract specifies future schema 4 without
+authorizing runtime migration or modifying persisted schema-3 meaning. Historical inventories and execution
 records remain in Git history.
 
 Manifest inspection always reads through the selected store, including explicit
@@ -126,10 +127,9 @@ path. Require this durable additional manifest declaration:
 }
 ```
 
-The declaration is mandatory, not an optional hint. Current `inspectManifest`
-rejects any format 2 `storage` object before repository construction, and current
-`SQLiteBlockStore` rejects schema 3. This gives existing readers two fail-closed
-barriers. A capability placed only in an ignored top-level field is insufficient.
+The declaration is mandatory, not an optional hint. Pre-STOR02A readers reject
+the format-2 `storage` object or schema 3. STOR02A readers explicitly validate this
+declaration and matching schema-3 database identity before canonical construction. A capability placed only in an ignored top-level field is insufficient.
 Future admission must reject missing/unknown required capabilities, malformed fields,
 unsupported SQL/document versions, UUID disagreement and manifest/database capability
 mismatch before writable access. Preservation inspection does not authorize saving.
@@ -156,10 +156,11 @@ DB and file records. Interruption between publication steps must fail closed and
 support receipt-bound recovery without overwriting either authority. No automatic
 reversion, dual writes or deletion of preserved files is implied.
 
-### Minimum schema 3 records (proposed, not implemented)
+### Schema 3 logical records and preservation invariants
 
-Retain schema 2 page/block columns and revision semantics. Exact DDL and migration
-fixtures belong to STOR.02 review; these are required logical keys and invariants.
+STOR02A retains schema-2 page/block columns and revision semantics and implements
+the following logical records. Exact persisted DDL is authoritative in
+`SQLiteBlockStore`; authority-changing migration remains an acceptance gate.
 Use versioned authoritative payloads plus explicit relational metadata, with no
 second authoritative copy of fields promoted to relationships or lifecycle columns.
 
@@ -184,13 +185,56 @@ time. Import existing file-only page Trash as retained pages only after collisio
 identity review; conflicting IDs become preserved conflicts, never overwrites.
 
 Semantic designations/status/provenance remain block/source payload content.
-Do not add an ontology, universal entity catalog, canonical FTS or embeddings tables.
-Future stable semantic references and annotations use the versioned extension
-contract in [block editor](block-editor.md); adding their relational projection needs
-a consumer and an explicit payload/schema version. Unknown optional JSON must survive
-unchanged writes via bounded opaque extension preservation, while unsupported required
-features reject writable access. Current Codable ignores unknown object keys; its
-string-valued `extra` and string-backed kinds alone do not satisfy that future guarantee.
+STOR.01 deferred the entity catalogue; [KNOW01](knowledge-model.md) now specifies
+its distinct schema-4 foundation and supersedes that deferral only for the approved
+Person, Place, Concept, Question and Definition domain scope. No runtime schema
+change, ontology, canonical FTS, embeddings or inference is authorized by KNOW01.
+STOR02A preserves bounded optional JSON in supported domain scopes and rejects
+unknown SQL wrapper keys and unsupported required features. String-valued `extra`
+and string-backed kinds alone are insufficient preservation guarantees.
+
+### Knowledge ownership and independent acceptance (KNOW01)
+
+The [knowledge contract](knowledge-model.md) and [decision](../decisions/0002-canonical-knowledge-model.md)
+define the approved future schema. Schema 3 has an implemented durable staging
+layout; its meaning must not be silently changed because production admission is
+pending. Schema 4 must retain schema-3 authority, extend manifest/database capability
+negotiation together, and reject older writers before mutation. Schema-3 conversion
+requires explicit quiescence, a consistent retained backup, separate verified staging,
+revision revalidation and receipt-bound publication/recovery; opening never migrates.
+
+`VaultStorageProvider` still selects and constructs the sole `SQLiteBlockStore`.
+Entity/type/alias/relation, semantic-object and annotation records belong to that
+actor's connection and transactions, including explicitly approved internal helpers.
+Domain protocols expose typed snapshots/errors; UI/editor consumers do not own SQL
+connections, schemas or an independently writable JSON catalogue. Block text remains
+in its existing canonical rows; quotes/context are bounded verification evidence.
+Canonical byte publication and backup use the selected `VaultContentStore` boundary.
+
+Author and independent reviewer must separately record the following disposition
+when KNOW02/03 change runtime storage. Trace public APIs to actor, admitted root,
+lease validation, expected record/collection/page revisions and pre-COMMIT checks;
+inspect all helper/caller routing and SQL ownership even if the scanner passes.
+Review manifest/database capability agreement, forward migration, unknown payload
+preservation and tombstone handling; name tests and unresolved limitations in the
+PR. KNOW01 changes specification only: runtime storage/I/O disposition is N/A,
+with an independent architectural approval required before implementation.
+
+| Gate | Focused acceptance required of the owning implementation |
+| --- | --- |
+| KNOW02 identity/registry | Create independent Person/Place/Concept records; equal labels and aliases remain disambiguated UUIDs; rename retains links; register a future type without reshaping identity storage; unknown required versions/features reject writes. |
+| KNOW02 atomicity/lifecycle | Reopen exact supported properties/unknown optional JSON; stale entity and vault-collection revisions, lease loss and injected precommit failure publish nothing; tombstoning preserves occurrences and relation endpoints; restore retains UUID. |
+| KNOW02 compatibility | Schema-2 page-only and schema-3 canonical fixtures remain readable under their own authority; old readers reject schema 4; mismatch/unsupported capabilities reject before writable access; interrupted staged conversion preserves both authorities and verifies its receipt. |
+| KNOW03 authority transfer | Migrate existing extension annotations once, preserving UUIDs, opaque fields and stale/deleted state; unresolvable legacy targets remain explicit preservation data; no entity/object is invented from semantic labels, titles or matching text; no second annotation authority. |
+| KNOW03 overlapping/reference states | Independent whole-block, identical, crossing and nested inline annotations coexist; deleting a Question annotation never deletes Person/Place records; anchor resolution and target tombstone/unresolved state are independently queryable. |
+| KNOW03 editing/publication | Verify UTF-16/grapheme boundaries for surrogate pairs, combining marks and joined emoji; exercise edge affinity, split/merge, move/style, replacement, delete, undo/redo and duplication; failed compound edits leave content/anchors at one revision. |
+| KNOW03 import/query/preservation | Reopen the Napoleonic Wars scenario; rename retains occurrences; duplicate content/annotations receive new identities with permitted canonical targets; collisions never overwrite identities; explicit relationships stay distinguishable from derived co-occurrence; purge never cascades unique preservation data. |
+
+These are implementation gates, not evidence that KNOW01 executed runtime tests.
+Production schema-2-to-3 conversion, device/accessibility, filesystem/process/power-loss
+and transport acceptance remain standing gaps. Knowledge backup/archive and future
+encryption must include canonical records, unknown payloads and preserved unresolved
+references; a database-only snapshot is not a complete vault archive.
 
 ### Domain APIs and commit outcomes (STOR.02 handoff)
 
