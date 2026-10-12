@@ -14,6 +14,9 @@ enum NoemaTypography {
     static let metadata: Font = .caption
     static let metadataEmphasis: Font = .caption.weight(.medium)
     static let caption: Font = .caption2
+    static let sidebarNavigation: Font = .title3
+    static let sidebarNavigationEmphasis: Font = .title3.weight(.medium)
+    static let sidebarHeading: Font = .body.weight(.medium)
     static let sidebarSection: Font = .subheadline.weight(.medium)
     static let sidebarIcon: Font = .system(size: 14, weight: .regular)
 }

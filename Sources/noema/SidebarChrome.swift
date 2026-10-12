@@ -34,7 +34,7 @@ struct NoemaSidebarRowLabel: View {
                 .frame(width: NoemaMetrics.iconWidth, alignment: .center)
                 .accessibilityHidden(true)
             Text(title)
-                .font(isSelected ? NoemaTypography.navigationEmphasis : NoemaTypography.navigation)
+                .font(isSelected ? NoemaTypography.sidebarNavigationEmphasis : NoemaTypography.sidebarNavigation)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .layoutPriority(1)
@@ -52,7 +52,7 @@ struct NoemaSidebarSectionHeader: View {
 
     var body: some View {
         Text(title)
-            .font(NoemaTypography.sidebarSection)
+            .font(NoemaTypography.sidebarHeading)
             .foregroundStyle(theme.text(for: .textSecondary, on: .sidebar))
             .padding(.top, 4)
             .padding(.bottom, 2)
@@ -73,7 +73,7 @@ struct NoemaSidebarVaultSelectorLabel: View {
                 .frame(width: NoemaMetrics.iconWidth, alignment: .center)
                 .accessibilityHidden(true)
             Text(vaultName)
-                .font(NoemaTypography.navigationEmphasis)
+                .font(NoemaTypography.sidebarNavigationEmphasis)
                 .foregroundStyle(theme.text(for: .textPrimary, on: .sidebar))
                 .lineLimit(1)
                 .truncationMode(.tail)
