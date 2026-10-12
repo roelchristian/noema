@@ -13,36 +13,44 @@ struct ExternalAISettings: View {
     @State private var isBusy = false
     @State private var feedback: String?
     @State private var failed = false
+    @State private var showDiagnostics = false
 
     var body: some View {
-        Section("OpenAI connection") {
-            Picker("Content submission confirmation", selection: Binding(
-                get: { service.consentPolicy },
-                set: { service.setConsentPolicy($0) })) {
-                ForEach(OpenAIConsentPolicy.allCases) { policy in
-                    Text(policy.displayName).tag(policy)
-                }
-            }
-            .pickerStyle(.menu)
-            Text(consentPolicyDescription)
-                .font(.caption).foregroundStyle(.secondary)
+        Section("Connection") {
             LabeledContent("Credential", value: credentialDescription)
             if service.credentialStatus?.presence == .inaccessible {
                 Text("Noema cannot access this saved key. Remove it here, then save the key again. If removal fails, unlock the login Keychain in Keychain Access.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            LabeledContent("Session authorization", value: authorizationDescription)
             if let expiresAt = service.credentialStatus?.localPolicyExpiresAt {
                 LabeledContent("Local policy ends") {
                     Text(expiresAt, format: .dateTime.year().month().day())
                 }
             }
+            SecureField(service.credentialStatus?.isAvailable == true ? "Replacement API key" : "OpenAI API key", text: $enteredKey)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                .disabled(isBusy)
+            Toggle("Limit this saved credential to 30 days locally", isOn: $thirtyDayPolicy)
+                .disabled(isBusy)
             HStack {
-                TextField("Model", text: $modelEntry)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                Button("Apply model", action: applyModel)
-                    .disabled(isBusy || modelEntry == service.configuration.model)
+                Button(service.credentialStatus?.isAvailable == true ? "Replace Key" : "Save Key", action: saveKey)
+                    .disabled(isBusy || enteredKey.isEmpty)
+                Button("Remove Key", role: .destructive) {
+                    enteredKey = ""
+                    perform(success: "API key removed from Keychain.") { try await service.removeCredential() }
+                }
+                .disabled(isBusy || service.credentialStatus?.presence == .missing || service.credentialStatus == nil)
+            }
+            LabeledContent("Model") {
+                HStack {
+                    TextField("Model", text: $modelEntry)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                        .disabled(isBusy)
+                    Button("Apply Model", action: applyModel)
+                        .disabled(isBusy || modelEntry == service.configuration.model)
+                }
             }
             Text("Configured model: \(service.configuration.model). Changing it revokes current session authorization.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -60,51 +68,16 @@ struct ExternalAISettings: View {
             .pickerStyle(.menu)
             .disabled(isBusy || !service.configuration.supportsReasoningEffort)
             Text(service.configuration.supportsReasoningEffort
-                 ? "Low is Noema's default. None uses no reasoning; Medium allows more reasoning and can take longer and use more tokens. Changes are saved automatically and revoke session access."
-                 : "Reasoning effort selection is available for gpt-6-luna. Your selection is retained when switching models.")
+                 ? "Low is the default. Changes save automatically and revoke session access."
+                 : "Reasoning effort selection is available for gpt-6-luna and retained across model switches.")
                 .font(.caption).foregroundStyle(.secondary)
-            Toggle("OpenAI debug mode", isOn: Binding(
-                get: { service.debugModeEnabled }, set: { service.setDebugMode($0) }))
-                .disabled(!service.canEnableDebugMode)
-            Text("Enable with an unlocked vault, then retry the failing action. Shows the latest rejected response, which may contain private content. Kept only in memory; locking, closing or switching vaults turns debugging off and clears it. No API key or request headers are captured.")
-                .font(.caption).foregroundStyle(.secondary)
-            if service.debugModeEnabled {
-                if let report = service.debugReport {
-                    DisclosureGroup("Latest rejected OpenAI response") {
-                        ScrollView {
-                            Text(report).font(.system(.caption, design: .monospaced))
-                                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                        }.frame(maxHeight: 260)
-                    }
-                    Button("Clear debug response") { service.clearDebugReport() }
-                } else {
-                    Text("Waiting for a rejected response. Retry the action, then return here.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            SecureField(service.credentialStatus?.isAvailable == true ? "Replacement API key" : "OpenAI API key", text: $enteredKey)
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled()
-                .disabled(isBusy)
-            Toggle("Limit this saved credential to 30 days locally", isOn: $thirtyDayPolicy)
-                .disabled(isBusy)
-            Text("The optional 30-day policy starts when you save or replace the key. It only limits Noema's use; OpenAI key expiry, revocation and hard spending limits must be configured with the issuer.")
-                .font(.caption).foregroundStyle(.secondary)
+            LabeledContent("Session authorization", value: authorizationDescription)
             HStack {
-                Button(service.credentialStatus?.isAvailable == true ? "Replace key" : "Save key", action: saveKey)
-                    .disabled(isBusy || enteredKey.isEmpty)
-                Button("Remove key", role: .destructive) {
-                    enteredKey = ""
-                    perform(success: "API key removed from Keychain.") { try await service.removeCredential() }
-                }
-                .disabled(isBusy || service.credentialStatus?.presence == .missing || service.credentialStatus == nil)
-            }
-            HStack {
-                Button("Validate connection") {
+                Button("Validate Connection") {
                     perform(success: "OpenAI accepted the key and configured model.") { try await service.validateConnection() }
                 }
                 .disabled(isBusy || service.credentialStatus?.isAvailable != true)
-                Button("Revoke session access") {
+                Button("Revoke Session Access") {
                     service.revokeAuthorization()
                     feedback = "Session access revoked. The next AI request requires macOS authentication."
                     failed = false
@@ -114,13 +87,50 @@ struct ExternalAISettings: View {
             if let feedback {
                 Text(feedback).font(.caption).foregroundStyle(failed ? Color.red : Color.secondary)
             }
-            Text("Explicit OpenAI enrichment, title suggestions and page creation send only the selected content under your confirmation policy. Submitted text leaves this Mac and API usage may incur charges. Provider and connection settings never start a submission. Automatic intelligence remains on-device.")
-                .font(.callout).foregroundStyle(.secondary)
-            Text("Connection validation sends a model metadata request with no vault content. Session access lasts at most four hours and expires after 30 minutes without external AI activity. Removing a key here does not revoke the key at OpenAI.")
+        }
+        Section("Content Sharing") {
+            Picker("Confirmation policy", selection: Binding(
+                get: { service.consentPolicy },
+                set: { service.setConsentPolicy($0) })) {
+                ForEach(OpenAIConsentPolicy.allCases) { policy in
+                    Text(policy.displayName).tag(policy)
+                }
+            }
+            .pickerStyle(.menu)
+            Text(consentPolicyDescription)
                 .font(.caption).foregroundStyle(.secondary)
+            Text("Explicit OpenAI actions send only the selected content under your confirmation policy. Submitted text leaves this Mac and API usage may incur charges. Automatic intelligence remains on-device.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        Section("Diagnostics") {
+            DisclosureGroup("Diagnostics", isExpanded: $showDiagnostics) {
+                Toggle("OpenAI debug mode", isOn: Binding(
+                    get: { service.debugModeEnabled }, set: { service.setDebugMode($0) }))
+                    .disabled(!service.canEnableDebugMode)
+                Text("Available while a vault is unlocked. Retains the latest rejected response in memory only until the vault locks, closes, or switches. No API keys or headers are captured.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if service.debugModeEnabled {
+                    if let report = service.debugReport {
+                        DisclosureGroup("Latest rejected OpenAI response") {
+                            ScrollView {
+                                Text(report).font(.system(.caption, design: .monospaced))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            }.frame(maxHeight: 220)
+                        }
+                        Button("Clear Debug Response") { service.clearDebugReport() }
+                    } else {
+                        Text("Waiting for a rejected response. Retry the failing action, then return here.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .onAppear {
+            showDiagnostics = service.debugModeEnabled
         }
         .task {
             modelEntry = service.configuration.model
+            showDiagnostics = service.debugModeEnabled
             // Status inspection does not renew authorization. Refresh while Settings is visible,
             // so expiry and revocation are represented without keeping any vault open.
             while !Task.isCancelled {
@@ -129,12 +139,35 @@ struct ExternalAISettings: View {
             }
         }
         .onDisappear {
-            enteredKey = ""
-            operation?.cancel()
-            operation = nil
-            isBusy = false
-            feedback = nil
+            Self.sanitizeTransientState(
+                enteredKey: &enteredKey,
+                modelEntry: &modelEntry,
+                configuredModel: service.configuration.model,
+                operation: &operation,
+                isBusy: &isBusy,
+                feedback: &feedback,
+                failed: &failed
+            )
         }
+    }
+
+    @MainActor
+    static func sanitizeTransientState(
+        enteredKey: inout String,
+        modelEntry: inout String,
+        configuredModel: String,
+        operation: inout Task<Void, Never>?,
+        isBusy: inout Bool,
+        feedback: inout String?,
+        failed: inout Bool
+    ) {
+        enteredKey = ""
+        modelEntry = configuredModel
+        operation?.cancel()
+        operation = nil
+        isBusy = false
+        feedback = nil
+        failed = false
     }
 
     private var consentPolicyDescription: String {
