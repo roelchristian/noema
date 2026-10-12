@@ -50,6 +50,7 @@ struct AIProviderIntegrationTests {
             await probe.record("cloud", request.content)
             let output: String
             switch request.action {
+            case .composePage: throw ExternalAIError.unsupportedAction
             case .summarizePage, .summarizeSource: output = "Cloud fixture summary"
             case .suggestTitle: output = "Cloud Fixture Title"
             case .lccClassification: output = "{\"code\":\"QA\",\"rationale\":\"The document concerns mathematics.\"}"
@@ -115,12 +116,14 @@ struct AIProviderIntegrationTests {
         #expect(f.model.preferredAIProvider(for: .summarizeSource) == .onDevice)
     }
 
-    @Test @MainActor func unsupportedSourceDraftingRejectsBeforeAnyProviderExecutes() async throws {
+    @Test @MainActor func sourceDraftingOpensScopedWorkflowBeforeAnyProviderExecutes() async throws {
         let f = try await fixture(); defer { f.cleanup() }
         let selected = try await source(f)
         let probe = ProviderProbe(); mock(f.model, probe: probe)
         f.model.createPageFromSource(selected, provider: .openAI)
-        #expect(f.model.aiProviderNotice != nil)
+        #expect(f.model.showTopicPage)
+        #expect(f.model.aiPageSourceID == selected.id)
+        #expect(f.model.aiPageProviderOverride == .openAI)
         #expect(f.model.generatingSourcePages.isEmpty)
         #expect(f.model.cloudSummaryConfirmation == nil)
         #expect(await probe.total == 0)
@@ -176,22 +179,30 @@ struct AIProviderIntegrationTests {
         f.model.refreshPageLCC(provider: .onDevice)
         try await waitUntil { !f.model.generatingPageLCC }
         #expect(f.model.currentNote?.lcc == nil)
-        #expect(f.model.pendingAISuggestion?.value == "QA")
+        #expect(f.model.pendingAISuggestion?.value == "QA76")
         f.model.acceptAISuggestion()
         await f.model.aiSuggestionAcceptanceTaskForTesting?.value
-        #expect(f.model.currentNote?.lcc == "QA")
+        #expect(f.model.currentNote?.lcc == "QA76")
         f.model.refreshSourceLCC(selected, provider: .onDevice)
         try await waitUntil { !f.model.generatingSourceLCCs.contains(selected.id) }
         #expect(try await f.repository.loadSource(id: selected.id).metadata.lcc == nil)
         f.model.acceptAISuggestion()
         await f.model.aiSuggestionAcceptanceTaskForTesting?.value
-        #expect(try await f.repository.loadSource(id: selected.id).metadata.lcc == "QA")
+        #expect(try await f.repository.loadSource(id: selected.id).metadata.lcc == "QA76")
+        f.model.aiClient.enrich = { text, mode in
+            await probe.record("enrich", text)
+            return try ExternalAIEnrichment(title: "Native Source Draft", summary: "Source summary",
+                classification: ExternalAILCCSuggestion(code: "QA76", rationale: "Computer science"),
+                body: "Native source article", mode: mode)
+        }
         f.model.createPageFromSource(selected, provider: .onDevice)
-        try await waitUntil { !f.model.generatingSourcePages.contains(selected.id) }
+        #expect(await f.model.prepareAIPage(.source(selected.id)))
+        #expect(try await f.repository.scan().notes.count == 1)
+        #expect(await f.model.publishAIPageDraft(title: "Native Source Draft"))
         let created = try #require(try await f.repository.scan().notes.first { $0.id != f.note.id })
         #expect(created.body.contains("Native source article"))
         #expect(created.linkedSourceIDs.contains(selected.id))
-        #expect(await probe.count("pageFromSource") == 1)
+        #expect(await probe.count("enrich") == 1)
         #expect(await probe.count("lccCode") == 2)
         #expect(await probe.count("cloud") == 0)
         #expect(f.defaults.data(forKey: AIProviderPreferences.preferenceKey) == saved)
@@ -347,7 +358,7 @@ struct AIProviderIntegrationTests {
         }
     }
 
-    @Test @MainActor func nativeSummaryNeverInvokesClassificationOrOverwritesManualLCC() async throws {
+    @Test @MainActor func legacyNativeSummaryClientMarksUnavailableClassificationWithoutSeparateInference() async throws {
         let f = try await fixture(); defer { f.cleanup() }
         f.model.setPageLCC("DG299")
         try await waitUntil { (try? await f.repository.scan().notes.first { $0.id == f.note.id }?.lcc) == "DG299" }
@@ -355,7 +366,8 @@ struct AIProviderIntegrationTests {
         f.model.requestPageSummary(id: f.note.id)
         await f.model.nativePageSummaryTaskForTesting?.value
         #expect(await f.model.saveCurrent())
-        #expect(f.model.currentNote?.lcc == "DG299")
+        #expect(f.model.currentNote?.lcc == nil)
+        #expect(f.model.currentNote?.lccClassification == nil)
         #expect(await probe.count("inferLCC") == 0)
         #expect(await probe.count("lccCode") == 0)
     }

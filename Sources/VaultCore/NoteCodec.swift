@@ -42,6 +42,7 @@ public enum NoteCodec {
         note.lcc = (rawLCC?.isEmpty == false) ? rawLCC : nil
         note.aiTitleProvenance = provenance(node?["ai_title_provenance"])
         note.aiLCCProvenance = provenance(node?["ai_lcc_provenance"])
+        note.lccClassification = classification(node?["lcc_classification"])
         note.editingLocked = string("editing_locked") == "true"
         return note
     }
@@ -56,6 +57,7 @@ public enum NoteCodec {
         if note.editingLocked != nil { mapping["editing_locked"] = Node(note.isEditingLocked ? "true" : "false") }
         setOptional("ai_title_provenance", value: provenanceNode(note.aiTitleProvenance), in: &mapping)
         setOptional("ai_lcc_provenance", value: provenanceNode(note.aiLCCProvenance), in: &mapping)
+        setOptional("lcc_classification", value: classificationNode(note.lccClassification), in: &mapping)
         mapping["sources"] = Node(note.linkedSourceIDs.map { Node($0.uuidString.lowercased()) })
         mapping["id"] = Node(note.id.uuidString.lowercased())
         mapping["title"] = Node(note.title)
@@ -73,13 +75,37 @@ public enum NoteCodec {
         if let value { mapping[key] = value }
     }
 
+    private static func classification(_ node: Node?) -> LCCClassification? {
+        guard let code = node?["code"]?.scalar?.string,
+              let rawLevel = node?["level"]?.scalar?.string,
+              let level = LCCClassificationLevel(rawValue: rawLevel),
+              let caption = node?["caption"]?.scalar?.string else { return nil }
+        return LCCClassification(code: code, level: level, caption: caption,
+            provenance: provenance(node?["provenance"]),
+            classifiedAt: (node?["classified_at"]?.scalar?.string).flatMap { ISO8601DateFormatter().date(from: $0) })
+    }
+
+    private static func classificationNode(_ classification: LCCClassification?) -> Node? {
+        guard let classification else { return nil }
+        var node = Node.mapping(Node.Mapping([]))
+        node["code"] = Node(classification.code)
+        node["level"] = Node(classification.level.rawValue)
+        node["caption"] = Node(classification.caption)
+        if let facts = provenanceNode(classification.provenance) { node["provenance"] = facts }
+        if let date = classification.classifiedAt {
+            node["classified_at"] = Node(ISO8601DateFormatter().string(from: date))
+        }
+        return node
+    }
+
     private static func provenance(_ node: Node?) -> SummaryProvenance? {
         guard let provider = node?["provider"]?.scalar?.string,
               let model = node?["model"]?.scalar?.string,
               let rawDate = node?["generated_at"]?.scalar?.string,
               let generatedAt = ISO8601DateFormatter().date(from: rawDate) else { return nil }
         return SummaryProvenance(provider: provider, model: model, generatedAt: generatedAt,
-            sourceRevision: node?["source_revision"]?.scalar?.string)
+            sourceRevision: node?["source_revision"]?.scalar?.string,
+            generationID: (node?["generation_id"]?.scalar?.string).flatMap(UUID.init(uuidString:)))
     }
 
     private static func provenanceNode(_ provenance: SummaryProvenance?) -> Node? {
@@ -89,6 +115,7 @@ public enum NoteCodec {
         node["model"] = Node(provenance.model)
         node["generated_at"] = Node(ISO8601DateFormatter().string(from: provenance.generatedAt))
         if let revision = provenance.sourceRevision { node["source_revision"] = Node(revision) }
+        if let generation = provenance.generationID { node["generation_id"] = Node(generation.uuidString.lowercased()) }
         return node
     }
 }

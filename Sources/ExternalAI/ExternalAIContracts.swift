@@ -8,6 +8,7 @@ public enum ExternalAIAction: String, Sendable, CaseIterable {
     case summarizeSource
     case suggestTitle
     case lccClassification
+    case composePage
 }
 
 public enum ExternalAISummaryTarget: Sendable, Equatable, Hashable {
@@ -49,10 +50,16 @@ public struct ExternalAIVaultAuthority: Sendable, Equatable, Hashable {
     }
 }
 
+public enum ExternalAIEnrichmentMode: String, Sendable, Codable, CaseIterable {
+    case initial, regenerate, compose
+}
+
 public enum ExternalAILimits {
     public static let maximumContentBytes = 64 * 1_024
     public static let maximumResponseBytes = 128 * 1_024
     public static let maximumSummaryBytes = 8 * 1_024
+    public static let maximumBodyBytes = 64 * 1_024
+    public static let maximumEnrichmentBytes = 80 * 1_024
     public static let maximumTitleCharacters = 120
     public static let maximumTitleWords = 8
     public static let maximumLCCRationaleBytes = 2 * 1_024
@@ -69,12 +76,13 @@ public struct ExternalAISummaryRequest: Sendable, CustomStringConvertible, Custo
     public let contentRevision: UUID
     public let content: String
     public let action: ExternalAIAction
+    public let mode: ExternalAIEnrichmentMode
     public var contentByteCount: Int { content.utf8.count }
     let contentDigest: Data
 
     public init(
         id: UUID = UUID(), authority: ExternalAIVaultAuthority,
-        target: ExternalAISummaryTarget, contentRevision: UUID, content: String, action: ExternalAIAction? = nil
+        target: ExternalAISummaryTarget, contentRevision: UUID, content: String, action: ExternalAIAction? = nil, mode: ExternalAIEnrichmentMode? = nil
     ) throws {
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ExternalAIError.emptyContent
@@ -83,9 +91,15 @@ public struct ExternalAISummaryRequest: Sendable, CustomStringConvertible, Custo
             throw ExternalAIError.payloadTooLarge
         }
         let operation = action ?? target.action
-        guard operation == target.action || operation == .suggestTitle || operation == .lccClassification else {
+        guard operation == target.action || operation == .suggestTitle || operation == .lccClassification || operation == .composePage else {
             throw ExternalAIError.unsupportedAction
         }
+        let resolvedMode = mode ?? (operation == .composePage ? .compose : .regenerate)
+        guard (operation == .composePage) == (resolvedMode == .compose) else { throw ExternalAIError.unsupportedAction }
+        if operation == .composePage {
+            guard case .page = target else { throw ExternalAIError.unsupportedAction }
+        }
+        self.mode = resolvedMode
         self.action = operation
         self.id = id
         self.authority = authority
@@ -110,6 +124,7 @@ public struct ExternalAIContentConsent: Sendable, Equatable {
     public let contentRevision: UUID
     public let action: ExternalAIAction
     private let contentDigest: Data
+    public let mode: ExternalAIEnrichmentMode
 
     public init(approving request: ExternalAISummaryRequest) {
         id = UUID()
@@ -118,12 +133,13 @@ public struct ExternalAIContentConsent: Sendable, Equatable {
         target = request.target
         contentRevision = request.contentRevision
         action = request.action
+        mode = request.mode
         contentDigest = request.contentDigest
     }
 
     public func approves(_ request: ExternalAISummaryRequest) -> Bool {
         requestID == request.id && authority == request.authority && target == request.target
-            && action == request.action && contentRevision == request.contentRevision && contentDigest == request.contentDigest
+            && action == request.action && mode == request.mode && contentRevision == request.contentRevision && contentDigest == request.contentDigest
     }
 }
 
@@ -162,36 +178,69 @@ public struct ExternalAISummaryResult: Sendable, CustomStringConvertible, Custom
     public let target: ExternalAISummaryTarget
     public let contentRevision: UUID
     public let action: ExternalAIAction
+    public let mode: ExternalAIEnrichmentMode
     public let summary: String
-    /// A title is a proposal only. Applying it requires the caller's existing review workflow.
-    public var title: String? { action == .suggestTitle ? summary : nil }
+    public var title: String? { enrichment?.title ?? (action == .suggestTitle ? summary : nil) }
     public let lccSuggestion: ExternalAILCCSuggestion?
+    public let enrichment: ExternalAIEnrichment?
     public let provenance: ExternalAIProvenance
 
+    /// Compatibility for summary test doubles and historical independent metadata actions.
+    /// The production gateway uses the structured initializer for enrichment and composition.
     public init(request: ExternalAISummaryRequest, summary: String, provenance: ExternalAIProvenance) throws {
         guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              summary.utf8.count <= ExternalAILimits.maximumSummaryBytes else {
-            throw ExternalAIError.invalidResponse
-        }
+              summary.utf8.count <= ExternalAILimits.maximumSummaryBytes else { throw ExternalAIError.invalidResponse }
         switch request.action {
-        case .summarizePage, .summarizeSource:
-            lccSuggestion = nil
+        case .summarizePage, .summarizeSource: lccSuggestion = nil
         case .suggestTitle:
             try ExternalAIOutputValidation.validateTitle(summary)
             lccSuggestion = nil
-        case .lccClassification:
-            lccSuggestion = try ExternalAIOutputValidation.lccSuggestion(from: summary)
+        case .lccClassification: lccSuggestion = try ExternalAIOutputValidation.lccSuggestion(from: summary)
+        case .composePage: throw ExternalAIError.invalidResponse
         }
         action = request.action
+        mode = request.mode
         requestID = request.id
         authority = request.authority
         target = request.target
         contentRevision = request.contentRevision
         self.summary = summary
+        enrichment = nil
         self.provenance = provenance
     }
 
-    public var description: String { "ExternalAISummaryResult(summary: <redacted>)" }
+    public init(request: ExternalAISummaryRequest, enrichment: ExternalAIEnrichment,
+                provenance: ExternalAIProvenance) throws {
+        guard [.summarizePage, .summarizeSource, .composePage].contains(request.action) else {
+            throw ExternalAIError.unsupportedAction
+        }
+        let validated = try ExternalAIEnrichment(title: enrichment.title, summary: enrichment.summary,
+            classification: enrichment.classification, body: enrichment.body, mode: request.mode)
+        requestID = request.id
+        authority = request.authority
+        target = request.target
+        contentRevision = request.contentRevision
+        action = request.action
+        mode = request.mode
+        summary = validated.summary
+        lccSuggestion = validated.classification
+        self.enrichment = validated
+        self.provenance = provenance
+    }
+
+    /// Bind every artifact, including explicit unavailable classification, to issued authority.
+    var publicationDigest: Data {
+        var parts = [action.rawValue, mode.rawValue, summary]
+        if let enrichment {
+            parts += ["structured", enrichment.title ?? "", enrichment.classification?.code ?? "",
+                      enrichment.classification?.rationale ?? "", enrichment.body ?? ""]
+        }
+        let bytes = parts.reduce(into: Data()) { data, part in
+            data.append(Data("\(part.utf8.count):".utf8)); data.append(Data(part.utf8))
+        }
+        return Data(SHA256.hash(data: bytes))
+    }
+    public var description: String { "ExternalAISummaryResult(enrichment: <redacted>)" }
     public var debugDescription: String { description }
 }
 
@@ -202,11 +251,21 @@ public protocol ExternalAISummarizing: Sendable {
     func summarizeSource(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult
 }
 
-/// The three expressly invoked operations share one security boundary. Summary-only test
+/// Explicit enrichment, composition and metadata actions share one security boundary. Summary-only test
 /// doubles and callers can continue to conform to ExternalAISummarizing.
-public protocol ExternalAIActionPerforming: ExternalAISummarizing {
+public protocol ExternalAIEnriching: ExternalAISummarizing {
+    func composePage(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult
+}
+
+public protocol ExternalAIActionPerforming: ExternalAIEnriching {
     func suggestTitle(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult
     func classifyLCC(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult
+}
+
+public extension ExternalAIEnriching {
+    func composePage(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult {
+        throw ExternalAIError.unsupportedAction
+    }
 }
 
 /// Opaque in-process capability; only security components in this module can mint it.

@@ -13,7 +13,7 @@ private final class AuditKeychain: ExternalAIKeychain, Sendable {
     func write(_ data: Data) throws { value.withLock { $0 = data } }
     func delete() throws { value.withLock { $0 = nil } }
 }
-private let auditResponse = Data(#"{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Approved summary"}]}]}"#.utf8)
+private let auditResponse = Data(#"{"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{\"title\":null,\"summary\":\"Approved summary\",\"classification\":{\"code\":\"QA76\",\"level\":\"schedule\",\"rationale\":\"Computer science subject\"},\"body\":null}"}]}]}"#.utf8)
 private actor AuditTransport: OpenAITransporting {
     private(set) var count = 0
     var beforeResume: (@Sendable () async throws -> Void)?
@@ -82,7 +82,10 @@ func auditCredentialRevocationAfterResponsePreservesUsageWithoutPublication(remo
     let price = try #require(AIUsagePrice(model: ExternalAIModelConfiguration.default.model,
         effectiveFrom: .distantPast, inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.5,
         outputUSDPerMillion: 8))
-    let body = Data(#"{"object":"response","status":"completed","usage":{"input_tokens":100,"output_tokens":20,"input_tokens_details":{"cached_tokens":30}},"output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Approved summary"}]}]}"#.utf8)
+    var response = try #require(JSONSerialization.jsonObject(with: auditResponse) as? [String: Any])
+    response["usage"] = ["input_tokens": 100, "output_tokens": 20,
+                         "input_tokens_details": ["cached_tokens": 30]]
+    let body = try JSONSerialization.data(withJSONObject: response)
     let transport = AuditTransport(body: body)
     let f = try await AuditFixture(transport: transport, activityRecorder: recorder,
         pricingCatalogue: .init(version: "synthetic-test-v1", rates: [price]))

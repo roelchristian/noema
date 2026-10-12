@@ -1181,7 +1181,7 @@ struct ContentView: View {
                 Menu {
                     workspaceCommandButton("Blank Page", .newPage)
                     workspaceCommandButton("Personal Page", .newPersonalPage)
-                    workspaceCommandButton("Page from Topic with AI…", .newTopicPage)
+                    workspaceCommandButton("Create Page with AI…", .newTopicPage)
                         .disabled(model.generatingTopicPage)
                     Divider()
                     workspaceCommandButton("Source from Files…", .addSource)
@@ -1459,26 +1459,86 @@ struct URLSourceSheet: View {
 struct TopicPageSheet: View {
     @Bindable var model: AppModel
     @Environment(\.dismiss) private var dismiss
-    @State private var topic = ""
-    @FocusState private var topicFocused: Bool
+    @State private var mode = "topic"
+    @State private var input = ""
+    @State private var sourceID: UUID?
+    @State private var retainSource = true
+    @State private var reviewedTitle = ""
+
+    private func launch(_ operation: @escaping @MainActor () async -> Void) {
+        model.aiPageTask = Task { await operation() }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Create Page from Topic").font(.title2.bold())
-            Text("Searches the web with Bing and reads up to three top results. Apple Intelligence summarizes them on this Mac and adds web references. Your topic is sent to the search service.").font(.callout).foregroundStyle(.secondary)
-            TextField("Topic", text: $topic).textFieldStyle(.roundedBorder).focused($topicFocused)
-                .disabled(model.generatingTopicPage)
-            if model.generatingTopicPage { NoemaLoadingStatus("Searching web and creating page…") }
-            if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil } }
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction).disabled(model.generatingTopicPage)
-                Button("Create with AI") {
-                    Task { if await model.createPageFromTopic(topic) { dismiss() } }
-                }.keyboardShortcut(.defaultAction)
-                .disabled(topic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || topic.trimmingCharacters(in: .whitespacesAndNewlines).count > 120 || model.generatingTopicPage)
+            Text("Create Page with AI").font(.title2.bold())
+            if let submission = model.aiPageSubmission {
+                Text("Send this selected text to OpenAI? It leaves your device and API charges may apply.")
+                Text("OpenAI · \(submission.model) · \(submission.request.contentByteCount) bytes").font(.caption)
+                ScrollView { Text(submission.request.content).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                    .frame(height: 260)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { model.cancelAIPage(); dismiss() }.keyboardShortcut(.cancelAction)
+                    Button("Send to OpenAI") { launch { await model.generateCloudAIPage() } }.keyboardShortcut(.defaultAction)
+                }
+            } else if let draft = model.aiPageDraft {
+                TextField("Page title", text: $reviewedTitle).textFieldStyle(.roundedBorder)
+                Text(draft.enrichment.summary).font(.callout).foregroundStyle(.secondary)
+                if let classification = draft.enrichment.classification {
+                    Text(classification.code + " · " + classification.caption).font(.caption)
+                } else { Text("Classification unavailable").font(.caption).foregroundStyle(.secondary) }
+                ScrollView { Text((draft.enrichment.body ?? "") + draft.context.references).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                    .frame(height: 300)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { model.cancelAIPage(); dismiss() }.keyboardShortcut(.cancelAction)
+                    Button("Publish Page") { launch { if await model.publishAIPageDraft(title: reviewedTitle) { dismiss() } } }
+                        .keyboardShortcut(.defaultAction).disabled(reviewedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.generatingTopicPage)
+                }
+            } else {
+                Picker("Input", selection: $mode) {
+                    Text("Source").tag("source")
+                    Text("Topic").tag("topic")
+                    Text("URL").tag("url")
+                }.pickerStyle(.segmented).disabled(model.generatingTopicPage)
+                Text("Provider: " + model.preferredAIProvider(for: .composePage, temporaryOverride: model.aiPageProviderOverride).displayName)
+                    .font(.caption).foregroundStyle(.secondary)
+                if mode == "source" {
+                    Picker("Source", selection: $sourceID) {
+                        Text("Choose a source").tag(nil as UUID?)
+                        ForEach(model.sources) { source in Text(source.title).tag(Optional(source.id)) }
+                    }
+                } else {
+                    TextField(mode == "topic" ? "Topic" : "https://example.com/article", text: $input).textFieldStyle(.roundedBorder)
+                    Text(mode == "topic" ? "Your topic is sent to Bing. Up to three readable results form the draft's evidence." : "The document is fetched locally. Its extracted text is used to generate the draft.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    if mode == "url" { Toggle("Retain fetched document as a linked source", isOn: $retainSource) }
+                }
+                HStack {
+                    Spacer()
+                    Button("Cancel") { model.cancelAIPage(); dismiss() }.keyboardShortcut(.cancelAction)
+                    Button("Generate Draft") {
+                        launch {
+                            let request: AIPageInput
+                            if mode == "source", let sourceID { request = .source(sourceID) }
+                            else if mode == "url" { request = .url(input, retainSource: retainSource) }
+                            else { request = .topic(input) }
+                            _ = await model.prepareAIPage(request)
+                        }
+                    }.keyboardShortcut(.defaultAction)
+                    .disabled(model.generatingTopicPage || (mode == "source" ? sourceID == nil : input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                }
             }
-        }.padding(24).frame(width: 460).interactiveDismissDisabled(model.generatingTopicPage)
-        .onAppear { topicFocused = true }
+            if model.generatingTopicPage { NoemaLoadingStatus("Preparing draft…") }
+            if let error = model.errorMessage { DismissibleNotice(message: error) { model.errorMessage = nil } }
+        }.padding(24).frame(width: 580).interactiveDismissDisabled(model.generatingTopicPage)
+        .onAppear {
+            sourceID = model.aiPageSourceID
+            if sourceID != nil { mode = "source" }
+        }
+        .onChange(of: model.aiPageDraft?.id) { _, _ in reviewedTitle = model.aiPageDraft?.enrichment.title ?? "" }
+        .onDisappear { model.cancelAIPage(); model.aiPageSourceID = nil; model.aiPageProviderOverride = nil }
     }
 }
 

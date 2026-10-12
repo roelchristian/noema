@@ -16,15 +16,19 @@ final class ExternalAIService {
     private(set) var configuration: ExternalAIModelConfiguration
     private(set) var credentialStatus: ExternalAICredentialStatus?
     private(set) var authorizationState: ExternalAISessionState = .unauthorized
+    private(set) var consentPolicy: OpenAIConsentPolicy
 
     @ObservationIgnored private let accessGate: VaultAccessGate
     @ObservationIgnored private let activityRecorder: AIActivityRecorder
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let consentSession = OpenAIConsentSession()
+    @ObservationIgnored private var consentObservation: UUID?
 
     init(accessGate: VaultAccessGate, defaults: UserDefaults = .standard, activityRecorder: AIActivityRecorder = .shared) {
         self.activityRecorder = activityRecorder
         self.accessGate = accessGate
         self.defaults = defaults
+        consentPolicy = OpenAIConsentPolicy.load(from: defaults)
         let configuration = Self.loadConfiguration(from: defaults)
         self.configuration = configuration
         let broker = ExternalAICredentialBroker()
@@ -33,6 +37,74 @@ final class ExternalAIService {
         sessionManager = sessions
         gateway = ExternalAIGateway(credentialBroker: broker, sessionManager: sessions,
                                    accessGate: accessGate, configuration: configuration, activityRecorder: activityRecorder)
+    }
+
+    deinit {
+        if let consentObservation { accessGate.removeSessionInvalidator(consentObservation) }
+    }
+
+    func setConsentPolicy(_ policy: OpenAIConsentPolicy) {
+        guard consentPolicy != policy else { return }
+        clearConsentSession()
+        policy.persist(in: defaults)
+        consentPolicy = policy
+    }
+
+    /// Only explicit commands can use a policy grant. This inspection cannot mint consent,
+    /// authenticate or extend authentication idle time.
+    func requiresSubmissionConfirmation(for authority: ExternalAIVaultAuthority,
+                                        explicitlyInitiated: Bool = true) throws -> Bool {
+        let lease = try consentLease(for: authority, explicitlyInitiated: explicitlyInitiated)
+        return try accessGate.withOpenSession(lease: lease, operation: "externalAIConsent") {
+            switch consentPolicy {
+            case .always: true
+            case .oncePerSession: !consentSession.approves(lease)
+            case .neverAsk: false
+            }
+        }
+    }
+
+    /// Called after the coordinator's revision/cancellation checks. The gateway independently
+    /// authenticates and consumes this exact-request receipt once, even for Never ask.
+    func approveSubmission(_ request: ExternalAISummaryRequest, explicitlyInitiated: Bool = true,
+                           userConfirmed: Bool) throws -> ExternalAIContentConsent {
+        try Task.checkCancellation()
+        let lease = try consentLease(for: request.authority, explicitlyInitiated: explicitlyInitiated)
+        let requiresConfirmation = try requiresSubmissionConfirmation(for: request.authority,
+                                                                       explicitlyInitiated: explicitlyInitiated)
+        guard userConfirmed || !requiresConfirmation else { throw ExternalAIError.consentRequired }
+        if userConfirmed, consentPolicy == .oncePerSession {
+            clearConsentSession()
+            consentSession.record(lease)
+            consentObservation = accessGate.registerSessionInvalidator(lease: lease) { [consentSession] in
+                consentSession.clear()
+            }
+        }
+        return try accessGate.withOpenSession(lease: lease, operation: "externalAIConsent") {
+            // Recheck the policy inside the live gate barrier; an intervening lock cannot
+            // convert a retired once-per-session grant into approval for another request.
+            guard userConfirmed || consentPolicy == .neverAsk
+                    || (consentPolicy == .oncePerSession && consentSession.approves(lease)) else {
+                throw ExternalAIError.consentRequired
+            }
+            return ExternalAIContentConsent(approving: request)
+        }
+    }
+
+    private func consentLease(for authority: ExternalAIVaultAuthority,
+                              explicitlyInitiated: Bool) throws -> VaultSessionLease {
+        guard explicitlyInitiated else { throw ExternalAIError.consentRequired }
+        guard let lease = accessGate.currentLease, authority.matches(lease) else {
+            clearConsentSession()
+            throw ExternalAIError.vaultUnavailable
+        }
+        return lease
+    }
+
+    private func clearConsentSession() {
+        consentSession.clear()
+        if let consentObservation { accessGate.removeSessionInvalidator(consentObservation) }
+        consentObservation = nil
     }
 
     static func loadConfiguration(from defaults: UserDefaults) -> ExternalAIModelConfiguration {
@@ -72,6 +144,7 @@ final class ExternalAIService {
         guard selected != configuration else { return }
         // Revoke first so requests using the old gateway cannot dispatch or publish results.
         sessionManager.revoke()
+        clearConsentSession()
         configuration = selected
         gateway = ExternalAIGateway(credentialBroker: credentialBroker, sessionManager: sessionManager,
                                    accessGate: accessGate, configuration: selected, activityRecorder: activityRecorder)
@@ -82,6 +155,7 @@ final class ExternalAIService {
     /// No entered key is retained in application state, preferences or error text.
     func saveCredential(_ enteredKey: String, thirtyDayPolicy: Bool) async throws {
         sessionManager.revoke(reason: .credentialChanged)
+        clearConsentSession()
         defer { authorizationState = .revoked }
         try await credentialBroker.store(enteredKey, policy: thirtyDayPolicy ? .thirtyDays : .unlimited)
         await refreshStatus()
@@ -89,6 +163,7 @@ final class ExternalAIService {
 
     func removeCredential() async throws {
         sessionManager.revoke(reason: .credentialChanged)
+        clearConsentSession()
         defer { authorizationState = .revoked }
         do {
             try await credentialBroker.remove()
@@ -101,6 +176,7 @@ final class ExternalAIService {
 
     func revokeAuthorization() {
         sessionManager.revoke()
+        clearConsentSession()
         authorizationState = .revoked
     }
 

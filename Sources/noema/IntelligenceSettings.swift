@@ -26,7 +26,7 @@ struct IntelligenceSettings: View {
                  ? "Process supported actions privately on this Mac."
                  : "Use the configured OpenAI connection for supported actions. Submitted content leaves this Mac and API usage may incur charges.")
                 .font(.callout).foregroundStyle(.secondary)
-            Text("Changes affect future requests only. Existing summaries, accepted titles and classifications remain unchanged. Provider preferences apply to explicit actions. Choosing OpenAI does not authorize a request; each submission still requires confirmation and session access.")
+            Text("Changes affect future requests only. Existing summaries, accepted titles and classifications remain unchanged. Provider preferences apply to explicit actions. OpenAI uses your content submission confirmation policy and requires authenticated session access.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         Section("Per-action preferences") {
@@ -52,6 +52,8 @@ struct IntelligenceSettings: View {
             Button("Reset overrides") { preferences.resetOverrides() }
                 .disabled(!hasOverrides)
             Text("Actions use the default unless overridden. An unavailable or unsupported provider reports the reason; Noema never switches providers automatically.")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("Content enrichment generates the summary and classification together. Legacy summary choices take precedence over a former classification override; when no summary override exists, the classification choice is retained for enrichment.")
                 .font(.caption).foregroundStyle(.secondary)
             Text("Automatic titles, classification and source processing remain on-device regardless of these preferences.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -84,11 +86,12 @@ struct IntelligenceSettings: View {
 
     private func detail(for action: AIAction) -> String {
         switch action {
-        case .summarizePage: "Generate a concise summary of a page or source."
-        case .summarizeSource: "Generate a concise source summary."
+        case .summarizePage: "Generate or refresh a summary and its LCC classification together."
+        case .summarizeSource: "Generate a source summary and classification together."
         case .suggestTitle: "Suggest a descriptive page or source title."
         case .classifyLCC: "Classify the selected page or source."
         case .processSource: "Process source content or draft a linked page."
+        case .composePage: "Create a reviewable page from a source, topic or URL."
         }
     }
 }

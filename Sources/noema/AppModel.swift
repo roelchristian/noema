@@ -244,6 +244,16 @@ struct AISuggestion: Identifiable, Sendable {
     var showRecovery = false
     var showTopicPage = false
     var generatingTopicPage = false
+    var aiPageSourceID: UUID?
+    var aiPageProviderOverride: AIProvider?
+    var aiPageDraft: AIPageDraft?
+    var aiPageSubmission: AIPageSubmission?
+    private var aiPageOperationID: UUID?
+    private var aiPageActivityID: UUID?
+    private var aiPagePublicationActivityID: UUID?
+    var aiPageTask: Task<Void, Never>?
+    var aiPageFetch: @Sendable (URL) async throws -> WebSourceFetch = WebSourceFetcher.fetch
+
     var showURLSource = false
     var showPasteSource = false
     var showIssues = false
@@ -335,7 +345,7 @@ struct AISuggestion: Identifiable, Sendable {
         self.aiPreferenceDefaults = aiDefaults
         self.aiProviderPreferences = AIProviderPreferences(defaults: aiDefaults)
         self.sessionManager = sessionManager
-        self.externalAIService = ExternalAIService(accessGate: sessionManager.accessGate, activityRecorder: activityRecorder)
+        self.externalAIService = ExternalAIService(accessGate: sessionManager.accessGate, defaults: aiDefaults, activityRecorder: activityRecorder)
         self.repository = repository
         self.recovery = recovery
         self.activeLease = repository?.sessionLease
@@ -511,6 +521,8 @@ struct AISuggestion: Identifiable, Sendable {
         var pageFromTopic: @Sendable (String, String) async throws -> String
         var pageFromSource: @Sendable (String) async throws -> String
         var researchTopic: @Sendable (String) async throws -> [WebTopicResult]
+        // Optional only for legacy injected clients; production always generates one structured result.
+        var enrich: (@Sendable (String, ExternalAIEnrichmentMode) async throws -> ExternalAIEnrichment)? = nil
 
         static let live = AIProcessingClient(
             unavailabilityReason: { OnDeviceSummary.unavailabilityReason },
@@ -520,7 +532,8 @@ struct AISuggestion: Identifiable, Sendable {
             pageTitle: { try await OnDeviceSummary().pageTitle($0) },
             pageFromTopic: { try await OnDeviceSummary().pageFromTopic($0, context: $1) },
             pageFromSource: { try await OnDeviceSummary().pageFromSource($0) },
-            researchTopic: { try await WebTopicResearch.research($0) }
+            researchTopic: { try await WebTopicResearch.research($0) },
+            enrich: { try await OnDeviceSummary().enrich($0, mode: $1) }
         )
     }
 
@@ -820,6 +833,25 @@ struct AISuggestion: Identifiable, Sendable {
         }
     }
 
+    private static func enrichmentMode(_ snapshot: CloudSummarySnapshot) -> ExternalAIEnrichmentMode {
+        switch snapshot {
+        case .page(let page): return BlockDocumentCodec.decode(page.note.body).aiSummary == nil ? .initial : .regenerate
+        case .source(let source): return source.source.metadata.aiSummary == nil ? .initial : .regenerate
+        }
+    }
+
+    private static func classification(_ suggestion: ExternalAILCCSuggestion?, provenance: SummaryProvenance) -> LCCClassification? {
+        guard let suggestion else { return nil }
+        return LCCClassification(code: suggestion.code, level: suggestion.level, caption: suggestion.caption,
+            provenance: provenance, classifiedAt: provenance.generatedAt)
+    }
+
+    private func nativeEnrichment(_ client: AIProcessingClient, text: String, mode: ExternalAIEnrichmentMode) async throws -> ExternalAIEnrichment {
+        if let enrich = client.enrich { return try await enrich(text, mode) }
+        // Compatibility seam for pre-enrichment injected clients; never used by the live provider.
+        return try ExternalAIEnrichment(title: nil, summary: try await client.summarize(text), classification: nil, body: nil)
+    }
+
     /// Failed debounced saves must not turn optimistic manual edits into AI overwrite targets.
     private func validateEditableMetadata(_ snapshot: CloudSummarySnapshot) throws {
         switch snapshot {
@@ -1030,6 +1062,7 @@ struct AISuggestion: Identifiable, Sendable {
             Task { await recorder.finish(activityID, status: .cancelled, failureCode: .cancelled) }
             cloudActivityID = nil
         }
+        cancelAIPage()
         dismissAISuggestion()
         providerPreflightID = nil
         providerPreflightTask?.cancel(); providerPreflightTask = nil; providerPreflightTarget = nil
@@ -1081,7 +1114,8 @@ struct AISuggestion: Identifiable, Sendable {
                       ExternalAIVaultAuthority(lease: lease).matches(sessionManager.accessGate.currentLease) else { throw ExternalAIError.staleSession }
                 try validateEditableMetadata(snapshot)
                 let request = try ExternalAISummaryRequest(authority: ExternalAIVaultAuthority(lease: lease),
-                    target: target, contentRevision: UUID(), content: text, action: action)
+                    target: target, contentRevision: UUID(), content: text, action: action,
+                    mode: Self.enrichmentMode(snapshot))
                 let presentation = await externalAIService.consentPresentation(for: request.authority)
                 try Task.checkCancellation()
                 guard cloudRequestID == identity, selectedID == selection, revision == cloudEditorRevision,
@@ -1103,6 +1137,9 @@ struct AISuggestion: Identifiable, Sendable {
                     title: itemTitle, model: configuration.model,
                     selection: selection, editorRevision: revision, presentation: presentation)
                 cloudSummaryTarget = nil; cloudSummaryTask = nil
+                if try !externalAIService.requiresSubmissionConfirmation(for: request.authority) {
+                    confirmCloudSummary(userConfirmed: false)
+                }
             } catch {
                 if let activityID = createdActivityID {
                     let failure = AIActivityOperation.failure(error)
@@ -1116,7 +1153,7 @@ struct AISuggestion: Identifiable, Sendable {
         }
     }
 
-    func confirmCloudSummary() {
+    func confirmCloudSummary(userConfirmed: Bool = true) {
         guard let confirmation = cloudSummaryConfirmation, canOperateOnLoadedContent else { return }
         cloudSummaryConfirmation = nil
         let request = confirmation.request
@@ -1147,7 +1184,7 @@ struct AISuggestion: Identifiable, Sendable {
                     guard body == page.note.body, cloudEditorRevision == confirmation.editorRevision,
                           !editingLocked, !externalChange else { throw ExternalAIError.staleContent }
                 }
-                let consent = ExternalAIContentConsent(approving: request)
+                let consent = try externalAIService.approveSubmission(request, userConfirmed: userConfirmed)
                 let result: ExternalAISummaryResult
                 if let override { result = try await override(request, consent) }
                 else {
@@ -1156,10 +1193,11 @@ struct AISuggestion: Identifiable, Sendable {
                     case .summarizeSource: result = try await gateway.summarizeSource(request, consent: consent)
                     case .suggestTitle: result = try await gateway.suggestTitle(request, consent: consent)
                     case .lccClassification: result = try await gateway.classifyLCC(request, consent: consent)
+                    case .composePage: throw ExternalAIError.unsupportedAction
                     }
                 }
                 guard result.requestID == request.id, result.target == request.target,
-                      result.contentRevision == request.contentRevision, result.authority == request.authority, result.action == request.action else { throw ExternalAIError.invalidResponse }
+                      result.contentRevision == request.contentRevision, result.authority == request.authority, result.action == request.action, result.mode == request.mode else { throw ExternalAIError.invalidResponse }
                 let validate: @Sendable () throws -> Void
                 if let publicationOverride { validate = try await publicationOverride(result) }
                 else {
@@ -1206,7 +1244,9 @@ struct AISuggestion: Identifiable, Sendable {
                         guard body == page.note.body, cloudEditorRevision == confirmation.editorRevision,
                               !editingLocked, !externalChange, !generatingAISummary else { throw ExternalAIError.staleContent }
                     }
-                    let saved = try await repository.publishPageSummary(page, summary: result.summary, provenance: provenance, validate: {
+                    let saved = try await repository.publishPageEnrichment(page, summary: result.summary,
+                        classification: Self.classification(result.enrichment?.classification, provenance: provenance),
+                        title: request.mode == .initial ? result.enrichment?.title : nil, provenance: provenance, validate: {
                         try publicationGuard.validate(requestID: request.id)
                         try validate()
                     })
@@ -1217,7 +1257,9 @@ struct AISuggestion: Identifiable, Sendable {
                     if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
                     if currentNote?.id == saved.id, body == page.note.body, cloudEditorRevision == confirmation.editorRevision { apply(saved) }
                 case .source(let source):
-                    let saved = try await repository.publishSourceSummary(source, summary: result.summary, provenance: provenance, validate: {
+                    let saved = try await repository.publishSourceEnrichment(source, summary: result.summary,
+                        classification: Self.classification(result.enrichment?.classification, provenance: provenance),
+                        title: request.mode == .initial ? result.enrichment?.title : nil, provenance: provenance, validate: {
                         try publicationGuard.validate(requestID: request.id)
                         try validate()
                     })
@@ -1283,8 +1325,11 @@ struct AISuggestion: Identifiable, Sendable {
                     }
                 }
                 do {
+                    guard await saveCurrent(), let note = currentNote, let repository else { throw ExternalAIError.staleContent }
+                    let snapshot = try await repository.pageSummarySnapshot(note)
                     try await activity.start(contentSizeBytes: content.utf8.count)
-                    let summary = try await client.summarize(content)
+                    let enrichment = try await nativeEnrichment(client, text: content, mode: Self.enrichmentMode(.page(snapshot)))
+                    let summary = enrichment.summary
                     guard isCompletionValid(
                         completionTicket,
                         expectedTargetID: currentNote?.id,
@@ -1297,14 +1342,19 @@ struct AISuggestion: Identifiable, Sendable {
                         aiSummaryNotice = "The page changed during generation. Generate the summary again."; return
                     }
                     guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, summary.utf8.count <= ExternalAILimits.maximumSummaryBytes else { activity.fail(ExternalAIError.invalidResponse); aiSummaryNotice = "No valid summary was returned. Try again."; return }
-                    var document = BlockDocumentCodec.decode(body)
-                    document.setAISummary(summary)
-                    document.blocks[0].metadata.extra["aiProvider"] = "On-device"
-                    document.blocks[0].metadata.extra["aiModel"] = "Apple Intelligence"
-                    document.blocks[0].metadata.extra["aiGeneratedAt"] = ISO8601DateFormatter().string(from: Date())
-                    document.blocks[0].metadata.extra["aiSourceRevision"] = Self.contentRevision(content)
-                    body = BlockDocumentCodec.encode(document); edited()
+                    let provenance = SummaryProvenance(provider: "On-device", model: "Apple Intelligence", generatedAt: Date(), sourceRevision: snapshot.sourceRevision)
+                    cloudPublicationGuard.arm(requestID: requestID)
+                    let publicationGuard = cloudPublicationGuard
+                    let saved = try await repository.publishPageEnrichment(snapshot, summary: summary,
+                        classification: Self.classification(enrichment.classification, provenance: provenance),
+                        title: Self.enrichmentMode(.page(snapshot)) == .initial ? enrichment.title : nil,
+                        provenance: provenance, validate: { try publicationGuard.validate(requestID: requestID) })
                     activity.complete()
+                    guard !Task.isCancelled, nativePageSummaryRequestID == requestID,
+                          capturedRevision == cloudEditorRevision else { return }
+                    if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
+                    apply(saved)
+
                 } catch {
                     activity.fail(error)
                     guard !Task.isCancelled, nativePageSummaryRequestID == requestID else { return }
@@ -2555,52 +2605,7 @@ struct AISuggestion: Identifiable, Sendable {
     }
     private func updateTags() { tags = Array(Set(notes.flatMap(\.allTags))).sorted() }
     func createPageFromTopic(_ input: String) async -> Bool {
-        let topic = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard canOperateOnLoadedContent, !topic.isEmpty, topic.count <= 120, !generatingTopicPage, let repository else { return false }
-        if let reason = aiClient.unavailabilityReason() { errorMessage = reason; return false }
-        let completionTicket = issueCompletionTicket(kind: .aiProcessing)
-        let client = aiClient
-        generatingTopicPage = true; errorMessage = nil
-        defer { if generation == completionTicket.token { generatingTopicPage = false } }
-        return await withLocalAIActivity(action: .createPageFromTopic) { activity in
-            do {
-                guard await finishCurrentPage(),
-                      isCompletionValid(completionTicket, operation: "createPageFromTopic.finishInitial") else { return false }
-                let results = try await client.researchTopic(topic)
-                guard isCompletionValid(completionTicket, operation: "createPageFromTopic.research") else { return false }
-                let context = results.enumerated().map { offset, result in
-                    "[\(offset + 1)] " + result.title + "\n" + result.url.absoluteString + "\n" + result.text
-                }.joined(separator: "\n\n")
-                try await activity.start(contentSizeBytes: topic.utf8.count + context.utf8.count)
-                guard isCompletionValid(completionTicket, operation: "createPageFromTopic.activityStart") else { return false }
-                async let generatedArticle = client.pageFromTopic(topic, context)
-                async let generatedLCC = client.inferLCC(OnDeviceSummary.topicPrompt(topic: topic, context: context))
-                var article = try await generatedArticle
-                let lcc = await generatedLCC
-                guard isCompletionValid(completionTicket, operation: "createPageFromTopic.generate") else { return false }
-                article += "\n\n*AI-generated draft based on web results retrieved " + timestamp() + ".*"
-                let references: [String] = results.enumerated().map { offset, result in
-                    let title = result.title.replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
-                    return "- [\(offset + 1)] [\(title)](<\(result.url.absoluteString)>)"
-                }
-                article += "\n\n## Web references\n\n" + references.joined(separator: "\n")
-                guard await finishCurrentPage(),
-                      isCompletionValid(completionTicket, operation: "createPageFromTopic.preCreate") else { return false }
-                let note = try await repository.create(title: topic, body: article, lcc: lcc)
-                activity.complete()
-                guard isCompletionValid(completionTicket, operation: "createPageFromTopic.create") else { return false }
-                errorMessage = nil; searchText = ""; scope = .wiki; reading = false
-                notes.insert(note, at: 0); selectedID = note.id; currentSource = nil; apply(note)
-                await refresh()
-                return isCompletionValid(completionTicket, operation: "createPageFromTopic.complete")
-            } catch {
-                activity.fail(error)
-                if isCompletionValid(completionTicket, operation: "createPageFromTopic.error") {
-                    errorMessage = "Create topic page: " + error.localizedDescription
-                }
-                return false
-            }
-        }
+        await prepareAIPage(.topic(input))
     }
 
     func newPage(template: Bool = false, named name: String = "Untitled") {
@@ -3008,41 +3013,11 @@ struct AISuggestion: Identifiable, Sendable {
         }.value
     }
     func createPageFromSource(_ source: SourceRecord, provider: AIProvider? = nil) {
-        guard canOperateOnLoadedContent, !downloadingSources.contains(source.id), !generatingSourcePages.contains(source.id), let repository, let root else { return }
-        guard admitsNativeAction(.processSource, provider: provider) else { return }
-        let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: source.id)
-        let ticket = completionTicket.token
-        let client = aiClient
-        generatingSourcePages.insert(source.id)
-        sourcePageTasks[source.id]?.cancel()
-        sourcePageTasks[source.id] = Task {
-            await withLocalAIActivity(target: .source(source.id), action: .createPageFromSource) { activity in
-                defer { if generation == ticket { generatingSourcePages.remove(source.id); sourcePageTasks.removeValue(forKey: source.id) } }
-                do {
-                    let materialized = try await repository.loadSource(id: source.id)
-                    let text = try await sourceSummaryContent(materialized, root: root)
-                    guard isCompletionValid(completionTicket, operation: "createPageFromSource.read") else { return }
-                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                        throw VaultError.unavailable("No readable text for a wiki page.")
-                    }
-                    try await activity.start(contentSizeBytes: text.utf8.count)
-                    let article = try await client.pageFromSource(text)
-                    async let generatedTitle = client.pageTitle(article)
-                    async let generatedLCC = client.inferLCC(article)
-                    let pageTitle = (try await generatedTitle) ?? source.title
-                    let lcc = (await generatedLCC) ?? source.metadata.lcc
-                    guard isCompletionValid(completionTicket, operation: "createPageFromSource.generate"),
-                          await finishCurrentPage(),
-                          isCompletionValid(completionTicket, operation: "createPageFromSource.preCreate") else { return }
-                    let note = try await repository.create(title: pageTitle, body: article, source: materialized, lcc: lcc)
-                    activity.complete()
-                    guard isCompletionValid(completionTicket, operation: "createPageFromSource.create") else { return }
-                    errorMessage = nil; searchText = ""; scope = .wiki; reading = false
-                    notes.insert(note, at: 0); selectedID = note.id; currentSource = nil; apply(note)
-                    await refresh()
-                } catch { activity.fail(error); if isCompletionValid(completionTicket, operation: "createPageFromSource.error") { errorMessage = "Create page: " + error.localizedDescription } }
-            }
-        }
+        guard canOperateOnLoadedContent, !downloadingSources.contains(source.id), !hasPendingCloudSummary,
+              !generatingTopicPage, aiPageDraft == nil, aiPageSubmission == nil else { return }
+        aiPageSourceID = source.id
+        aiPageProviderOverride = provider
+        showTopicPage = true
     }
 
     func generateSourceSummary(_ source: SourceRecord) {
@@ -3068,16 +3043,21 @@ struct AISuggestion: Identifiable, Sendable {
                     let text = try await Task.detached { try CloudSummaryConfirmation.extractedText(snapshot) }.value
                     guard isCompletionValid(completionTicket, operation: "generateSourceSummary.read") else { return }
                     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ExternalAIError.emptyContent }
+                    cloudPublicationGuard.arm(requestID: requestID)
+                    let publicationGuard = cloudPublicationGuard
                     try await activity.start(contentSizeBytes: text.utf8.count)
-                    let summary = try await client.summarize(String(text.prefix(6000)))
+                    let enrichment = try await nativeEnrichment(client, text: String(text.prefix(6000)), mode: Self.enrichmentMode(.source(snapshot)))
+                    let summary = enrichment.summary
                     try Task.checkCancellation()
                     guard nativeSourceSummaryIDs[source.id] == requestID,
                           isCompletionValid(completionTicket, operation: "generateSourceSummary.generate") else { return }
                     guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                           summary.utf8.count <= ExternalAILimits.maximumSummaryBytes else { throw ExternalAIError.invalidResponse }
-                    let saved = try await repository.publishSourceSummary(snapshot, summary: summary,
+                    let saved = try await repository.publishSourceEnrichment(snapshot, summary: summary,
+                        classification: Self.classification(enrichment.classification, provenance: SummaryProvenance(provider: "On-device", model: "Apple Intelligence", generatedAt: Date())),
+                        title: Self.enrichmentMode(.source(snapshot)) == .initial ? enrichment.title : nil,
                         provenance: SummaryProvenance(provider: "On-device", model: "Apple Intelligence", generatedAt: Date()),
-                        validate: { try Task.checkCancellation() })
+                        validate: { try publicationGuard.validate(requestID: requestID) })
                     activity.complete()
                     guard isCompletionValid(completionTicket, operation: "generateSourceSummary.save") else { return }
                     if let i = sources.firstIndex(where: { $0.id == saved.id }) { sources[i] = saved }
@@ -3209,4 +3189,236 @@ struct AISuggestion: Identifiable, Sendable {
         } catch { if isCompletionValid(completionTicket, operation: "pasteSource.error") { errorMessage = error.localizedDescription }; return false }
     }
     func revealVault() { guard isVaultAvailable, let root else { return }; NSWorkspace.shared.open(root) }
+}
+
+
+extension AppModel {
+    /// Preparation and inference create only transient drafts. Publication is an explicit review action.
+    func cancelAIPage() {
+        if let activityID = aiPageActivityID, aiPagePublicationActivityID != activityID {
+            let recorder = activityRecorder
+            if aiPageDraft != nil {
+                Task { await recorder.updateOutcome(activityID, outcome: .rejected) }
+            } else if aiPageSubmission != nil {
+                Task { await recorder.finish(activityID, status: .cancelled, failureCode: .cancelled) }
+            }
+        }
+        aiPageActivityID = nil
+        cloudPublicationGuard.invalidate()
+        aiPageOperationID = nil
+        aiPageTask?.cancel(); aiPageTask = nil
+        aiPageDraft = nil; aiPageSubmission = nil
+        generatingTopicPage = false
+    }
+
+    func prepareAIPage(_ input: AIPageInput) async -> Bool {
+        guard canOperateOnLoadedContent, !generatingTopicPage, !hasPendingCloudSummary,
+              let repository, let lease = sessionManager.accessGate.currentLease else { return false }
+        if case .topic(let text) = input {
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 120 else { return false }
+        }
+        if let previousActivityID = aiPageActivityID {
+            let recorder = activityRecorder
+            if aiPageDraft != nil {
+                Task { await recorder.updateOutcome(previousActivityID, outcome: .rejected) }
+            } else if aiPageSubmission != nil {
+                Task { await recorder.finish(previousActivityID, status: .cancelled, failureCode: .cancelled) }
+            }
+        }
+        aiPageActivityID = nil
+        aiPageDraft = nil; aiPageSubmission = nil
+        let identity = UUID()
+        aiPageOperationID = identity
+        generatingTopicPage = true; errorMessage = nil
+        let provider = preferredAIProvider(for: .composePage, temporaryOverride: aiPageProviderOverride)
+        let client = aiClient
+        var startedActivityID: UUID?
+        var suggestionCompleted = false
+        defer { if aiPageOperationID == identity { generatingTopicPage = false } }
+        do {
+            guard await finishCurrentPage(), lease == sessionManager.accessGate.currentLease else { throw ExternalAIError.staleSession }
+            let revision = cloudEditorRevision, selection = selectedID
+            var source: SourceSummarySnapshot?
+            var references = "", fetched: WebSourceFetch?, address: String?
+            var retainSource = false
+            let text: String
+            switch input {
+            case .source(let id):
+                let snapshot = try await repository.sourceSummarySnapshot(id: id)
+                text = String(try CloudSummaryConfirmation.extractedText(snapshot).prefix(6000))
+                source = snapshot
+            case .topic(let topic):
+                let results = try await client.researchTopic(topic)
+                guard !results.isEmpty else { throw VaultError.unavailable("No readable web results were found.") }
+                let context = results.enumerated().map { "[\($0.offset + 1)] " + $0.element.title + "\n" + $0.element.text }.joined(separator: "\n\n")
+                text = OnDeviceSummary.topicPrompt(topic: topic, context: context)
+                references = "\n\n## Web references\n\n" + results.enumerated().map { offset, result in
+                    let label = result.title.replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
+                    return "- [\(offset + 1)] [\(label)](<\(result.url.absoluteString)>)"
+                }.joined(separator: "\n")
+            case .url(let value, let retain):
+                let url = try WebSourceFetcher.validatedURL(value)
+                let capture = try await aiPageFetch(url)
+                fetched = capture; address = url.absoluteString; retainSource = retain
+                if capture.filename.hasSuffix("pdf") {
+                    guard let pdf = PDFDocument(data: capture.data) else { throw ExternalAIError.emptyContent }
+                    text = String((pdf.string ?? "").prefix(6000))
+                } else {
+                    guard let decoded = String(data: capture.data, encoding: .utf8) else { throw ExternalAIError.emptyContent }
+                    text = String((capture.filename.hasSuffix("html") ? WebTopicResearch.plainText(decoded) : decoded).prefix(6000))
+                }
+                references = "\n\n## Web references\n\n- [Captured document](<" + url.absoluteString + ">)"
+            }
+            try Task.checkCancellation()
+            guard aiPageOperationID == identity, lease == sessionManager.accessGate.currentLease,
+                  selection == selectedID, revision == cloudEditorRevision else { throw ExternalAIError.staleContent }
+            let context = AIPageCompositionContext(id: UUID(), authority: ExternalAIVaultAuthority(lease: lease),
+                selection: selection, editorRevision: revision, inputText: text, source: source,
+                references: references, fetched: fetched, address: address, retainSource: retainSource)
+            if provider == .openAI {
+                if cloudSummaryOverride == nil { await externalAIService.refreshStatus() }
+                try Task.checkCancellation()
+                guard aiPageOperationID == identity else { throw ExternalAIError.cancelled }
+                try validateAIPageContext(context)
+                guard resolveAIAction(.composePage, provider: .openAI).isEligible else { return false }
+                let request = try ExternalAISummaryRequest(authority: context.authority, target: .page(context.id),
+                    contentRevision: UUID(), content: text, action: .composePage, mode: .compose)
+                let configuration = externalAIService.configuration
+                startedActivityID = request.id; aiPageActivityID = request.id
+                await activityRecorder.begin(id: request.id, vaultID: lease.vaultID,
+                    target: .init(type: .page, id: context.id), action: .composePage,
+                    executionMode: .userInvoked, provider: .openAI, modelID: configuration.model,
+                    contentSizeBytes: text.utf8.count)
+                guard aiPageOperationID == identity else { throw ExternalAIError.cancelled }
+                try validateAIPageContext(context)
+                guard configuration == externalAIService.configuration else { throw ExternalAIError.staleContent }
+                aiPageSubmission = AIPageSubmission(request: request, context: context, model: configuration.model)
+                if try !externalAIService.requiresSubmissionConfirmation(for: context.authority) {
+                    await generateCloudAIPage(userConfirmed: false)
+                }
+            } else {
+                guard admitsNativeAction(.composePage, provider: .onDevice) else { return false }
+                guard let enrich = client.enrich else { throw ExternalAIError.unsupportedAction }
+                startedActivityID = identity; aiPageActivityID = identity
+                await activityRecorder.begin(id: identity, vaultID: lease.vaultID,
+                    target: .init(type: .page, id: context.id), action: .composePage,
+                    executionMode: .userInvoked, provider: .onDevice, modelID: "apple-foundation-models",
+                    contentSizeBytes: text.utf8.count)
+                guard aiPageOperationID == identity else { throw ExternalAIError.cancelled }
+                try validateAIPageContext(context)
+                let enrichment = try await enrich(text, .compose)
+                guard aiPageOperationID == identity else { throw ExternalAIError.cancelled }
+                try validateAIPageContext(context)
+                await activityRecorder.finish(identity, status: .completed, outcome: .suggested)
+                suggestionCompleted = true
+                guard aiPageOperationID == identity else { throw ExternalAIError.cancelled }
+                try validateAIPageContext(context)
+                let provenance = SummaryProvenance(provider: "On-device", model: "Apple Intelligence", generatedAt: Date())
+                aiPageDraft = AIPageDraft(context: context, enrichment: enrichment, provenance: provenance, validate: { try Task.checkCancellation() })
+            }
+            return aiPageDraft != nil || aiPageSubmission != nil
+        } catch {
+            if let activityID = startedActivityID {
+                if suggestionCompleted { await activityRecorder.updateOutcome(activityID, outcome: .rejected) }
+                let failure = AIActivityOperation.failure(error)
+                await activityRecorder.finish(activityID, status: failure.status, failureCode: failure.code)
+                if aiPageActivityID == activityID { aiPageActivityID = nil }
+            }
+            if aiPageOperationID == identity { errorMessage = Self.cloudError(error) }
+            return false
+        }
+    }
+
+    func generateCloudAIPage(userConfirmed: Bool = true) async {
+        guard let submission = aiPageSubmission, let identity = aiPageOperationID else { return }
+        aiPageSubmission = nil
+        generatingTopicPage = true
+        var suggestionCompleted = false
+        defer { if aiPageOperationID == identity { generatingTopicPage = false } }
+        do {
+            try validateAIPageContext(submission.context)
+            guard submission.model == externalAIService.configuration.model else { throw ExternalAIError.staleContent }
+            let consent = try externalAIService.approveSubmission(submission.request, userConfirmed: userConfirmed)
+            let gateway = externalAIService.gateway
+            let result: ExternalAISummaryResult
+            if let override = cloudSummaryOverride { result = try await override(submission.request, consent) }
+            else { result = try await gateway.composePage(submission.request, consent: consent) }
+            guard result.requestID == submission.request.id, result.action == .composePage,
+                  result.authority == submission.context.authority, result.target == .page(submission.context.id),
+                  result.contentRevision == submission.request.contentRevision, result.mode == .compose,
+                  let enrichment = result.enrichment else { throw ExternalAIError.invalidResponse }
+            let validate: @Sendable () throws -> Void
+            if let override = cloudPublicationOverride { validate = try await override(result) }
+            else {
+                let permit = try await gateway.publicationPermit(for: result)
+                validate = { try permit.validateSynchronously() }
+            }
+            guard aiPageOperationID == identity else { throw ExternalAIError.cancelled }
+            try validateAIPageContext(submission.context)
+            let provenance = SummaryProvenance(provider: "OpenAI", model: result.provenance.model,
+                generatedAt: result.provenance.generatedAt)
+            await activityRecorder.finish(submission.request.id, status: .completed, outcome: .suggested)
+            suggestionCompleted = true
+            guard aiPageOperationID == identity else { throw ExternalAIError.cancelled }
+            try validateAIPageContext(submission.context)
+            aiPageDraft = AIPageDraft(context: submission.context, enrichment: enrichment, provenance: provenance, validate: validate)
+        } catch {
+            if suggestionCompleted { await activityRecorder.updateOutcome(submission.request.id, outcome: .rejected) }
+            let failure = AIActivityOperation.failure(error)
+            await activityRecorder.finish(submission.request.id, status: failure.status, failureCode: failure.code)
+            if aiPageActivityID == submission.request.id { aiPageActivityID = nil }
+            if aiPageOperationID == identity { errorMessage = Self.cloudError(error) }
+        }
+    }
+
+    private func validateAIPageContext(_ context: AIPageCompositionContext) throws {
+        try Task.checkCancellation()
+        guard canOperateOnLoadedContent, context.authority.matches(sessionManager.accessGate.currentLease),
+              context.selection == selectedID, context.editorRevision == cloudEditorRevision else { throw ExternalAIError.staleContent }
+    }
+
+    func publishAIPageDraft(title reviewedTitle: String) async -> Bool {
+        guard let draft = aiPageDraft, let identity = aiPageOperationID, let repository else { return false }
+        let activityID = aiPageActivityID
+        aiPagePublicationActivityID = activityID
+        generatingTopicPage = true
+        defer {
+            if aiPagePublicationActivityID == activityID { aiPagePublicationActivityID = nil }
+            if aiPageOperationID == identity { generatingTopicPage = false }
+        }
+        do {
+            try validateAIPageContext(draft.context)
+            try draft.validate()
+            guard let generatedBody = draft.enrichment.body, draft.enrichment.title != nil else { throw ExternalAIError.invalidResponse }
+            var source = draft.context.source
+            if draft.context.retainSource, let capture = draft.context.fetched, let address = draft.context.address {
+                let retained = try await repository.importURLSource(address, fetch: { _ in capture })
+                source = try await repository.sourceSummarySnapshot(id: retained.id)
+            }
+            try validateAIPageContext(draft.context)
+            guard aiPageOperationID == identity else { throw ExternalAIError.cancelled }
+            cloudPublicationGuard.arm(requestID: identity)
+            let publicationGuard = cloudPublicationGuard
+            let saved = try await repository.createEnrichedPage(id: draft.id, title: reviewedTitle,
+                body: generatedBody + draft.context.references, summary: draft.enrichment.summary,
+                classification: Self.classification(draft.enrichment.classification, provenance: draft.provenance),
+                provenance: draft.provenance, source: source, validate: {
+                    try publicationGuard.validate(requestID: identity)
+                    try draft.validate()
+                })
+            if let activityID { await activityRecorder.updateOutcome(activityID, outcome: .published) }
+            guard aiPageOperationID == identity, draft.context.authority.matches(sessionManager.accessGate.currentLease) else { return false }
+            aiPageDraft = nil; aiPageSubmission = nil; aiPageOperationID = nil; aiPageActivityID = nil
+            errorMessage = nil; searchText = ""; scope = .wiki; reading = false
+            notes.insert(saved, at: 0); selectedID = saved.id; currentSource = nil; apply(saved)
+            await refresh()
+            return true
+        } catch {
+            if aiPageOperationID != identity, let activityID {
+                await activityRecorder.updateOutcome(activityID, outcome: .rejected)
+            }
+            if aiPageOperationID == identity { errorMessage = Self.cloudError(error) }
+            return false
+        }
+    }
 }
