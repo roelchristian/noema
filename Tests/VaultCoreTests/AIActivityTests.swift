@@ -18,12 +18,12 @@ import Testing
     private func scalar(_ url: URL, _ sql: String) throws -> Int {
         var db: OpaquePointer?
         #expect(sqlite3_open(url.path, &db) == SQLITE_OK)
-        let db = try #require(db); defer { sqlite3_close(db) }
+        let pointer = try #require(db); defer { sqlite3_close(pointer) }
         var statement: OpaquePointer?
-        #expect(sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK)
-        let statement = try #require(statement); defer { sqlite3_finalize(statement) }
-        #expect(sqlite3_step(statement) == SQLITE_ROW)
-        return Int(sqlite3_column_int64(statement, 0))
+        #expect(sqlite3_prepare_v2(pointer, sql, -1, &statement, nil) == SQLITE_OK)
+        let prepared = try #require(statement); defer { sqlite3_finalize(prepared) }
+        #expect(sqlite3_step(prepared) == SQLITE_ROW)
+        return Int(sqlite3_column_int64(prepared, 0))
     }
     /// Frozen v1 schema: migration tests must not derive their fixture from v2.
     private func createV1Database(_ url: URL) throws {
