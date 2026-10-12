@@ -171,7 +171,7 @@ struct VaultUIIntegrationTests {
         #expect(model.currentNote?.isEditingLocked == false)
         #expect(model.notes.first?.contentHash == note.contentHash)
         #expect(model.errorMessage?.contains("Could not change editing lock") == true)
-        #expect(try await repo.scan().notes.first?.body == "External edit")
+        #expect(BlockDocumentCodec.markdownBody(try #require(try await repo.scan().notes.first).body) == "External edit")
         model.notes = [changed]; model.currentNote = changed; model.body = changed.body
         model.toggleEditingLock(note.id)
         for _ in 0..<200 {
@@ -201,7 +201,7 @@ struct VaultUIIntegrationTests {
         }
         let saved = try #require(try await repo.scan().notes.first)
         #expect(saved.isEditingLocked)
-        #expect(saved.body == "Pending edit")
+        #expect(BlockDocumentCodec.markdownBody(saved.body) == "Pending edit")
         #expect(saved.updatedAt > scanned.updatedAt)
         #expect(model.currentNote?.updatedAt == saved.updatedAt)
         #expect(!model.dirty)

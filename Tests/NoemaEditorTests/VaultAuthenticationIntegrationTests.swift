@@ -53,7 +53,7 @@ struct VaultAuthenticationIntegrationTests {
         await retry.value
         #expect(f.model.isVaultAvailable && f.model.errorMessage == nil)
         #expect(indices.value == 1)
-        #expect(f.model.notes.contains { $0.id == note.id && $0.body == "Canonical body" })
+        #expect(f.model.notes.contains { $0.id == note.id && BlockDocumentCodec.markdownBody($0.body) == "Canonical body" })
         #expect(f.model.recoveredDrafts.contains { $0.id == draft.id && $0.body == "Unsaved recovery body" })
         #expect(f.model.damagedRecoveryEntries.count == 1)
         #expect(try Data(contentsOf: damaged) == damagedBytes)
@@ -140,7 +140,7 @@ struct VaultAuthenticationIntegrationTests {
         await f.auth.waitForCalls(1)
         let manifest = try FileVaultRepository.inspectManifest(at: createdRoot)
         let original = try Data(contentsOf: createdRoot.appendingPathComponent("vault.json"))
-        #expect(manifest.formatVersion == 1)
+        #expect(manifest.formatVersion == 2)
         #expect(f.manager.accessAuthenticationRequired(for: manifest.id))
         #expect(!f.model.isVaultAvailable && f.model.index == nil)
         await f.model.cancelVaultAuthentication()

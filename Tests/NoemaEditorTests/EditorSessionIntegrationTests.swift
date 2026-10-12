@@ -125,7 +125,7 @@ import VaultCore
         view.undoManager?.beginUndoGrouping()
         view.insertText("Saved ", replacementRange: NSRange(location: 0, length: 0))
         view.undoManager?.endUndoGrouping()
-        #expect(model.body == "Original")
+        #expect(BlockDocumentCodec.markdownBody(model.body) == "Original")
         #expect(await model.saveCurrent())
         var batch = try await repository.scan()
         #expect(BlockDocumentCodec.decode(try #require(batch.notes.first(where: { $0.id == page.id })).body).blocks.first?.text == "Saved Original")

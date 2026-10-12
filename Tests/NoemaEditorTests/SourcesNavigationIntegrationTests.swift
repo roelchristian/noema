@@ -179,10 +179,14 @@ struct SourcesNavigationIntegrationTests {
         try store.base.write(Data("Corruption".utf8), at: original, condition: .replace(expected: bytes))
         await model.refresh()
         await waitUntil {
-            model.sources.isEmpty && model.currentSource == nil && model.selectedID == nil &&
+            model.currentSource?.contentState == .unavailable &&
             model.body.isEmpty && model.preview.isEmpty && model.sourceAvailability.isEmpty
         }
-        #expect(model.sources.isEmpty && model.currentSource == nil && model.selectedID == nil)
+        // Canonical source identity survives corruption; its plaintext becomes unavailable.
+        #expect(model.sources.map(\.id) == [source.id])
+        #expect(model.currentSource?.id == source.id && model.selectedID == source.id)
+        #expect(model.currentSource?.contentState == .unavailable)
+        #expect(model.currentSource?.availabilityIssue?.contains("checksum") == true)
         #expect(model.body.isEmpty && model.preview.isEmpty && model.sourceAvailability.isEmpty)
         #expect(await model.closeVault())
     }
@@ -220,6 +224,16 @@ private final class NavigationSourceStore: VaultContentStore {
     private func validate(_ path: String) throws {
         if path.contains("/original."), unavailable.withLock({ $0 }) { throw VaultContentStoreError.unavailable(path) }
     }
+    func synchronize(at path: String) throws { try base.synchronize(at: path) }
+    func publishCanonicalOriginal(_ data: Data, metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.publishCanonicalOriginal(data, metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+    func verifyCanonicalOriginal(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.verifyCanonicalOriginal(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+    func verifyCanonicalLinked(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.verifyCanonicalLinked(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
     func createDirectory(at path: String) throws { try base.createDirectory(at: path) }
     func read(at path: String) throws -> Data { try validate(path); return try base.read(at: path) }
     func changeToken(at path: String) throws -> VaultContentChangeToken? { try validate(path); return try base.changeToken(at: path) }
@@ -233,6 +247,16 @@ private final class SummaryStoreProbe: VaultContentStore {
     let base: PlaintextVaultContentStore
     let reads = Mutex([String]())
     init(root: URL) throws { base = try PlaintextVaultContentStore(root: root) }
+    func synchronize(at path: String) throws { try base.synchronize(at: path) }
+    func publishCanonicalOriginal(_ data: Data, metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.publishCanonicalOriginal(data, metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+    func verifyCanonicalOriginal(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.verifyCanonicalOriginal(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+    func verifyCanonicalLinked(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.verifyCanonicalLinked(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
     func createDirectory(at path: String) throws { try base.createDirectory(at: path) }
     func read(at path: String) throws -> Data {
         reads.withLock { $0.append(path) }

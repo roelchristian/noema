@@ -136,7 +136,7 @@ struct AppModelSessionIntegrationTests {
                 try await Task.sleep(for: .milliseconds(20))
             }
             #expect(!model.recoveredDrafts.contains { $0.id == draft.id })
-            #expect(model.notes.contains { $0.title == draft.title + " (recovered)" && $0.body == draft.body && $0.tags == draft.tags })
+            #expect(model.notes.contains { $0.title == draft.title + " (recovered)" && BlockDocumentCodec.markdownBody($0.body) == draft.body && $0.tags == draft.tags })
             #expect(model.errorMessage == nil)
             #expect(model.damagedRecoveryEntries.count == 1)
             #expect(try Data(contentsOf: corrupt) == original)
