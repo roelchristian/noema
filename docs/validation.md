@@ -21,8 +21,9 @@ codesign --verify --deep --strict dist/noema.app
 git diff --check
 ```
 
-Build/test wrappers enforce storage routing. CI also runs hygiene and maintenance
-regressions. Storage review is separately required by the
+Build/test wrappers enforce storage routing. This checkout has no configured GitHub
+Actions workflows; local validation must run explicitly, and remote CI execution
+must not be assumed. Storage review is separately required by the
 [storage contract](contracts/storage-boundary.md#required-author-and-reviewer-disposition).
 Never treat a lexical scan as a semantic boundary proof.
 
@@ -83,6 +84,21 @@ them. Long-document fixture coverage does not establish sustained typing/frame t
   additional live checks deferred. Conditional remounting may reset scroll position.
 - Cryptographic storage, key/recovery design, encrypted draft/index/preview policy
   and device acceptance remain prerequisites. Encrypted vault creation is disabled.
+
+### Native authentication device acceptance
+
+All items are **pending**. Deterministic context tests establish attempt ownership,
+finite error classification and cancellation/late-callback behavior, not actual
+macOS prompt behavior. Exercise Touch ID where available, system-password fallback,
+user/system cancellation, unavailable authentication, app switching during a prompt,
+keyboard navigation and VoiceOver in the signed development bundle. Verify repeated
+operations create independent prompts and a cancelled attempt cannot complete a
+later operation. Automated success does not close these device/accessibility gaps.
+For an authentication-enabled plaintext vault, verify first open, explicit unlock,
+close/reopen, app restart and same-folder permission recovery each authenticate before
+showing content. Cancel each operation and retry; check that changing either direction
+of the access preference authenticates, and a cancelled first open preserves the newly
+created vault. Unprotected legacy vaults should keep their ordinary open behavior.
 
 <a id="d02a-device-acceptance-checklist"></a>
 
