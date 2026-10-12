@@ -7,16 +7,12 @@ public struct PageSummarySnapshot: Sendable {
     public var sourceRevision: String {
         digest(Data(BlockDocumentCodec.readable(BlockDocumentCodec.decode(note.body).withoutAISummary).utf8))
     }
-    let bytes: Data
-    let token: VaultContentChangeToken?
 }
 public struct SourceSummarySnapshot: Sendable {
     public let source: SourceRecord
     /// Original bytes permit complete extraction, including PDFs, without using cached excerpts.
     public let original: Data
     public var sourceRevision: String { digest(original) }
-    let metadataBytes: Data
-    let metadataToken: VaultContentChangeToken?
     let originalToken: VaultContentChangeToken?
     var canonicalRevision: BlockStoreRevision? = nil
 }
@@ -25,51 +21,24 @@ extension FileVaultRepository {
     public func pageSummarySnapshot(_ note: NoteRecord) async throws -> PageSummarySnapshot {
         try validateAccess(operation: "pageSummarySnapshot")
         try Task.checkCancellation()
-        if let sqliteBlockStore {
-            let actual = try await sqliteBlockStore.loadPage(pageID: note.id).record
-            guard actual.contentHash == note.contentHash, actual.body == note.body, !actual.isEditingLocked else { throw VaultContentStoreError.stale(note.relativePath) }
-            return PageSummarySnapshot(note: actual, bytes: Data(), token: nil)
-        }
-        let before = try contentStore.changeToken(at: note.relativePath)
-        let bytes = try contentStore.read(at: note.relativePath)
-        let after = try contentStore.changeToken(at: note.relativePath)
-        guard before == after else { throw VaultContentStoreError.stale(note.relativePath) }
-        let actual = try NoteCodec.decode(bytes, path: note.relativePath, vaultID: manifest.id)
-        guard actual.id == note.id, actual.contentHash == note.contentHash, actual.body == note.body,
-              !actual.isEditingLocked else { throw VaultContentStoreError.stale(note.relativePath) }
-        return PageSummarySnapshot(note: actual, bytes: bytes, token: after)
+        let actual = try await sqliteBlockStore.loadPage(pageID: note.id).record
+        guard actual.contentHash == note.contentHash, actual.body == note.body, !actual.isEditingLocked else { throw VaultContentStoreError.stale(note.relativePath) }
+        return PageSummarySnapshot(note: actual)
     }
 
     public func sourceSummarySnapshot(id: UUID) async throws -> SourceSummarySnapshot {
         try validateAccess(operation: "sourceSummarySnapshot")
         try Task.checkCancellation()
         let source = try await loadSource(id: id, verifyOriginal: true)
-        if manifest.canonicalStorage {
-            let captured = try await canonicalSourceMetadata(id: id)
-            let before = try summaryOriginalToken(source)
-            let original = try Self.readSourceOriginal(source, root: root, contentStore: contentStore)
-            let after = try summaryOriginalToken(source)
-            guard before == after, try await canonicalSourceMetadata(id: id).revision == captured.revision else {
-                throw VaultContentStoreError.stale("canonical source")
-            }
-            return SourceSummarySnapshot(source: SourceRecord(metadata: captured.metadata, body: source.body),
-                original: original, metadataBytes: try JSONEncoder().encode(captured.metadata),
-                metadataToken: nil, originalToken: after, canonicalRevision: captured.revision)
-        }
-        let path = "Sources/" + id.uuidString.lowercased() + "/metadata.json"
-        let metadataBefore = try contentStore.changeToken(at: path)
-        let bytes = try contentStore.read(at: path)
-        let metadataAfter = try contentStore.changeToken(at: path)
-        guard metadataBefore == metadataAfter else { throw VaultContentStoreError.stale(path) }
-        let metadata = try JSONDecoder().decode(SourceMetadata.self, from: bytes)
-        guard metadata.id == source.id, metadata.aiSummary == source.metadata.aiSummary,
-              metadata.sha256 == source.metadata.sha256 else { throw VaultContentStoreError.stale(path) }
-        let originalBefore = try summaryOriginalToken(source)
+        let captured = try await canonicalSourceMetadata(id: id)
+        let before = try summaryOriginalToken(source)
         let original = try Self.readSourceOriginal(source, root: root, contentStore: contentStore)
-        let originalAfter = try summaryOriginalToken(source)
-        guard originalBefore == originalAfter else { throw VaultContentStoreError.stale(path) }
-        return SourceSummarySnapshot(source: SourceRecord(metadata: metadata, body: source.body),
-            original: original, metadataBytes: bytes, metadataToken: metadataAfter, originalToken: originalAfter)
+        let after = try summaryOriginalToken(source)
+        guard before == after, try await canonicalSourceMetadata(id: id).revision == captured.revision else {
+            throw VaultContentStoreError.stale("canonical source")
+        }
+        return SourceSummarySnapshot(source: SourceRecord(metadata: captured.metadata, body: source.body),
+            original: original, originalToken: after, canonicalRevision: captured.revision)
     }
 
     /// The actor rechecks content and prior summary immediately before a conditional write.
@@ -80,10 +49,7 @@ extension FileVaultRepository {
         try validateAccess(operation: "publishPageArtifact")
         try Task.checkCancellation()
         let path = snapshot.note.relativePath
-        if sqliteBlockStore == nil {
-            guard try contentStore.read(at: path) == snapshot.bytes,
-                  try contentStore.changeToken(at: path) == snapshot.token else { throw VaultContentStoreError.stale(path) }
-        }
+
         var updated = snapshot.note
         var document = BlockDocumentCodec.decode(updated.body)
         guard !document.unsupportedVersion else { throw VaultContentStoreError.stale(path) }
@@ -94,18 +60,12 @@ extension FileVaultRepository {
         document.blocks[0].metadata.extra["aiSourceRevision"] = provenance.sourceRevision ?? snapshot.sourceRevision
         updated.body = BlockDocumentCodec.encode(document)
         updated.updatedAt = ISO8601DateFormatter().string(from: Date())
-        let data = try NoteCodec.encode(updated)
         try Task.checkCancellation()
         try validate()
         try validateAccess(operation: "publishArtifact.write")
-        if let sqliteBlockStore {
-            updated.inlineTags = MarkdownService.analyze(updated.body).tags
-            _ = try await sqliteBlockStore.savePage(record: updated, document: document, condition: .replace(expected: sqliteRevision(snapshot.note)), validating: validate)
-            return try await sqliteBlockStore.loadPage(pageID: updated.id).record
-        }
-        try contentStore.write(data, at: path, condition: .replace(expected: snapshot.bytes))
-        invalidateSummaryCaches(pagePath: path, sourceID: nil)
-        return try NoteCodec.decode(data, path: path, vaultID: manifest.id)
+        updated.inlineTags = MarkdownService.analyze(updated.body).tags
+        _ = try await sqliteBlockStore.savePage(record: updated, document: document, condition: .replace(expected: sqliteRevision(snapshot.note)), validating: validate)
+        return try await sqliteBlockStore.loadPage(pageID: updated.id).record
     }
 
     public func publishSourceSummary(_ snapshot: SourceSummarySnapshot, summary: String,
@@ -113,39 +73,14 @@ extension FileVaultRepository {
     ) async throws -> SourceRecord {
         try validateAccess(operation: "publishSourceArtifact")
         try Task.checkCancellation()
-        if manifest.canonicalStorage {
-            var metadata = snapshot.source.metadata
-            var provenance = provenance
-            provenance.sourceRevision = provenance.sourceRevision ?? snapshot.sourceRevision
-            metadata.aiSummary = summary; metadata.aiSummaryProvenance = provenance
-            return try await publishSourceMetadata(snapshot, metadata: metadata, validate: validate)
-        }
-        let source = snapshot.source
-        let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
-        guard try contentStore.read(at: path) == snapshot.metadataBytes,
-              try contentStore.changeToken(at: path) == snapshot.metadataToken,
-              try summaryOriginalToken(source) == snapshot.originalToken,
-              try Self.readSourceOriginal(source, root: root, contentStore: contentStore) == snapshot.original,
-              try summaryOriginalToken(source) == snapshot.originalToken else {
-            throw VaultContentStoreError.stale(path)
-        }
-        var metadata = try JSONDecoder().decode(SourceMetadata.self, from: snapshot.metadataBytes)
-        guard metadata.id == source.id, metadata.aiSummary == source.metadata.aiSummary else {
-            throw VaultContentStoreError.stale(path)
-        }
+        var metadata = snapshot.source.metadata
         var provenance = provenance
         provenance.sourceRevision = provenance.sourceRevision ?? snapshot.sourceRevision
         metadata.aiSummary = summary; metadata.aiSummaryProvenance = provenance
-        let data = try JSONEncoder().encode(metadata)
-        try Task.checkCancellation()
-        try validate()
-        try validateAccess(operation: "publishArtifact.write")
-        try contentStore.write(data, at: path, condition: .replace(expected: snapshot.metadataBytes))
-        invalidateSummaryCaches(pagePath: nil, sourceID: source.id)
-        return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: source.availabilityIssue)
+        return try await publishSourceMetadata(snapshot, metadata: metadata, validate: validate)
     }
 
-    /// Publishes all generated artifacts in one conditional Wiki write. A nil classification
+    /// Publishes all generated artifacts in one conditional canonical write. A nil classification
     /// explicitly means unavailable; legacy/manual values survive until enrichment occurs.
     public func publishPageEnrichment(_ snapshot: PageSummarySnapshot, summary: String,
         classification: LCCClassification?, title: String? = nil, provenance: SummaryProvenance,
@@ -205,56 +140,39 @@ extension FileVaultRepository {
         let enriched = try enrichedBody(body, summary: summary, provenance: provenance)
         let now = timestamp()
         var note = NoteRecord(id: id, title: title, aliases: [], tags: [], inlineTags: [],
-            createdAt: now, updatedAt: now, body: enriched, relativePath: availablePath(title: title),
+            createdAt: now, updatedAt: now, body: enriched, relativePath: "sqlite/" + id.uuidString.lowercased(),
             contentHash: "", originalHeader: nil)
         note.sourceIDs = source.map { [$0.source.id] }
         note.aiTitleProvenance = provenance
         note.lcc = classification?.code; note.lccClassification = classification
         note.aiLCCProvenance = classification == nil ? nil : provenance
-        let data = try NoteCodec.encode(note)
         if let source { try await validateSourceSnapshot(source) }
         try Task.checkCancellation()
         try validate()
         try validateAccess(operation: "createEnrichedPage.write")
-        if let sqliteBlockStore {
-            note.relativePath = "sqlite/" + note.id.uuidString.lowercased()
-            note.inlineTags = MarkdownService.analyze(note.body).tags
-            if manifest.canonicalStorage, let source {
-                guard let revision = source.canonicalRevision else { throw VaultError.invalid("Missing source revision.") }
-                try await canonicalPublishSourceAndPage(metadata: source.source.metadata, expected: revision,
-                    page: CanonicalPagePublication(record: note, document: BlockDocumentCodec.decode(note.body), condition: .createOnly), validating: validate)
-            } else {
-                _ = try await sqliteBlockStore.savePage(record: note, document: BlockDocumentCodec.decode(note.body), condition: .createOnly, validating: validate)
-            }
-            return try await sqliteBlockStore.loadPage(pageID: note.id).record
+        note.relativePath = "sqlite/" + note.id.uuidString.lowercased()
+        note.inlineTags = MarkdownService.analyze(note.body).tags
+        if let source {
+            guard let revision = source.canonicalRevision else { throw VaultError.invalid("Missing source revision.") }
+            try await canonicalPublishSourceAndPage(metadata: source.source.metadata, expected: revision,
+                page: CanonicalPagePublication(record: note, document: BlockDocumentCodec.decode(note.body), condition: .createOnly), validating: validate)
+        } else {
+            _ = try await sqliteBlockStore.savePage(record: note, document: BlockDocumentCodec.decode(note.body), condition: .createOnly, validating: validate)
         }
-        try contentStore.write(data, at: note.relativePath, condition: .createOnly)
-        invalidateSummaryCaches(pagePath: note.relativePath, sourceID: nil)
-        return try NoteCodec.decode(data, path: note.relativePath, vaultID: manifest.id)
+        return try await sqliteBlockStore.loadPage(pageID: note.id).record
     }
 
     public func validateSourceSnapshot(_ snapshot: SourceSummarySnapshot) async throws {
         try validateAccess(operation: "validateSourceSnapshot")
         try Task.checkCancellation()
-        if manifest.canonicalStorage {
-            guard let revision = snapshot.canonicalRevision,
-                  try await canonicalSourceMetadata(id: snapshot.source.id).revision == revision,
-                  try summaryOriginalToken(snapshot.source) == snapshot.originalToken,
-                  try Self.readSourceOriginal(snapshot.source, root: root, contentStore: contentStore) == snapshot.original,
-                  try summaryOriginalToken(snapshot.source) == snapshot.originalToken else {
-                throw VaultContentStoreError.stale("canonical source")
-            }
-            return
+        guard let revision = snapshot.canonicalRevision,
+              try await canonicalSourceMetadata(id: snapshot.source.id).revision == revision,
+              try summaryOriginalToken(snapshot.source) == snapshot.originalToken,
+              try Self.readSourceOriginal(snapshot.source, root: root, contentStore: contentStore) == snapshot.original,
+              try summaryOriginalToken(snapshot.source) == snapshot.originalToken else {
+            throw VaultContentStoreError.stale("canonical source")
         }
-        let source = snapshot.source
-        let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
-        guard try contentStore.read(at: path) == snapshot.metadataBytes,
-              try contentStore.changeToken(at: path) == snapshot.metadataToken,
-              try summaryOriginalToken(source) == snapshot.originalToken,
-              try Self.readSourceOriginal(source, root: root, contentStore: contentStore) == snapshot.original,
-              try summaryOriginalToken(source) == snapshot.originalToken else {
-            throw VaultContentStoreError.stale(path)
-        }
+        return
     }
 
     private func needsGeneratedTitle(_ title: String) -> Bool {
@@ -376,29 +294,13 @@ extension FileVaultRepository {
         try validateAccess(operation: "publishPageArtifact")
         try Task.checkCancellation()
         let path = snapshot.note.relativePath
-        if let sqliteBlockStore {
-            guard !snapshot.note.isEditingLocked else { throw VaultContentStoreError.stale(path) }
-            var updated = updated
-            updated.updatedAt = timestamp()
-            try validate()
-            updated.inlineTags = MarkdownService.analyze(updated.body).tags
-            _ = try await sqliteBlockStore.savePage(record: updated, document: BlockDocumentCodec.decode(updated.body), condition: .replace(expected: sqliteRevision(snapshot.note)), validating: validate)
-            return try await sqliteBlockStore.loadPage(pageID: updated.id).record
-        }
-        guard !snapshot.note.isEditingLocked,
-              try contentStore.read(at: path) == snapshot.bytes,
-              try contentStore.changeToken(at: path) == snapshot.token else {
-            throw VaultContentStoreError.stale(path)
-        }
+        guard !snapshot.note.isEditingLocked else { throw VaultContentStoreError.stale(path) }
         var updated = updated
         updated.updatedAt = timestamp()
-        let data = try NoteCodec.encode(updated)
-        try Task.checkCancellation()
         try validate()
-        try validateAccess(operation: "publishArtifact.write")
-        try contentStore.write(data, at: path, condition: .replace(expected: snapshot.bytes))
-        invalidateSummaryCaches(pagePath: path, sourceID: nil)
-        return try NoteCodec.decode(data, path: path, vaultID: manifest.id)
+        updated.inlineTags = MarkdownService.analyze(updated.body).tags
+        _ = try await sqliteBlockStore.savePage(record: updated, document: BlockDocumentCodec.decode(updated.body), condition: .replace(expected: sqliteRevision(snapshot.note)), validating: validate)
+        return try await sqliteBlockStore.loadPage(pageID: updated.id).record
     }
 
     private func publishSourceMetadata(_ snapshot: SourceSummarySnapshot, metadata: SourceMetadata,
@@ -406,30 +308,11 @@ extension FileVaultRepository {
     ) async throws -> SourceRecord {
         try validateAccess(operation: "publishSourceArtifact")
         try Task.checkCancellation()
-        if manifest.canonicalStorage {
-            try await validateSourceSnapshot(snapshot)
-            guard let revision = snapshot.canonicalRevision else { throw VaultError.invalid("Missing canonical source revision.") }
-            try await canonicalUpdateSource(metadata: metadata, expected: revision, validating: validate)
-            return SourceRecord(metadata: metadata, body: snapshot.source.body,
-                availabilityIssue: snapshot.source.availabilityIssue, contentState: snapshot.source.contentState)
-        }
-        let source = snapshot.source
-        let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
-        guard try contentStore.read(at: path) == snapshot.metadataBytes,
-              try contentStore.changeToken(at: path) == snapshot.metadataToken,
-              try summaryOriginalToken(source) == snapshot.originalToken,
-              try Self.readSourceOriginal(source, root: root, contentStore: contentStore) == snapshot.original,
-              try summaryOriginalToken(source) == snapshot.originalToken else {
-            throw VaultContentStoreError.stale(path)
-        }
-        let data = try JSONEncoder().encode(metadata)
-        try Task.checkCancellation()
-        try validate()
-        try validateAccess(operation: "publishArtifact.write")
-        try contentStore.write(data, at: path, condition: .replace(expected: snapshot.metadataBytes))
-        invalidateSummaryCaches(pagePath: nil, sourceID: source.id)
-        return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: source.availabilityIssue,
-            contentState: source.contentState)
+        try await validateSourceSnapshot(snapshot)
+        guard let revision = snapshot.canonicalRevision else { throw VaultError.invalid("Missing canonical source revision.") }
+        try await canonicalUpdateSource(metadata: metadata, expected: revision, validating: validate)
+        return SourceRecord(metadata: metadata, body: snapshot.source.body,
+            availabilityIssue: snapshot.source.availabilityIssue, contentState: snapshot.source.contentState)
     }
 
     private func summaryOriginalToken(_ source: SourceRecord) throws -> VaultContentChangeToken? {

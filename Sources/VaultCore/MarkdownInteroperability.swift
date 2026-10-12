@@ -26,15 +26,7 @@ public extension FileVaultRepository {
     /// Exports canonical content, never an implicit editor draft or an autosave mirror.
     func exportMarkdown(pageID: UUID, format: MarkdownExportFormat = .noema) async throws -> MarkdownPageExport {
         try validateAccess(operation: "exportMarkdown")
-        let note: NoteRecord
-        if let sqliteBlockStore {
-            note = try await sqliteBlockStore.loadPage(pageID: pageID).record
-        } else {
-            guard let found = try await scan().notes.first(where: { $0.id == pageID }) else {
-                throw VaultError.unavailable("Page is missing.")
-            }
-            note = found
-        }
+        let note = try await sqliteBlockStore.loadPage(pageID: pageID).record
         try Task.checkCancellation()
         try validateAccess(operation: "exportMarkdown.publish")
         return try Self.markdownExport(note, format: format)
@@ -44,9 +36,7 @@ public extension FileVaultRepository {
     /// interchange bundle, not a backup of sources, trash, recovery or vault policy.
     func exportVaultMarkdown(format: MarkdownExportFormat = .noema) async throws -> [MarkdownPageExport] {
         try validateAccess(operation: "exportVaultMarkdown")
-        let notes: [NoteRecord]
-        if let sqliteBlockStore { notes = try await sqliteBlockStore.allPages() }
-        else { notes = try await scan().notes }
+        let notes = try await sqliteBlockStore.allPages()
         let exports = try notes.map { try Self.markdownExport($0, format: format) }
         try Task.checkCancellation()
         try validateAccess(operation: "exportVaultMarkdown.publish")
@@ -65,6 +55,8 @@ public extension FileVaultRepository {
         guard !imported.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw VaultError.invalid("A wiki page needs a title.")
         }
+        let importedHeader = try imported.originalHeader.flatMap { try Yams.compose(yaml: $0) }
+        if importedHeader?["id"] == nil { imported.id = UUID() }
         let document = BlockDocumentCodec.decode(imported.body)
         guard !document.unsupportedVersion, BlockDocumentCodec.valid(document) else {
             throw VaultError.invalid("Unsupported Noema document metadata. Keep the original Markdown for recovery.")
@@ -98,17 +90,11 @@ public extension FileVaultRepository {
             }
             if imported.createdAt.isEmpty { imported.createdAt = timestamp() }
             if imported.updatedAt.isEmpty { imported.updatedAt = imported.createdAt }
-            imported.relativePath = "Wiki/" + imported.id.uuidString.lowercased() + ".md"
+            imported.relativePath = "sqlite/" + imported.id.uuidString.lowercased()
             try Task.checkCancellation()
             try validateAccess(operation: "importMarkdown.publish")
-            if let sqliteBlockStore {
-                imported.relativePath = "sqlite/" + imported.id.uuidString.lowercased()
-                _ = try await sqliteBlockStore.savePage(record: imported, document: preserved, condition: .createOnly)
-                return try await sqliteBlockStore.loadPage(pageID: imported.id).record
-            }
-            let encoded = try NoteCodec.encode(imported)
-            try contentStore.write(encoded, at: imported.relativePath, condition: .createOnly)
-            return try NoteCodec.decode(encoded, path: imported.relativePath, vaultID: manifest.id)
+            _ = try await sqliteBlockStore.savePage(record: imported, document: preserved, condition: .createOnly)
+            return try await sqliteBlockStore.loadPage(pageID: imported.id).record
         }
     }
 

@@ -299,7 +299,6 @@ struct AISuggestion: Identifiable, Sendable {
     private var repository: FileVaultRepository?
     var index: (any SearchIndex)?
     private var recovery: RecoveryStore?
-    private var watcher: VaultWatcher?
     private var scopeURL: URL?
     private var autosaveTask: Task<Void, Never>?
     private var queryTask: Task<Void, Never>?
@@ -417,7 +416,7 @@ struct AISuggestion: Identifiable, Sendable {
         vaultAccessAuthenticationRequired = nextState.vaultID.map { sessionManager.accessAuthenticationRequired(for: $0) } ?? false
         switch nextState {
         case .closed:
-            let hadActiveResources = root != nil || lockedVaultURL != nil || activeSession != nil || activeLease != nil || repository != nil || index != nil || recovery != nil || watcher != nil || !notes.isEmpty || !sources.isEmpty || currentNote != nil || currentSource != nil
+            let hadActiveResources = root != nil || lockedVaultURL != nil || activeSession != nil || activeLease != nil || repository != nil || index != nil || recovery != nil || !notes.isEmpty || !sources.isEmpty || currentNote != nil || currentSource != nil
             lockedVaultURL = nil
             lockedVaultBookmark = nil
             vaultName = "Noema"
@@ -447,7 +446,7 @@ struct AISuggestion: Identifiable, Sendable {
             busy = true
 
         case .locked(_, let lockedRoot, let name, _):
-            let needsTeardown = root != nil || repository != nil || index != nil || recovery != nil || watcher != nil || !notes.isEmpty || !sources.isEmpty || currentNote != nil || currentSource != nil
+            let needsTeardown = root != nil || repository != nil || index != nil || recovery != nil || !notes.isEmpty || !sources.isEmpty || currentNote != nil || currentSource != nil
             lockedVaultURL = lockedRoot
             vaultName = name
             if needsTeardown {
@@ -688,7 +687,6 @@ struct AISuggestion: Identifiable, Sendable {
         vaultCommandPanel = nil; sourceCommandPanel = nil
         isChoosingVault = false; isChoosingSource = false
         SourceReader.closeAll()
-        watcher?.stop(); watcher = nil
         if let scopeURL { securityScopeReleaser(scopeURL); self.scopeURL = nil }
         cancelAllAsyncWork()
         generation = UUID()
@@ -1725,7 +1723,6 @@ struct AISuggestion: Identifiable, Sendable {
             if persistSecurityScopedBookmark {
                 try remember(url)
             }
-            watcher = VaultWatcher(url: url) { [weak self] in Task { @MainActor in self?.scheduleRefresh() } }
             busy = false
             await updateRows()
             await refresh()
@@ -1888,7 +1885,6 @@ struct AISuggestion: Identifiable, Sendable {
                 try remember(candidateURL)
             }
             SourceReader.closeAll()
-            watcher?.stop()
             if let scopeURL { securityScopeReleaser(scopeURL) }
             self.scopeURL = hasScope ? candidateURL : nil
             cancelAllAsyncWork()
@@ -1907,7 +1903,6 @@ struct AISuggestion: Identifiable, Sendable {
             notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
             updateTags()
             applyRecoveryListing(drafts)
-            watcher = VaultWatcher(url: candidateURL) { [weak self] in Task { @MainActor in self?.scheduleRefresh() } }
             busy = false
             await updateRows()
             await refresh()
