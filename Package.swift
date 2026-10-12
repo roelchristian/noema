@@ -7,6 +7,11 @@ let visualValidationTargets: [Target] = ProcessInfo.processInfo.environment["NOE
     ? [.testTarget(name: "NoemaVisualValidationTests", dependencies: ["noema", "VaultCore", "NoemaBrand", "NativeAuthentication"])]
     : []
 
+// Example-vault quality checks are separate from runtime regression coverage.
+let fixtureValidationTargets: [Target] = ProcessInfo.processInfo.environment["NOEMA_FIXTURE_VALIDATION"] == "1"
+    ? [.testTarget(name: "NoemaFixtureValidationTests", dependencies: ["VaultCore"])]
+    : []
+
 let package = Package(
     name: "noema",
     platforms: [.macOS("26.0")],
@@ -30,5 +35,5 @@ let package = Package(
         .testTarget(name: "VaultCoreTests", dependencies: ["VaultCore", "NativeAuthentication"]),
         .testTarget(name: "NoemaBrandTests", dependencies: ["NoemaBrand"]),
         .testTarget(name: "NoemaEditorTests", dependencies: ["noema", "NativeAuthentication"])
-    ] + visualValidationTargets
+    ] + visualValidationTargets + fixtureValidationTargets
 )

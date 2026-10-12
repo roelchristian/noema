@@ -134,6 +134,23 @@ My Vault/
 - **Conflict preservation:** If a page changes on disk while you are editing, Noema keeps the disk version and saves your competing draft to `Conflicts/` and local recovery storage so you can reload or save as a new page. iCloud conflict versions are copied before being marked resolved.
 - **Recoverable Trash (`Removed Pages`):** Open **Trash** from the bottom-left vault menu to restore or permanently delete trashed pages and source records in a single unified list (external linked files are never deleted). Restore checks for identity, title, or duplicate-source collisions, while **Empty Trash…** and permanent deletion verify snapshots so modified, unreadable, or conflicted items are preserved and reported. Items in `Removed Pages` expire automatically after **15 days** on vault open/refresh (undated items receive a full 15-day grace period, and any surviving legacy `.Trash` Markdown files are migrated automatically under coordinated access).
 
+## Example vault fixture validation
+
+Run the example-vault quality checks when changing `Examples/Demo Vault` or its LCC
+metadata:
+
+```sh
+./scripts/validate-fixtures.sh --skip-update
+```
+
+The script explicitly includes `NoemaFixtureValidationTests` with
+`NOEMA_FIXTURE_VALIDATION=1` and filters the run to that target. The
+[fixture checks](../Tests/NoemaFixtureValidationTests/DemoVaultFixtureValidationTests.swift)
+require at least one demo page and source, decode their metadata with the production
+codecs, and require a non-empty LCC for each. This sample-content requirement is
+reviewed independently of runtime LCC serialization, persistence and source-to-page
+inheritance assertions in the routine regression suite.
+
 ## Explicit visual validation
 
 Routine tests retain text layout, selection/content preservation, color contrast and
