@@ -75,7 +75,7 @@ struct AIProviderBadge: View {
             .labelStyle(.titleAndIcon)
             .font(NoemaTypography.metadata)
             .foregroundStyle(.secondary)
-            .help(provider == .onDevice ? "Runs locally on this Mac" : "Selected text is sent to OpenAI after your approval")
+            .help(provider == .onDevice ? "Runs locally on this Mac" : "Selected text is sent to OpenAI using your submission confirmation policy")
             .accessibilityLabel("AI provider: \(aiProviderLabel(provider))")
     }
 }
@@ -85,7 +85,7 @@ struct AISummaryProviderDisclosure: View {
     var body: some View {
         HStack(spacing: NoemaSpacing.sm) {
             AIProviderBadge(provider: provider)
-            Text(provider == .onDevice ? "Runs locally" : "Sends selected text after approval")
+            Text(provider == .onDevice ? "Runs locally" : "Sends selected text · confirmation policy applies")
                 .font(NoemaTypography.metadata).foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)

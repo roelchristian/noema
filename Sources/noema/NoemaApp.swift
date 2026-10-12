@@ -27,7 +27,7 @@ import VaultCore
                 }
             }
             CommandGroup(replacing: .newItem) {
-                Button("New Page from Topic with AI…") { model.performWorkspaceCommand(.newTopicPage) }.disabled(!model.canPerformWorkspaceCommand(.newTopicPage))
+                Button("Create Page with AI…") { model.performWorkspaceCommand(.newTopicPage) }.disabled(!model.canPerformWorkspaceCommand(.newTopicPage))
                 Button("New Page") { model.performWorkspaceCommand(.newPage) }.keyboardShortcut("n").disabled(!model.canPerformWorkspaceCommand(.newPage))
                 Button("New Personal Page") { model.performWorkspaceCommand(.newPersonalPage) }.keyboardShortcut("n", modifiers: [.command, .shift]).disabled(!model.canPerformWorkspaceCommand(.newPersonalPage))
                 Divider()
