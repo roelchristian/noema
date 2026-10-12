@@ -18,6 +18,11 @@ struct RichArticleView: NSViewRepresentable {
     var onWikiLink: (String) -> Void
     var onWikiQuery: (String?) -> Void = { _ in }
     var noteID: UUID? = nil
+    var vaultID: UUID? = nil
+    var sessionID: UUID? = nil
+    var hidesAISummary = false
+    var onSessionReady: ((Coordinator?) -> Void)? = nil
+    var onSnapshot: ((EditorSession.DocumentSnapshot, String) -> Void)? = nil
     var onBlockLink: (URL) -> Void = { _ in }
     var onScrollOffset: (CGFloat) -> Void = { _ in }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -31,12 +36,14 @@ struct RichArticleView: NSViewRepresentable {
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         view.isAutomaticQuoteSubstitutionEnabled = false; view.isAutomaticDashSubstitutionEnabled = false
         view.setAccessibilityLabel("Article block editor")
-        view.setAccessibilityHelp("Click to edit. Unlock a locked article first. Slash opens block commands. Use the Block context menu for structure, tags, and status. Command Option A selects the document.")
+        view.setAccessibilityHelp("Select text or activate links while reading. Press Edit or Option-click to edit. Unlock a locked article first. Slash opens block commands. Use the Block context menu for structure, tags, and status. Command Option A selects the document.")
         view.registerForDraggedTypes([ArticleTextView.dragType])
         view.delegate = context.coordinator; context.coordinator.view = view; scroll.documentView = view
         view.updateReadingGeometry()
         context.coordinator.load(text)
+        context.coordinator.lastMacros = texMacros
         context.coordinator.observeScrolling(in: scroll)
+        onSessionReady?(context.coordinator)
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -44,7 +51,6 @@ struct RichArticleView: NSViewRepresentable {
         guard let view = coordinator.view else { return }
         let headingsChanged = view.showSemanticHeadings != showSemanticHeadings
         let macrosChanged = coordinator.lastMacros != texMacros
-        coordinator.lastMacros = texMacros
         view.showSemanticHeadings = showSemanticHeadings
         view.typography = typography
         view.locked = locked || coordinator.document.unsupportedVersion
@@ -58,14 +64,22 @@ struct RichArticleView: NSViewRepresentable {
         view.pasteContent = { [weak coordinator] in coordinator?.paste($0) }
         view.insertionPointColor = theme.native(.accentPrimary)
         view.linkTextAttributes = [.foregroundColor: theme.nativeText(.accentSecondary), .underlineStyle: NSUnderlineStyle.single.rawValue]
-        if coordinator.lastText != text { coordinator.load(text); view.undoManager?.removeAllActions() }
-        else if coordinator.lastTheme != theme || coordinator.lastTypography != typography || headingsChanged || macrosChanged { coordinator.refreshPresentation() }
+        if coordinator.lastText != text || coordinator.session.identity != EditorSession.Identity(pageID: noteID, vaultID: vaultID, sessionID: sessionID) {
+            coordinator.load(text); coordinator.lastMacros = texMacros; view.undoManager?.removeAllActions()
+        } else if coordinator.lastTheme != theme || coordinator.lastTypography != typography || headingsChanged || macrosChanged {
+            if !view.hasMarkedText(), !view.isSettingMarkedText {
+                coordinator.refreshPresentation(); coordinator.lastMacros = texMacros
+                coordinator.presentationRefreshPending = false
+            } else { coordinator.presentationRefreshPending = true }
+        }
         if let action, coordinator.lastAction != action.id {
             if case .block = action.operation { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
             else if view.isEditable { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
         }
     }
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        coordinator.flushPublication()
+        coordinator.parent.onSessionReady?(nil)
         NotificationCenter.default.removeObserver(coordinator, name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         coordinator.suggestions.close()
         coordinator.view?.delegate = nil
@@ -84,16 +98,14 @@ struct SummarizedArticleView: View {
         model.currentNote.map { model.isSummarizing(target: .page($0.id)) } ?? false
     }
     var editorText: Binding<String> {
-        Binding(get: {
-            let document = BlockDocumentCodec.decode(model.body)
-            return document.aiSummary == nil ? model.body : BlockDocumentCodec.encode(document.withoutAISummary)
-        }, set: { text in
-            let summary = BlockDocumentCodec.decode(model.body).aiSummary
-            if let summary {
-                var edited = BlockDocumentCodec.decode(text)
-                edited.blocks.insert(summary, at: 0)
-                model.body = BlockDocumentCodec.encode(edited)
-            } else { model.body = text }
+        let pageID = model.currentNote?.id
+        let vaultID = model.sessionState.vaultID
+        let sessionID = model.sessionState.sessionID
+        return Binding(get: { model.body }, set: { text in
+            guard model.currentNote?.id == pageID,
+                  model.sessionState.vaultID == vaultID,
+                  model.sessionState.sessionID == sessionID else { return }
+            model.body = text
         })
     }
     var body: some View {
@@ -156,7 +168,11 @@ struct SummarizedArticleView: View {
                 .background(.ultraThinMaterial)
                 Divider().scaleEffect(y: 0.5).frame(height: 0.5)
             }
-            RichArticleView(text: editorText, reading: model.reading, locked: model.editingLocked, action: model.editorAction, onBegin: model.beginEditing, onEnd: model.finishEditing, onWikiLink: model.followWikiLink, onWikiQuery: { model.wikiQuery = $0 }, noteID: model.currentNote?.id, onBlockLink: model.openBlockURL, onScrollOffset: { disclosure.scrolled(to: $0) })
+            RichArticleView(text: editorText, reading: model.reading, locked: model.editingLocked, action: model.editorAction, onBegin: model.beginEditing, onEnd: model.finishEditing, onWikiLink: model.followWikiLink, onWikiQuery: { model.wikiQuery = $0 }, noteID: model.currentNote?.id, vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID, hidesAISummary: true, onSessionReady: { coordinator in
+                if let coordinator {
+                    model.flushEditorPublication = { [weak coordinator] in coordinator?.flushPublication() }
+                } else { model.flushEditorPublication = nil }
+            }, onBlockLink: model.openBlockURL, onScrollOffset: { disclosure.scrolled(to: $0) })
                 .frame(maxWidth: .infinity)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: disclosure.collapsed)

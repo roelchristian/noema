@@ -100,7 +100,8 @@ import VaultCore
         let index = BlockTextStorage.RangeIndex(storage)
         let separator = try #require(before.blocks.first(where: { $0.text.isEmpty }))
         let range = try #require(index.range(for: separator.id))
-        storage.replaceCharacters(in: NSRange(location: range.location, length: 0), with: "Filled")
+        let attributes = storage.attributes(at: range.location, effectiveRange: nil)
+        storage.replaceCharacters(in: NSRange(location: range.location, length: 0), with: NSAttributedString(string: "Filled", attributes: attributes))
         index.applyLocalEdit(blockID: separator.id, delta: 6)
         var after = before
         after.update(separator.id) { $0.runs = [RichRun("Filled")] }

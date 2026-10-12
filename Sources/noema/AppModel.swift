@@ -215,6 +215,7 @@ struct AISuggestion: Identifiable, Sendable {
             }
         }
     }
+    @ObservationIgnored var flushEditorPublication: (() -> Void)?
     var tagInput = "" { didSet { if tagInput != oldValue { cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate() } } }
     var preview: [PreviewBlock] = []
     var backlinks: [NoteRecord] = []
@@ -1290,6 +1291,7 @@ struct AISuggestion: Identifiable, Sendable {
     }
 
     func deleteAISummary() {
+        flushEditorPublication?()
         guard let currentNote, !editingLocked, !isSummarizing(target: .page(currentNote.id)) else { return }
         var document = BlockDocumentCodec.decode(body)
         guard document.removeAISummary() else { return }
@@ -1462,6 +1464,7 @@ struct AISuggestion: Identifiable, Sendable {
 
     @discardableResult
     func flushPendingEdits(waitForTitles: Bool = false) async -> Bool {
+        flushEditorPublication?()
         autosaveTask?.cancel(); autosaveTask = nil
         if lccSaveTask != nil {
             lccSaveTask?.cancel(); lccSaveTask = nil
@@ -1686,6 +1689,7 @@ struct AISuggestion: Identifiable, Sendable {
     /// On unrecoverable quiescence failure, surfaces `errorMessage` and keeps the vault open without falsely publishing `.locked`.
     @discardableResult
     func lockVault(cancelPreCommitSaves: Bool = false) async -> Bool {
+        flushEditorPublication?()
         guard beginLifecycleAction("lock") else { return false }
         defer { lifecycleAction = nil; lifecycleActionID = nil }
         if sessionManager.accessGate.currentState.phase == .locked {
@@ -2375,7 +2379,7 @@ struct AISuggestion: Identifiable, Sendable {
         }
         editingHint = nil; reading = false
     }
-    func finishEditing() { guard canOperateOnLoadedContent else { return }; wikiQuery = nil; editorAction = nil; savePage(); reading = true }
+    func finishEditing() { guard canOperateOnLoadedContent else { return }; flushEditorPublication?(); wikiQuery = nil; editorAction = nil; savePage(); reading = true }
     var updatingSourceReferences = false
     func setSourceReference(pageID: UUID, sourceID: UUID, linked: Bool) {
         guard canOperateOnLoadedContent, !updatingSourceReferences else { return }
@@ -2446,7 +2450,9 @@ struct AISuggestion: Identifiable, Sendable {
         }
     }
     @discardableResult func saveCurrent() async -> Bool {
+        flushEditorPublication?()
         await waitForSave()
+        flushEditorPublication?()
         guard canOperateOnLoadedContent, dirty, var note = currentNote, let repository, let recovery else { return !saving }
         guard !saving else { return false }
         let ticket = generation

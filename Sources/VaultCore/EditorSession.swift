@@ -58,7 +58,20 @@ import Foundation
         guard value != document else { return }
         let old = Dictionary(uniqueKeysWithValues: document.flattened.map { ($0.id, $0) })
         let new = Dictionary(uniqueKeysWithValues: value.flattened.map { ($0.id, $0) })
-        let ids = Set(old.keys).union(new.keys).filter { old[$0] != new[$0] }
+        let oldOrder = Dictionary(uniqueKeysWithValues: document.flattened.enumerated().map { ($0.element.id, $0.offset) })
+        let newOrder = Dictionary(uniqueKeysWithValues: value.flattened.enumerated().map { ($0.element.id, $0.offset) })
+        func parents(_ blocks: [EditorBlock], parent: UUID? = nil) -> [UUID: UUID] {
+            var result: [UUID: UUID] = [:]
+            for block in blocks {
+                if let parent { result[block.id] = parent }
+                result.merge(parents(block.children, parent: block.id)) { _, new in new }
+            }
+            return result
+        }
+        let oldParents = parents(document.blocks), newParents = parents(value.blocks)
+        let ids = Set(old.keys).union(new.keys).filter {
+            old[$0] != new[$0] || oldOrder[$0] != newOrder[$0] || oldParents[$0] != newParents[$0]
+        }
         document = value; record(name, ids: Set(ids), selection: selection ?? self.selection)
     }
     @discardableResult public func apply(_ mutation: BlockMutation, to id: UUID, name: String = "Edit block") -> BlockCursor? {

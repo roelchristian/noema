@@ -115,6 +115,10 @@ extension NSAttributedString.Key {
     }
     private static var metadataCache: [(BlockMetadata, Data)] = []
     private static var mathCache: [String: String] = [:]
+    private static func encodedStyle(_ style: InlineStyle) -> Data? {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(style)
+    }
     private static var cachedMacroSource = ""
     private static var cachedMacros: [TeXMacro] = []
     static func renderedMath(_ raw: String, display: Bool, defaults: UserDefaults = .standard) -> String {
@@ -164,7 +168,7 @@ extension NSAttributedString.Key {
            block.originalMarkdown?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
             attrs[.markdownSeparator] = true
         }
-        attrs[.inlineStyle] = try? JSONEncoder().encode(InlineStyle())
+        attrs[.inlineStyle] = encodedStyle(InlineStyle())
         attrs[.blockMetadata] = encodedMetadata(block.metadata)
         if let semantic = block.metadata.semantic { attrs[.semanticTag] = semantic }
         return attrs
@@ -172,7 +176,7 @@ extension NSAttributedString.Key {
     static func attributes(_ style: InlineStyle, block: EditorBlock, depth: Int, theme: NoemaTheme, typography: EditorTypography = .init()) -> [NSAttributedString.Key: Any] {
         var attrs = base(block, depth: depth, theme: theme, typography: typography)
         attrs[.font] = typography.font(for: EditorTypography.role(for: block.kind), style: style)
-        attrs[.inlineStyle] = try? JSONEncoder().encode(style)
+        attrs[.inlineStyle] = encodedStyle(style)
         if style.underline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
         if style.strike { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
         if style.highlight || style.code || style.math { attrs[.backgroundColor] = theme.native(.graphHighlight).withAlphaComponent(theme.dark ? 0.22 : 0.10) }
@@ -188,6 +192,9 @@ extension NSAttributedString.Key {
         updateParagraphRhythm(result, typography: typography)
         if showSemanticHeadings { updateSemanticHeadingSpacing(result, typography: typography) }
         return result
+    }
+    static func renderBlock(_ block: EditorBlock, depth: Int, theme: NoemaTheme, typography: EditorTypography) -> NSAttributedString {
+        renderVisible([VisibleBlock(block: block, depth: depth, number: 0)], theme: theme, typography: typography)
     }
     private static func renderVisible(_ values: [VisibleBlock], theme: NoemaTheme, typography: EditorTypography) -> NSMutableAttributedString {
         let result = NSMutableAttributedString(string: "")

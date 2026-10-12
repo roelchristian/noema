@@ -37,9 +37,14 @@ import VaultCore
     // hasMarkedText(). Reserve that call for the native input manager as well.
     private(set) var isSettingMarkedText = false
     override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        var replacement = replacementRange
+        if !hasMarkedText(), let coordinator = delegate as? RichArticleView.Coordinator {
+            let requested = replacement.location == NSNotFound ? self.selectedRange() : replacement
+            replacement = coordinator.prepareMarkedReplacement(requested)
+        }
         isSettingMarkedText = true
         defer { isSettingMarkedText = false }
-        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacement)
     }
     var handleKey: ((NSEvent) -> Bool)?
     var blockMenu: (() -> NSMenu)?

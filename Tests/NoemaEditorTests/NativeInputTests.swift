@@ -180,4 +180,11 @@ import VaultCore
     #expect(coordinator.document.block(lastID)?.text == "Last")
     #expect(coordinator.document.flattened.map(\.text).joined() == "Fi日本語ondLast")
     #expect(BlockDocumentCodec.valid(coordinator.document))
+    view.undoManager?.undo()
+    #expect(view.string == "First\nSecond\nLast\n")
+    #expect(coordinator.document.blocks.count == 3)
+    #expect(coordinator.document.blocks.first?.id == originalID)
+    view.undoManager?.redo()
+    #expect(view.string == "Fi日本語ond\nLast\n")
+    #expect(coordinator.document.blocks.count == 2)
 }

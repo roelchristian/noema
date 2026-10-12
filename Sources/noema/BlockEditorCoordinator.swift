@@ -14,6 +14,7 @@ extension RichArticleView {
         var publicationTask: Task<Void, Never>?
         var presentationDocument: BlockDocument { parent.hidesAISummary && document.aiSummary != nil ? document.withoutAISummary : document }
         var renderedDocument: BlockDocument?
+        var renderedHeadings: Bool?
         var rangeIndex: BlockTextStorage.RangeIndex?
         var deferredComposition = false
         var lastText: String?
@@ -22,6 +23,7 @@ extension RichArticleView {
         var lastMacros: String?
         var lastAction: UUID?
         var changing = false
+        var presentationRefreshPending = false
         let palette = BlockPalette()
         lazy var suggestions = BlockSuggestionPanel(palette: palette)
         var slashRange: NSRange?
@@ -53,18 +55,24 @@ extension RichArticleView {
             changing = true
             view.typography = parent.typography
             if let storage = view.textStorage {
-                if let previous = renderedDocument, let rangeIndex {
-                    _ = BlockTextStorage.apply(document: presentationDocument, previous: previous, to: storage, index: rangeIndex, theme: parent.theme, showSemanticHeadings: view.showSemanticHeadings, typography: parent.typography)
+                if let previous = renderedDocument, let rangeIndex, renderedHeadings == view.showSemanticHeadings {
+                    let oldRange = rangeIndex.ordered.first(where: { id, _ in previous.block(id) != presentationDocument.block(id) })?.1
+                    if let oldRange { view.invalidateDecorations(in: oldRange) }
+                    let affected = BlockTextStorage.apply(document: presentationDocument, previous: previous, to: storage, index: rangeIndex, theme: parent.theme, showSemanticHeadings: view.showSemanticHeadings, typography: parent.typography)
+                    view.invalidateDecorations(in: affected)
                 } else {
                     storage.setAttributedString(BlockTextStorage.render(presentationDocument, theme: parent.theme, showSemanticHeadings: view.showSemanticHeadings, typography: parent.typography))
                     rangeIndex = BlockTextStorage.RangeIndex(storage)
                 }
                 renderedDocument = presentationDocument
+                renderedHeadings = view.showSemanticHeadings
                 view.blockRangeIndex = rangeIndex
             }
             view.updateSemanticHeadingTopInset()
-            let location = min(selection.location, max(0, view.string.utf16.count - 1))
-            view.setSelectedRange(NSRange(location: location, length: min(selection.length, max(0, view.string.utf16.count - 1 - location))))
+            let count = view.string.utf16.count
+            let limit = selection.length == 0 ? max(0, count - 1) : count
+            let location = min(selection.location, limit)
+            view.setSelectedRange(NSRange(location: location, length: min(selection.length, max(0, count - location))))
             session.selection = view.selectedRange(); lastTheme = parent.theme; lastTypography = parent.typography; changing = false; updateTypingAttributes()
         }
         /// Preference changes only replace attributes when the visible text is
@@ -95,6 +103,7 @@ extension RichArticleView {
             rangeIndex?.rebuild(storage)
             view.blockRangeIndex = rangeIndex
             renderedDocument = presentationDocument
+            renderedHeadings = view.showSemanticHeadings
             view.updateSemanticHeadingTopInset()
             let count = storage.length
             view.setSelectedRanges(selections.map { value in
@@ -133,6 +142,7 @@ extension RichArticleView {
                 guard !Task.isCancelled else { return }
                 let source = await Task.detached(priority: .userInitiated) { BlockDocumentCodec.encode(snapshot.document) }.value
                 guard !Task.isCancelled, let self, self.parent.text == self.lastText,
+                      self.view?.hasMarkedText() != true, self.view?.isSettingMarkedText != true,
                       self.parent.noteID == snapshot.identity.pageID,
                       self.parent.vaultID == snapshot.identity.vaultID,
                       self.parent.sessionID == snapshot.identity.sessionID,
@@ -228,12 +238,33 @@ extension RichArticleView {
             // preference change. Reapply the currently displayed typography to
             // those runs without registering another edit or discarding redo.
             if view.undoManager?.isUndoing == true || view.undoManager?.isRedoing == true {
-                refreshPresentation(typography: lastTypography)
+                refreshActiveBlockPresentation()
             }
+            if presentationRefreshPending {
+                presentationRefreshPending = false
+                refreshPresentation(); lastMacros = parent.texMacros
+            }
+            if let affected = current()?.1 { view.invalidateDecorations(in: affected) }
             if let (block, _) = current(), block.kind != .code, block.kind != .math, let command = BlockCommand.shortcut(block.text) {
                 transaction(command.title) { document.update(block.id) { $0.runs = [] }; return document.apply(command.mutation, to: block.id) }
             } else if !convertInlineAtCaret() { publish() }
             updateTypingAttributes()
+        }
+        private func refreshActiveBlockPresentation() {
+            guard let view, let storage = view.textStorage, let (block, range) = current() else { return }
+            let depth = storage.attribute(.blockDepth, at: range.location, effectiveRange: nil) as? Int ?? 0
+            let typography = lastTypography ?? parent.typography
+            let rendered = BlockTextStorage.renderBlock(block, depth: depth, theme: parent.theme, typography: typography)
+            guard rendered.string == (storage.string as NSString).substring(with: range) else { return }
+            changing = true; storage.beginEditing()
+            rendered.enumerateAttributes(in: NSRange(location: 0, length: rendered.length)) { attributes, part, _ in
+                storage.setAttributes(attributes, range: NSRange(location: range.location + part.location, length: part.length))
+            }
+            storage.endEditing()
+            let affected = rangeIndex?.rhythmAffectedRange(for: block.id, storage: storage)
+            BlockTextStorage.updateParagraphRhythm(storage, in: affected, index: rangeIndex, typography: typography)
+            if view.showSemanticHeadings { BlockTextStorage.updateSemanticHeadingSpacing(storage, in: affected, index: rangeIndex, typography: typography) }
+            changing = false
         }
         func textViewDidChangeSelection(_ notification: Notification) {
             guard !changing, let view, !view.hasMarkedText(), !view.isSettingMarkedText else { return }
@@ -287,6 +318,12 @@ extension RichArticleView {
                 return false
             }
             return true
+        }
+        func prepareMarkedReplacement(_ range: NSRange) -> NSRange {
+            guard let view, let (_, blockRange) = current(), range.length > 0,
+                  NSMaxRange(range) >= NSMaxRange(blockRange) else { return range }
+            transaction("Replace composition selection") { replaceSelection(with: [], range: range) }
+            return view.selectedRange()
         }
         func updatePalette() {
             guard let view, view.isEditable, !view.locked, current()?.0.kind != .code, current()?.0.kind != .math,

@@ -113,3 +113,13 @@ import Testing
     #expect(session.changedBlockIDs.contains(first.id))
     #expect(session.changedBlockIDs.contains(second.id))
 }
+
+@Test @MainActor func editorSessionMarksReparentedBlockEvenWhenFlattenedOrderIsUnchanged() {
+    let first = EditorBlock(runs: [RichRun("Parent")])
+    let second = EditorBlock(runs: [RichRun("Child")])
+    let session = EditorSession(document: BlockDocument(blocks: [first, second]))
+    session.apply(.indent, to: second.id)
+    #expect(session.document.blocks.first?.children.first?.id == second.id)
+    #expect(session.changedBlockIDs.contains(second.id))
+    #expect(session.changedBlockIDs.contains(first.id))
+}
