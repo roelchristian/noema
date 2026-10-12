@@ -520,14 +520,14 @@ struct InspectorRedesignTests {
                         let view = InspectorContainer(model: model, state: state, context: context)
                             .environment(\.noemaTheme, theme)
                             .environment(\.colorScheme, appearance.dark ? .dark : .light)
-                            .environment(\.colorSchemeContrast, appearance.increased ? .increased : .standard)
                             .transaction { $0.disablesAnimations = true }
                             .frame(width: width, height: 640)
                         let hosting = NSHostingView(rootView: view)
                         hosting.appearance = nativeAppearance
                         hosting.frame = NSRect(x: 0, y: 0, width: width, height: 640)
                         hosting.layoutSubtreeIfNeeded()
-                        let label = "\(context.targetKind)-\(tab.rawValue) at \(width)pt, \(appearance.preference.rawValue), dark=\(appearance.dark), contrast=\(appearance.increased)"
+                        let kind = context.targetKind == .page ? "page" : "source"
+                        let label = "\(kind)-\(tab.rawValue) at \(width)pt, \(appearance.preference.rawValue), dark=\(appearance.dark), contrast=\(appearance.increased)"
                         #expect(hosting.fittingSize.width >= InspectorState.minWidth, "\(label): below minimum")
                         #expect(hosting.fittingSize.width <= width + 1, "\(label): horizontal overflow")
                         let safeArea = hosting.safeAreaInsets.top + hosting.safeAreaInsets.bottom

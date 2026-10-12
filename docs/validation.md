@@ -44,7 +44,7 @@ light/dark fixtures, wide/narrow measures, headings, blank separators, lists,
 semantic reservation and complete math-preview fit. Source-byte and serialization
 checks establish presentation-only changes. Native preference-refresh tests cover
 selected ranges, caret, viewport and undo/redo without registering a content edit.
-Opt-in fixture capture procedures are in [development](development.md#typography-capture-fixtures).
+Opt-in fixture capture procedures are in [development](development.md#explicit-visual-validation).
 Live VoiceOver, keyboard focus, OS Reduce Motion/contrast combinations and manual
 window/sidebar/inspector resizing remain outstanding; raster fixtures do not certify
 them. Long-document fixture coverage does not establish sustained typing/frame timing.
@@ -140,7 +140,7 @@ scenarios. Earlier D01.R2, D01.R3 and D02.REM05 acceptance is retained by scope.
 | Save quiescence | [VaultSaveQuiescenceTests](../Tests/VaultCoreTests/VaultSaveQuiescenceTests.swift), [VaultCleanupFailureTests](../Tests/VaultCoreTests/VaultCleanupFailureTests.swift) | Admission drains; pre-commit cancellation journals edits; durable windows finish and retain commit recognition. Cleanup/recovery failure aborts locking and preserves committed/recoverable content. Cooperative cancellation only. |
 | Stale results | [StaleCompletionRaceTests](../Tests/NoemaEditorTests/StaleCompletionRaceTests.swift) | Session/epoch/token/entity/content checks reject delayed search, preview, source, indexing and AI publication across lock/close/switch. No exhaustive schedule guarantee. |
 | AppModel integration | [AppModelSessionIntegrationTests](../Tests/NoemaEditorTests/AppModelSessionIntegrationTests.swift) | Purges loaded content, retains failed-close resources, preflights destination, rejects overlapping actions and reconciles rollback with central state. Deferred native/device acceptance stays open. |
-| Recovery isolation | [RecoveryStoreIsolationTests](../Tests/VaultCoreTests/RecoveryStoreIsolationTests.swift), [AppModelRecoveryIsolationTests](../Tests/NoemaEditorTests/AppModelRecoveryIsolationTests.swift) | Valid peers recover across lock/unlock/reopen while unreadable, damaged or identity-mismatched bytes stay visible/preserved. Same-page saves archive damaged entries; decoded deletion refuses them. Directory-wide errors fail explicitly. |
+| Recovery isolation | [RecoveryStoreIsolationTests](../Tests/VaultCoreTests/RecoveryStoreIsolationTests.swift), [AppModelSessionIntegrationTests](../Tests/NoemaEditorTests/AppModelSessionIntegrationTests.swift) | Valid peers recover across lock/unlock/reopen while unreadable, damaged or identity-mismatched bytes stay visible/preserved. Same-page saves archive damaged entries; decoded deletion refuses them. Directory-wide errors fail explicitly. |
 | Preview cleanup | [SourcePreviewDirectoryTests](../Tests/VaultCoreTests/SourcePreviewDirectoryTests.swift) | Sequential/concurrent creation, leases, child-process termination, orphan retry/bounded passes, unrelated/legacy entries, malformed markers, extra contents, symlinks and private permissions. Best effort ordinary removal, not secure deletion. |
 | Lexical guard | [adversarial fixtures](../scripts/fixtures/storage-boundary/cases.json) | Eleven guard regressions and 18 adversarial fixtures; reviewed statement ownership/counts enforced. Review-only cases retain same-file target/helper and opaque-API blind spots. |
 | Encryption release gate | [VaultCreationTests](../Tests/VaultCoreTests/VaultCreationTests.swift) | Encrypted requests reject before writes. This tests rejection, not encryption. |
@@ -247,30 +247,38 @@ assertions without timing measurements or historical before/after comparisons.
 
 The [design contract](contracts/design-tokens.md) retains semantic APIs, approved
 component exceptions, native control ownership and visual acceptance requirements.
-Fixture source: [DesignTokenValidationTests](../Tests/NoemaEditorTests/DesignTokenValidationTests.swift).
-Before application source: `0046a9e`; current native-toolbar application source:
+Capture source: [DesignTokenCaptureTests](../Tests/NoemaVisualValidationTests/DesignTokenCaptureTests.swift),
+excluded from the default test graph. Routine bounds coverage lives in
+[InspectorRedesignTests](../Tests/NoemaEditorTests/InspectorRedesignTests.swift).
+Historical before application source: `0046a9e`; reviewed native-toolbar source:
 `40acf50` (integrated in main `d74a938`). Historical UI.TK06 comparison used `8ebe0b9`.
-The baseline archive receives only the shared test fixture with
-`NOEMA_LEGACY_TOKEN_FIXTURE`;
-application sources are unchanged. Machine: macOS 27.0 (26A428), arm64, Swift 6.2.4.
+Historical fixture source and reviewed findings remain available in Git history;
+New captures use current sources without pre-token compatibility branches.
+The historical review used macOS 27.0 (26A428), arm64, Swift 6.2.4.
 
 ```sh
+validation/ui-design-tokens/capture.sh token-review baseline
+# After the proposed visual change:
 validation/ui-design-tokens/capture.sh token-review after
-BASELINE_REF=0046a9e validation/ui-design-tokens/capture.sh token-review baseline
 python3 validation/ui-design-tokens/select-evidence.py --run-id token-review
 ```
 
-Both matrices remain local; selection/manifest output remains in the managed run.
+Captures and selection/manifest output remain in the managed run.
 Attach selected review captures to the PR when needed. No capture/report is canonical
 source or a permanent golden fixture. Reproduction retains commit/fixture provenance.
 
-- Baseline renders 17 states × System/Midnight Iris × light/dark × standard/
-  increased contrast = 136 PNGs. Current capture adds 720×540 native-minimum workspace
+- Historical baseline rendered 17 states × System/Midnight Iris × light/dark × standard/
+  increased contrast = 136 PNGs. The former current matrix added 720×540 native-minimum workspace
   and 680×480 compact-welcome fixtures across eight modes, producing 152 PNGs.
   Isolated pane preferences avoid reading/writing real workspace state.
-  Ordinary runs render five inspector tabs
-  at 280 points in eight modes without writing images. Bitmap/dimension checks
-  reject blank rasters; fixed outer bounds do not prove descendants fit or actions work.
+  Current opt-in capture exhausts applicable page/source inspector tabs
+  at minimum/ideal/maximum widths across both themes, schemes and contrast levels
+  alongside 12 workspace/control states (288 PNGs per phase).
+  Routine layout coverage uses standard light/dark at all three widths and
+  representative Midnight Iris high contrast at minimum width (64 cases), checking
+  tab applicability and upper/lower host bounds without image operations. Opt-in
+  bitmap/dimension checks reject blank rasters; fixed outer bounds do not prove
+  descendants fit or actions work.
 - Offscreen `NSHostingView`/borderless-window snapshots omit live titlebar, desktop
   glass composition, menus, alerts and presented sheets. Creation shows content,
   not live sheet presentation. Historical hidden-titlebar roots added 32 safe-area
