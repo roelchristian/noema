@@ -16,6 +16,44 @@ struct VaultUIIntegrationTests {
         return model
     }
 
+    @Test @MainActor func sqliteMigrationReopensInAppModelAndPersistsBlockEdits() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaSQLiteUI-" + UUID().uuidString).resolvingSymlinksInPath()
+        let folder = base.appendingPathComponent("Vault", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let manager = VaultSessionManager()
+        let (_, _, repository) = try await manager.openRepository(root: folder, create: true)
+        var metadata = BlockMetadata(); metadata.semantic = "question"; metadata.extra["future"] = "retained"
+        let block = EditorBlock(runs: [RichRun("Stars question #astronomy")], metadata: metadata)
+        let note = try await repository.create(title: "Stars", body: BlockDocumentCodec.encode(BlockDocument(blocks: [block])))
+        let source = try await repository.importSource(data: Data("source text".utf8), filename: "stars.txt", title: "Source", originURL: nil)
+        let referenced = try await repository.setSourceReference(note: note, sourceID: source.id, linked: true)
+        _ = try await SQLiteVaultMigration.convert(root: folder,
+            sessionLease: #require(repository.sessionLease), accessGate: #require(repository.accessGate))
+        let model = try await openRichArticleFixtureVault(at: folder)
+        #expect(model.notes.count == 1)
+        #expect(model.notes.first?.id == referenced.id)
+        #expect(model.notes.first?.linkedSourceIDs == [source.id])
+        model.select(note.id, block: block.id)
+        for _ in 0..<50 {
+            if model.currentNote?.id == note.id { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let initial = BlockDocumentCodec.decode(model.body)
+        #expect(initial.block(block.id)?.metadata.extra["future"] == "retained")
+        var edited = initial
+        _ = edited.update(block.id) { $0.runs = [RichRun("Edited stars #cosmos")] }
+        model.body = BlockDocumentCodec.encode(edited)
+        #expect(await model.saveCurrent())
+        #expect(await model.closeVault())
+        let reopened = try await openRichArticleFixtureVault(at: folder)
+        let saved = try #require(reopened.notes.first)
+        #expect(BlockDocumentCodec.decode(saved.body).block(block.id)?.text == "Edited stars #cosmos")
+        #expect(saved.inlineTags.contains("cosmos"))
+        #expect(saved.linkedSourceIDs == [source.id])
+        #expect(await reopened.closeVault())
+    }
+
     @Test @MainActor func sidebarSearchNavigationPreservesQueryAndScope() async throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaSearchNavigation-" + UUID().uuidString)
         let folder = base.appendingPathComponent("Vault", isDirectory: true)

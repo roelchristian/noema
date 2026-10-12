@@ -226,5 +226,11 @@
     "statement": "do { try data.write(to: destination, options: .withoutOverwriting) }",
     "count": 1,
     "reason": "AIActivityExportDestination owns a user-selected new external JSON export; synchronous resolved-root refusal protects vault/recovery/activity storage and OS create-only writing refuses any existing file, including selection-to-write races. No canonical mutations or deletion."
+  },
+  {
+    "path": "Sources/VaultCore/SQLiteBlockStore.swift",
+    "statement": "guard sqlite3_open_v2(url.path, &pointer, (createIfMissing ? SQLITE_OPEN_CREATE : 0) | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let pointer else {",
+    "count": 1,
+    "reason": "SQLiteBlockStore owns the selected local format 2 canonical page database and SQLite journal files; production construction captures session gate and lease."
   }
 ]

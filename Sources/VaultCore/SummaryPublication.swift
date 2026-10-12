@@ -21,9 +21,14 @@ public struct SourceSummarySnapshot: Sendable {
 }
 
 extension FileVaultRepository {
-    public func pageSummarySnapshot(_ note: NoteRecord) throws -> PageSummarySnapshot {
+    public func pageSummarySnapshot(_ note: NoteRecord) async throws -> PageSummarySnapshot {
         try validateAccess(operation: "pageSummarySnapshot")
         try Task.checkCancellation()
+        if let sqliteBlockStore {
+            let actual = try await sqliteBlockStore.loadPage(pageID: note.id).record
+            guard actual.contentHash == note.contentHash, actual.body == note.body, !actual.isEditingLocked else { throw VaultContentStoreError.stale(note.relativePath) }
+            return PageSummarySnapshot(note: actual, bytes: Data(), token: nil)
+        }
         let before = try contentStore.changeToken(at: note.relativePath)
         let bytes = try contentStore.read(at: note.relativePath)
         let after = try contentStore.changeToken(at: note.relativePath)
@@ -57,13 +62,15 @@ extension FileVaultRepository {
     /// The actor rechecks content and prior summary immediately before a conditional write.
     /// `validate` checks external authorization immediately at the canonical write.
     public func publishPageSummary(_ snapshot: PageSummarySnapshot, summary: String,
-        provenance: SummaryProvenance, validate: @Sendable () throws -> Void
-    ) throws -> NoteRecord {
+        provenance: SummaryProvenance, validate: @escaping @Sendable () throws -> Void
+    ) async throws -> NoteRecord {
         try validateAccess(operation: "publishPageArtifact")
         try Task.checkCancellation()
         let path = snapshot.note.relativePath
-        guard try contentStore.read(at: path) == snapshot.bytes,
-              try contentStore.changeToken(at: path) == snapshot.token else { throw VaultContentStoreError.stale(path) }
+        if sqliteBlockStore == nil {
+            guard try contentStore.read(at: path) == snapshot.bytes,
+                  try contentStore.changeToken(at: path) == snapshot.token else { throw VaultContentStoreError.stale(path) }
+        }
         var updated = snapshot.note
         var document = BlockDocumentCodec.decode(updated.body)
         guard !document.unsupportedVersion else { throw VaultContentStoreError.stale(path) }
@@ -78,13 +85,18 @@ extension FileVaultRepository {
         try Task.checkCancellation()
         try validate()
         try validateAccess(operation: "publishArtifact.write")
+        if let sqliteBlockStore {
+            updated.inlineTags = MarkdownService.analyze(updated.body).tags
+            _ = try await sqliteBlockStore.savePage(record: updated, document: document, condition: .replace(expected: sqliteRevision(snapshot.note)), validating: validate)
+            return try await sqliteBlockStore.loadPage(pageID: updated.id).record
+        }
         try contentStore.write(data, at: path, condition: .replace(expected: snapshot.bytes))
         invalidateSummaryCaches(pagePath: path, sourceID: nil)
         return try NoteCodec.decode(data, path: path, vaultID: manifest.id)
     }
 
     public func publishSourceSummary(_ snapshot: SourceSummarySnapshot, summary: String,
-        provenance: SummaryProvenance, validate: @Sendable () throws -> Void
+        provenance: SummaryProvenance, validate: @escaping @Sendable () throws -> Void
     ) throws -> SourceRecord {
         try validateAccess(operation: "publishSourceArtifact")
         try Task.checkCancellation()
@@ -117,14 +129,14 @@ extension FileVaultRepository {
     /// explicitly means unavailable; legacy/manual values survive until enrichment occurs.
     public func publishPageEnrichment(_ snapshot: PageSummarySnapshot, summary: String,
         classification: LCCClassification?, title: String? = nil, provenance: SummaryProvenance,
-        validate: @Sendable () throws -> Void
-    ) throws -> NoteRecord {
+        validate: @escaping @Sendable () throws -> Void
+    ) async throws -> NoteRecord {
         let provenance = try enrichmentProvenance(provenance, revision: snapshot.sourceRevision)
         let classification = try verifiedClassification(classification, provenance: provenance)
         var updated = snapshot.note
         if let title, needsGeneratedTitle(updated.title) {
             updated.title = try acceptedTitle(title)
-            let otherNotes = try scan().notes.filter { $0.id != updated.id }
+            let otherNotes = try await scan().notes.filter { $0.id != updated.id }
             try requireUniqueTitle(updated.title, in: otherNotes)
             if normalized(updated.title) != normalized(snapshot.note.title), !snapshot.note.title.isEmpty,
                !updated.aliases.contains(snapshot.note.title) { updated.aliases.append(snapshot.note.title) }
@@ -134,12 +146,12 @@ extension FileVaultRepository {
         updated.lcc = classification?.code
         updated.lccClassification = classification
         updated.aiLCCProvenance = classification == nil ? nil : provenance
-        return try publishPageMetadata(snapshot, updated: updated, validate: validate)
+        return try await publishPageMetadata(snapshot, updated: updated, validate: validate)
     }
 
     public func publishSourceEnrichment(_ snapshot: SourceSummarySnapshot, summary: String,
         classification: LCCClassification?, title: String? = nil, provenance: SummaryProvenance,
-        validate: @Sendable () throws -> Void
+        validate: @escaping @Sendable () throws -> Void
     ) throws -> SourceRecord {
         let provenance = try enrichmentProvenance(provenance, revision: snapshot.sourceRevision)
         let classification = try verifiedClassification(classification, provenance: provenance)
@@ -160,12 +172,12 @@ extension FileVaultRepository {
     /// Source relationships use the captured original and metadata, never a cached excerpt.
     public func createEnrichedPage(id: UUID = UUID(), title: String, body: String, summary: String,
         classification: LCCClassification?, provenance: SummaryProvenance,
-        source: SourceSummarySnapshot? = nil, validate: @Sendable () throws -> Void
-    ) throws -> NoteRecord {
+        source: SourceSummarySnapshot? = nil, validate: @escaping @Sendable () throws -> Void
+    ) async throws -> NoteRecord {
         try validateAccess(operation: "createEnrichedPage")
         try Task.checkCancellation()
         let title = try acceptedTitle(title)
-        let notes = try scan().notes
+        let notes = try await scan().notes
         try requireUniqueTitle(title, in: notes)
         guard !notes.contains(where: { $0.id == id }) else { throw VaultError.invalid("This generated page already exists.") }
         let provenance = try enrichmentProvenance(provenance, revision: source?.sourceRevision ?? digest(Data(body.utf8)))
@@ -184,6 +196,12 @@ extension FileVaultRepository {
         try Task.checkCancellation()
         try validate()
         try validateAccess(operation: "createEnrichedPage.write")
+        if let sqliteBlockStore {
+            note.relativePath = "sqlite/" + note.id.uuidString.lowercased()
+            note.inlineTags = MarkdownService.analyze(note.body).tags
+            _ = try await sqliteBlockStore.savePage(record: note, document: BlockDocumentCodec.decode(note.body), condition: .createOnly, validating: validate)
+            return try await sqliteBlockStore.loadPage(pageID: note.id).record
+        }
         try contentStore.write(data, at: note.relativePath, condition: .createOnly)
         invalidateSummaryCaches(pagePath: note.relativePath, sourceID: nil)
         return try NoteCodec.decode(data, path: note.relativePath, vaultID: manifest.id)
@@ -249,10 +267,10 @@ extension FileVaultRepository {
 
     /// Publication occurs only after the caller's explicit acceptance of a suggestion.
     public func publishPageTitle(_ snapshot: PageSummarySnapshot, title: String,
-        provenance: SummaryProvenance, validate: @Sendable () throws -> Void
-    ) throws -> NoteRecord {
+        provenance: SummaryProvenance, validate: @escaping @Sendable () throws -> Void
+    ) async throws -> NoteRecord {
         let title = try acceptedTitle(title)
-        let otherNotes = try scan().notes.filter { $0.id != snapshot.note.id }
+        let otherNotes = try await scan().notes.filter { $0.id != snapshot.note.id }
         guard !otherNotes.contains(where: { normalized($0.title) == normalized(title) || $0.aliases.contains { normalized($0) == normalized(title) } }) else {
             throw VaultError.duplicateTitle(title)
         }
@@ -262,21 +280,21 @@ extension FileVaultRepository {
         }
         updated.title = title
         updated.aiTitleProvenance = acceptedProvenance(provenance, revision: snapshot.sourceRevision)
-        return try publishPageMetadata(snapshot, updated: updated, validate: validate)
+        return try await publishPageMetadata(snapshot, updated: updated, validate: validate)
     }
 
     public func publishPageLCC(_ snapshot: PageSummarySnapshot, lcc: String,
-        provenance: SummaryProvenance, validate: @Sendable () throws -> Void
-    ) throws -> NoteRecord {
+        provenance: SummaryProvenance, validate: @escaping @Sendable () throws -> Void
+    ) async throws -> NoteRecord {
         var updated = snapshot.note
         updated.lcc = try acceptedLCC(lcc)
         updated.lccClassification = nil
         updated.aiLCCProvenance = acceptedProvenance(provenance, revision: snapshot.sourceRevision)
-        return try publishPageMetadata(snapshot, updated: updated, validate: validate)
+        return try await publishPageMetadata(snapshot, updated: updated, validate: validate)
     }
 
     public func publishSourceTitle(_ snapshot: SourceSummarySnapshot, title: String,
-        provenance: SummaryProvenance, validate: @Sendable () throws -> Void
+        provenance: SummaryProvenance, validate: @escaping @Sendable () throws -> Void
     ) throws -> SourceRecord {
         var metadata = snapshot.source.metadata
         metadata.title = try acceptedTitle(title)
@@ -285,7 +303,7 @@ extension FileVaultRepository {
     }
 
     public func publishSourceLCC(_ snapshot: SourceSummarySnapshot, lcc: String,
-        provenance: SummaryProvenance, validate: @Sendable () throws -> Void
+        provenance: SummaryProvenance, validate: @escaping @Sendable () throws -> Void
     ) throws -> SourceRecord {
         var metadata = snapshot.source.metadata
         metadata.lcc = try acceptedLCC(lcc)
@@ -317,11 +335,20 @@ extension FileVaultRepository {
     }
 
     private func publishPageMetadata(_ snapshot: PageSummarySnapshot, updated: NoteRecord,
-        validate: @Sendable () throws -> Void
-    ) throws -> NoteRecord {
+        validate: @escaping @Sendable () throws -> Void
+    ) async throws -> NoteRecord {
         try validateAccess(operation: "publishPageArtifact")
         try Task.checkCancellation()
         let path = snapshot.note.relativePath
+        if let sqliteBlockStore {
+            guard !snapshot.note.isEditingLocked else { throw VaultContentStoreError.stale(path) }
+            var updated = updated
+            updated.updatedAt = timestamp()
+            try validate()
+            updated.inlineTags = MarkdownService.analyze(updated.body).tags
+            _ = try await sqliteBlockStore.savePage(record: updated, document: BlockDocumentCodec.decode(updated.body), condition: .replace(expected: sqliteRevision(snapshot.note)), validating: validate)
+            return try await sqliteBlockStore.loadPage(pageID: updated.id).record
+        }
         guard !snapshot.note.isEditingLocked,
               try contentStore.read(at: path) == snapshot.bytes,
               try contentStore.changeToken(at: path) == snapshot.token else {
@@ -339,7 +366,7 @@ extension FileVaultRepository {
     }
 
     private func publishSourceMetadata(_ snapshot: SourceSummarySnapshot, metadata: SourceMetadata,
-        validate: @Sendable () throws -> Void
+        validate: @escaping @Sendable () throws -> Void
     ) throws -> SourceRecord {
         try validateAccess(operation: "publishSourceArtifact")
         try Task.checkCancellation()
