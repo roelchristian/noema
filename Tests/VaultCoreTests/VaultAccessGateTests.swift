@@ -156,7 +156,7 @@ struct VaultAccessGateTests {
         let shouldBlockFirstNoteRead = Mutex(true)
 
         let (_, _, repo) = try await manager.openRepository(root: root) { operation in
-            if operation.hasPrefix("read Wiki/"), shouldBlockFirstNoteRead.withLock({
+            if operation.hasPrefix("read Sources/"), shouldBlockFirstNoteRead.withLock({
                 if $0 { $0 = false; return true }
                 return false
             }) {
@@ -175,9 +175,10 @@ struct VaultAccessGateTests {
         // Create initial note while open ( disable blocking until after creation ).
         shouldBlockFirstNoteRead.withLock { $0 = false }
         let note = try await repo.create(title: "Boundary Page", body: "Original")
+        let source = try await repo.importSource(data: Data("Unchanged source original".utf8), filename: "boundary.txt", title: "Boundary Source", originURL: nil)
         shouldBlockFirstNoteRead.withLock { $0 = true }
 
-        // 1. Start a repository save that enters actor execution while `.open`, then pauses right before reading the note.
+        // 1. Start a canonical save while `.open`, then pause its mandatory source scan before reading an original.
         // 2. Queue a second repository operation (`create`) behind it while `.open`.
         let inFlightSave = Task {
             try await repo.save(note: note, title: note.title, body: "In-flight save crossing lock", tags: [])
@@ -241,7 +242,8 @@ struct VaultAccessGateTests {
         let finalScan = try await finalRepo.scan()
         #expect(finalScan.notes.count == 1)
         #expect(canonicalTestReadableBody(finalScan.notes.first?.body) == "Original")
-        #expect(finalScan.sources.isEmpty)
+        #expect(finalScan.sources.map(\.id) == [source.id])
+        #expect(finalScan.sources.first?.body == "Unchanged source original")
     }
 
     @Test func wrongVaultAccessIsRejectedAcrossRepositoriesStoresAndLeases() async throws {
