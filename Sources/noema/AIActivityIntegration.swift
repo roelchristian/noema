@@ -97,6 +97,7 @@ extension ExternalAIAction {
         case .summarizeSource: .summarizeSource
         case .suggestTitle: .suggestTitle
         case .lccClassification: .classifyLCC
+        case .composePage: .composePage
         }
     }
 }

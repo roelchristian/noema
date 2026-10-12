@@ -96,12 +96,6 @@ struct AIActivityIntegrationTests {
     @Test @MainActor func modelChangeDuringCloudActivityBeginCancelsBeforeConsent() async throws {
         let gate = ActivityInferenceGate()
         let f = try await fixture(beginGate: gate); defer { f.cleanup() }
-        let originalPreference = UserDefaults.standard.object(forKey: ExternalAIService.modelPreferenceKey)
-        defer {
-            if let originalPreference {
-                UserDefaults.standard.set(originalPreference, forKey: ExternalAIService.modelPreferenceKey)
-            } else { UserDefaults.standard.removeObject(forKey: ExternalAIService.modelPreferenceKey) }
-        }
         let originalModel = f.model.externalAIService.configuration.model
         let changedModel = originalModel == "gpt-4.1-mini" ? "gpt-4.1" : "gpt-4.1-mini"
         f.model.prepareCloudPageSummary(id: f.note.id)
@@ -149,11 +143,15 @@ struct AIActivityIntegrationTests {
         #expect(automatic.first?.target == AIActivityTarget(type: .source, id: source.id))
         try await waitUntil { f.model.generatingSourceTitles.isEmpty }
         let updated = try await f.repository.loadSource(id: source.id)
+        injectComposition(f.model)
         f.model.createPageFromSource(updated)
-        try await waitUntil { try await f.store.query(.init(action: .createPageFromSource)).first?.status == .completed }
+        #expect(await f.model.prepareAIPage(.source(updated.id)))
+        let draft = try #require(f.model.aiPageDraft)
+        #expect(await f.model.publishAIPageDraft(title: try #require(draft.enrichment.title)))
         let records = try await f.store.query()
         #expect(records.count == 2)
-        #expect(records.first(where: { $0.action == .createPageFromSource })?.executionMode == .userInvoked)
+        #expect(records.first(where: { $0.action == .composePage })?.executionMode == .userInvoked)
+        #expect(records.first(where: { $0.action == .composePage })?.outcome == .published)
     }
 
     @Test @MainActor func unavailableRecorderNeverChangesSuccessfulInference() async throws {
@@ -162,6 +160,10 @@ struct AIActivityIntegrationTests {
         await f.model.nativePageSummaryTaskForTesting?.value
         #expect(BlockDocumentCodec.decode(f.model.body).aiSummary?.text == "Generated summary")
         #expect(await f.recorder.recordingUnavailable)
+        #expect(try await f.store.count() == 0)
+        injectComposition(f.model)
+        #expect(await f.model.prepareAIPage(.topic("Fixture topic")))
+        #expect(await f.model.publishAIPageDraft(title: "Reviewed Title"))
         #expect(try await f.store.count() == 0)
     }
 
@@ -225,8 +227,11 @@ struct AIActivityIntegrationTests {
 
     @Test @MainActor func topicCreationAndInitialPageNamingGroupTheirLocalHelpers() async throws {
         let f = try await fixture(); defer { f.cleanup() }
+        injectComposition(f.model)
         #expect(await f.model.createPageFromTopic("Fixture topic"))
-        let topicRecords = try await f.store.query(.init(action: .createPageFromTopic))
+        let draft = try #require(f.model.aiPageDraft)
+        #expect(await f.model.publishAIPageDraft(title: try #require(draft.enrichment.title)))
+        let topicRecords = try await f.store.query(.init(action: .composePage))
         #expect(topicRecords.count == 1 && topicRecords.first?.outcome == .published)
         f.model.newPage()
         try await waitUntil { f.model.currentNote?.title == "Untitled" }
@@ -238,6 +243,139 @@ struct AIActivityIntegrationTests {
         #expect(titles.first?.status == .completed && titles.first?.outcome == .published)
         #expect(f.model.currentNote?.title == "Generated Title" && f.model.currentNote?.lcc == "QA")
         #expect(try await f.store.count() == 2)
+    }
+
+    @MainActor private func injectComposition(_ model: AppModel) {
+        model.aiClient.enrich = { _, mode in
+            try ExternalAIEnrichment(title: mode == .regenerate ? nil : "Generated Title",
+                summary: "Generated summary", classification: ExternalAILCCSuggestion(code: "QA", rationale: "Mathematics"),
+                body: mode == .compose ? "Generated article" : nil, mode: mode)
+        }
+        model.aiClient.researchTopic = { _ in
+            [WebTopicResult(title: "Evidence", url: URL(string: "https://example.com/evidence")!, text: "Selected evidence")]
+        }
+        model.aiPageFetch = { _ in WebSourceFetch(data: Data("Fetched evidence".utf8), filename: "page.txt") }
+    }
+
+    @Test @MainActor func reviewedCompositionRecordsOneOperationForEveryInputAndProvider() async throws {
+        for provider in AIProvider.allCases {
+            for inputIndex in 0..<3 {
+                let f = try await fixture(); defer { f.cleanup() }
+                injectComposition(f.model)
+                f.model.aiProviderPreferences.setDefaultProvider(provider)
+                let recorder = f.recorder
+                f.model.cloudSummaryOverride = { request, consent in
+                    #expect(consent.approves(request))
+                    await recorder.recordDispatch(request.id)
+                    await recorder.recordUsage(request.id, usage: .init(inputTokens: 15, outputTokens: 20))
+                    let enrichment = try ExternalAIEnrichment(title: "Generated Title", summary: "Generated summary",
+                        classification: ExternalAILCCSuggestion(code: "QA", rationale: "Mathematics"),
+                        body: "Generated article", mode: .compose)
+                    return try ExternalAISummaryResult(request: request, enrichment: enrichment,
+                        provenance: ExternalAIProvenance(model: "gpt-4.1-mini"))
+                }
+                f.model.cloudPublicationOverride = { _ in { try Task.checkCancellation() } }
+                let input: AIPageInput
+                if inputIndex == 0 {
+                    let source = try await f.repository.importSource(data: Data("Source evidence".utf8),
+                        filename: "evidence.txt", title: "Source", originURL: nil)
+                    await f.model.refresh()
+                    input = .source(source.id)
+                } else if inputIndex == 1 { input = .topic("Fixture topic") }
+                else { input = .url("https://example.com/article", retainSource: true) }
+                #expect(await f.model.prepareAIPage(input))
+                if provider == .openAI { await f.model.generateCloudAIPage() }
+                let draft = try #require(f.model.aiPageDraft)
+                let suggested = try #require(try await f.store.query().first)
+                #expect(try await f.store.count() == 1)
+                #expect(suggested.action == .composePage && suggested.status == .completed && suggested.outcome == .suggested)
+                #expect(suggested.target == AIActivityTarget(type: .page, id: draft.id))
+                #expect(try await f.repository.scan().notes.count == 1)
+                #expect(await f.model.publishAIPageDraft(title: "Reviewed Title"))
+                let published = try #require(try await f.store.query().first)
+                #expect(published.id == suggested.id && published.outcome == .published)
+                #expect(try await f.store.count() == 1)
+                #expect(published.requestCount == (provider == .openAI ? 1 : 0))
+                #expect(published.usage?.inputTokens == (provider == .openAI ? 15 : nil))
+            }
+        }
+    }
+
+    @Test @MainActor func cancelledCompositionConsentAndDismissedDraftFinalizeExistingRecords() async throws {
+        let f = try await fixture(); defer { f.cleanup() }
+        injectComposition(f.model)
+        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+        f.model.cloudSummaryOverride = { _, _ in throw ExternalAIError.invalidResponse }
+        #expect(await f.model.prepareAIPage(.topic("Fixture topic")))
+        let request = try #require(f.model.aiPageSubmission?.request)
+        f.model.cancelAIPage()
+        try await waitUntil { try await f.store.query().first?.status == .cancelled }
+        let cancelled = try #require(try await f.store.query().first)
+        #expect(cancelled.id == request.id && cancelled.requestCount == 0)
+        f.model.aiProviderPreferences.setDefaultProvider(.onDevice)
+        #expect(await f.model.prepareAIPage(.topic("Fixture topic")))
+        let suggested = try #require(try await f.store.query().first)
+        f.model.cancelAIPage()
+        try await waitUntil { try await f.store.query().first?.outcome == .rejected }
+        let rejected = try #require(try await f.store.query().first)
+        #expect(rejected.id == suggested.id && rejected.status == .completed)
+        #expect(try await f.store.count() == 2 && f.model.aiPageDraft == nil)
+        #expect(try await f.repository.scan().notes.count == 1)
+    }
+
+    @Test @MainActor func compositionCancelledDuringDelayedFinishNeverExposesDraft() async throws {
+        let gate = ActivityInferenceGate()
+        let f = try await fixture(finishGate: gate); defer { f.cleanup() }
+        injectComposition(f.model)
+        let worker = Task { await f.model.prepareAIPage(.topic("Fixture topic")) }
+        try await waitUntil { await gate.entered }
+        f.model.cancelAIPage()
+        await gate.release()
+        #expect(await worker.value == false)
+        let record = try #require(try await f.store.query().first)
+        #expect(record.status == .completed && record.outcome == .rejected)
+        #expect(f.model.aiPageDraft == nil && f.model.aiPageSubmission == nil)
+    }
+
+    @Test @MainActor func modelChangeDuringCompositionBeginCancelsBeforeConsent() async throws {
+        let gate = ActivityInferenceGate()
+        let f = try await fixture(beginGate: gate); defer { f.cleanup() }
+        injectComposition(f.model)
+        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+        f.model.cloudSummaryOverride = { _, _ in throw ExternalAIError.invalidResponse }
+        let originalModel = f.model.externalAIService.configuration.model
+        let worker = Task { await f.model.prepareAIPage(.topic("Fixture topic")) }
+        try await waitUntil { await gate.entered }
+        try f.model.externalAIService.setModel(originalModel == "gpt-4.1-mini" ? "gpt-4.1" : "gpt-4.1-mini")
+        await gate.release()
+        #expect(await worker.value == false)
+        let record = try #require(try await f.store.query().first)
+        #expect(record.status == .cancelled && record.failureCode == .publication)
+        #expect(record.modelID == originalModel && record.requestCount == 0)
+        #expect(f.model.aiPageSubmission == nil && f.model.aiPageDraft == nil)
+    }
+
+    @Test @MainActor func automaticCloudCompositionConsentStillUsesOneRequestBoundRecord() async throws {
+        let f = try await fixture(); defer { f.cleanup() }
+        injectComposition(f.model)
+        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+        f.model.externalAIService.setConsentPolicy(.neverAsk)
+        let recorder = f.recorder
+        f.model.cloudSummaryOverride = { request, consent in
+            #expect(consent.approves(request))
+            await recorder.recordDispatch(request.id)
+            let enrichment = try ExternalAIEnrichment(title: "Generated Title", summary: "Generated summary",
+                classification: nil, body: "Generated article", mode: .compose)
+            return try ExternalAISummaryResult(request: request, enrichment: enrichment,
+                provenance: ExternalAIProvenance(model: "gpt-4.1-mini"))
+        }
+        f.model.cloudPublicationOverride = { _ in { try Task.checkCancellation() } }
+        #expect(await f.model.prepareAIPage(.topic("Fixture topic")))
+        #expect(f.model.aiPageSubmission == nil && f.model.aiPageDraft != nil)
+        let record = try #require(try await f.store.query().first)
+        #expect(try await f.store.count() == 1 && record.requestCount == 1)
+        #expect(record.action == .composePage && record.outcome == .suggested)
+        f.model.cancelAIPage()
     }
 }
 }
