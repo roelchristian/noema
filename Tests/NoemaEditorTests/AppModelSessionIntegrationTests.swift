@@ -25,6 +25,134 @@ struct AppModelSessionIntegrationTests {
         }
     }
 
+    @MainActor
+    private func selectPage(_ page: NoteRecord, in model: AppModel, targets: [String]) async throws {
+        model.select(page.id)
+        for _ in 0..<100 {
+            if model.currentNote?.id == page.id && model.outgoingLinkTargets == targets { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try #require(model.currentNote?.id == page.id)
+        try #require(model.outgoingLinkTargets == targets)
+    }
+
+    // Both initialization paths must discard the previous vault's links.
+    @Test @MainActor
+    func populatedInspectorLinksArePurgedAcrossLockUnlockVaultSwitchAndClose() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("noema-inspector-session-\(UUID())", isDirectory: true)
+        let rootA = base.appendingPathComponent("Vault A", isDirectory: true)
+        let rootB = base.appendingPathComponent("Vault B", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: rootB, withIntermediateDirectories: true)
+        defer {
+            SourceReader.closeAll()
+            try? FileManager.default.removeItem(at: base)
+        }
+        let repoA = try FileVaultRepository.open(root: rootA, create: true)
+        let pageA = try await repoA.create(title: "Page A", body: "See [[Target A]].")
+        let targetA = try await repoA.create(title: "Target A", body: "See [[Page A]].")
+        let repoB = try FileVaultRepository.open(root: rootB, create: true)
+        let pageB = try await repoB.create(title: "Page B", body: "See [[Only In B]].")
+
+        let model = AppModel()
+        model.localStorageRoot = base
+        model.persistSecurityScopedBookmark = false
+        await model.open(rootA, create: false)
+        try #require(model.isVaultAvailable)
+        try await selectPage(pageA, in: model, targets: ["target a"])
+        #expect(model.backlinks.map(\.id) == [targetA.id])
+
+        try #require(await model.lockVault())
+        #expect(model.outgoingLinkTargets.isEmpty && model.backlinks.isEmpty)
+        #expect(InspectorContext.resolve(model: model, librarySourceSelection: nil) == .none)
+
+        try #require(await model.unlockVault())
+        #expect(model.currentNote == nil)
+        #expect(model.outgoingLinkTargets.isEmpty && model.backlinks.isEmpty)
+        try await selectPage(pageA, in: model, targets: ["target a"])
+        #expect(model.backlinks.map(\.id) == [targetA.id])
+
+        await model.open(rootB, create: false)
+        try #require(model.isVaultAvailable && model.root == rootB)
+        #expect(model.currentNote == nil)
+        #expect(model.outgoingLinkTargets.isEmpty && model.backlinks.isEmpty)
+        try await selectPage(pageB, in: model, targets: ["only in b"])
+        #expect(model.backlinks.isEmpty)
+
+        try #require(await model.closeVault())
+        #expect(model.outgoingLinkTargets.isEmpty && model.backlinks.isEmpty)
+        #expect(InspectorContext.resolve(model: model, librarySourceSelection: nil) == .none)
+    }
+
+    @Test @MainActor func corruptedDraftRemainsVisibleAndPeersRecoverAcrossLockUnlockAndReopening() async throws {
+        let base = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("noema-recovery-isolation-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("Vault")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let repository = try FileVaultRepository.open(root: root, create: true)
+        let local = base.appendingPathComponent("Local")
+        let draftsDirectory = local.appendingPathComponent("KnowledgeVault/\(repository.manifest.id.uuidString)/Drafts")
+        let fixture = try RecoveryStore(unguardedTestingDirectory: draftsDirectory)
+        var drafts: [DraftRecord] = []
+        for i in 0..<3 {
+            let note = try await repository.create(title: "Page \(i)", body: "Canonical \(i)")
+            let draft = DraftRecord(note: note, title: note.title, body: "Unsaved \(i)", tags: ["recovery"])
+            try await fixture.store(draft)
+            drafts.append(draft)
+        }
+        let corrupt = draftsDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        let original = Data("{\"body\":\"Only partial unsaved work".utf8)
+        try original.write(to: corrupt)
+
+        let model = AppModel()
+        model.localStorageRoot = local
+        model.persistSecurityScopedBookmark = false
+        await model.open(root, create: false)
+        #expect(model.isVaultAvailable)
+        #expect(model.errorMessage == nil)
+        #expect(Set(model.recoveredDrafts.map(\.id)) == Set(drafts.map(\.id)))
+        #expect(model.damagedRecoveryEntries.first?.fileURL.resolvingSymlinksInPath().path == corrupt.resolvingSymlinksInPath().path)
+        #expect(model.hasRecoveryEntries)
+
+        #expect(await model.lockVault())
+        #expect(model.recoveredDrafts.isEmpty)
+        #expect(model.damagedRecoveryEntries.isEmpty)
+        #expect(!model.hasRecoveryEntries)
+        #expect(await model.unlockVault())
+        #expect(model.recoveredDrafts.count == 3)
+        #expect(model.damagedRecoveryEntries.count == 1)
+        #expect(try Data(contentsOf: corrupt) == original)
+
+        #expect(await model.closeVault())
+        await model.open(root, create: false)
+        #expect(model.isVaultAvailable)
+        #expect(model.recoveredDrafts.count == 3)
+        #expect(model.damagedRecoveryEntries.count == 1)
+
+        for draft in drafts {
+            model.saveDraftAsNewPage(draft)
+            for _ in 0..<200 {
+                if !model.recoveredDrafts.contains(where: { $0.id == draft.id }) { break }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(!model.recoveredDrafts.contains { $0.id == draft.id })
+            #expect(model.notes.contains { $0.title == draft.title + " (recovered)" && $0.body == draft.body && $0.tags == draft.tags })
+            #expect(model.errorMessage == nil)
+            #expect(model.damagedRecoveryEntries.count == 1)
+            #expect(try Data(contentsOf: corrupt) == original)
+        }
+        // The menu and sidebar must remain available when only damaged entries are left.
+        #expect(model.recoveredDrafts.isEmpty)
+        #expect(model.hasRecoveryEntries)
+        #expect(await model.closeVault())
+        await model.open(root, create: false)
+        #expect(model.recoveredDrafts.isEmpty)
+        #expect(model.damagedRecoveryEntries.count == 1)
+        #expect(model.hasRecoveryEntries)
+        #expect(try Data(contentsOf: corrupt) == original)
+        #expect(await model.closeVault())
+    }
+
     @Test @MainActor func appModelObservesSessionStateAndPurgesAllContentEditorSearchAndPreviewStateOnLock() async throws {
         let root = try makeTempVault(name: "AtlasVault")
         defer {
