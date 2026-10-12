@@ -216,9 +216,12 @@ to current usable displays, including disconnected/offscreen display changes. Op
 retains the prior profile; open/locking uses workspace, closed/locked/unlocking uses
 welcome. Full-screen transitions defer frame changes and preserve saved geometry.
 Window probes operate only on their attached main window, never whichever auxiliary
-window is key. About (660×560), Settings, source readers and nonactivating caret panels
-retain their existing chrome/focus/security-scope/preview cleanup ownership. Geometry
-restoration must not open a vault twice or introduce a second lifecycle controller.
+window is key. Settings (`⌘,`) presents as a single workspace-owned modal sheet
+(ideal 840×600 pt, sidebar categories under Personalisation, Intelligence, and Security)
+that gates workspace navigation, editing, and commands while preserving background saves
+and dismissing on successful vault lock; About (660×560), source readers and nonactivating
+caret panels retain their existing chrome/focus/security-scope/preview cleanup ownership.
+Geometry restoration must not open a vault twice or introduce a second lifecycle controller.
 
 See [native window acceptance](validation.md#native-window-acceptance) for source tests,
 scoped performed UI checks and remaining interaction/accessibility acceptance.

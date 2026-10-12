@@ -54,8 +54,8 @@ struct ContentView: View {
             toggleInspector: toggleInspectorPane,
             sidebarPresented: model.isVaultAvailable && panePresentation.sidebar,
             inspectorPresented: isInspectorPresented,
-            canToggleSidebar: model.isVaultAvailable && workspaceWidth >= workspaceMinimum + WorkspacePaneState.sidebarMinimum + 1,
-            canToggleInspector: model.isVaultAvailable && inspectorContext.isInspectable && workspaceWidth >= workspaceMinimum + InspectorState.minWidth + 1
+            canToggleSidebar: model.canInteractWithWorkspace && model.isVaultAvailable && workspaceWidth >= workspaceMinimum + WorkspacePaneState.sidebarMinimum + 1,
+            canToggleInspector: model.canInteractWithWorkspace && model.isVaultAvailable && inspectorContext.isInspectable && workspaceWidth >= workspaceMinimum + InspectorState.minWidth + 1
         )
     }
     private func toggleSidebarPane() {
@@ -131,6 +131,7 @@ struct ContentView: View {
     }
     private var titledWorkspace: some View {
         workspacePresentation
+        .disabled(!model.canInteractWithWorkspace)
         .navigationTitle(model.windowTitle.title)
         .navigationSubtitle(model.windowTitle.subtitle)
         .focusedSceneValue(\.workspacePaneActions, paneActions)
@@ -140,6 +141,14 @@ struct ContentView: View {
     }
     private var workspaceSheets: some View {
         titledWorkspace
+        .sheet(isPresented: $model.showSettings) {
+            NoemaSettings(
+                externalAIService: model.externalAIService,
+                aiProviderPreferences: model.aiProviderPreferences,
+                model: model
+            )
+            .systemNoemaTheme()
+        }
         .sheet(item: $model.cloudSummaryConfirmation, onDismiss: {
             if model.cloudSummaryTarget == nil { model.cloudSummaryConfirmation = nil }
         }) { confirmation in
