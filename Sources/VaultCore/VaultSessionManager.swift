@@ -371,8 +371,8 @@ public actor VaultSessionManager {
         encryptionRequested: Bool,
         accessAuthenticationRequested: Bool = false,
         storageProvider: VaultStorageProvider = .plaintext
-    ) throws -> URL {
-        let root = try FileVaultRepository.createNewVault(
+    ) async throws -> URL {
+        let root = try await FileVaultRepository.createNewVault(
             parent: parent, name: name, encryptionRequested: encryptionRequested,
             storageProvider: storageProvider
         )
@@ -453,6 +453,8 @@ public actor VaultSessionManager {
 
     /// Opens a vault session (if not already open for `root`), issues a session lease, and returns a
     /// `FileVaultRepository` whose storage and actor operations are gated by `accessGate` and `lease`.
+    private var creationInitializationInProgress = false
+
     public func openRepository(
         root: URL,
         create: Bool = false,
@@ -462,9 +464,9 @@ public actor VaultSessionManager {
         let normalizedRoot = Self.normalize(root)
         if Task.isCancelled { throw VaultSessionError.cancelled(action: "open") }
         // Existing vaults never initialize directories or open content before admission.
-        // Reject incompatible lifecycle requests before even the compatibility creation route.
+        // Reject incompatible lifecycle requests before initializing a fresh canonical root.
         if create {
-            guard activeCloseTask == nil else {
+            guard !creationInitializationInProgress, activeCloseTask == nil else {
                 throw VaultSessionError.transitionInProgress(current: state.phase, requested: "open")
             }
             switch state {
@@ -474,7 +476,9 @@ public actor VaultSessionManager {
                     throw VaultSessionError.transitionInProgress(current: state.phase, requested: "open")
                 }
                 if try FileVaultRepository.preflightOpen(root: normalizedRoot, create: true, storageProvider: storageProvider) == nil {
-                    _ = try FileVaultRepository.open(root: normalizedRoot, create: true, storageProvider: storageProvider)
+                    creationInitializationInProgress = true
+                    defer { creationInitializationInProgress = false }
+                    try await FileVaultRepository.initializeSchema5(root: normalizedRoot, storageProvider: storageProvider)
                 }
             case .open(let existing) where existing.root == normalizedRoot:
                 break

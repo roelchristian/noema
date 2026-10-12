@@ -4,43 +4,60 @@ import CryptoKit
 public enum EntryKind: String, Codable, Sendable { case wiki, source }
 public struct VaultCanonicalStorageDeclaration: Codable, Sendable, Equatable {
     public var mode: String = "sqliteBlocks"
-    public var schemaVersion: Int = 3
+    public var schemaVersion: Int = 5
     public var database: String = "blocks.sqlite"
     public var localOnly: Bool = true
-    public var requiredCapabilities: [String] = ["canonicalMetadataV1"]
+    public var requiredCapabilities: [String] = ["canonicalKnowledgeV1", "canonicalMetadataV1", "semanticAnnotationsV1"]
+    public var unknownFields: [String: JSONValue] = [:]
     public init() {}
     public var isSupported: Bool {
         mode == "sqliteBlocks" && database == "blocks.sqlite" && localOnly &&
-        ((schemaVersion == 3 && requiredCapabilities == ["canonicalMetadataV1"]) ||
-         (schemaVersion == 4 && requiredCapabilities == ["canonicalKnowledgeV1", "canonicalMetadataV1"]) ||
-         (schemaVersion == 5 && requiredCapabilities == ["canonicalKnowledgeV1", "canonicalMetadataV1", "semanticAnnotationsV1"]))
+        schemaVersion == 5 && requiredCapabilities == SQLiteBlockStore.semanticRequiredCapabilities
+    }
+    private static let keys: Set<String> = ["mode", "schemaVersion", "database", "localOnly", "requiredCapabilities"]
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: PersistenceCodingKey.self)
+        mode = try c.decode(String.self, forKey: .init("mode"))
+        schemaVersion = try c.decode(Int.self, forKey: .init("schemaVersion"))
+        database = try c.decode(String.self, forKey: .init("database"))
+        localOnly = try c.decode(Bool.self, forKey: .init("localOnly"))
+        requiredCapabilities = try c.decode([String].self, forKey: .init("requiredCapabilities"))
+        unknownFields = try decodeUnknownFields(c, known: Self.keys)
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: PersistenceCodingKey.self)
+        try c.encode(mode, forKey: .init("mode")); try c.encode(schemaVersion, forKey: .init("schemaVersion"))
+        try c.encode(database, forKey: .init("database")); try c.encode(localOnly, forKey: .init("localOnly"))
+        try c.encode(requiredCapabilities, forKey: .init("requiredCapabilities"))
+        try encodeUnknownFields(unknownFields, known: Self.keys, into: &c)
     }
 }
 public struct VaultManifest: Codable, Sendable {
     public static let sqliteDatabasePath = "blocks.sqlite"
-    public var formatVersion: Int = 1
+    public var formatVersion: Int = 2
     public var id: UUID
-    public var storageMode: BlockStorageMode = .markdown
-    public var storage: VaultCanonicalStorageDeclaration? = nil
+    public var storageMode: BlockStorageMode = .sqliteBlocks
+    public var storage: VaultCanonicalStorageDeclaration? = VaultCanonicalStorageDeclaration()
+    public var unknownFields: [String: JSONValue] = [:]
     public var canonicalStorage: Bool { storage != nil }
     public var isSupported: Bool {
-        (formatVersion == 1 && storageMode == .markdown && storage == nil) ||
-        (formatVersion == 2 && storageMode == .sqliteBlocks && (storage == nil || storage?.isSupported == true))
+        formatVersion == 2 && storageMode == .sqliteBlocks && storage?.isSupported == true
     }
     public init(id: UUID = UUID()) { self.id = id }
-    private enum CodingKeys: String, CodingKey { case formatVersion, id, storageMode, storage }
+    private static let keys: Set<String> = ["formatVersion", "id", "storageMode", "storage"]
     public init(from decoder: any Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        formatVersion = try values.decode(Int.self, forKey: .formatVersion)
-        id = try values.decode(UUID.self, forKey: .id)
-        storageMode = try values.decodeIfPresent(BlockStorageMode.self, forKey: .storageMode) ?? .markdown
-        if values.contains(.storage), !(try values.decodeNil(forKey: .storage)) {
-            enum DeclarationKey: String, CodingKey { case mode, schemaVersion, database, localOnly, requiredCapabilities }
-            let declaration = try values.nestedContainer(keyedBy: DeclarationKey.self, forKey: .storage)
-            if formatVersion == 1, try declaration.decode(String.self, forKey: .mode) == "markdown",
-               declaration.allKeys == [.mode] { storage = nil }
-            else { storage = try values.decode(VaultCanonicalStorageDeclaration.self, forKey: .storage) }
-        }
+        let c = try decoder.container(keyedBy: PersistenceCodingKey.self)
+        formatVersion = try c.decode(Int.self, forKey: .init("formatVersion"))
+        id = try c.decode(UUID.self, forKey: .init("id"))
+        storageMode = try c.decode(BlockStorageMode.self, forKey: .init("storageMode"))
+        storage = try c.decodeIfPresent(VaultCanonicalStorageDeclaration.self, forKey: .init("storage"))
+        unknownFields = try decodeUnknownFields(c, known: Self.keys)
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: PersistenceCodingKey.self)
+        try c.encode(formatVersion, forKey: .init("formatVersion")); try c.encode(id, forKey: .init("id"))
+        try c.encode(storageMode, forKey: .init("storageMode")); try c.encodeIfPresent(storage, forKey: .init("storage"))
+        try encodeUnknownFields(unknownFields, known: Self.keys, into: &c)
     }
 }
 public struct NoteRecord: Codable, Identifiable, Sendable, Equatable {

@@ -11,27 +11,17 @@ public struct VaultStorageProvider: Sendable {
 
     public func makeStore(root: URL) throws -> any VaultContentStore { try factory(root) }
 
-    /// Actor construction remains in the same policy as byte-store selection.
-    /// An existing page-only vault must never infer expanded authority from tables.
+    /// Production construction admits only a declared schema-5 authority and a current lease.
     func makeBlockStore(url: URL, sessionLease: VaultSessionLease?, accessGate: VaultAccessGate?,
-                        createIfMissing: Bool = true, manifest: VaultManifest? = nil) throws -> SQLiteBlockStore {
-        if let manifest, manifest.canonicalStorage {
-            guard manifest.isSupported, let declaration = manifest.storage,
-                  let sessionLease, let accessGate else { throw VaultError.invalid("Canonical admission requires matching session authority.") }
-            try SQLiteVaultMigration.requireLocalRoot(url.deletingLastPathComponent())
-            return try SQLiteBlockStore(url: url, sessionLease: sessionLease, accessGate: accessGate,
-                canonicalVaultID: manifest.id, requiredCapabilities: declaration.requiredCapabilities, schemaVersion: declaration.schemaVersion,
-                createIfMissing: createIfMissing)
+                        createIfMissing: Bool = false, manifest: VaultManifest? = nil) throws -> SQLiteBlockStore {
+        guard let manifest, manifest.isSupported, let declaration = manifest.storage,
+              let sessionLease, let accessGate, !createIfMissing else {
+            throw VaultError.invalid("Canonical admission requires a schema-5 manifest, existing database and matching session authority.")
         }
-        if let sessionLease, let accessGate {
-            return try SQLiteBlockStore(url: url, sessionLease: sessionLease,
-                                        accessGate: accessGate, createIfMissing: createIfMissing)
-        }
-        guard sessionLease == nil, accessGate == nil else {
-            throw VaultAccessError.missingLease(operation: "blockStore.open")
-        }
-        // Only explicit migration staging and disposable tests lack a session.
-        return try SQLiteBlockStore(unguardedTestingURL: url, createIfMissing: createIfMissing)
+        try SQLiteVaultLocality.requireLocalRoot(url.deletingLastPathComponent())
+        return try SQLiteBlockStore(url: url, sessionLease: sessionLease, accessGate: accessGate,
+            canonicalVaultID: manifest.id, requiredCapabilities: declaration.requiredCapabilities,
+            schemaVersion: declaration.schemaVersion, createIfMissing: false)
     }
 
     /// Explicit construction of a fresh expanded database. This does not publish a
@@ -39,14 +29,14 @@ public struct VaultStorageProvider: Sendable {
     /// until source byte receipts and every metadata lifecycle path are integrated.
     func makeCanonicalStagingStore(url: URL, vaultID: UUID,
                                    createIfMissing: Bool = true) throws -> SQLiteBlockStore {
-        try SQLiteVaultMigration.requireLocalRoot(url.deletingLastPathComponent())
+        try SQLiteVaultLocality.requireLocalRoot(url.deletingLastPathComponent())
         return try SQLiteBlockStore(canonicalStagingURL: url, vaultID: vaultID,
                                     createIfMissing: createIfMissing)
     }
 
     /// Explicit fresh staging only; opening schema 3 never converts its authority.
     func makeKnowledgeStagingStore(url: URL, vaultID: UUID, createIfMissing: Bool = true) throws -> SQLiteBlockStore {
-        try SQLiteVaultMigration.requireLocalRoot(url.deletingLastPathComponent())
+        try SQLiteVaultLocality.requireLocalRoot(url.deletingLastPathComponent())
         return try SQLiteBlockStore(canonicalStagingURL: url, vaultID: vaultID,
             requiredCapabilities: SQLiteBlockStore.knowledgeRequiredCapabilities,
             schemaVersion: SQLiteBlockStore.knowledgeSchemaVersion, createIfMissing: createIfMissing)
@@ -54,7 +44,7 @@ public struct VaultStorageProvider: Sendable {
 
     /// Schema 5 is initialized only through this explicit fresh staging route.
     func makeSemanticStagingStore(url: URL, vaultID: UUID, createIfMissing: Bool = true) throws -> SQLiteBlockStore {
-        try SQLiteVaultMigration.requireLocalRoot(url.deletingLastPathComponent())
+        try SQLiteVaultLocality.requireLocalRoot(url.deletingLastPathComponent())
         return try SQLiteBlockStore(canonicalStagingURL:url, vaultID:vaultID, requiredCapabilities:SQLiteBlockStore.semanticRequiredCapabilities, schemaVersion:SQLiteBlockStore.semanticSchemaVersion, createIfMissing:createIfMissing)
     }
 

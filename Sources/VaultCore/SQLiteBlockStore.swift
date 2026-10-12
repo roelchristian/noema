@@ -31,19 +31,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
     public static let knowledgeRequiredCapabilities = ["canonicalKnowledgeV1", "canonicalMetadataV1"]
     private let canonicalVaultID: UUID?
 
-    /// Canonical production access requires the admitted vault's current lease.
-    public init(url: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate, createIfMissing: Bool = true) throws {
-        try accessGate.validate(lease: sessionLease, targetRoot: sessionLease.root, targetVaultID: sessionLease.vaultID, operation: "blockStore.open")
-        try SQLiteVaultMigration.requireLocalRoot(sessionLease.root)
-        let root = sessionLease.root.standardizedFileURL.resolvingSymlinksInPath().path + "/"
-        guard url.standardizedFileURL.resolvingSymlinksInPath().path.hasPrefix(root) else { throw VaultError.invalid("Block database must belong to the admitted vault.") }
-        canonicalVaultID = nil
-        self.sessionLease = sessionLease; self.accessGate = accessGate
-        databaseURL = url.standardizedFileURL.resolvingSymlinksInPath()
-        connection = try BlockSQLiteConnection(url: url, createIfMissing: createIfMissing)
-        try Self.prepare(connection, initializeIfNeeded: createIfMissing)
-    }
-    /// Staging migration and disposable tests have no admitted session yet.
+    /// Disposable page-store tests have no admitted session; no production caller uses this route.
     /// Callers must separately establish a safe local staging target.
     init(unguardedTestingURL url: URL, createIfMissing: Bool = true) throws {
         canonicalVaultID = nil
@@ -54,11 +42,12 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
     }
     /// Expanded authority is opt-in and cannot reinterpret an existing page-only DB.
     init(url: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate,
-                canonicalVaultID: UUID, requiredCapabilities: [String] = ["canonicalMetadataV1"], schemaVersion: Int = 3,
+                canonicalVaultID: UUID, requiredCapabilities: [String] = semanticRequiredCapabilities, schemaVersion: Int = semanticSchemaVersion,
                 createIfMissing: Bool = false) throws {
+        guard schemaVersion == Self.semanticSchemaVersion, !createIfMissing else { throw VaultError.invalid("Production admission requires an existing schema-5 database.") }
         try Self.validateCanonicalDeclaration(schemaVersion: schemaVersion, capabilities: requiredCapabilities)
         try accessGate.validate(lease: sessionLease, targetRoot: sessionLease.root, targetVaultID: canonicalVaultID, operation: "blockStore.openCanonical")
-        try SQLiteVaultMigration.requireLocalRoot(sessionLease.root)
+        try SQLiteVaultLocality.requireLocalRoot(sessionLease.root)
         let root = sessionLease.root.standardizedFileURL.resolvingSymlinksInPath().path + "/"
         guard url.standardizedFileURL.resolvingSymlinksInPath().path.hasPrefix(root), sessionLease.vaultID == canonicalVaultID else { throw VaultError.invalid("Canonical database identity/root mismatch.") }
         self.canonicalVaultID = canonicalVaultID; self.sessionLease = sessionLease; self.accessGate = accessGate
@@ -99,7 +88,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
             guard sqlite3_step(statement) == SQLITE_ROW else { throw VaultError.storage("Cannot read block schema version.") }
             return sqlite3_column_int(statement, 0)
         }
-        var version = try readVersion()
+        let version = try readVersion()
         if canonicalVaultID != nil {
             guard (expectedSchemaVersion == 3 && requiredCapabilities == ["canonicalMetadataV1"]) || (expectedSchemaVersion == 4 && requiredCapabilities == knowledgeRequiredCapabilities) || (expectedSchemaVersion == 5 && requiredCapabilities == semanticRequiredCapabilities) else { throw VaultError.invalid("Unsupported canonical schema/capability declaration.") }
             guard version == 0 || version == expectedSchemaVersion else { throw VaultError.invalid("Canonical authority transition required; existing authority is never upgraded on open.") }
@@ -110,7 +99,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
             defer { sqlite3_finalize(tables) }
             guard sqlite3_step(tables) == SQLITE_ROW, sqlite3_column_int(tables, 0) == 0 else { throw VaultError.invalid("Canonical staging cannot reinterpret an unversioned database.") }
         }
-        guard version >= 0, version <= (canonicalVaultID == nil ? schemaVersion : expectedSchemaVersion) else { throw VaultError.invalid("Unsupported block database schema version.") }
+        guard version == 0 || version == (canonicalVaultID == nil ? schemaVersion : expectedSchemaVersion) else { throw VaultError.invalid("Unsupported block database schema version.") }
         guard version != 0 || initializeIfNeeded else { throw VaultError.invalid("The block database has no supported schema.") }
         if let canonicalVaultID, version == expectedSchemaVersion {
             var state: OpaquePointer?
@@ -127,59 +116,44 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
         if version == 0 {
             try exec("BEGIN IMMEDIATE")
             do {
-                try exec("""
-                CREATE TABLE pages(id TEXT PRIMARY KEY, revision BLOB NOT NULL, metadata BLOB, properties BLOB NOT NULL, trashed INTEGER NOT NULL DEFAULT 0 CHECK(trashed IN (0,1)));
-                CREATE TABLE blocks(page_id TEXT NOT NULL, id TEXT NOT NULL, parent_id TEXT, sibling_order INTEGER NOT NULL CHECK(sibling_order>=0), kind TEXT NOT NULL, runs BLOB NOT NULL, semantic BLOB NOT NULL, created_at REAL NOT NULL, modified_at REAL NOT NULL, extensions BLOB NOT NULL, PRIMARY KEY(page_id,id), FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE, FOREIGN KEY(page_id,parent_id) REFERENCES blocks(page_id,id) DEFERRABLE INITIALLY DEFERRED);
-                CREATE INDEX block_parent_order ON blocks(page_id,parent_id,sibling_order);
-                PRAGMA user_version=1;
-                """)
-                if canonicalVaultID == nil { try exec("COMMIT") }
-            } catch { try? exec("ROLLBACK"); throw error }
-            version = 1
-        }
-        if version == 1 {
-            if canonicalVaultID == nil { try exec("BEGIN IMMEDIATE") }
-            do {
-                // Existing v1 trash has no trustworthy removal date; NULL retains
-                // the repository's undated-entry grace rather than inventing one.
-                try exec("ALTER TABLE pages ADD COLUMN trashed_at REAL; PRAGMA user_version=2;")
-                if canonicalVaultID == nil { try exec("COMMIT") }
-            } catch { try? exec("ROLLBACK"); throw error }
-            version = 2
-        }
-        if let canonicalVaultID {
-            if version == 2 {
-                // Fresh canonical construction retains the original DDL transaction.
-                // An existing schema2 was rejected before any DDL/WAL changes.
-                do {
-                    try exec(canonicalSchema)
+                try exec(pageSchema)
+                if let canonicalVaultID {
+                    var schema = canonicalSchema
+                    if expectedSchemaVersion >= 4 {
+                        schema = schema.replacingOccurrences(of: "extensions BLOB NOT NULL);", with: "extensions BLOB NOT NULL, required_capabilities BLOB NOT NULL);")
+                    }
+                    try exec(schema)
                     var insert: OpaquePointer?
-                    guard sqlite3_prepare_v2(db, "INSERT INTO vault_state(singleton,vault_id,capability,payload_version,revision,extensions) VALUES(1,?, 'canonicalMetadataV1',1,?, '{}')", -1, &insert, nil) == SQLITE_OK, let insert else { throw VaultError.storage("Cannot initialize canonical identity.") }
+                    let sql = expectedSchemaVersion >= 4
+                        ? "INSERT INTO vault_state(singleton,vault_id,capability,payload_version,revision,extensions,required_capabilities) VALUES(1,?, 'canonicalMetadataV1',1,?, '{}',?)"
+                        : "INSERT INTO vault_state(singleton,vault_id,capability,payload_version,revision,extensions) VALUES(1,?, 'canonicalMetadataV1',1,?, '{}')"
+                    guard sqlite3_prepare_v2(db, sql, -1, &insert, nil) == SQLITE_OK, let insert else { throw VaultError.storage("Cannot initialize canonical identity.") }
                     defer { sqlite3_finalize(insert) }
                     let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
                     sqlite3_bind_text(insert, 1, canonicalVaultID.uuidString, -1, transient)
                     sqlite3_bind_text(insert, 2, UUID().uuidString, -1, transient)
-                    guard sqlite3_step(insert) == SQLITE_DONE else { throw VaultError.storage("Cannot initialize canonical identity.") }
                     if expectedSchemaVersion >= 4 {
+                        let capabilities = try JSONEncoder().encode(requiredCapabilities)
+                        _ = capabilities.withUnsafeBytes { sqlite3_bind_blob(insert, 3, $0.baseAddress, Int32(capabilities.count), transient) }
                         try exec(knowledgeSchema)
-                        try exec("ALTER TABLE vault_state ADD COLUMN required_capabilities BLOB NOT NULL DEFAULT '[\"canonicalKnowledgeV1\",\"canonicalMetadataV1\"]'")
                     }
-                    if expectedSchemaVersion == 5 {
-                        try exec(semanticSchema)
-                        try exec("UPDATE vault_state SET required_capabilities='[\"canonicalKnowledgeV1\",\"canonicalMetadataV1\",\"semanticAnnotationsV1\"]'")
-                    }
-                    try exec("PRAGMA user_version=\(expectedSchemaVersion); COMMIT")
-                } catch { try? exec("ROLLBACK"); throw error }
-            }
-            var state: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "SELECT vault_id,capability,payload_version FROM vault_state WHERE singleton=1", -1, &state, nil) == SQLITE_OK, let state else { throw VaultError.invalid("Canonical vault state missing.") }
-            defer { sqlite3_finalize(state) }
-            guard sqlite3_step(state) == SQLITE_ROW,
-                  sqlite3_column_text(state, 0).map({ String(cString: $0) }) == canonicalVaultID.uuidString,
-                  sqlite3_column_text(state, 1).map({ String(cString: $0) }) == "canonicalMetadataV1",
-                  sqlite3_column_int(state, 2) == 1 else { throw VaultError.invalid("Canonical identity/capability/payload mismatch.") }
+                    if expectedSchemaVersion == 5 { try exec(semanticSchema) }
+                    guard sqlite3_step(insert) == SQLITE_DONE else { throw VaultError.storage("Cannot initialize canonical identity.") }
+                }
+                let finalVersion = canonicalVaultID == nil ? schemaVersion : expectedSchemaVersion
+                try exec("PRAGMA user_version=\(finalVersion); COMMIT")
+            } catch { try? exec("ROLLBACK"); throw error }
+        }
+        if canonicalVaultID != nil, expectedSchemaVersion >= 4 {
+            try validateKnowledgeCapabilities(db, expected: requiredCapabilities)
+            if expectedSchemaVersion == 5 { try validateSemanticRegistry(db) }
         }
     }
+    private static let pageSchema = """
+    CREATE TABLE pages(id TEXT PRIMARY KEY, revision BLOB NOT NULL, metadata BLOB, properties BLOB NOT NULL, trashed INTEGER NOT NULL DEFAULT 0 CHECK(trashed IN (0,1)), trashed_at REAL);
+    CREATE TABLE blocks(page_id TEXT NOT NULL, id TEXT NOT NULL, parent_id TEXT, sibling_order INTEGER NOT NULL CHECK(sibling_order>=0), kind TEXT NOT NULL, runs BLOB NOT NULL, semantic BLOB NOT NULL, created_at REAL NOT NULL, modified_at REAL NOT NULL, extensions BLOB NOT NULL, PRIMARY KEY(page_id,id), FOREIGN KEY(page_id) REFERENCES pages(id) ON DELETE CASCADE, FOREIGN KEY(page_id,parent_id) REFERENCES blocks(page_id,id) DEFERRABLE INITIALLY DEFERRED);
+    CREATE INDEX block_parent_order ON blocks(page_id,parent_id,sibling_order);
+    """
     private static let canonicalSchema = """
     CREATE TABLE vault_state(singleton INTEGER PRIMARY KEY CHECK(singleton=1), vault_id TEXT NOT NULL, capability TEXT NOT NULL, payload_version INTEGER NOT NULL, revision BLOB NOT NULL, extensions BLOB NOT NULL);
     CREATE TABLE sources(id TEXT PRIMARY KEY, revision BLOB NOT NULL, ownership TEXT NOT NULL CHECK(ownership IN ('imported','linked','unavailable')), payload_version INTEGER NOT NULL, required_features BLOB NOT NULL, metadata BLOB NOT NULL, blob_path TEXT, checksum TEXT, byte_size INTEGER, linked_reference BLOB, trashed INTEGER NOT NULL DEFAULT 0 CHECK(trashed IN (0,1)), trashed_at REAL);
@@ -795,6 +769,18 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
             return try sourceInTransaction(id: id)
         }
     }
+    /// Structural validation supplements identity and required-capability admission.
+    public func validateIntegrity() throws {
+        try validate("blockStore.integrity")
+        let integrity = try statement("PRAGMA integrity_check")
+        defer { sqlite3_finalize(integrity) }
+        guard sqlite3_step(integrity) == SQLITE_ROW, text(integrity, 0) == "ok",
+              sqlite3_step(integrity) == SQLITE_DONE else { throw VaultError.invalid("Canonical database integrity check failed.") }
+        let foreignKeys = try statement("PRAGMA foreign_key_check")
+        defer { sqlite3_finalize(foreignKeys) }
+        guard sqlite3_step(foreignKeys) == SQLITE_DONE else { throw VaultError.invalid("Canonical database relationship integrity check failed.") }
+    }
+
     public func checkpoint() throws {
         try validate("blockStore.checkpoint")
         let statement = try statement("PRAGMA wal_checkpoint(TRUNCATE)"); defer { sqlite3_finalize(statement) }
