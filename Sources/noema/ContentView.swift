@@ -604,8 +604,12 @@ struct ContentView: View {
                 }
                 .disabled(model.editingLockOperations.contains(note.id))
                 Button("Delete…", role: .destructive) { trashPageID = note.id; showTrashConfirmation = true }
+                    .disabled(!Self.canTrashPage(note, model: model))
             }
         }
+    }
+    static func canTrashPage(_ note: NoteRecord, model: AppModel) -> Bool {
+        !note.isEditingLocked && !model.editingLocked && !model.externalChange && !model.editingLockOperations.contains(note.id)
     }
     private var sortedPageRows: [LibraryRow] {
         switch pageSortOrder {
@@ -680,7 +684,9 @@ struct ContentView: View {
             } else {
                 List(selection: Binding(get: { model.selectedID }, set: { model.select($0) })) {
                     ForEach(sortedPageRows) { row in
-                        VStack(alignment: .leading, spacing: 6) {
+                        let note = row.kind == .wiki ? model.notes.first(where: { $0.id == row.id }) : nil
+                        let deleteDisabled = note.map { !Self.canTrashPage($0, model: model) } ?? true
+                        VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
                                 if row.kind == .wiki, model.unseenRenamedPages.contains(row.id) {
                                     Image(systemName: "circle.fill")
@@ -690,9 +696,10 @@ struct ContentView: View {
                                         .accessibilityLabel("Unread title change")
                                 }
                                 Text(row.title).font(NoemaTypography.interfaceEmphasis).lineLimit(1)
-                                if row.kind == .wiki, model.notes.first(where: { $0.id == row.id })?.isEditingLocked == true {
+                                if note?.isEditingLocked == true {
                                     Image(systemName: "lock.fill")
                                         .font(NoemaTypography.metadata)
+                                        .foregroundStyle(.secondary)
                                         .help("Page locked against editing")
                                         .accessibilityLabel("Page locked against editing")
                                 }
@@ -704,38 +711,39 @@ struct ContentView: View {
                                         .accessibilityLabel("\(row.kind == .wiki ? "Last updated" : "Captured") \(date.formatted(date: .long, time: .shortened))")
                                 }
                             }
-                            HStack(alignment: .top, spacing: 5) {
-                                if row.hasAISummary {
-                                    Image(systemName: "sparkles").accessibilityLabel("AI-generated summary")
-                                }
-                                Text(row.excerpt.replacingOccurrences(of: "\n", with: " ")).lineLimit(2)
-                            }.font(NoemaTypography.interface)
-                                .foregroundStyle(.secondary)
-                            if !row.tags.isEmpty {
-                                Text(row.tags.prefix(3).map { "#" + $0 }.joined(separator: "  ")).font(NoemaTypography.metadata)
-                                    .foregroundStyle(.secondary).lineLimit(1)
+                            if !row.excerpt.isEmpty {
+                                Text(row.excerpt.replacingOccurrences(of: "\n", with: " "))
+                                    .font(NoemaTypography.metadata)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
                             }
-                        }.padding(.horizontal, NoemaSpacing.md).padding(.vertical, NoemaSpacing.sm).tag(row.id)
+                        }
+                        .padding(.horizontal, NoemaSpacing.sm)
+                        .padding(.vertical, 4)
+                        .tag(row.id)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             if row.kind == .wiki {
                                 Button(role: .destructive) { trashPageID = row.id; showTrashConfirmation = true } label: {
                                     Label("Delete", systemImage: "trash")
                                 }
+                                .disabled(deleteDisabled)
                             }
                         }
                         .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                            if row.kind == .wiki, let note = model.notes.first(where: { $0.id == row.id }) {
+                            if let note {
                                 Button { model.toggleEditingLock(row.id) } label: {
                                     Label(note.isEditingLocked ? "Unlock Editing" : "Lock Editing", systemImage: note.isEditingLocked ? "lock.open" : "lock")
                                 }.disabled(model.editingLockOperations.contains(note.id))
                             }
                         }
                         .contextMenu {
-                            if row.kind == .wiki, let note = model.notes.first(where: { $0.id == row.id }) {
+                            if let note {
                                 AISummaryMenuCommands(model: model, target: .page(note.id))
                                 Button(note.isEditingLocked ? "Unlock Editing" : "Lock Editing") { model.toggleEditingLock(row.id) }
                                     .disabled(model.editingLockOperations.contains(note.id))
                                 Button("Delete…", role: .destructive) { trashPageID = row.id; showTrashConfirmation = true }
+                                    .disabled(deleteDisabled)
                             }
                         }
                     }
@@ -756,58 +764,42 @@ struct ContentView: View {
         }
         .background(theme.color(for: .canvas))
         .safeAreaBar(edge: .top) {
-            VStack(alignment: .leading, spacing: NoemaSpacing.sm) {
-                HStack(spacing: NoemaSpacing.md) {
-                    Text(model.scopeTitle).font(NoemaTypography.libraryTitle).foregroundStyle(theme.text(for: .textPrimary, on: .canvas))
-                    if model.activeTagFilter != nil {
-                        Button("Clear filter") { model.changeScope(.wiki) }
-                            .font(NoemaTypography.metadata)
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                    }
-                    Spacer()
-                    if isPagesScope {
-                        Picker("Sort", selection: $pageSortOrder) {
-                            ForEach(PageSortOrder.allCases) { order in
-                                Text(order.rawValue).tag(order)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .controlSize(.small)
-                        .fixedSize()
-                    }
-                    if model.scope == .sources {
-                        Menu {
-                            Button("Check Availability of All Sources") { model.checkSourceAvailability(model.sources) }
-                                .disabled(model.sources.isEmpty || !model.checkingSourceAvailability.isEmpty)
-                        } label: { Label("Source Actions", systemImage: "ellipsis.circle") }
-                    }
-                    if model.busy { ProgressView().controlSize(.small).accessibilityLabel("Updating library").accessibilityValue("In progress") }
-                }
-                if model.scope == .sources, let error = model.errorMessage {
-                    DismissibleNotice(message: error, surface: .canvas) { model.errorMessage = nil }
-                }
-                if isPagesScope && !model.tags.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            Button("All Pages") { model.changeScope(.wiki) }
-                                .font(NoemaTypography.metadata)
-                                .buttonStyle(.bordered)
-                                .tint(model.activeTagFilter == nil ? .accentColor : nil)
-                                .controlSize(.small)
-                            ForEach(model.tags, id: \.self) { tag in
-                                Button("#" + tag) {
-                                    model.changeScope(model.activeTagFilter == tag ? .wiki : .tag(tag))
+            if (isPagesScope && !model.tags.isEmpty) || model.busy {
+                HStack(spacing: NoemaSpacing.sm) {
+                    if isPagesScope && !model.tags.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                Button("All Pages") { model.changeScope(.wiki) }
+                                    .font(NoemaTypography.metadata)
+                                    .buttonStyle(.bordered)
+                                    .tint(model.activeTagFilter == nil ? .accentColor : nil)
+                                    .controlSize(.small)
+                                ForEach(model.tags, id: \.self) { tag in
+                                    Button("#" + tag) {
+                                        model.changeScope(model.activeTagFilter == tag ? .wiki : .tag(tag))
+                                    }
+                                    .font(NoemaTypography.metadata)
+                                    .buttonStyle(.bordered)
+                                    .tint(model.activeTagFilter == tag ? theme.color(.graphHighlight) : nil)
+                                    .controlSize(.small)
                                 }
-                                .font(NoemaTypography.metadata)
-                                .buttonStyle(.bordered)
-                                .tint(model.activeTagFilter == tag ? theme.color(.graphHighlight) : nil)
-                                .controlSize(.small)
+                                if model.activeTagFilter != nil {
+                                    Button("Clear filter") { model.changeScope(.wiki) }
+                                        .font(NoemaTypography.metadata)
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                }
                             }
                         }
                     }
+                    Spacer(minLength: 0)
+                    if model.busy {
+                        ProgressView().controlSize(.small).accessibilityLabel("Updating library").accessibilityValue("In progress")
+                    }
                 }
-            }.padding(.horizontal, NoemaSpacing.lg).padding(.top, NoemaSpacing.md).padding(.bottom, NoemaSpacing.md)
+                .padding(.horizontal, NoemaSpacing.md)
+                .padding(.vertical, 6)
+            }
         }
     }
     private func metadataDate(_ value: String) -> String {
@@ -1018,6 +1010,48 @@ struct ContentView: View {
                 .help("Return to Library (⌘[)")
                 .accessibilityLabel("Return to Library")
             }
+            ToolbarItem(id: "workspace.search", placement: .primaryAction) {
+                ToolbarSearchView(model: model, availableWidth: workspaceWidth) {
+                    showAllSearchResults = true
+                }
+            }
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+            if isPagesScope && model.currentNote == nil && model.currentSource == nil && !showAllSearchResults {
+                ToolbarItem(id: "pages.sort", placement: .primaryAction) {
+                    Menu {
+                        Picker("Sort", selection: $pageSortOrder) {
+                            ForEach(PageSortOrder.allCases) { order in
+                                Text(order.rawValue).tag(order)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        Label("Sort", systemImage: "arrow.up.arrow.down")
+                    }
+                    .help("Sort pages (\(pageSortOrder.rawValue))")
+                    .accessibilityLabel("Sort Pages")
+                    .accessibilityValue(pageSortOrder.rawValue)
+                }
+            }
+            ToolbarItem(id: "workspace.add", placement: .primaryAction) {
+                Menu {
+                    workspaceCommandButton("Blank Page", .newPage)
+                    workspaceCommandButton("Personal Page", .newPersonalPage)
+                    workspaceCommandButton("Create Page with AI…", .newTopicPage)
+                        .disabled(model.generatingTopicPage)
+                    Divider()
+                    workspaceCommandButton("Source from Files…", .addSource)
+                    workspaceCommandButton("Source by URL…", .addURLSource)
+                    workspaceCommandButton("Paste a Source…", .pasteSource)
+                } label: {
+                    Label("Add Page or Source", systemImage: "plus")
+                } primaryAction: {
+                    model.performWorkspaceCommand(.newPage)
+                }
+                .disabled(!model.canPerformWorkspaceCommand(.newPage))
+                .help("Add a page or source")
+                .accessibilityLabel("Add Page or Source")
+            }
             if let note = model.currentNote {
                 ToolbarItem(id: "document.edit", placement: .primaryAction) {
                     Button {
@@ -1040,35 +1074,21 @@ struct ContentView: View {
                     .accessibilityLabel(note.isEditingLocked ? "Unlock Editing" : "Lock Editing")
                     .accessibilityValue(note.isEditingLocked ? "Locked" : "Unlocked")
                 }
-                ToolbarSpacer(.fixed, placement: .primaryAction)
-            }
-            ToolbarItem(placement: .primaryAction) {
-                ToolbarSearchView(model: model, availableWidth: workspaceWidth) {
-                    showAllSearchResults = true
+                ToolbarItem(id: "document.trash", placement: .primaryAction) {
+                    Button {
+                        trashPageID = note.id
+                        showTrashConfirmation = true
+                    } label: {
+                        Label("Move to Trash", systemImage: "trash")
+                    }
+                    .labelStyle(.iconOnly)
+                    .disabled(!Self.canTrashPage(note, model: model))
+                    .help("Move to Trash")
+                    .accessibilityLabel("Move to Trash")
                 }
             }
             ToolbarSpacer(.fixed, placement: .primaryAction)
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    workspaceCommandButton("Blank Page", .newPage)
-                    workspaceCommandButton("Personal Page", .newPersonalPage)
-                    workspaceCommandButton("Create Page with AI…", .newTopicPage)
-                        .disabled(model.generatingTopicPage)
-                    Divider()
-                    workspaceCommandButton("Source from Files…", .addSource)
-                    workspaceCommandButton("Source by URL…", .addURLSource)
-                    workspaceCommandButton("Paste a Source…", .pasteSource)
-                } label: {
-                    Label("Add Page or Source", systemImage: "plus")
-                } primaryAction: {
-                    model.performWorkspaceCommand(.newPage)
-                }
-                .disabled(!model.canPerformWorkspaceCommand(.newPage))
-                .help("Add a page or source")
-                .accessibilityLabel("Add Page or Source")
-            }
-            ToolbarSpacer(.fixed, placement: .primaryAction)
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItem(id: "workspace.more", placement: .primaryAction) {
                 Menu {
                     if let note = model.currentNote {
                         Button {
@@ -1082,6 +1102,7 @@ struct ContentView: View {
                             trashPageID = note.id
                             showTrashConfirmation = true
                         } label: { Label("Move Page to Trash…", systemImage: "trash") }
+                        .disabled(!Self.canTrashPage(note, model: model))
                         Divider()
                     } else if let source = model.currentSource {
                         Button {
@@ -1116,14 +1137,12 @@ struct ContentView: View {
                     workspaceCommandButton("Close Vault", .close)
                 } label: {
                     Label("Document and Vault Options", systemImage: "ellipsis")
-                } primaryAction: {
-                    ToolbarSplitMenuPresenter.presentMenu(forSymbol: "ellipsis")
                 }
+                .menuIndicator(.hidden)
                 .help("Document and vault options")
                 .accessibilityLabel("Document and Vault Options")
             }
-            ToolbarSpacer(.fixed, placement: .primaryAction)
-            ToolbarItem(placement: .primaryAction) { inspectorToolbarToggle }
+            ToolbarItem(id: "workspace.inspector", placement: .primaryAction) { inspectorToolbarToggle }
         }
     }
     private var pageFooter: some View {
