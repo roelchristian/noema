@@ -47,6 +47,7 @@ extension VaultUIIntegrationTests {
             #expect(!policy.allows(.recovery))
             #expect(!policy.allows(.notices))
             #expect(policy.allows(.search))
+            #expect(policy.allows(.quickOpen))
             #expect(policy.allows(.newTopicPage))
         }
 
@@ -54,7 +55,7 @@ extension VaultUIIntegrationTests {
         func closedAndManagerMismatchCommandsCannotMutateUIState() {
             let gate = VaultAccessGate()
             let model = AppModel(sessionManager: VaultSessionManager(accessGate: gate))
-            for command in [WorkspaceCommand.search, .newTopicPage, .addURLSource, .pasteSource, .recovery, .notices, .lock, .unlock, .close] {
+            for command in [WorkspaceCommand.search, .quickOpen, .newTopicPage, .addURLSource, .pasteSource, .recovery, .notices, .lock, .unlock, .close] {
                 #expect(model.performWorkspaceCommand(command) == nil)
             }
             #expect(model.searchFocusToken == 0)
@@ -102,7 +103,7 @@ extension VaultUIIntegrationTests {
             let model = AppModel(repository: oldRepository, sessionManager: manager)
             model.root = root; model.notes = [note]; model.currentNote = note
             #expect(model.sessionPhase == .open && !model.isVaultAvailable)
-            for command in [WorkspaceCommand.search, .returnToLibrary, .newPage, .newTopicPage, .save, .addURLSource, .lock] {
+            for command in [WorkspaceCommand.search, .quickOpen, .returnToLibrary, .newPage, .newTopicPage, .save, .addURLSource, .lock] {
                 #expect(!model.canPerformWorkspaceCommand(command))
                 #expect(model.performWorkspaceCommand(command) == nil)
             }

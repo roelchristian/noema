@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 import VaultCore
 
 /// Resolved names are transient and must be checked against the synchronous gate on
@@ -70,19 +69,18 @@ import VaultCore
     }
 }
 
-private struct AIActivityExportDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.json] }
-    var data: Data
-    init(data: Data) { self.data = data }
-    init(configuration: ReadConfiguration) throws { data = configuration.file.regularFileContents ?? Data() }
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
-}
-
 struct AIActivityHistoryView: View {
     var model: AppModel?
     var recorder: AIActivityRecorder = .shared
     @Environment(\.dismiss) private var dismiss
-    @State private var records: [AIActivityRecord] = []
+    @State private var loader = AIActivityHistoryLoader()
+    private var records: [AIActivityRecord] { loader.records }
+    private var total: Int { loader.total }
+    private var loading: Bool { loader.loading }
+    private var errorMessage: String? {
+        get { loader.errorMessage }
+        nonmutating set { loader.errorMessage = newValue }
+    }
     @State private var selection: UUID?
     @State private var provider: AIActivityProvider?
     @State private var action: AIActivityAction?
@@ -91,13 +89,9 @@ struct AIActivityHistoryView: View {
     @State private var dateDays = 30
     @State private var currentVaultOnly = false
     @State private var page = 0
-    @State private var total = 0
     @State private var retention = 90
-    @State private var loading = false
-    @State private var errorMessage: String?
     @State private var showClearConfirmation = false
-    @State private var exporting = false
-    @State private var exportDocument = AIActivityExportDocument(data: Data())
+    @State private var exportPanel: AIActivityExportPanel?
     // A lock/session change invalidates asynchronous queries and metadata exports.
     private var accessibleVaultID: UUID? { AIActivityPrivacy.accessibleVaultID(model) }
     private var query: AIActivityQuery {
@@ -152,13 +146,14 @@ struct AIActivityHistoryView: View {
                     Text("Forever").tag(0)
                 }.frame(width: 235)
                 .onChange(of: retention) { _, value in
+                    loader.invalidate()
                     Task {
                         do { try await recorder.setRetentionDays(value == 0 ? nil : value); await load() }
                         catch { errorMessage = "History retention could not be updated." }
                     }
                 }
                 Spacer()
-                Button("Export metadata…") { Task { await prepareExport() } }.disabled(loading || total == 0)
+                Button("Export metadata…") { Task { await prepareExport() } }.disabled(loading || total == 0 || exportPanel != nil)
                 Button("Clear History…", role: .destructive) { showClearConfirmation = true }
             }
             Text("Exports contain at most 1,000 matching records. Vault and target identifiers are omitted. Clearing or pruning history does not remove AI results from your pages and sources; ordinary deletion is not secure erasure.")
@@ -173,25 +168,24 @@ struct AIActivityHistoryView: View {
         }
         .onChange(of: accessibleVaultID) { _, _ in
             // Drop the pending export immediately; re-export requires a fresh access check.
-            exporting = false
-            exportDocument = AIActivityExportDocument(data: Data())
+            loader.invalidate()
+            exportPanel?.cancel()
+            exportPanel = nil
             selection = nil
             currentVaultOnly = false
             page = 0
         }
         .confirmationDialog("Clear all AI activity history?", isPresented: $showClearConfirmation) {
             Button("Clear History", role: .destructive) {
+                loader.invalidate()
+                selection = nil
                 Task {
                     do { try await recorder.clearHistory(); page = 0; await load() }
                     catch { errorMessage = "Activity history could not be cleared." }
                 }
             }
         } message: { Text("This removes history for every vault. Saved AI results remain in your documents.") }
-        .fileExporter(isPresented: $exporting, document: exportDocument, contentType: .json,
-                      defaultFilename: "Noema AI Activity") { result in
-            if case .failure = result { errorMessage = "Activity metadata could not be exported." }
-            exportDocument = AIActivityExportDocument(data: Data())
-        }
+        .onDisappear { exportPanel?.cancel(); exportPanel = nil }
     }
 
     private var filters: some View {
@@ -275,32 +269,27 @@ struct AIActivityHistoryView: View {
 
     @MainActor private func load() async {
         let key = queryKey
-        loading = true
-        defer { if key == queryKey { loading = false } }
-        do {
-            let requestedQuery = query
-            let result = try await recorder.query(requestedQuery)
-            let count = try await recorder.count(requestedQuery)
-            guard !Task.isCancelled, key == queryKey else { return }
-            records = result; total = count; selection = nil
-            errorMessage = await recorder.recordingUnavailable ? "Some activity could not be recorded. History may be incomplete." : nil
-        } catch {
-            guard !Task.isCancelled, key == queryKey else { return }
-            records = []; total = 0
-            errorMessage = "Activity history is unavailable. AI operations can still continue."
+        if await loader.load(recorder: recorder, query: query, isCurrent: { key == queryKey }) {
+            selection = nil
         }
     }
 
     @MainActor private func prepareExport() async {
         let vaultID = accessibleVaultID
+        let key = queryKey
         var exportQuery = query
         exportQuery.limit = 1000
         exportQuery.offset = 0
         do {
             let result = try await recorder.query(exportQuery)
-            guard vaultID == accessibleVaultID else { return }
-            exportDocument = AIActivityExportDocument(data: try AIActivityPrivacy.export(result))
-            exporting = true
+            guard !Task.isCancelled, key == queryKey, vaultID == accessibleVaultID else { return }
+            let data = try AIActivityPrivacy.export(result)
+            let panel = AIActivityExportPanel(currentRoots: { AIActivityExportDestination.protectedRoots(model: model) })
+            exportPanel = panel
+            panel.begin(data: data) { failure in
+                if let failure { errorMessage = failure.localizedDescription }
+                exportPanel = nil
+            }
         } catch { errorMessage = "Activity metadata could not be exported." }
     }
 }

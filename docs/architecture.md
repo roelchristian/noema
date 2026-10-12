@@ -6,6 +6,8 @@ The Semantic Blocks library scope derives searchable block rows from page snapsh
 
 **VaultCore** is independent of SwiftUI. `FileVaultRepository` owns canonical files and coordinated writes. Trash is a sidebar scope backed directly by `Removed Pages` Markdown files, outside the derived search index. Repository operations list, restore, and permanently delete these files under coordinated access, checking content hashes and path containment. Restore moves bytes to an available Wiki path and rejects active UUID/title collisions; no vault schema change is required. `NoteCodec` handles lossless Markdown bodies and frontmatter. `BlockDocument` and `BlockDocumentCodec` represent rich block trees (including inline math and display math blocks) and their compatible Markdown/JSON envelope; `BlockMutation` owns structural operations independently of AppKit. `TeXMath`, `TeXMacro`, and `TeXMacroStore` parse and expand custom `\newcommand` macros (with 0 to 3 arguments) and render TeX expressions for inline and display math. `MarkdownService` analyzes links/tags (excluding code and math) and produces a Sendable preview model. `SQLiteSearchIndex` maintains rebuildable search/tag/backlink tables. `RecoveryStore` journals unsaved drafts outside the synced folder.
 
+**NativeAuthentication** owns operation-specific macOS authentication attempts independently of VaultCore, ExternalAI and SwiftUI. `LocalNativeAuthenticator` creates one private `LAContext` per invocation, uses device-owner authentication with the system-password fallback and disables Touch ID reuse from prior attempts. Cancellation and native callbacks arbitrate one completion; cancellation invalidates the context and delayed callbacks cannot resume a completed attempt. Callers receive only success or finite cancelled/unavailable/failed errors, never a context, credential or reusable authorization grant. ExternalAI retains its own session authority and expiry; successful native authentication cannot automatically authorize a different operation. Hardware prompt and accessibility acceptance remain [pending](validation.md#native-authentication-device-acceptance).
+
 **noema** owns the UI. `AppModel` runs on the main actor; storage/index work runs in separate actors, and parsing runs in detached tasks. `ContentView` arranges navigation and pages. `NativeTextViews` bridges read-only source text and attributed source previews. `RichArticleView` bridges the article editor; `BlockEditorCoordinator` synchronizes its value document with one native `ArticleTextView`, manages selection/commands and the shared undo manager, and publishes the complete body to the existing draft/autosave path. `BlockTextStorage` renders/captures rich runs without flattening collapsed descendants. `BlockCommands` owns slash matching/presentation and a nonactivating native suggestion panel constrained above or below the caret within the visible editor; `SemanticRegistry` owns semantic icons, accessible names, and optional statuses. Native drag sessions carry document-scoped block IDs and reorder sibling subtrees; explicit indent/outdent commands change parentage. `VaultWatcher` forwards file-presenter and recursive FSEvents notifications into debounced reconciliation, including changes from editors that do not coordinate their writes.
 
 The `VaultRepository` and `SearchIndex` protocols are the seams for replacing storage/index implementations. Keep UI actions out of codecs, and keep filesystem work out of view bodies. SQLite connections are confined to their index actor.
@@ -89,6 +91,25 @@ document editing controls remain with the document heading. Toolbar and menu act
 share guarded `AppModel.performWorkspaceCommand`, with lifecycle admission reserved
 before queuing. Activation/termination still use existing save/recovery/session hooks.
 
+`AppModel.searchText` owns the query. Search mode, category scope and explicit
+idle/searching/results/failure status share the existing `SidebarSearchResults`;
+full-vault search retains SQLite FTS and semantic snapshot search, while Quick Open
+filters page/source titles and page aliases. Query publication checks a search
+revision alongside the existing session completion ticket, so superseded queries,
+mode/scope changes, selection, catalog/editor mutations and vault revocation cannot
+publish older results. Mutations invalidate synchronously, before view refresh.
+The 120 ms debounce remains. Library rows and semantic catalogs refresh by catalog,
+editor and scope revisions; row construction runs off the main actor rather than
+rebuilding the library on each query. Toolbar expansion, responder restoration, keyboard
+selection and the anchored results popover belong to `ToolbarSearchView`; compact
+windows place its field inside the popover. The first eight results share a route
+to the explicit full results view. Entry and category refinement preserve the open
+document and library scope; result navigation uses the existing save-before-select
+path, including semantic block targets. Admitted workspace navigation dismisses
+transient search views; consent/review sheets block search focus commands. Native
+input composition retains arrow, Return and Escape handling. Search does not
+require a visible sidebar.
+
 `WorkspaceWindowTitle` derives identity from existing metadata and the central gate,
 without reading source bodies. Welcome uses Noema; library/page/primary-source identity
 and vault subtitle are available only to an authorized open session. Locking/locked/
@@ -101,9 +122,8 @@ inspector state and does not become a primary document title.
 editor, while inspector availability is independent. `WorkspacePaneState` persists
 sidebar/inspector intent and widths separately from effective visibility. Narrow
 windows/context loss can suppress panes without erasing intent; widening restores
-requested panes. Search prioritizes mounting the sidebar before focusing its existing
-field; an explicit inspector request prioritizes the inspector when one outer pane
-fits. Session resets clear transient tabs/caches while retaining visibility/widths.
+requested panes. Search is independent of sidebar visibility; an explicit inspector
+request prioritizes the inspector when one outer pane fits. Session resets clear transient tabs/caches while retaining visibility/widths.
 
 Center minimums are 420 pt for documents and 520 pt for Sources; sidebar min/initial/
 max is 190/265/320 pt, and inspector is 280/340/420 pt. Native dividers own dragging.
@@ -141,4 +161,4 @@ Admission checks and canonical writes are separate synchronous steps. A write al
 
 `AIActivityRecorder` shares one lazy application-level `SQLiteAIActivityStore` across local callers and the OpenAI gateway. The database is independent of vault search indexes. A caller allocates one logical ID, begins immediately before local inference or when presenting cloud consent, and finalizes after publication or proposal generation. Helper inference calls share that ID; proposal acceptance/dismissal updates its outcome without creating another inference record. Gateway observations carry only bounded dispatch counts and validated optional token usage. Dispatch is observed at actual transport resume; asynchronous persistence runs outside authorization locks and is followed by the existing authority/cancellation checks. Connection validation has its own targetless record.
 
-The store owns versioned schema initialization, interrupted-operation reconciliation, idempotent finalization, indexed bounded queries and retention. Settings history uses explicit refresh and 50-row pages, with provider/action/status/outcome/date/current-vault filters. Current titles are resolved only from the accessible vault's loaded metadata; stale and inaccessible targets cannot navigate. Metadata export is bounded to 1,000 records. Cost calculation uses an injected versioned catalogue keyed by model and effective dates, including cached input rates; the default unpriced catalogue displays unknown cost rather than inventing charges. See the [activity contract](contracts/external-ai.md#activity-history) and [storage ownership](contracts/storage-boundary.md).
+The store owns versioned schema initialization, interrupted-operation reconciliation, idempotent finalization, indexed bounded queries and retention. Settings history uses latest-request snapshot ownership to reject delayed reads after clearing, pruning or a newer refresh, and explicit refresh with 50-row pages, with provider/action/status/outcome/date/current-vault filters. Current titles are resolved only from the accessible vault's loaded metadata; stale and inaccessible targets cannot navigate. Metadata export is bounded to 1,000 records. Cost calculation uses an injected versioned catalogue keyed by model and effective dates, including cached input rates; the default unpriced catalogue displays unknown cost rather than inventing charges. See the [activity contract](contracts/external-ai.md#activity-history) and [storage ownership](contracts/storage-boundary.md).

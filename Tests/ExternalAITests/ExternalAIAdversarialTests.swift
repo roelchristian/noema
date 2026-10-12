@@ -103,8 +103,9 @@ func auditCredentialRevocationAfterResponsePreservesUsageWithoutPublication(remo
     #expect(record.estimatedCostUSD == 0.000315)
     // The caller owns finalization, and revocation must issue no publication capability.
     #expect(record.status == .running && record.outcome == .notApplicable)
+    let model = await f.gateway.configuration.model
     let forged = try ExternalAISummaryResult(request: f.request, summary: "Approved summary",
-        provenance: ExternalAIProvenance(model: f.gateway.configuration.model))
+        provenance: ExternalAIProvenance(model: model))
     await #expect(throws: ExternalAIError.authorizationRevoked) { try await f.gateway.publicationPermit(for: forged) }
     #expect(f.gate.registrySnapshot().activeCount == 0)
 }

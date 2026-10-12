@@ -113,7 +113,7 @@ Zero spacing, native default padding and small 1–3 point optical corrections a
 | --- | ---: | --- |
 | `compactRowHeight` | 30 | Custom sidebar row minimum; current 28pt rows |
 | `comfortableRowHeight` | 34 | Vault menu/comfortable custom navigation |
-| `searchHeight` | 30 | Custom sidebar search; current 26pt |
+| `searchHeight` | 30 | Compact popover search field; inline native field retains intrinsic height |
 | `sidebarInset` | 12 | Shared sidebar horizontal framing |
 | `inspectorInset` | 16 | Inspector shell, header and panel horizontal alignment |
 | `radiusSmall` | 6 | Custom selected tabs and compact controls |
@@ -161,7 +161,7 @@ These exceptions allow continued literals at meaningful component boundaries. An
 | Hover | Semantic `hover` backing; never impersonates selected navigation | Plain custom navigation/button targets |
 | Pressed | Semantic `pressed`, scoped to press duration; preserve native button action handling | Plain custom buttons |
 | Selected | `selection` + matching `textOnSelection`; independent of hover and visibly retained inactive | Sidebar and inspector tabs/rows |
-| Focused | Native focus where available; `focusRing` for custom plain targets without visible native focus | Sidebar search, tabs and lock action |
+| Focused | Native focus where available; `focusRing` for custom plain targets without visible native focus | Native search field, custom tabs and lock action |
 | Disabled | Use `.disabled(...)` and native control drawing; custom labels can use `disabledText`; never remove semantic action state | Busy lock/source actions |
 | Loading | Native `ProgressView`, metadata text, existing state logic; no whole-container animation | Source generation/checking and header progress |
 | Destructive | Native destructive button/alert roles; semantic `destructive` only for custom text/notice affordances | Trash, import failure notices |

@@ -42,7 +42,7 @@ struct WorkspacePaneStateTests {
         }
     }
 
-    @Test func explicitPaneRequestsTakePriorityAndSearchRevealsSidebar() {
+    @Test func explicitPaneRequestsTakePriorityAndSidebarRequestsPreserveIntent() {
         withDefaults { defaults in
             let state = WorkspacePaneState(defaults: defaults)
             state.toggleInspector(presented: false)

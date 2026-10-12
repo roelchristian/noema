@@ -220,5 +220,11 @@
     "statement": "try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)",
     "count": 1,
     "reason": "SQLiteAIActivityStore owns metadata-only app-local activity SQLite and WAL/SHM; production target is Application Support/Noema/Activity/activity.sqlite, never canonical vault bytes."
+  },
+  {
+    "path": "Sources/noema/AIActivityExport.swift",
+    "statement": "do { try data.write(to: destination, options: .withoutOverwriting) }",
+    "count": 1,
+    "reason": "AIActivityExportDestination owns a user-selected new external JSON export; synchronous resolved-root refusal protects vault/recovery/activity storage and OS create-only writing refuses any existing file, including selection-to-write races. No canonical mutations or deletion."
   }
 ]

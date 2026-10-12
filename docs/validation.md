@@ -21,8 +21,9 @@ codesign --verify --deep --strict dist/noema.app
 git diff --check
 ```
 
-Build/test wrappers enforce storage routing. CI also runs hygiene and maintenance
-regressions. Storage review is separately required by the
+Build/test wrappers enforce storage routing. This checkout has no configured GitHub
+Actions workflows; local validation must run explicitly, and remote CI execution
+must not be assumed. Storage review is separately required by the
 [storage contract](contracts/storage-boundary.md#required-author-and-reviewer-disposition).
 Never treat a lexical scan as a semantic boundary proof.
 
@@ -83,6 +84,16 @@ them. Long-document fixture coverage does not establish sustained typing/frame t
   additional live checks deferred. Conditional remounting may reset scroll position.
 - Cryptographic storage, key/recovery design, encrypted draft/index/preview policy
   and device acceptance remain prerequisites. Encrypted vault creation is disabled.
+
+### Native authentication device acceptance
+
+All items are **pending**. Deterministic context tests establish attempt ownership,
+finite error classification and cancellation/late-callback behavior, not actual
+macOS prompt behavior. Exercise Touch ID where available, system-password fallback,
+user/system cancellation, unavailable authentication, app switching during a prompt,
+keyboard navigation and VoiceOver in the signed development bundle. Verify repeated
+operations create independent prompts and a cancelled attempt cannot complete a
+later operation. Automated success does not close these device/accessibility gaps.
 
 <a id="d02a-device-acceptance-checklist"></a>
 
@@ -304,7 +315,7 @@ Git history retains provenance, and new captures remain local/PR attachments.
 | --- | --- |
 | Light/dark workspace | Synthetic page toolbar/title/three-pane clearance reviewed in final merged build. |
 | Welcome and relaunch | 680×480 welcome observed; restored workspace frame and 265 pt sidebar verified. Inspector widths/manual divider edits remain unverified. |
-| Search/sidebar/inspector shortcuts | ⇧⌘F/⌘P reveal/focus search; ⌃⌘S toggles sidebar; ⌥⌘I toggles inspector and disables in library context. Full keyboard traversal/focus traps still pending. |
+| Search/sidebar/inspector shortcuts | Earlier ⇧⌘F/⌘P sidebar focus acceptance is superseded by UI.SR toolbar search/Quick Open. Live toolbar focus, result traversal, dismissal/restoration and narrow-window presentation remain pending; UI validation/screenshots were explicitly excluded from UI.SR implementation. Standing ⌃⌘S sidebar/⌥⌘I inspector checks retain their prior scope. |
 | Lifecycle identity | ⌥⌘L locks to Vault Locked, Unlock returns to Pages, ⇧⌘W closes to compact welcome without previous document identity. Source/other-library contexts pending. |
 | Standard controls/long title | Native controls exposed once; full long title retained in accessibility tree. Complete close/minimize/zoom/activation cycle and small-width truncation remain pending. |
 | Full screen | Enter/exit and lock/unlock exercised without crash/overlap; exit restoration observed. Full resize/pane-toggle/frame-corruption matrix pending. |

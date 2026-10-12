@@ -54,8 +54,11 @@ import VaultCore
                     .disabled(!model.canPerformWorkspaceCommand(.returnToLibrary))
             }
             CommandMenu("Vault") {
-                Button("Find in Vault") { model.performWorkspaceCommand(.search) }.keyboardShortcut("f", modifiers: [.command, .shift]).disabled(!model.canPerformWorkspaceCommand(.search))
-                Button("Quick Open") { model.performWorkspaceCommand(.search) }.keyboardShortcut("p").disabled(!model.canPerformWorkspaceCommand(.search))
+                ForEach(WorkspaceSearchMenuCommand.allCases, id: \.self) { item in
+                    Button(item.title) { model.performWorkspaceCommand(item.command) }
+                        .keyboardShortcut(item.shortcut)
+                        .disabled(!model.canPerformWorkspaceCommand(item.command))
+                }
                 Divider()
                 Button("Add Source…") { model.performWorkspaceCommand(.addSource) }.keyboardShortcut("i", modifiers: [.command, .shift]).disabled(!model.canPerformWorkspaceCommand(.addSource))
                 Button("Add Sources by URL…") { model.performWorkspaceCommand(.addURLSource) }.disabled(!model.canPerformWorkspaceCommand(.addURLSource))
