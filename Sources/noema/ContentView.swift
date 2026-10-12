@@ -367,15 +367,6 @@ struct ContentView: View {
     }
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: NoemaSpacing.sm) {
-                NoemaMark(presentation: .glyph).frame(width: 20, height: 20).accessibilityHidden(true)
-                Text("Noema").font(NoemaTypography.navigationEmphasis).foregroundStyle(theme.text(for: .textPrimary, on: .sidebar))
-                Spacer()
-            }
-            .padding(.horizontal, NoemaMetrics.sidebarInset)
-            .padding(.top, NoemaSpacing.md)
-            .padding(.bottom, NoemaSpacing.sm)
-
             List(selection: sidebarSelectionBinding) {
                 Section {
                     sidebarNavigationRow("Pages", symbol: "book.closed", scope: .wiki)
@@ -388,6 +379,7 @@ struct ContentView: View {
                             .font(NoemaTypography.metadata)
                             .foregroundStyle(.secondary)
                             .frame(minHeight: NoemaMetrics.compactRowHeight)
+                            .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                     } else {
                         ForEach(model.sidebarRecentItems) { item in
                             sidebarRecentRow(item)
@@ -404,7 +396,7 @@ struct ContentView: View {
             .scrollContentBackground(.hidden)
             .accessibilityLabel("Workspace navigation")
 
-            VStack(alignment: .leading, spacing: NoemaSpacing.sm) {
+            VStack(alignment: .leading, spacing: 6) {
                 Divider().overlay(theme.color(for: .separator))
                 Menu {
                     Button { model.performWorkspaceCommand(.revealVault) } label: {
@@ -450,14 +442,15 @@ struct ContentView: View {
                             .font(NoemaTypography.navigationEmphasis)
                             .foregroundStyle(theme.text(for: .textPrimary, on: .sidebar))
                             .lineLimit(1)
-                        Spacer(minLength: NoemaSpacing.sm)
+                            .truncationMode(.tail)
+                        Spacer(minLength: NoemaSpacing.xs)
                         Image(systemName: "chevron.down")
                             .font(NoemaTypography.caption)
                             .foregroundStyle(theme.text(for: .textSecondary, on: .sidebar))
                     }
-                    .padding(.horizontal, NoemaSpacing.sm)
-                    .padding(.vertical, NoemaSpacing.sm)
-                    .frame(maxWidth: .infinity, minHeight: NoemaMetrics.comfortableRowHeight)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight)
                     .contentShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton)
@@ -467,8 +460,8 @@ struct ContentView: View {
                 .accessibilityLabel("Vault menu. Current vault: \(model.vaultName)")
             }
             .padding(.horizontal, NoemaMetrics.sidebarInset)
-            .padding(.top, NoemaSpacing.sm)
-            .padding(.bottom, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 8)
         }
         .background {
             if theme.usesFullPalette { theme.color(for: .sidebar).ignoresSafeArea() }
@@ -564,6 +557,7 @@ struct ContentView: View {
                 .font(NoemaTypography.navigation)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .layoutPriority(1)
             Spacer(minLength: NoemaSpacing.xs)
         }
         .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight, alignment: .leading)
@@ -572,7 +566,7 @@ struct ContentView: View {
     private func sidebarNavigationRow(_ title: String, symbol: String, scope: LibraryScope) -> some View {
         sidebarRowLabel(title, symbol: symbol)
             .tag(SidebarSelection.destination(scope))
-            .listRowInsets(EdgeInsets(top: 0, leading: NoemaSpacing.sm, bottom: 0, trailing: NoemaSpacing.sm))
+            .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
             .listRowSeparator(.hidden)
             .accessibilityLabel(title)
             .help(title)
@@ -597,7 +591,7 @@ struct ContentView: View {
             if hovering { hoveredSidebarPageID = item.pageID }
             else if hoveredSidebarPageID == item.pageID { hoveredSidebarPageID = nil }
         }
-        .listRowInsets(EdgeInsets(top: 0, leading: NoemaSpacing.sm, bottom: 0, trailing: NoemaSpacing.sm))
+        .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
         .listRowSeparator(.hidden)
         .help(item.accessibilityLabel)
         .accessibilityElement(children: .contain)
@@ -656,23 +650,21 @@ struct ContentView: View {
             )
             .background(theme.color(for: .canvas))
             .safeAreaBar(edge: .top) {
-                VStack(alignment: .leading, spacing: NoemaSpacing.sm) {
-                    HStack(spacing: NoemaSpacing.md) {
-                        Text("Sources").font(NoemaTypography.libraryTitle).foregroundStyle(theme.text(for: .textPrimary, on: .canvas))
-                        Spacer()
-                        Menu {
-                            Button("Check Availability of All Sources") { model.checkSourceAvailability(model.sources) }
-                                .disabled(model.sources.isEmpty || !model.checkingSourceAvailability.isEmpty)
-                        } label: { Label("Source Actions", systemImage: "ellipsis.circle") }
-                        if model.busy { ProgressView().controlSize(.small).accessibilityLabel("Updating library").accessibilityValue("In progress") }
+                if model.busy || model.errorMessage != nil {
+                    VStack(alignment: .leading, spacing: NoemaSpacing.sm) {
+                        if model.busy {
+                            HStack {
+                                Spacer()
+                                ProgressView().controlSize(.small).accessibilityLabel("Updating library").accessibilityValue("In progress")
+                            }
+                        }
+                        if let error = model.errorMessage {
+                            DismissibleNotice(message: error, surface: .canvas) { model.errorMessage = nil }
+                        }
                     }
-                    if let error = model.errorMessage {
-                        DismissibleNotice(message: error, surface: .canvas) { model.errorMessage = nil }
-                    }
+                    .padding(.horizontal, NoemaSpacing.lg)
+                    .padding(.vertical, NoemaSpacing.sm)
                 }
-                .padding(.horizontal, NoemaSpacing.lg)
-                .padding(.top, NoemaSpacing.md)
-                .padding(.bottom, NoemaSpacing.md)
             }
         } else {
             pageLibraryContent
@@ -865,14 +857,13 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .safeAreaBar(edge: .top) {
             HStack {
-                Text("Trash").font(NoemaTypography.libraryTitle).foregroundStyle(theme.text(for: .textPrimary, on: .canvas))
                 Text("Automatically deleted after 15 days").font(NoemaTypography.metadata).foregroundStyle(.secondary)
                 Spacer()
                 Button { model.performWorkspaceCommand(.refresh) } label: { Label("Refresh Trash", systemImage: "arrow.clockwise").labelStyle(.iconOnly) }
                     .help("Refresh Trash").disabled(model.trashOperationInProgress || !model.canPerformWorkspaceCommand(.refresh))
                 Button("Empty Trash…", role: .destructive) { emptyTrashPages = model.trashedPages; showEmptyTrash = true }
                     .disabled(model.trashedPages.isEmpty || model.trashOperationInProgress)
-            }.padding(.horizontal, NoemaSpacing.lg).padding(.top, NoemaSpacing.md).padding(.bottom, NoemaSpacing.md)
+            }.padding(.horizontal, NoemaSpacing.lg).padding(.vertical, NoemaSpacing.sm)
         }
         .alert("Permanently delete this item?", isPresented: $showPermanentDeletion, presenting: permanentDeletion) { page in
             Button("Delete permanently", role: .destructive) {
@@ -1108,6 +1099,10 @@ struct ContentView: View {
                         Button(role: .destructive) { deletingSource = source } label: {
                             Label("Delete Source…", systemImage: "trash")
                         }
+                        Divider()
+                    } else if model.scope == .sources {
+                        Button("Check Availability of All Sources") { model.checkSourceAvailability(model.sources) }
+                            .disabled(model.sources.isEmpty || !model.checkingSourceAvailability.isEmpty)
                         Divider()
                     }
                     workspaceCommandButton("Open Another Vault…", .openVault)
