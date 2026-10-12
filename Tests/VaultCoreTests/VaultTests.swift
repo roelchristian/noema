@@ -392,18 +392,37 @@ private struct ManifestFailureStore: VaultContentStore {
     func delete(at path: String, expected: VaultContentSnapshot) throws { throw error }
 }
 
-@Test func unavailableManifestAndPermissionFailureRemainDistinctWithoutInitialization() throws {
+@Test(arguments: [false, true])
+func unavailableManifestAndPermissionFailureRemainDistinctWithoutInitialization(create: Bool) throws {
     let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
     let cloud = ManifestFailureStore(error: .unavailable("vault.json"))
-    do { _ = try FileVaultRepository.open(root: root, contentStore: cloud); Issue.record("Unavailable manifest opened") }
+    do { _ = try FileVaultRepository.open(root: root, create: create, contentStore: cloud); Issue.record("Unavailable manifest opened") }
     catch VaultError.unavailable(let message) { #expect(message.contains("iCloud")) }
     catch { Issue.record("Incorrect cloud classification: \(error)") }
     let denied = VaultContentStoreError.io(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError, message: "Permission denied")
-    #expect(throws: denied) { try FileVaultRepository.open(root: root, contentStore: ManifestFailureStore(error: denied)) }
+    #expect(throws: denied) { try FileVaultRepository.open(root: root, create: create, contentStore: ManifestFailureStore(error: denied)) }
+    let provider = VaultStorageProvider { _ in cloud }
+    do { _ = try FileVaultRepository.preflightOpen(root: root, create: create, storageProvider: provider); Issue.record("Unavailable manifest passed preflight") }
+    catch VaultError.unavailable(let message) { #expect(message.contains("iCloud")) }
+    catch { Issue.record("Incorrect preflight classification: \(error)") }
     #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     #expect(throws: VaultError.self) { try FileVaultRepository.open(root: root) }
     #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     #expect(throws: VaultError.self) { try FileVaultRepository.open(root: root.appendingPathComponent("Absent")) }
+}
+
+@Test func missingManifestInNonemptyRootCannotBeInitialized() throws {
+    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
+    let wiki = root.appendingPathComponent("Wiki")
+    try FileManager.default.createDirectory(at: wiki, withIntermediateDirectories: false)
+    let page = wiki.appendingPathComponent("Preserved.md")
+    let bytes = Data("Potentially recoverable original content".utf8)
+    try bytes.write(to: page)
+    #expect(throws: VaultError.self) { try FileVaultRepository.preflightOpen(root: root, create: true) }
+    #expect(throws: VaultError.self) { try FileVaultRepository.open(root: root, create: true) }
+    #expect(try Data(contentsOf: page) == bytes)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["Wiki"])
+    #expect(try FileManager.default.contentsOfDirectory(atPath: wiki.path) == ["Preserved.md"])
 }
 
 @Test(arguments: [#"{"formatVersion":"1","id":"bad"}"#, #"{"formatVersion":1}"#, "{damaged"])
