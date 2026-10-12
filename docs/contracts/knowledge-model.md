@@ -1,6 +1,7 @@
 # Canonical knowledge model
 
-Status: KNOW01 design contract; runtime implementation belongs to KNOW02/KNOW03.
+Status: KNOW01 approved design contract. KNOW02 entity/relationship APIs and fresh
+schema-4 staging are implemented; KNOW03 semantic APIs and schema 5 remain pending.
 The decision is [0002](../decisions/0002-canonical-knowledge-model.md). The
 [storage boundary](storage-boundary.md) and [block editor](block-editor.md) remain
 binding for connection ownership, bytes, admission, content identity and editing.
