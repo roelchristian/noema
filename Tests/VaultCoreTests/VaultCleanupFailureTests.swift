@@ -28,7 +28,17 @@ private final class CleanupFailureStore: VaultContentStore {
         try base.verifyCanonicalLinked(metadata: metadata, vaultID: vaultID, operationID: operationID)
     }
     func createDirectory(at path: String) throws { try base.createDirectory(at: path) }
-    func read(at path: String) throws -> Data { try base.read(at: path) }
+    func read(at path: String) throws -> Data {
+        let data = try base.read(at: path)
+        // Canonical page saving scans source originals after journaling the dirty draft.
+        // Inject the cleanup-only failure at that real dependency; SQLite page bytes
+        // are written by the actor and never pass through legacy Markdown hooks.
+        if path.hasPrefix("Sources/"), path.contains("/original."),
+           let directory = state.withLock({ $0.recoveryDirectoryToProtect }) {
+            try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        }
+        return data
+    }
     func snapshot(at path: String) throws -> VaultContentSnapshot { try base.snapshot(at: path) }
     func move(from source: String, to destination: String, expected: VaultContentSnapshot) throws {
         try base.move(from: source, to: destination, expected: expected)
@@ -116,6 +126,7 @@ struct VaultCleanupFailureTests {
         )
         let recovery = try RecoveryStore(directory: directory, sessionLease: lease, accessGate: manager.accessGate)
         let note = try await repo.create(title: "Pending", body: "Before")
+        _ = try await repo.importSource(data: Data("Scan dependency".utf8), filename: "dependency.txt", title: "Dependency", originURL: nil)
         store.state.withLock { $0.recoveryDirectoryToProtect = directory }
         do {
             _ = try await manager.lockWithQuiescence(
