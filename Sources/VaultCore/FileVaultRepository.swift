@@ -664,7 +664,8 @@ public actor FileVaultRepository: VaultRepository {
             storedFilename: pending.metadata.storedFilename
         )
         try await canonicalPublish(metadata: metadata)
-        return SourceRecord(metadata: metadata, body: body)
+        let current = try await canonicalSourceMetadata(id: metadata.id)
+        return SourceRecord(metadata: current.metadata, body: body)
     }
 
     public func cancelSourceDownload(id: UUID) {
@@ -732,10 +733,13 @@ public actor FileVaultRepository: VaultRepository {
             let metadata = SourceMetadata(id: UUID(), title: file.deletingPathExtension().lastPathComponent, capturedAt: timestamp(), originalFilename: file.lastPathComponent, originURL: nil, sha256: digest(data), fileSize: data.count, linkedBookmark: bookmark, storedFilename: "original." + file.pathExtension.lowercased())
             prepared.append(SourceRecord(metadata: metadata, body: body))
         }
+        var published: [SourceRecord] = []
         for source in prepared {
             try await canonicalPublish(metadata: source.metadata)
+            let current = try await canonicalSourceMetadata(id: source.id)
+            published.append(SourceRecord(metadata: current.metadata, body: source.body))
         }
-        return prepared
+        return published
     }
 
     func invalidateSummaryCaches(pagePath: String?, sourceID: UUID?) {
