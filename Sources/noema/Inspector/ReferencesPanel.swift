@@ -221,7 +221,7 @@ struct ReferencesPanel: View {
                             model.createPageFromSource(source)
                         } label: {
                             Label(
-                                isCreatingPageWithAI ? "Creating Page…" : "Create Page with AI · \(model.preferredAIProvider(for: .processSource).displayName)",
+                                isCreatingPageWithAI ? "Creating Page…" : "Create Page with AI · \(model.preferredAIProvider(for: .composePage).displayName)",
                                 systemImage: "sparkles"
                             )
                         }

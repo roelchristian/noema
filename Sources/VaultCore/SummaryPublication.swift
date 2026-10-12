@@ -113,6 +113,140 @@ extension FileVaultRepository {
         return SourceRecord(metadata: metadata, body: source.body, availabilityIssue: source.availabilityIssue)
     }
 
+    /// Publishes all generated artifacts in one conditional Wiki write. A nil classification
+    /// explicitly means unavailable; legacy/manual values survive until enrichment occurs.
+    public func publishPageEnrichment(_ snapshot: PageSummarySnapshot, summary: String,
+        classification: LCCClassification?, title: String? = nil, provenance: SummaryProvenance,
+        validate: @Sendable () throws -> Void
+    ) throws -> NoteRecord {
+        let provenance = try enrichmentProvenance(provenance, revision: snapshot.sourceRevision)
+        let classification = try verifiedClassification(classification, provenance: provenance)
+        var updated = snapshot.note
+        if let title, needsGeneratedTitle(updated.title) {
+            updated.title = try acceptedTitle(title)
+            let otherNotes = try scan().notes.filter { $0.id != updated.id }
+            try requireUniqueTitle(updated.title, in: otherNotes)
+            if normalized(updated.title) != normalized(snapshot.note.title), !snapshot.note.title.isEmpty,
+               !updated.aliases.contains(snapshot.note.title) { updated.aliases.append(snapshot.note.title) }
+            updated.aiTitleProvenance = provenance
+        }
+        updated.body = try enrichedBody(updated.body, summary: summary, provenance: provenance)
+        updated.lcc = classification?.code
+        updated.lccClassification = classification
+        updated.aiLCCProvenance = classification == nil ? nil : provenance
+        return try publishPageMetadata(snapshot, updated: updated, validate: validate)
+    }
+
+    public func publishSourceEnrichment(_ snapshot: SourceSummarySnapshot, summary: String,
+        classification: LCCClassification?, title: String? = nil, provenance: SummaryProvenance,
+        validate: @Sendable () throws -> Void
+    ) throws -> SourceRecord {
+        let provenance = try enrichmentProvenance(provenance, revision: snapshot.sourceRevision)
+        let classification = try verifiedClassification(classification, provenance: provenance)
+        var metadata = snapshot.source.metadata
+        if let title, needsGeneratedTitle(metadata.title) {
+            metadata.title = try acceptedTitle(title); metadata.aiTitleProvenance = provenance
+        }
+        guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw VaultError.invalid("An enrichment summary is required.")
+        }
+        metadata.aiSummary = summary; metadata.aiSummaryProvenance = provenance
+        metadata.lcc = classification?.code; metadata.lccClassification = classification
+        metadata.aiLCCProvenance = classification == nil ? nil : provenance
+        return try publishSourceMetadata(snapshot, metadata: metadata, validate: validate)
+    }
+
+    /// A reviewed draft is encoded fully before a single create-only canonical write.
+    /// Source relationships use the captured original and metadata, never a cached excerpt.
+    public func createEnrichedPage(id: UUID = UUID(), title: String, body: String, summary: String,
+        classification: LCCClassification?, provenance: SummaryProvenance,
+        source: SourceSummarySnapshot? = nil, validate: @Sendable () throws -> Void
+    ) throws -> NoteRecord {
+        try validateAccess(operation: "createEnrichedPage")
+        try Task.checkCancellation()
+        let title = try acceptedTitle(title)
+        let notes = try scan().notes
+        try requireUniqueTitle(title, in: notes)
+        guard !notes.contains(where: { $0.id == id }) else { throw VaultError.invalid("This generated page already exists.") }
+        let provenance = try enrichmentProvenance(provenance, revision: source?.sourceRevision ?? digest(Data(body.utf8)))
+        let classification = try verifiedClassification(classification, provenance: provenance)
+        let enriched = try enrichedBody(body, summary: summary, provenance: provenance)
+        let now = timestamp()
+        var note = NoteRecord(id: id, title: title, aliases: [], tags: [], inlineTags: [],
+            createdAt: now, updatedAt: now, body: enriched, relativePath: availablePath(title: title),
+            contentHash: "", originalHeader: nil)
+        note.sourceIDs = source.map { [$0.source.id] }
+        note.aiTitleProvenance = provenance
+        note.lcc = classification?.code; note.lccClassification = classification
+        note.aiLCCProvenance = classification == nil ? nil : provenance
+        let data = try NoteCodec.encode(note)
+        if let source { try validateSourceSnapshot(source) }
+        try Task.checkCancellation()
+        try validate()
+        try validateAccess(operation: "createEnrichedPage.write")
+        try contentStore.write(data, at: note.relativePath, condition: .createOnly)
+        invalidateSummaryCaches(pagePath: note.relativePath, sourceID: nil)
+        return try NoteCodec.decode(data, path: note.relativePath, vaultID: manifest.id)
+    }
+
+    public func validateSourceSnapshot(_ snapshot: SourceSummarySnapshot) throws {
+        try validateAccess(operation: "validateSourceSnapshot")
+        try Task.checkCancellation()
+        let source = snapshot.source
+        let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
+        guard try contentStore.read(at: path) == snapshot.metadataBytes,
+              try contentStore.changeToken(at: path) == snapshot.metadataToken,
+              try summaryOriginalToken(source) == snapshot.originalToken,
+              try Self.readSourceOriginal(source, root: root, contentStore: contentStore) == snapshot.original,
+              try summaryOriginalToken(source) == snapshot.originalToken else {
+            throw VaultContentStoreError.stale(path)
+        }
+    }
+
+    private func needsGeneratedTitle(_ title: String) -> Bool {
+        normalized(title).isEmpty || normalized(title) == "untitled"
+    }
+
+    private func requireUniqueTitle(_ title: String, in notes: [NoteRecord]) throws {
+        guard !notes.contains(where: { normalized($0.title) == normalized(title) || $0.aliases.contains { normalized($0) == normalized(title) } }) else {
+            throw VaultError.duplicateTitle(title)
+        }
+    }
+
+    private func enrichmentProvenance(_ value: SummaryProvenance, revision: String) throws -> SummaryProvenance {
+        guard value.sourceRevision == nil || value.sourceRevision == revision else {
+            throw VaultError.invalid("Enrichment belongs to another content revision.")
+        }
+        var value = value
+        value.sourceRevision = revision; value.generationID = value.generationID ?? UUID()
+        return value
+    }
+
+    private func verifiedClassification(_ value: LCCClassification?, provenance: SummaryProvenance) throws -> LCCClassification? {
+        guard let value else { return nil }
+        guard let level = LCCClassificationVocabulary.level(for: value.code),
+              let caption = LCCClassificationVocabulary.caption(for: value.code), value.level == level else {
+            throw VaultError.invalid("Invalid generated LCC classification.")
+        }
+        return LCCClassification(code: value.code, level: level, caption: caption,
+            provenance: provenance, classifiedAt: provenance.generatedAt)
+    }
+
+    private func enrichedBody(_ body: String, summary: String, provenance: SummaryProvenance) throws -> String {
+        guard !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw VaultError.invalid("An enrichment summary is required.")
+        }
+        var document = BlockDocumentCodec.decode(body)
+        guard !document.unsupportedVersion else { throw VaultError.invalid("This page uses an unsupported block format.") }
+        document.setAISummary(summary)
+        document.blocks[0].metadata.extra["aiProvider"] = provenance.provider
+        document.blocks[0].metadata.extra["aiModel"] = provenance.model
+        document.blocks[0].metadata.extra["aiGeneratedAt"] = ISO8601DateFormatter().string(from: provenance.generatedAt)
+        document.blocks[0].metadata.extra["aiSourceRevision"] = provenance.sourceRevision
+        document.blocks[0].metadata.extra["aiGenerationID"] = provenance.generationID?.uuidString.lowercased()
+        return BlockDocumentCodec.encode(document)
+    }
+
     /// Publication occurs only after the caller's explicit acceptance of a suggestion.
     public func publishPageTitle(_ snapshot: PageSummarySnapshot, title: String,
         provenance: SummaryProvenance, validate: @Sendable () throws -> Void
@@ -136,6 +270,7 @@ extension FileVaultRepository {
     ) throws -> NoteRecord {
         var updated = snapshot.note
         updated.lcc = try acceptedLCC(lcc)
+        updated.lccClassification = nil
         updated.aiLCCProvenance = acceptedProvenance(provenance, revision: snapshot.sourceRevision)
         return try publishPageMetadata(snapshot, updated: updated, validate: validate)
     }
@@ -154,6 +289,7 @@ extension FileVaultRepository {
     ) throws -> SourceRecord {
         var metadata = snapshot.source.metadata
         metadata.lcc = try acceptedLCC(lcc)
+        metadata.lccClassification = nil
         metadata.aiLCCProvenance = acceptedProvenance(provenance, revision: snapshot.sourceRevision)
         return try publishSourceMetadata(snapshot, metadata: metadata, validate: validate)
     }

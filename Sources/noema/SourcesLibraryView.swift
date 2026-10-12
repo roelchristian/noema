@@ -180,7 +180,7 @@ private struct SourceTableContextMenu: View {
             Button("Open Preview") { model.openSource(sourceID) }
                 .disabled(model.downloadingSources.contains(sourceID))
             Button { model.createPageFromSource(source) } label: {
-                Label(model.generatingSourcePages.contains(sourceID) ? "Creating Page…" : "Create Page with AI · \(aiProviderLabel(model.preferredAIProvider(for: .processSource)))", systemImage: "sparkles")
+                Label(model.generatingSourcePages.contains(sourceID) ? "Creating Page…" : "Create Page with AI · \(aiProviderLabel(model.preferredAIProvider(for: .composePage)))", systemImage: "sparkles")
             }
             .disabled(model.downloadingSources.contains(sourceID) || model.generatingSourcePages.contains(sourceID)
                       || model.generatingSourceTitles.contains(sourceID) || model.generatingSourceSummaries.contains(sourceID))

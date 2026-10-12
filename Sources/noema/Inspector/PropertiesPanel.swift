@@ -29,8 +29,6 @@ struct PropertiesPanel: View {
                 VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                     InspectorSection(title: "Classification & Identity", showTopDivider: false) {
                         pageLCCRow(note)
-                        Text("Classification: \(model.preferredAIProvider(for: .classifyLCC).displayName)")
-                            .font(NoemaTypography.metadata).foregroundStyle(.secondary)
                         HStack {
                             Button("Suggest Title") { model.suggestPageTitle() }
                                 .disabled(model.currentNote?.id != note.id || model.editingLocked || model.generatingPageTitle)
@@ -99,8 +97,6 @@ struct PropertiesPanel: View {
             InspectorPanelHeader(title: "Properties") {
                 Menu {
                     Button("Open Preview") { model.openSource(source.id) }
-                    Button("Refresh LCC · \(model.preferredAIProvider(for: .classifyLCC).displayName)") { model.refreshSourceLCC(source) }
-                        .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceLCCs.contains(source.id))
                     Button("Suggest Title · \(model.preferredAIProvider(for: .suggestTitle).displayName)") { model.suggestSourceTitle(source) }
                         .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceTitles.contains(source.id))
                     Button("Check Availability") { model.checkSourceAvailability([source]) }
@@ -123,8 +119,6 @@ struct PropertiesPanel: View {
                         }
                         .font(NoemaTypography.metadata)
                         sourceLCCRow(source)
-                        Text("Classification: \(model.preferredAIProvider(for: .classifyLCC).displayName)")
-                            .font(NoemaTypography.metadata).foregroundStyle(.secondary)
                         InspectorProperty("Original file", source.metadata.originalFilename)
                         InspectorProperty("Kind", kindLabel)
                         InspectorProperty("Location", source.metadata.isLinked ? "Linked" : "In vault")
@@ -172,75 +166,53 @@ struct PropertiesPanel: View {
         }
     }
 
-    @ViewBuilder private func sourceLCCRow(_ source: SourceRecord) -> some View {
+    private func sourceLCCRow(_ source: SourceRecord) -> some View {
+        classificationRow(LCCMetadataPresentation(classification: source.metadata.lccClassification,
+            legacyCode: source.metadata.lcc, legacyProvenance: source.metadata.aiLCCProvenance))
+    }
+
+    private func pageLCCRow(_ note: NoteRecord) -> some View {
+        classificationRow(LCCMetadataPresentation(classification: note.lccClassification,
+            legacyCode: note.lcc, legacyProvenance: note.aiLCCProvenance))
+    }
+
+    private func classificationRow(_ metadata: LCCMetadataPresentation) -> some View {
         LabeledContent {
-            HStack(spacing: NoemaSpacing.xs) {
-                TextField(
-                    "None",
-                    text: Binding(
-                        get: { source.metadata.lcc ?? "" },
-                        set: { model.updateSourceLCC(source, lcc: $0) }
-                    )
-                )
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.small)
-                .font(NoemaTypography.metadata)
-                .disabled(model.downloadingSources.contains(source.id) || model.generatingSourceLCCs.contains(source.id))
-                if model.generatingSourceLCCs.contains(source.id) || model.generatingSourceTitles.contains(source.id) || model.generatingSourceSummaries.contains(source.id) {
-                    ProgressView().controlSize(.mini)
-                } else {
-                    Button {
-                        model.refreshSourceLCC(source)
-                    } label: {
-                        Label("Refresh LCC", systemImage: "arrow.clockwise").labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .disabled(model.downloadingSources.contains(source.id))
-                    .help("Refresh LCC using " + model.preferredAIProvider(for: .classifyLCC).displayName)
+            VStack(alignment: .trailing, spacing: NoemaSpacing.xs) {
+                Text(metadata.code).foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
+                if let caption = metadata.caption {
+                    Text(caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
                 }
             }
+            .help(metadata.detail)
+            .accessibilityLabel(metadata.detail)
         } label: {
             Text("LCC").foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
         }
         .font(NoemaTypography.metadata)
     }
+}
 
-    @ViewBuilder private func pageLCCRow(_ note: NoteRecord) -> some View {
-        LabeledContent {
-            HStack(spacing: NoemaSpacing.xs) {
-                if model.editingLocked {
-                    let effectiveLCC = (model.currentNote?.id == note.id ? model.lccInput : (note.lcc ?? "")).trimmingCharacters(in: .whitespacesAndNewlines)
-                    Text(effectiveLCC.isEmpty ? "None" : effectiveLCC).foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
-                } else {
-                    TextField(
-                        "None",
-                        text: Binding(
-                            get: { model.lccInput },
-                            set: { model.setPageLCC($0) }
-                        )
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .controlSize(.small)
-                    .font(NoemaTypography.metadata)
-                    .disabled(model.generatingPageLCC)
-                }
-                if model.generatingPageLCC {
-                    ProgressView().controlSize(.mini)
-                } else if !model.editingLocked {
-                    Button {
-                        model.refreshPageLCC()
-                    } label: {
-                        Label("Refresh LCC", systemImage: "arrow.clockwise").labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .help("Refresh LCC using " + model.preferredAIProvider(for: .classifyLCC).displayName)
-                }
-            }
-        } label: {
-            Text("LCC").foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
+/// Presents generated metadata and preserves historical manual values without claiming AI origin.
+struct LCCMetadataPresentation {
+    let code: String
+    let caption: String?
+    let detail: String
+
+    init(classification: LCCClassification?, legacyCode: String?, legacyProvenance: SummaryProvenance?) {
+        let selectedCode = classification?.code ?? legacyCode
+        code = selectedCode?.isEmpty == false ? selectedCode! : "None"
+        caption = selectedCode.flatMap { LCCClassificationVocabulary.caption(for: $0) }
+        let provenance = classification?.provenance ?? legacyProvenance
+        var parts = [code]
+        if let caption { parts.append(caption) }
+        if let provenance {
+            parts.append(aiSummaryProvenanceLabel(provider: provenance.provider, model: provenance.model))
+            parts.append(provenance.generatedAt.formatted(date: .abbreviated, time: .shortened))
+        } else if selectedCode != nil {
+            parts.append("Preserved classification · Origin unspecified")
         }
-        .font(NoemaTypography.metadata)
+        parts.append("Updated with content enrichment")
+        detail = parts.joined(separator: " · ")
     }
 }

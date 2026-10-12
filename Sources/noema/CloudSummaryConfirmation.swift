@@ -69,28 +69,41 @@ struct CloudSummaryConsentSheet: View {
 
     private var operationTitle: String {
         switch confirmation.request.action {
-        case .summarizePage, .summarizeSource: "Summarize with OpenAI"
+        case .summarizePage, .summarizeSource: "Enrich with OpenAI"
         case .suggestTitle: "Suggest Title with OpenAI"
         case .lccClassification: "Suggest LCC Classification with OpenAI"
+        case .composePage: "Create Page with OpenAI"
         }
     }
     private var publicationDescription: String {
         switch confirmation.request.action {
         case .summarizePage, .summarizeSource:
-            "The summary replaces the current summary only if the item stays unchanged."
+            "The summary and classification update together only if the item stays unchanged. Regeneration preserves the title and page body."
         case .suggestTitle, .lccClassification:
             "Review the suggestion before applying it. Generating it does not change the title, classification or summary."
+        case .composePage:
+            "Review the generated draft before creating the page. Cancelling draft review creates no page."
         }
     }
     private var targetDescription: String {
         switch confirmation.request.target { case .page: "page"; case .source: "source" }
+    }
+    private var submissionQuestion: String {
+        confirmation.request.action == .composePage
+            ? "Send this selected content to OpenAI? It leaves your device, and API charges may apply."
+            : "Send this selected \(targetDescription) text to OpenAI? It leaves your device, and API charges may apply."
+    }
+    private var approvalDescription: String {
+        model.externalAIService.consentPolicy == .oncePerSession
+            ? "Approval also permits later explicit submissions in this unlocked vault session."
+            : "Approval applies only to this submission."
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(operationTitle).font(.title2.bold())
             Text(confirmation.title).font(.headline)
-            Text("Send this selected \(targetDescription) text to OpenAI? It leaves your device, and API charges may apply.")
+            Text(submissionQuestion)
                 .foregroundStyle(.secondary)
             Text("OpenAI · \(confirmation.model) · \(confirmation.request.contentByteCount) bytes of text")
                 .font(.caption).accessibilityIdentifier("cloudConsent.requestDetails")
@@ -106,7 +119,7 @@ struct CloudSummaryConsentSheet: View {
             }
             .accessibilityIdentifier("cloudConsent.exactTextDisclosure")
             .accessibilityHint("Shows the full text for this submission. Expanding the preview does not send it.")
-            Text("Approval applies only to this submission. \(publicationDescription)")
+            Text("\(approvalDescription) \(publicationDescription)")
                 .font(.caption).foregroundStyle(.secondary)
             Text("Cancellation prevents publication and further requests; it cannot recall text already sent to OpenAI.")
                 .font(.caption).foregroundStyle(.secondary)

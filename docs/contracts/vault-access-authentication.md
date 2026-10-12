@@ -75,7 +75,7 @@ construction. Resource initialization failure rolls back only the session it own
 
 Native attempt success grants no ExternalAI capability. ExternalAI still requires
 its own operation purpose, precise live vault authority, credential-version checks,
-expiry and explicit per-submission consent; see the [external AI contract](external-ai.md).
+expiry and request-bound per-submission consent under the configured confirmation policy; see the [external AI contract](external-ai.md).
 Storage author/reviewer tracing remains required by the
 [storage boundary](storage-boundary.md#required-author-and-reviewer-disposition).
 Actual Touch ID, password fallback, OS cancellation, app switching and accessibility

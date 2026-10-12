@@ -20,6 +20,7 @@ public enum WebSourceFetcher {
               let host = url.host, !host.isEmpty, url.user == nil, url.password == nil else {
             throw VaultError.invalid("Enter a valid http or https URL without spaces or credentials.")
         }
+        try WebFetchPolicy.validateHost(url)
         return url
     }
 
@@ -32,10 +33,14 @@ public enum WebSourceFetcher {
     }
 
     private static func fetch(_ url: URL, allowXML: Bool) async throws -> WebSourceFetch {
-        _ = try validatedURL(url.absoluteString)
+        try await WebFetchPolicy.validateDestination(url)
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         request.setValue("text/html, text/plain, application/pdf", forHTTPHeaderField: "Accept")
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil; configuration.httpCookieStorage = nil; configuration.urlCredentialStorage = nil
+        let session = URLSession(configuration: configuration, delegate: WebFetchRedirectDelegate(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let (bytes, response) = try await session.bytes(for: request)
         guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
             throw VaultError.unavailable("The page could not be fetched (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)).")
         }
