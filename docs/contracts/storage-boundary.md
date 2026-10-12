@@ -96,6 +96,29 @@ storage bypass authorizations. The lexical guard plus owner/target review above
 remain required for any newly discovered secondary copy or I/O API. Crash-restart
 and real-provider behavior retain the acceptance limits in [validation](../validation.md).
 
+## Classification and lifecycle policy
+
+This policy applies to the inventory above without changing plaintext v1 format,
+current Trash expiry, activity retention or native admission. Identity and linkage
+metadata can be sensitive even when a store is metadata-only.
+
+| Class / mapped owners | Required lifecycle and deletion policy | E-series disposition |
+| --- | --- | --- |
+| Authoritative content / repository and published AI artifacts | Necessary durable data. Retain on lock, close, switch and crash-restart; protected application access requires current authority. Delete only through existing explicit/retention operations with their conflict and snapshot checks. | Encrypt canonical content and sensitive metadata, including names/layout if required by the chosen threat model; preserve conditional writes, format negotiation and interrupted-publication compatibility. |
+| Preservation data / recovery, conflict copies, Removed Pages and failed import staging | Potentially unique data is not disposable cache. Preserve drafts and damaged entries on failed cleanup or decoding; conflicts precede version resolution. Existing Trash expiry remains valid. A staging cleanup must establish ownership and intended cancellation; it cannot infer that all interrupted content is redundant merely from age or a prefix. | Protect drafts, archives, conflicts, staging and retention records with recoverable key availability; interrupted migration must preserve the only copy. Lock cleanup must not destroy unsaved content to hide plaintext. |
+| Rebuildable derivatives / search SQLite and in-memory derived catalogs | Necessary for current search, rebuildable from accessible authoritative content. Revalidate retained actor operations and stale publications. Detach session references on lock/close/switch; SQLite owns connection/WAL/SHM disposal. Restart can reopen the matching vault index. Never unlink journals while a connection is active. | Protect database pages, FTS/serialized records, WAL/SHM and rebuild/migration intermediates, or adopt an explicit memory-only policy; revocation alone cannot protect old disk bytes. |
+| Transient sensitive data / editor, source readers, preview copies, requests/results and debug report | Keep only for their owning operation/session. Revoke publication and clear presentation on lifecycle invalidation; debug mode also disables. Preview close/failure and bounded restart cleanup use ownership and process leases. Crash leftovers are ordinary-cleanup candidates only when proven disposable. | Prevent plaintext preview/export-to-platform copies unless explicitly authorized by the encrypted-vault policy. Define crash leftovers and OS-visible representations; memory release and file removal remain weaker than secure erasure. |
+| Ordinary settings and technical metadata / preferences and activity | Non-content geometry/theme/configuration may persist while locked. Bookmarks, identifiers, macro text and usage timing remain potentially sensitive. Activity is durable application metadata with independent configured retention, startup interrupted reconciliation and explicit Clear History. Never add raw content or authority to it. | Decide protection/redaction for cross-vault UUID linkage, bookmarks, user macro text and activity identifiers while retaining accepted history/settings. Do not silently purge history as a search rebuild. |
+| Externally owned or disclosed data / linked files, explicit clipboard/export, websites and AI provider | Existing scopes and selected-action authority govern access. Linked originals must never be mutated/deleted. Export/copy persists outside lifecycle ownership; cancellation cannot recall sent bytes. No cleanup of external files to satisfy an internal retention policy. | Require explicit disclosure policy for plaintext export, clipboard, linked previews and provider submissions; encryption cannot promise confidentiality of copies the user/provider/OS controls. |
+
+Close/switch must preserve pending edits through the existing save/recovery boundary
+before releasing resources. Failed quiescence must not publish a successful lock.
+Crash-restart does not restore session or submission authority from persisted records.
+Any implementation claim needs named tests and the independent owner/target review;
+lexical scan success is not proof of confidentiality, complete in-process isolation,
+secure erasure, arbitrary crash durability or iCloud arrival. E-series key design,
+opt-in migration and device acceptance remain future work, not D04 implementation.
+
 ## External AI publication and credential ownership
 
 - Page/source snapshot and atomic enrichment/reviewed-page/accepted-title publication in `SummaryPublication.swift` use the injected `VaultContentStore` for Wiki bytes, source metadata and imported-original change tokens. Original extraction reuses `readSourceOriginal`, retaining canonical path and checksum validation. Conditional replacement compares exact captured bytes and change tokens, preserving external content edits, independent summaries and deleted targets.
