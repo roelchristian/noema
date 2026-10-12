@@ -53,6 +53,9 @@ struct WorkspaceWindowTitle: Equatable, Sendable {
                 case .tag(let tag): title = "#" + tag
                 }
             }
+            // The sidebar footer owns vault identity while the workspace is open and available.
+            subtitle = ""
+            return
         }
         subtitle = title.localizedCaseInsensitiveCompare(vault) == .orderedSame ? "" : vault
     }

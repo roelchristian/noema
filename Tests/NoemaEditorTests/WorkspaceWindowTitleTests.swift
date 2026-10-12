@@ -27,7 +27,7 @@ import VaultCore
     #expect(reconstructing.subtitle == "Atlas")
 }
 
-@Test func nativeWindowTitlesRepresentEveryLibraryScopeWithVaultSubtitle() {
+@Test func nativeWindowTitlesRepresentEveryLibraryScopeWithoutRedundantVaultSubtitle() {
     let scopes: [(LibraryScope, String)] = [
         (.wiki, "Pages"), (.sources, "Sources"), (.semantic, "Semantic Blocks"),
         (.trash, "Trash"), (.tag("Research"), "#Research")
@@ -35,11 +35,11 @@ import VaultCore
     for (scope, expected) in scopes {
         let value = WorkspaceWindowTitle(phase: .open, vaultName: "Atlas", scope: scope, vaultAvailable: true)
         #expect(value.title == expected)
-        #expect(value.subtitle == "Atlas")
+        #expect(value.subtitle.isEmpty)
     }
 }
 
-@Test func nativeWindowTitlesKeepFullDocumentIdentityAndAvoidDuplicateSubtitle() {
+@Test func nativeWindowTitlesKeepFullDocumentIdentityAndOmitRedundantVaultSubtitle() {
     let longTitle = String(repeating: "Long document title 文献 📚 ", count: 40).trimmingCharacters(in: .whitespaces)
     for document in [WorkspaceWindowTitle.Document.page(longTitle), .source(longTitle)] {
         let value = WorkspaceWindowTitle(
@@ -48,7 +48,7 @@ import VaultCore
         )
         #expect(value.title == longTitle)
         #expect(!value.title.contains("…"))
-        #expect(value.subtitle == "Atlas")
+        #expect(value.subtitle.isEmpty)
     }
     let duplicate = WorkspaceWindowTitle(
         phase: .open, vaultName: "Atlas", scope: .wiki,
@@ -66,6 +66,8 @@ import VaultCore
     )
     #expect(emptyPage.title == "Untitled Page")
     #expect(emptySource.title == "Untitled Source")
+    #expect(emptyPage.subtitle.isEmpty)
+    #expect(emptySource.subtitle.isEmpty)
 }
 
 @Test @MainActor func nativeWindowTitleUsesGateMetadataBeforeModelObservation() {
@@ -106,15 +108,17 @@ extension VaultUIIntegrationTests {
         #expect(model.windowTitle.title == "Initial page")
         model.title = "Edited page"
         #expect(model.windowTitle.title == "Edited page")
-        #expect(model.windowTitle.subtitle == "Atlas")
+        #expect(model.windowTitle.subtitle.isEmpty)
 
         model.currentNote = nil
         model.scope = .sources
         model.selectedID = source.id
         #expect(model.windowTitle.title == "Sources")
+        #expect(model.windowTitle.subtitle.isEmpty)
         model.currentSource = source
         model.title = source.title
         #expect(model.windowTitle.title == "Reference source")
+        #expect(model.windowTitle.subtitle.isEmpty)
 
         let session = try #require(model.sessionState.activeSession)
         // A direct revocation changes admission before the queued model observation runs.

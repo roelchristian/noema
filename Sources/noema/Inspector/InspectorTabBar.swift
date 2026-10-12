@@ -21,7 +21,7 @@ struct InspectorTabBar: View {
                 } label: {
                     Image(systemName: tab.symbol)
                         .font(isSelected ? NoemaTypography.navigationEmphasis : NoemaTypography.navigation)
-                        .noemaChromeForeground(.textSecondary)
+                        .noemaChromeForeground(isSelected ? .textPrimary : .textSecondary)
                         .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight)
                         .contentShape(Rectangle())
                 }

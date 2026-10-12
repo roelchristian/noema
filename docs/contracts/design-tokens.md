@@ -111,10 +111,10 @@ Zero spacing, native default padding and small 1–3 point optical corrections a
 
 | Property | Points | Purpose and first consumer |
 | --- | ---: | --- |
-| `compactRowHeight` | 30 | Custom sidebar row minimum; current 28pt rows |
-| `comfortableRowHeight` | 34 | Vault menu/comfortable custom navigation |
+| `compactRowHeight` | 28 | Custom sidebar row minimum; current 28pt rows |
+| `comfortableRowHeight` | 30 | Vault menu/comfortable custom navigation |
 | `searchHeight` | 30 | Compact popover search field; inline native field retains intrinsic height |
-| `sidebarInset` | 12 | Shared sidebar horizontal framing |
+| `sidebarInset` | 10 | Shared sidebar horizontal framing |
 | `inspectorInset` | 16 | Inspector shell, header and panel horizontal alignment |
 | `radiusSmall` | 6 | Custom selected tabs and compact controls |
 | `radiusStandard` | 8 | Search and grouped custom control containers |

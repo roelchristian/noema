@@ -205,7 +205,8 @@ extension VaultUIIntegrationTests {
             let root = base.appendingPathComponent("Vault")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: base) }
-            _ = try FileVaultRepository.open(root: root, create: true)
+            let repository = try FileVaultRepository.open(root: root, create: true)
+            let note = try await repository.create(title: "Toolbar Page", body: "Toolbar test body")
             let model = AppModel()
             model.localStorageRoot = base
             model.persistSecurityScopedBookmark = false
@@ -230,14 +231,29 @@ extension VaultUIIntegrationTests {
             addMenu.delegate?.menuNeedsUpdate?(addMenu)
             #expect(addMenu.items.map(\.title).contains("Blank Page"))
 
-            let vaultControl = try #require(ToolbarSplitMenuPresenter.findSegmentedControl(forSymbol: "ellipsis", in: window))
-            #expect(vaultControl.segmentCount == 2)
-            #expect(!vaultControl.showsMenuIndicator(forSegment: 0))
-            #expect(vaultControl.showsMenuIndicator(forSegment: 1))
-            let vaultMenu = try #require(vaultControl.menu(forSegment: 1))
-            vaultMenu.delegate?.menuNeedsUpdate?(vaultMenu)
-            #expect(vaultMenu.items.map(\.title).contains("Open Another Vault…"))
-            #expect(vaultMenu.items.map(\.title).contains("Close Vault"))
+            #expect(ToolbarSplitMenuPresenter.findSegmentedControl(forSymbol: "ellipsis", in: window)?.segmentCount != 2)
+
+            model.currentNote = note
+            model.selectedID = note.id
+            try await Task.sleep(for: .milliseconds(100))
+            window.displayIfNeeded()
+            #expect(model.currentNote?.id == note.id)
+
+            let itemIDs = window.toolbar?.items.map { $0.itemIdentifier.rawValue } ?? []
+            #expect(itemIDs.contains("document.trash"))
+            let trashItem = try #require(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "document.trash" })
+            #expect(trashItem.label == "Move to Trash")
+            #expect(ContentView.canTrashPage(note, model: model))
+
+            var lockedNote = note
+            lockedNote.editingLocked = true
+            model.notes = [lockedNote]
+            model.currentNote = lockedNote
+            try await Task.sleep(for: .milliseconds(100))
+            window.displayIfNeeded()
+            #expect(model.currentNote?.isEditingLocked == true)
+            #expect(model.editingLocked)
+            #expect(!ContentView.canTrashPage(lockedNote, model: model))
 
             let close = try #require(model.performWorkspaceCommand(.close))
             await close.value

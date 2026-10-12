@@ -55,14 +55,14 @@ enum NoemaSpacing {
 /// the editor's existing width and gutter alignment remain editorial layout.
 enum NoemaMetrics {
     /// Minimum height for compact sidebar navigation rows and custom tabs.
-    static let compactRowHeight: CGFloat = 30
+    static let compactRowHeight: CGFloat = 28
     /// Minimum height for vault navigation and roomier custom rows.
-    static let comfortableRowHeight: CGFloat = 34
+    static let comfortableRowHeight: CGFloat = 30
     /// Minimum height for the custom sidebar search container.
     static let searchHeight: CGFloat = 30
 
     /// Horizontal framing shared by sidebar search, headers and tab groups.
-    static let sidebarInset: CGFloat = 12
+    static let sidebarInset: CGFloat = 10
     /// Horizontal alignment shared by the inspector shell and panel contents.
     static let inspectorInset: CGFloat = 16
 

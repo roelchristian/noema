@@ -4,18 +4,18 @@ import VaultCore
 @testable import noema
 
 @Test func readingMeasureCentersAndAdaptsToSplitPanes() {
-    for width in [CGFloat(0), 80, 160, 320, 500, 832, 1000, 1600] {
+    for width in [CGFloat(0), 80, 160, 240, 320, 500, 800, 832, 1000, 1600] {
         let geometry = ReadingGeometry(availableWidth: width, reservesEditorGutter: true)
         #expect(geometry.contentWidth <= 680)
         #expect(geometry.contentWidth >= 0)
         #expect(geometry.horizontalInset >= 0)
         #expect(geometry.contentWidth + 2 * geometry.horizontalInset == width)
-        if width >= 832 {
+        if width >= 800 {
             #expect(geometry.contentWidth == 680)
-        } else if width >= 304 {
-            #expect(geometry.contentWidth == width - 152)
-            #expect(geometry.horizontalInset == 76)
-            #expect(geometry.horizontalInset - 46 > 29) // Semantic icon clears drag controls.
+        } else if width >= 240 {
+            #expect(geometry.contentWidth == width - 120)
+            #expect(geometry.horizontalInset == 60)
+            #expect(max(30, geometry.horizontalInset - 46) > 29) // Semantic icon clears drag controls.
         } else {
             #expect(geometry.contentWidth >= width / 2)
         }

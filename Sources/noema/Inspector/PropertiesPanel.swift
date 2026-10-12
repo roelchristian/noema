@@ -6,6 +6,7 @@ import VaultCore
 struct PropertiesPanel: View {
     @Bindable var model: AppModel
     let context: InspectorContext
+    var state: InspectorState? = nil
     var scrollPosition: Binding<ScrollPosition>? = nil
 
     @Environment(\.noemaTheme) private var theme
@@ -21,62 +22,70 @@ struct PropertiesPanel: View {
         }
     }
 
+    private func sectionBinding(_ id: String) -> Binding<Bool>? {
+        state?.sectionExpansionBinding(for: id)
+    }
+
     private func pageProperties(_ note: NoteRecord) -> some View {
         VStack(spacing: 0) {
             InspectorPanelHeader(title: "Properties")
             Divider().overlay(theme.color(for: .separator))
             ScrollView {
                 VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
-                    InspectorSection(title: "Classification & Identity", showTopDivider: false) {
+                    InspectorSection(
+                        title: "Classification & Identity",
+                        showTopDivider: false,
+                        isExpanded: sectionBinding("Classification & Identity")
+                    ) {
                         pageLCCRow(note)
-                        HStack {
-                            Button("Suggest Title") { model.suggestPageTitle() }
-                                .disabled(model.currentNote?.id != note.id || model.editingLocked || model.generatingPageTitle)
-                            if model.generatingPageTitle { ProgressView().controlSize(.mini) }
-                        }
-                        Text("Title suggestions: \(model.preferredAIProvider(for: .suggestTitle).displayName)")
-                            .font(NoemaTypography.metadata).foregroundStyle(.secondary)
-                        LabeledContent("Location") {
+                        propertyRow("Location") {
                             Button(note.relativePath) {
                                 if let root = model.root {
                                     NSWorkspace.shared.activateFileViewerSelecting([root.appendingPathComponent(note.relativePath)])
                                 }
                             }
                             .buttonStyle(.link)
+                            .font(NoemaTypography.interface)
                             .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .help(note.relativePath)
                         }
-                        .font(NoemaTypography.metadata)
                         InspectorProperty("Kind", "Markdown")
                         if !note.aliases.isEmpty {
-                            InspectorProperty("Aliases", note.aliases.joined(separator: ", "))
+                            aliasesRow(note.aliases)
+                        }
+                        Divider()
+                            .overlay(theme.color(for: .separator))
+                            .padding(.top, NoemaSpacing.xs)
+                        HStack(alignment: .center, spacing: NoemaSpacing.sm) {
+                            Button("Suggest Title") { model.suggestPageTitle() }
+                                .controlSize(.small)
+                                .disabled(model.currentNote?.id != note.id || model.editingLocked || model.generatingPageTitle)
+                            if model.generatingPageTitle { ProgressView().controlSize(.mini) }
+                            Spacer(minLength: NoemaSpacing.xs)
+                            Text(model.preferredAIProvider(for: .suggestTitle).displayName)
+                                .font(NoemaTypography.metadata)
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
+                                .lineLimit(1)
                         }
                     }
 
-                    InspectorSection(title: "Timestamps") {
+                    InspectorSection(
+                        title: "Timestamps",
+                        isExpanded: sectionBinding("Timestamps")
+                    ) {
                         InspectorProperty("Created", InspectorFormatting.metadataDate(note.createdAt))
                             .help(note.createdAt)
                         InspectorProperty("Modified", InspectorFormatting.metadataDate(note.updatedAt))
                             .help(note.updatedAt)
                     }
 
-                    InspectorSection(title: "Status") {
-                        LabeledContent("Editing") {
-                            Button {
-                                model.toggleEditingLock(note.id)
-                            } label: {
-                                Label(
-                                    note.isEditingLocked ? "Unlock Editing" : "Lock Editing",
-                                    systemImage: note.isEditingLocked ? "lock.fill" : "lock.open"
-                                )
-                            }
-                            .buttonStyle(.borderless)
-                            .help(note.isEditingLocked ? "Unlock Editing" : "Lock Editing")
-                            .disabled(model.editingLockOperations.contains(note.id))
-                        }
-                        .font(NoemaTypography.metadata)
+                    InspectorSection(
+                        title: "Status",
+                        isExpanded: sectionBinding("Status")
+                    ) {
+                        editingStatusRow(note)
                         if model.editorReadOnly, model.currentNote?.id == note.id {
                             InspectorProperty("Access", "Read-only format")
                         }
@@ -113,11 +122,14 @@ struct PropertiesPanel: View {
             Divider().overlay(theme.color(for: .separator))
             ScrollView {
                 VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
-                    InspectorSection(title: "Classification & File", showTopDivider: false) {
-                        LabeledContent("Availability") {
+                    InspectorSection(
+                        title: "Classification & File",
+                        showTopDivider: false,
+                        isExpanded: sectionBinding("Classification & File")
+                    ) {
+                        propertyRow("Availability") {
                             sourceAvailabilityStatus(source.id, issue: source.availabilityIssue)
                         }
-                        .font(NoemaTypography.metadata)
                         sourceLCCRow(source)
                         InspectorProperty("Original file", source.metadata.originalFilename)
                         InspectorProperty("Kind", kindLabel)
@@ -127,17 +139,20 @@ struct PropertiesPanel: View {
                         }
                     }
 
-                    InspectorSection(title: "Capture & Origin") {
+                    InspectorSection(
+                        title: "Capture & Origin",
+                        isExpanded: sectionBinding("Capture & Origin")
+                    ) {
                         InspectorProperty("Captured", InspectorFormatting.metadataDate(source.metadata.capturedAt))
                             .help(source.metadata.capturedAt)
                         if let origin = source.metadata.originURL, let url = URL(string: origin), !origin.isEmpty {
-                            LabeledContent("Origin") {
+                            propertyRow("Origin") {
                                 Link(origin, destination: url)
+                                    .font(NoemaTypography.interface)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                     .help(origin)
                             }
-                            .font(NoemaTypography.metadata)
                         }
                     }
                 }
@@ -149,20 +164,90 @@ struct PropertiesPanel: View {
         }
     }
 
+    private func propertyRow<ValueContent: View>(
+        _ title: String,
+        alignment: VerticalAlignment = .firstTextBaseline,
+        @ViewBuilder content: () -> ValueContent
+    ) -> some View {
+        HStack(alignment: alignment, spacing: NoemaSpacing.sm) {
+            Text(title)
+                .font(NoemaTypography.metadata)
+                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
+                .frame(width: 72, alignment: .leading)
+            content()
+                .font(NoemaTypography.interface)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func aliasesRow(_ aliases: [String]) -> some View {
+        propertyRow("Aliases") {
+            VStack(alignment: .leading, spacing: NoemaSpacing.xs) {
+                ForEach(aliases, id: \.self) { alias in
+                    Text(alias)
+                        .font(NoemaTypography.metadataEmphasis)
+                        .foregroundStyle(theme.text(for: .textPrimary, on: .elevated))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: NoemaMetrics.radiusSmall, style: .continuous)
+                                .fill(theme.color(for: .elevated))
+                        )
+                        .help(alias)
+                }
+            }
+        }
+    }
+
+    private func editingStatusRow(_ note: NoteRecord) -> some View {
+        let isReadOnly = model.editorReadOnly && model.currentNote?.id == note.id
+        let statusLabel = note.isEditingLocked ? "Locked" : (isReadOnly ? "Read-only" : "Editable")
+        let statusIcon = note.isEditingLocked ? "lock.fill" : "lock.open"
+        let actionTitle = note.isEditingLocked ? "Unlock" : "Lock"
+        let actionHelp = note.isEditingLocked ? "Unlock Editing" : "Lock Editing"
+        return propertyRow("Editing") {
+            HStack(alignment: .firstTextBaseline, spacing: NoemaSpacing.sm) {
+                Label(statusLabel, systemImage: statusIcon)
+                    .font(NoemaTypography.interface)
+                    .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
+                Spacer(minLength: NoemaSpacing.xs)
+                Button(actionTitle) {
+                    model.toggleEditingLock(note.id)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .font(NoemaTypography.metadataEmphasis)
+                .help(actionHelp)
+                .accessibilityLabel(actionHelp)
+                .disabled(model.editingLockOperations.contains(note.id))
+            }
+        }
+    }
+
     @ViewBuilder private func sourceAvailabilityStatus(_ id: UUID, issue: String?) -> some View {
         if model.downloadingSources.contains(id) {
             HStack(spacing: NoemaSpacing.sm) {
                 ProgressView().controlSize(.mini)
-                Text("Downloading from iCloud").foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
+                Text("Downloading from iCloud")
+                    .font(NoemaTypography.interface)
+                    .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
             }
         } else if model.checkingSourceAvailability.contains(id) {
             HStack(spacing: NoemaSpacing.sm) {
                 ProgressView().controlSize(.mini)
-                Text("Checking availability…").foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
+                Text("Checking availability…")
+                    .font(NoemaTypography.interface)
+                    .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
             }
         } else {
             let label = model.sourceAvailability[id] ?? issue ?? "Available"
-            Text(label).lineLimit(1).help(label)
+            Text(label)
+                .font(NoemaTypography.interface)
+                .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
+                .lineLimit(1)
+                .help(label)
         }
     }
 
@@ -177,19 +262,21 @@ struct PropertiesPanel: View {
     }
 
     private func classificationRow(_ metadata: LCCMetadataPresentation) -> some View {
-        LabeledContent {
-            VStack(alignment: .trailing, spacing: NoemaSpacing.xs) {
-                Text(metadata.code).foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
+        propertyRow("LCC") {
+            VStack(alignment: .leading, spacing: NoemaSpacing.xs) {
+                Text(metadata.code)
+                    .font(NoemaTypography.interface)
+                    .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
                 if let caption = metadata.caption {
-                    Text(caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                    Text(caption)
+                        .font(NoemaTypography.metadata)
+                        .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
+                        .multilineTextAlignment(.leading)
                 }
             }
             .help(metadata.detail)
             .accessibilityLabel(metadata.detail)
-        } label: {
-            Text("LCC").foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
         }
-        .font(NoemaTypography.metadata)
     }
 }
 

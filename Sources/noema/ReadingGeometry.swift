@@ -5,7 +5,7 @@ struct ReadingGeometry {
     static let maximumContentWidth: CGFloat = 680
     static let horizontalInset: CGFloat = 24
     // Semantic icons begin 46 pt before the text; the drag-control hit area ends at 29 pt.
-    static let editorHorizontalInset: CGFloat = 76
+    static let editorHorizontalInset: CGFloat = 60
 
     let contentWidth: CGFloat
     let horizontalInset: CGFloat

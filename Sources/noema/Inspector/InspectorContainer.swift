@@ -74,7 +74,7 @@ struct InspectorContainer: View {
             if case .page(let note) = context {
                 LinksPanel(model: model, note: note, cache: state.linksCache, scrollPosition: position)
             } else {
-                PropertiesPanel(model: model, context: context, scrollPosition: position)
+                PropertiesPanel(model: model, context: context, state: state, scrollPosition: position)
             }
         case .references:
             ReferencesPanel(model: model, context: context, scrollPosition: position)
@@ -82,10 +82,10 @@ struct InspectorContainer: View {
             if case .page(let note) = context {
                 TagsPanel(model: model, note: note, scrollPosition: position)
             } else {
-                PropertiesPanel(model: model, context: context, scrollPosition: position)
+                PropertiesPanel(model: model, context: context, state: state, scrollPosition: position)
             }
         case .properties:
-            PropertiesPanel(model: model, context: context, scrollPosition: position)
+            PropertiesPanel(model: model, context: context, state: state, scrollPosition: position)
         case .insights:
             InsightsPanel(
                 model: model,
@@ -127,12 +127,16 @@ struct InspectorProperty: View {
     let value: String
     init(_ title: String, _ value: String) { self.title = title; self.value = value }
     var body: some View {
-        LabeledContent {
-            Text(value.isEmpty ? "None" : value).foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
-        } label: {
-            Text(title).foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
+        HStack(alignment: .firstTextBaseline, spacing: NoemaSpacing.sm) {
+            Text(title)
+                .font(NoemaTypography.metadata)
+                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
+                .frame(width: 72, alignment: .leading)
+            Text(value.isEmpty ? "None" : value)
+                .font(NoemaTypography.interface)
+                .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .font(NoemaTypography.metadata)
     }
 }
 
@@ -141,22 +145,29 @@ struct InspectorSection<Content: View, Actions: View>: View {
     let title: String
     let count: Int?
     let showTopDivider: Bool
+    let externalIsExpanded: Binding<Bool>?
     let content: Content
     let actions: Actions
-    @State private var expanded: Bool = true
+    @State private var localExpanded: Bool = true
 
     init(
         title: String,
         count: Int? = nil,
         showTopDivider: Bool = true,
+        isExpanded: Binding<Bool>? = nil,
         @ViewBuilder content: () -> Content,
         @ViewBuilder actions: () -> Actions = { EmptyView() }
     ) {
         self.title = title
         self.count = count
         self.showTopDivider = showTopDivider
+        self.externalIsExpanded = isExpanded
         self.content = content()
         self.actions = actions()
+    }
+
+    private var expandedBinding: Binding<Bool> {
+        externalIsExpanded ?? $localExpanded
     }
 
     var body: some View {
@@ -165,7 +176,7 @@ struct InspectorSection<Content: View, Actions: View>: View {
                 Divider().overlay(theme.color(for: .separator))
             }
             HStack(alignment: .center, spacing: NoemaSpacing.sm) {
-                DisclosureGroup(isExpanded: $expanded) { EmptyView() } label: {
+                DisclosureGroup(isExpanded: expandedBinding) { EmptyView() } label: {
                     HStack(spacing: NoemaSpacing.sm) {
                         Text(title)
                             .font(NoemaTypography.sectionHeader)
@@ -181,7 +192,7 @@ struct InspectorSection<Content: View, Actions: View>: View {
                     .controlSize(.small)
                     .font(NoemaTypography.metadata)
             }
-            if expanded {
+            if expandedBinding.wrappedValue {
                 VStack(alignment: .leading, spacing: NoemaSpacing.sm) {
                     content
                 }
