@@ -19,6 +19,7 @@ import VaultCore
         }
         // Let macOS own the titlebar, traffic lights, and full-screen transitions.
         .windowStyle(.titleBar)
+        .windowToolbarStyle(.unifiedCompact(showsTitle: true))
         .defaultSize(width: 680, height: 480)
         .commands {
             CommandGroup(replacing: .appInfo) {

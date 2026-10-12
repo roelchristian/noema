@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 import VaultCore
@@ -17,6 +18,8 @@ import VaultCore
             )
             #expect(value.title == expected)
             #expect(value.subtitle == (phase == .closed ? "" : "Atlas"))
+            #expect(value.hasSubtitle == (phase != .closed))
+            #expect(!value.isCollectionScope)
         }
     }
     let reconstructing = WorkspaceWindowTitle(
@@ -25,6 +28,8 @@ import VaultCore
     )
     #expect(reconstructing.title == "Opening Vault…")
     #expect(reconstructing.subtitle == "Atlas")
+    #expect(reconstructing.hasSubtitle)
+    #expect(!reconstructing.isCollectionScope)
 }
 
 @Test func nativeWindowTitlesRepresentEveryLibraryScopeWithoutRedundantVaultSubtitle() {
@@ -36,6 +41,8 @@ import VaultCore
         let value = WorkspaceWindowTitle(phase: .open, vaultName: "Atlas", scope: scope, vaultAvailable: true)
         #expect(value.title == expected)
         #expect(value.subtitle.isEmpty)
+        #expect(!value.hasSubtitle)
+        #expect(value.isCollectionScope)
     }
 }
 
@@ -49,6 +56,8 @@ import VaultCore
         #expect(value.title == longTitle)
         #expect(!value.title.contains("…"))
         #expect(value.subtitle.isEmpty)
+        #expect(!value.hasSubtitle)
+        #expect(!value.isCollectionScope)
     }
     let duplicate = WorkspaceWindowTitle(
         phase: .open, vaultName: "Atlas", scope: .wiki,
@@ -56,6 +65,8 @@ import VaultCore
     )
     #expect(duplicate.title == "atlas")
     #expect(duplicate.subtitle.isEmpty)
+    #expect(!duplicate.hasSubtitle)
+    #expect(!duplicate.isCollectionScope)
     let emptyPage = WorkspaceWindowTitle(
         phase: .open, vaultName: "Atlas", scope: .wiki,
         document: .page(" \n "), vaultAvailable: true
@@ -68,6 +79,67 @@ import VaultCore
     #expect(emptySource.title == "Untitled Source")
     #expect(emptyPage.subtitle.isEmpty)
     #expect(emptySource.subtitle.isEmpty)
+    #expect(!emptyPage.hasSubtitle)
+    #expect(!emptySource.hasSubtitle)
+    #expect(!emptyPage.isCollectionScope)
+    #expect(!emptySource.isCollectionScope)
+}
+
+@Test func collectionScopeAndSubtitleHierarchyMatchOpenAndTransitionalStates() {
+    let scopes: [LibraryScope] = [.wiki, .sources, .semantic, .trash, .tag("Research")]
+    for scope in scopes {
+        let openCollection = WorkspaceWindowTitle(
+            phase: .open, vaultName: "Atlas", scope: scope, document: nil, vaultAvailable: true
+        )
+        #expect(openCollection.isCollectionScope)
+        #expect(!openCollection.hasSubtitle)
+
+        let openPage = WorkspaceWindowTitle(
+            phase: .open, vaultName: "Atlas", scope: scope, document: .page("Note"), vaultAvailable: true
+        )
+        #expect(!openPage.isCollectionScope)
+        #expect(!openPage.hasSubtitle)
+
+        let openSource = WorkspaceWindowTitle(
+            phase: .open, vaultName: "Atlas", scope: scope, document: .source("PDF"), vaultAvailable: true
+        )
+        #expect(!openSource.isCollectionScope)
+        #expect(!openSource.hasSubtitle)
+
+        let unavailableOpen = WorkspaceWindowTitle(
+            phase: .open, vaultName: "Atlas", scope: scope, document: nil, vaultAvailable: false
+        )
+        #expect(!unavailableOpen.isCollectionScope)
+        #expect(unavailableOpen.hasSubtitle)
+
+        for phase in [VaultSessionPhase.closed, .opening, .locking, .locked, .unlocking] {
+            let nonOpen = WorkspaceWindowTitle(
+                phase: phase, vaultName: "Atlas", scope: scope, document: nil, vaultAvailable: true
+            )
+            #expect(!nonOpen.isCollectionScope)
+            #expect(nonOpen.hasSubtitle == (phase != .closed))
+        }
+    }
+}
+
+@Test @MainActor func workspaceWindowStateConfiguresUnifiedCompactToolbarAndMeasuresChromeHeight() {
+    let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+        styleMask: [.titled, .closable, .miniaturizable, .resizable],
+        backing: .buffered,
+        defer: false
+    )
+    window.toolbar = NSToolbar(identifier: "WorkspaceToolbarTest")
+    window.titleVisibility = .hidden
+    window.toolbarStyle = .expanded
+
+    WorkspaceWindowState.configureToolbarStyle(for: window)
+    #expect(window.toolbarStyle == .unifiedCompact)
+    #expect(window.titleVisibility == .visible)
+
+    let chromeHeight = WorkspaceWindowState.titlebarChromeHeight(for: window)
+    #expect(chromeHeight > 0)
+    #expect(chromeHeight <= 52)
 }
 
 @Test @MainActor func nativeWindowTitleUsesGateMetadataBeforeModelObservation() {

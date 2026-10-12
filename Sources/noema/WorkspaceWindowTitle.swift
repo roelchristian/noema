@@ -11,6 +11,9 @@ struct WorkspaceWindowTitle: Equatable, Sendable {
 
     let title: String
     let subtitle: String
+    let isCollectionScope: Bool
+
+    var hasSubtitle: Bool { !subtitle.isEmpty }
 
     init(
         phase: VaultSessionPhase,
@@ -19,6 +22,7 @@ struct WorkspaceWindowTitle: Equatable, Sendable {
         document: Document? = nil,
         vaultAvailable: Bool
     ) {
+        isCollectionScope = phase == .open && vaultAvailable && document == nil
         let vault = Self.nonempty(vaultName, fallback: "Vault")
         switch phase {
         case .closed:

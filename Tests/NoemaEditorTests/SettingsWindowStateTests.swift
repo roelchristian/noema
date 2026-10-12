@@ -124,6 +124,7 @@ struct SettingsWindowStateTests {
 
         let standard = SettingsModalMetrics.resolvedSize(for: CGSize(width: 1440, height: 900))
         #expect(standard.width == 840 && standard.height == 600)
+        #expect(SettingsModalMetrics.sidebarWidth == 200)
 
         let compact = SettingsModalMetrics.resolvedSize(for: CGSize(width: 720, height: 500))
         #expect(compact.width == 720 && compact.height == 500)
