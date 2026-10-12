@@ -7,6 +7,15 @@ import VaultCore
 struct WorkspaceWindowState: NSViewRepresentable {
     let phase: VaultSessionPhase
 
+    @MainActor static func configureToolbarStyle(for window: NSWindow) {
+        window.toolbarStyle = .unifiedCompact
+        window.titleVisibility = .visible
+    }
+
+    @MainActor static func titlebarChromeHeight(for window: NSWindow) -> CGFloat {
+        max(0, window.frame.height - window.contentLayoutRect.height)
+    }
+
     func makeNSView(context: Context) -> WindowStateView { WindowStateView(phase: phase) }
     func updateNSView(_ view: WindowStateView, context: Context) { view.update(phase: phase) }
     static func dismantleNSView(_ view: WindowStateView, coordinator: ()) { view.detach() }
@@ -31,6 +40,7 @@ struct WorkspaceWindowState: NSViewRepresentable {
             detach()
             guard let window else { return }
             observedWindow = window
+            WorkspaceWindowState.configureToolbarStyle(for: window)
             state.applyPending(canResize: canChangeFrame)
             observe(window)
             applyProfile(restore: true)
@@ -108,6 +118,7 @@ struct WorkspaceWindowState: NSViewRepresentable {
 
         private func applyProfile(restore: Bool) {
             guard canChangeFrame, let window = observedWindow else { return }
+            WorkspaceWindowState.configureToolbarStyle(for: window)
             changingFrame = true
             defer { changingFrame = false }
             let profile = state.profile
