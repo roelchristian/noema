@@ -1,6 +1,10 @@
 # Canonical storage boundary contract
 
-Canonical byte routing and exception ownership below govern current implementation. Historical inventories and execution records remain in Git history.
+Canonical byte routing and exception ownership below govern current implementation.
+The STOR.01 specification distinguishes implemented schema 2 from the proposed
+expanded-authority schema 3; no authority transition or runtime migration is
+authorized by documenting that target. Historical inventories and execution
+records remain in Git history.
 
 Manifest inspection always reads through the selected store, including explicit
 creation preflight. Only a provider-confirmed missing manifest in a positively empty
@@ -12,6 +16,276 @@ reject before canonical mutation. Unknown optional manifest fields survive openi
 because manifest bytes are not rewritten.
 
 Canonical byte reads, writes, snapshots, directory creation, moves and deletes use `VaultContentStore`: `vault.json`, Wiki Markdown, source originals and metadata, import staging, Removed Pages and legacy `.Trash` migration, Conflicts copies, and `Trash Retention.json`. `PlaintextVaultContentStore` is the sole runtime implementation. Imported PDF summary loading in AppModel uses `readSourceOriginal`, including path validation and checksum enforcement. Text summaries already use scanned source bodies. Plaintext v1 remains supported. Explicit local conversion may select format 2 SQLite page authority; source originals and their metadata retain the existing adapter model.
+
+## SQLite authority and schema evolution (STOR.01)
+
+The [canonical storage decision](../decisions/0001-canonical-sqlite-authority.md) governs
+the target. Current authority remains split:
+
+| Record | Implemented format 2 authority | Proposed expanded authority |
+| --- | --- | --- |
+| Vault identity and storage selection | `vault.json`; no database vault-identity record | Manifest selects format/path/local-only policy and required capabilities; database verifies the same vault UUID and authority capability |
+| Pages, blocks, page metadata and page Trash | `SQLiteBlockStore`, schema 2 | Same actor and relational foundation |
+| Source metadata and originals | Adapter-owned `Sources/<UUID>/metadata.json` and checksum-verified originals; linked originals externally owned | SQLite metadata; adapter-owned immutable blobs; external linked bytes unchanged |
+| Page-source links | UUID list in `NoteRecord.sourceIDs` payload, without source foreign keys | Authoritative relational links |
+| Source Trash, preconversion page Trash, retention and conflicts | Repository files in Removed Pages/legacy `.Trash`, `Trash Retention.json`, `Conflicts/` | Canonical logical records; unique preserved payloads retained through controlled bytes |
+| Search/FTS and future embeddings | App-local `SQLiteSearchIndex`; rebuildable | Projections; never an alternative content authority |
+| AI activity | App-local `SQLiteAIActivityStore` history | Independent application metadata history |
+| Recovery drafts | App-local `RecoveryStore`, potentially the only unsaved copy | Separate preservation authority until committed or explicitly discarded |
+
+A format 2 page database is not a complete SQLite-owned vault. Neither preservation
+Markdown nor a derived index becomes canonical merely because it remains available.
+The present source metadata and page-source payload list are not a database
+transaction spanning sources and pages. STOR.02 must implement an explicit transition
+before repository source/Trash/conflict operations use expanded authority.
+
+### Implemented schema 2 compatibility baseline
+
+Source of truth is [SQLiteBlockStore](../../Sources/VaultCore/SQLiteBlockStore.swift).
+The schema below describes persisted columns, not a new SQL API for consumers.
+
+| Table / column | Representation and invariant |
+| --- | --- |
+| `pages.id` | `TEXT PRIMARY KEY`; page UUID validated by loading/domain paths |
+| `pages.revision` | Non-null `BLOB`; opaque store-issued UUID-string bytes, not a timestamp, Markdown hash or monotonic counter |
+| `pages.metadata` | Nullable `BLOB`, JSON `NoteRecord`; `savePage` stores empty `body` and `contentHash`, reconstructing them from document/revision on load. A raw `BlockStore.save` can create a page without repository metadata |
+| `pages.properties` | Non-null `BLOB`, JSON `BlockDocument` with `blocks=[]`; retains document properties, recovered metadata, unsupported-version flag and original-source spelling |
+| `pages.trashed` | Non-null integer default 0, `CHECK(trashed IN (0,1))` |
+| `pages.trashed_at` | Nullable `REAL`, Unix seconds; NULL means absent/untrustworthy removal date. Trash changes issue a new page revision and retention identity; restore clears the date |
+| `blocks.page_id`, `blocks.id` | Non-null UUID `TEXT`, composite primary key `(page_id,id)`; page FK to `pages(id) ON DELETE CASCADE` |
+| `blocks.parent_id` | Nullable UUID `TEXT`; composite same-page FK `(page_id,parent_id)` to `blocks(page_id,id) DEFERRABLE INITIALLY DEFERRED`; NULL is a root block |
+| `blocks.sibling_order` | Non-null integer with `CHECK(sibling_order>=0)`; array index within parent; index `block_parent_order(page_id,parent_id,sibling_order)` is an accelerator, not a uniqueness constraint |
+| `blocks.kind` | Non-null `TEXT`, string-backed `BlockKind` |
+| `blocks.runs`, `blocks.semantic` | Non-null JSON `BLOB`s for `[RichRun]` and `BlockMetadata`; semantic/status/checked/collapsed/language/icon and string-valued `extra` are content |
+| `blocks.created_at`, `blocks.modified_at` | Non-null `REAL`, Foundation reference-date seconds, distinct from Unix `trashed_at` |
+| `blocks.extensions` | Non-null JSON `BLOB` for original Markdown/signature/indentation/depth; this is a fixed Codable payload, not arbitrary unknown JSON preservation |
+
+Initialization builds schema 1 then transactionally adds `trashed_at` and sets
+`PRAGMA user_version=2`. Opening schema 1 performs that compatible upgrade. Existing
+open rejects missing/unversioned databases when creation is disabled, and versions
+above 2 fail before WAL/schema changes. Read reconstruction requires contiguous
+sibling order, reachable acyclic parentage, unique block UUIDs and a valid document;
+SQL foreign keys alone do not establish those invariants. Metadata UUID must match
+the owning page. Existing schema 2 has no vault UUID record, source table or source FK.
+
+`properties.blocks=[]` and relational rows avoid a second authoritative serialized
+block tree. Original-source/recovered spellings are preservation information and do
+not override the current rich runs. Incremental persistence deletes removed rows and
+upserts changed rows; unchanged rows survive. Metadata and document publication use
+`savePage` in one revision-checked transaction. Read transactions return coherent
+metadata/document/revision even when another connection commits concurrently.
+See [SQLiteBlockStoreTests](../../Tests/VaultCoreTests/SQLiteBlockStoreTests.swift)
+for affected-row, rollback, coherent-snapshot, corruption, upgrade, cancellation and
+WAL-backup scenarios; these tests do not establish arbitrary power-loss behavior.
+
+### Required authority discriminator and explicit upgrade
+
+The minimum future expanded-authority baseline is SQL schema 3. Retain manifest
+`formatVersion=2`, top-level `storageMode="sqliteBlocks"`, and fixed `blocks.sqlite`
+path. Require this durable additional manifest declaration:
+
+```json
+"storage": {
+  "mode": "sqliteBlocks",
+  "schemaVersion": 3,
+  "database": "blocks.sqlite",
+  "localOnly": true,
+  "requiredCapabilities": ["canonicalMetadataV1"]
+}
+```
+
+The declaration is mandatory, not an optional hint. Current `inspectManifest`
+rejects any format 2 `storage` object before repository construction, and current
+`SQLiteBlockStore` rejects schema 3. This gives existing readers two fail-closed
+barriers. A capability placed only in an ignored top-level field is insufficient.
+Future admission must reject missing/unknown required capabilities, malformed fields,
+unsupported SQL/document versions, UUID disagreement and manifest/database capability
+mismatch before writable access. Preservation inspection does not authorize saving.
+Schema 2 with no declaration retains page-only semantics indefinitely.
+
+Manifest owns portable identity and authority selection; a singleton `vault_state`
+row verifies vault UUID, authority capability and payload compatibility, while
+`PRAGMA user_version` owns actual SQL schema version. Neither file independently
+changes authority. A mismatched pair is an interrupted/invalid publication requiring
+explicit reconciliation; never guess based on table presence or reimport Markdown.
+
+Schema evolution is forward-only. Additive SQL upgrades may occur on open only when
+an explicitly supported migration preserves the declared authority and payload
+meaning. Changing ownership, required features, encryption or destructive
+interpretation requires explicit migration, quiescence, verified backup and consent.
+For schema 2 to 3, snapshot existing SQLite authority using the backup API, inventory
+and snapshot file-backed source/Trash/conflict records, preserve unknown payloads,
+verify IDs/checksums/relationships, and build/verify a separate staged schema 3 DB.
+Copy current SQLite pages/revisions; never overwrite them from preserved Markdown.
+Revalidate the old DB revision set and all file snapshots before publication.
+Retain a receipt binding old manifest, old DB snapshot and staged DB digest. Publish
+only a closed verified database, then the capability manifest last; preserve the old
+DB and file records. Interruption between publication steps must fail closed and
+support receipt-bound recovery without overwriting either authority. No automatic
+reversion, dual writes or deletion of preserved files is implied.
+
+### Minimum schema 3 records (proposed, not implemented)
+
+Retain schema 2 page/block columns and revision semantics. Exact DDL and migration
+fixtures belong to STOR.02 review; these are required logical keys and invariants.
+Use versioned authoritative payloads plus explicit relational metadata, with no
+second authoritative copy of fields promoted to relationships or lifecycle columns.
+
+| Record | Required keys, authority and integrity |
+| --- | --- |
+| `vault_state` | Singleton; vault UUID, `canonicalMetadataV1`, supported payload versions, opaque vault-metadata revision and bounded optional extension payload; UUID/capability agree with manifest |
+| `sources` | Stable source UUID PK; opaque revision; versioned metadata payload excluding relational/lifecycle fields; imported or linked ownership kind; optional controlled blob path/checksum/size or linked bookmark/reference; active/trashed state and nullable removal date. Imported bytes must match checksum/size before references publish; linked bytes remain externally owned |
+| `page_sources` | Composite PK `(page_id,source_id)` and FKs to pages/sources; an explicit contiguous order preserves the supported source UUID sequence during migration and `NoteRecord` reconstruction. This becomes the sole source-link authority; `NoteRecord.sourceIDs` is reconstructed, not independently written |
+| `tombstones` | Stable entity UUID plus typed kind PK; last revision, deletion time and disposition. Logical deletion preserves page/source rows and references; purge writes the tombstone and removes or dispositions relationships in the same transaction. IDs are never reused |
+| `conflicts` | Stable conflict UUID PK; typed target UUID, captured/base revision, versioned preserved payload or checksum-verified controlled payload reference, creation time, disposition and opaque record revision. Disposition never deletes unique bytes implicitly; a target may be tombstoned |
+
+Keep page Trash authority in `pages.trashed/trashed_at`; source Trash is in `sources`.
+Do not add a competing generic Trash copy. Source FK deletion is RESTRICT until the
+compound operation handles links; page-link deletion may CASCADE on an authorized
+page purge. Logical Trash retains links, content and unavailable-source identity.
+Existing dangling source IDs migrate to explicit unavailable source identity records
+with no invented blob/checksum/bookmark; preserve order and missing/tombstoned state.
+New live relationship targets must exist; preserved conflict/tombstone target IDs may refer to removed
+entities and must be validated by typed disposition rules rather than a misleading
+unconditional live-row FK. Retention grace dates migrate without inventing a deletion
+time. Import existing file-only page Trash as retained pages only after collision and
+identity review; conflicting IDs become preserved conflicts, never overwrites.
+
+Semantic designations/status/provenance remain block/source payload content.
+Do not add an ontology, universal entity catalog, canonical FTS or embeddings tables.
+Future stable semantic references and annotations use the versioned extension
+contract in [block editor](block-editor.md); adding their relational projection needs
+a consumer and an explicit payload/schema version. Unknown optional JSON must survive
+unchanged writes via bounded opaque extension preservation, while unsupported required
+features reject writable access. Current Codable ignores unknown object keys; its
+string-valued `extra` and string-backed kinds alone do not satisfy that future guarantee.
+
+### Domain APIs and commit outcomes (STOR.02 handoff)
+
+`VaultRepository` / `FileVaultRepository` retain domain semantics, identity, conflict
+policy and format coordination. `BlockStore` retains opaque snapshots and
+create-only/expected-revision writes. `SQLiteBlockStore` owns connections, SQL and
+transactions; consumers and `EditorSession` must never depend on table layouts.
+The editor owns the mutable document, selection, undo, dirty state and captured
+revision. Leases, lock admission, quiescence, stale completion and recovery remain
+the existing session infrastructure.
+
+Extend `VaultStorageProvider` with policy-selected SQLite construction bound to the
+validated root/manifest/gate/lease, including explicit staging context; route repository
+and migration construction through that policy. Do not introduce a second storage
+selector or general-purpose database abstraction. Byte-store selection remains
+separate from actor-owned SQL writes; ordinary adapter replacement never writes a live DB.
+
+Only three narrow compound persistence contracts are currently justified. Names are
+provisional; STOR.02 must settle typed Swift signatures and errors before implementation:
+
+| Proposed operation | Inputs and revision conditions | Publication/result |
+| --- | --- | --- |
+| `publishSourceAndPage` | Source create-only or expected source revision, verified immutable-blob receipt (or linked reference), optional page create-only/expected page revision, document and relationship set, operation UUID, current publication validation | One SQL transaction publishes source metadata, optional page/document and links; returns committed source/page snapshots and operation UUID |
+| `transitionTrash` | Typed page/source identity, expected entity revision and expected affected relationship revisions, trash/restore/purge disposition and preservation receipt if needed | One SQL transaction publishes state/retention/tombstone/link changes; returns committed revisions. Physical byte cleanup follows only authorized durable disposition |
+| `disposeConflict` | Conflict UUID/expected conflict revision, chosen disposition, expected target revision when publishing content, preserved payload receipt | One SQL transaction publishes target plus conflict disposition; returns committed target/conflict evidence and keeps unselected unique content recoverable |
+
+Page-source mutations advance and compare the owning page revision; source changes
+compare source revisions. Collection membership changes also compare/advance the
+vault-state revision, so migration/archive captures can detect insertions and purges.
+An expected relationship revision means its owning page revision, not a separate
+independently writable relationship token.
+
+Every compound operation validates revisions and the live session publication
+predicate inside the actor transaction and again before COMMIT. Stale revision,
+duplicate identity, unsupported capability/payload, missing/corrupt blob, lost lease,
+SQL failure or precommit cancellation yields no metadata/document publication.
+A successful COMMIT is the durable success boundary. Cancellation arriving afterward
+must return or allow lookup of committed outcome by operation UUID; it must not
+report a rollback or retry as a new create. An uncertain return preserves the draft
+and reconciles against committed revision/operation evidence. The existing store
+returns after COMMIT without a postcommit cancellation check; new compound APIs must
+keep that distinction. Checkpoint failure aborts lock; retirement follows successful
+quiescence. Never manually unlink active WAL/SHM.
+
+### Source bytes, interruption and cleanup
+
+Existing `stageSource` writes original plus metadata into `Sources/.import-<UUID>/`
+and conditionally moves the complete directory; failures preserve staging. It does
+not transact with SQLite or establish file/directory power-loss synchronization.
+The expanded-authority import protocol must add recoverable publication:
+
+1. Stage under an operation-owned UUID location through the selected byte store;
+   record ownership, source identity and intended destination without persisting a session-access lease.
+2. Validate regular-file containment/no symlinks, exact bytes, size, checksum and
+   metadata identity; linked originals require scoped read evidence, never copying authority.
+3. Flush staged payloads with an appropriate file synchronization primitive, publish
+   create-only immutable bytes, and synchronize affected parent directory entries.
+   STOR.02 must document supported filesystem/OS durability assumptions and test
+   injected flush/rename failure; atomic rename alone is insufficient evidence.
+4. Commit source/page/link metadata using the verified receipt and captured revisions.
+   A reference must never acknowledge bytes whose durable publication is unproven.
+5. Reconcile interruption: prepublication staging, published-but-unreferenced bytes
+   and ambiguous receipts are retained preservation data. Committed references must
+   be reverified; missing/corrupt bytes surface a repair issue without erasing identity.
+6. Cleanup requires explicit authorization, exact owned snapshot, proven obsolete
+   disposition and no live/conflict/Trash/draft reference. A prefix, age or orphan
+   label alone never proves unique content disposable. Failed cleanup retains evidence.
+
+Logical deletion commits recoverable lifecycle state before physical deletion. An
+imported original is never removed while it is the only recoverable referenced copy;
+linked external originals are never deleted. Conflicts, damaged drafts, interrupted
+migration and ambiguous staging retain their existing preservation classification.
+
+### Complete archive contract (proposed archive version 1)
+
+Keep [MarkdownInteroperability](../../Sources/VaultCore/MarkdownInteroperability.swift)
+for Noema/readable export and explicit create-only or revision-checked import. A live
+page Markdown bundle and a SQLite backup snapshot each omit parts of the vault.
+A complete archive is a separate versioned package with an independently readable
+integrity manifest, vault UUID, manifest authority/capabilities, SQL/payload versions,
+all active and trashed pages/blocks, source metadata and included owned originals,
+page-source relationships, tombstones, conflict payloads/disposition, required
+semantic metadata and provenance. Inventory every entry with relative path, type,
+byte length and checksum; forbid duplicate/escaping paths and ambiguous ownership.
+Declare externally linked originals individually as external/not included; never
+claim them backed up merely because bookmarks were archived.
+
+Acquire repository save/import/retention quiescence, capture one committed SQLite
+backup plus an exact file inventory, and verify bytes/metadata/revision sets before
+publishing archive success. Reject or retry any intervening mutation; a DB snapshot
+alone cannot establish source-file consistency. Declare the separate draft boundary:
+either include lease-validated recovery snapshots under a distinct preservation
+namespace, or list drafts as excluded with vault identity, capture time and an explicit
+warning that unsaved edits are outside archive consistency. Include unresolved unique
+staging/conflicts as preservation entries, or declare their exclusion; an archive
+with exclusions must not claim preservation completeness.
+
+Verification independently checks checksums, supported versions/capabilities,
+manifest/database UUID agreement, foreign keys, block reconstruction, identities and
+all included blob references. Restore into a new empty local staging root, verify it,
+and publish create-only; never overwrite an existing vault, silently merge identities,
+reimport Markdown over DB pages or discard unsupported payloads. Archive import may
+require an explicit supported migration; unsupported required content remains retained
+and read-only. No archive runtime or reverse migration is implemented by STOR.01.
+
+### Locality and future protection
+
+Current `requireLocalRoot` rejects non-file URLs, resolved symlink differences,
+nonlocal/unverified volume state, ubiquitous ancestors and known cloud folder names
+(`CloudStorage`, `Mobile Documents`, iCloud Drive, Dropbox, OneDrive, Google Drive,
+Box). Published DB inspection requires a regular nonsymlink nonubiquitous file.
+These metadata/name checks do not universally detect arbitrary synchronizers or
+provider-managed roots with ordinary names. STOR.02 must reuse and strengthen
+admission when trustworthy provider/volume evidence exists, fail closed on unavailable
+locality evidence, and document the remaining discovery limit. A user-selected path
+or manifest `localOnly` flag is not proof. Recheck at staging/publication/open; never
+synchronize live DB/WAL/SHM through file-copy services.
+
+The [classification policy](#classification-and-lifecycle-policy) remains the E-series
+protection inventory: DB/WAL/SHM and temporary SQL data; source originals/staging;
+manifest identity/metadata; drafts, conflicts and Trash; derived indexes/embeddings;
+previews and temporary copies; backups/archives; recovery/key-management material.
+Adapter plaintext routing alone cannot encrypt live SQLite. Key lifecycle, encrypted
+SQL construction and opt-in format migration require separate reviewed design.
+Native authentication/session locking grant no at-rest encryption, secure erasure
+or iCloud-delivery guarantee. Device, accessibility and crash-durability acceptance
+remain open under [validation](../validation.md).
 
 ## Permitted I/O exceptions
 
@@ -88,7 +362,7 @@ plaintext after locking. Filesystem, provider and OS access are separate boundar
 
 | Surface and source owner | Location/content | Retention, access and disposal |
 | --- | --- | --- |
-| `FileVaultRepository` / `VaultContentStore` authoritative content | `vault.json`, `Wiki/*.md`, `Sources/<UUID>/metadata.json` and imported `original.*`; titles, bodies, source paths/bookmarks, classifications, summaries and provenance | Retained across lock/close/switch/relaunch. Admission inspection reads manifest identity before authentication; protected content operations require the selected lease. User edits/deletion use existing conditional adapter operations. |
+| `FileVaultRepository` / selected stores authoritative content | `vault.json`; format 1 `Wiki/*.md` or format 2 `blocks.sqlite` plus SQLite-managed WAL/SHM; `Sources/<UUID>/metadata.json` and imported `original.*`; titles, bodies, source paths/bookmarks, classifications, summaries and provenance | Retained across lock/close/switch/relaunch. Admission inspection reads manifest identity before authentication; protected content operations require the selected lease. User edits/deletion use existing conditional adapter operations. |
 | Repository preservation and retention | `Removed Pages/`, legacy `.Trash`, `Conflicts/`, `Trash Retention.json`; removed content, competing edits, imported originals and timestamps | Conflicts survive until explicit disposition; preserve OS conflict copies before resolving versions. Existing Trash expiry is 15 days, with undated grace and snapshot/error preservation. Linked originals are never deleted. |
 | Repository import staging | `Sources/.import-<UUID>/`; original bytes and metadata before publication | Adapter-owned, lease-checked staging. Failed publication deliberately retains it. Explicit staging cleanup uses exact snapshots; no new age-based deletion policy is implied. |
 | `VaultCreation` | Selected external parent `/.noema-create-<UUID>/`; partial or initialized vault | Same-parent publication refuses an occupied destination. Failure cleanup removes only positively empty owned staging; nonempty or unreadable staging is preserved with its location reported. Published vaults survive subsequent open/authentication failure. No startup sweep is implied. Contents still use the selected adapter. |
