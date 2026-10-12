@@ -14,8 +14,8 @@ when older D-series or EDT.BLK proposals disagree with this baseline.
 | Source metadata, originals and page references | `Sources/<UUID>/metadata.json` and checksum-verified bytes through `VaultContentStore`; ordered source UUID references are in canonical page metadata. Implemented but limited: separate stores have no compound transaction. | STOR.02 moves structured source metadata and relationships to SQLite only after explicit authority transition; imported originals remain controlled immutable blobs, linked originals externally owned. |
 | Conflicts, source Trash and retained legacy page Trash | Repository-owned file preservation and retention ledger. Implemented but limited; SQLite page Trash does not make all preservation metadata database-owned. | Canonical logical Trash, tombstones and conflict disposition become SQLite-owned; unique preserved bytes remain recoverable. |
 | Creation and conversion | `VaultCreation` creates Markdown format 1; `SQLiteVaultMigration` implements explicit verified manifest-last page conversion. | STOR.02 changes the eligible local creation default; existing vaults never convert on open. STOR.03 supplies explicit expanded-authority migration and complete restoration verification. |
-| Document compatibility | `BlockDocument`/codec retain supported kinds, runs, tree, semantic extension map, source spellings and recovery payload. Implemented but limited: Codable does not preserve arbitrary unknown JSON keys. | Versioned opaque optional extensions and required-feature rejection are specified in [block-editor.md](contracts/block-editor.md); preservation-only reads grant no save authority. |
-| Complete archive and annotations | Live-page Markdown export and SQLite backup exist; neither is a complete archive. Complete archive and stable inline annotation contracts are documented only; runtime implementations are missing. | STOR.03 owns complete archive/restore; annotations remain a deferred extension, independent of formatting-run identity. |
+| Document compatibility | `BlockDocument`/codec retain supported kinds, runs, tree, semantic extension map, source spellings and recovery payload. Bounded opaque optional JSON now round-trips in domain scopes; expanded writable payloads require explicit schema 3. Production schema-3 admission remains closed. | Versioned opaque optional extensions and required-feature rejection are specified in [block-editor.md](contracts/block-editor.md); preservation-only reads grant no save authority. |
+| Complete archive and annotations | Live-page Markdown export and SQLite backup exist; neither is a complete archive. Complete archive remains unimplemented; inline annotation domain records and conservative persistence invalidation exist in the explicit staging foundation. | STOR.03 owns complete archive/restore; annotations remain a deferred extension, independent of formatting-run identity. |
 | Search, activity and drafts | App-local `SQLiteSearchIndex`, metadata-only `SQLiteAIActivityStore`, and preservation-only `RecoveryStore`. Implemented with different lifecycle rules. | Search/embeddings remain rebuildable; activity is independent history; drafts retain separate preservation authority until explicit commitment/discard. |
 | Older “v1 only”, file-only canonical authority and hypothetical SQLite proposals | Contradictory or superseded by format-2 code and SQLite tests at this baseline. | Replace with the present authority map; E-series encryption and device/crash acceptance remain future gates. |
 
@@ -28,6 +28,13 @@ The [canonical storage decision](decisions/0001-canonical-sqlite-authority.md) a
 [versioned ownership contract](contracts/storage-boundary.md) specify the exact
 discriminator, integrity rules and explicit migration gate. No runtime
 schema, manifest, migration or creation default changes occur in STOR.01.
+
+STOR02A adds an internal explicit schema-3 staging foundation and bounded
+versioned JSON preservation in the existing domain/store. Its compound source/page
+API currently admits unavailable source identities only. Production expanded
+admission stays closed until receipt-backed imported/linked publication and all
+metadata lifecycle paths are integrated; existing format 1/2 behavior and creation
+defaults remain unchanged. See the [current foundation and remaining gates](contracts/storage-boundary.md#explicit-staging-foundation-stor02a).
 
 ## Where things live
 

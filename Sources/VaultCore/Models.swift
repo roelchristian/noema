@@ -40,6 +40,8 @@ public struct NoteRecord: Codable, Identifiable, Sendable, Equatable {
     public var sourceIDs: [UUID]? = nil
     public var linkedSourceIDs: [UUID] { sourceIDs ?? [] }
     public var originalHeader: String?
+    public var extensions: PersistencePayload? = nil
+    public var unknownFields: [String: JSONValue] = [:]
     public var allTags: [String] { Array(Set(tags + inlineTags)).sorted() }
 }
 /// Portable generation facts for an accepted AI artifact; no request authority or secret.

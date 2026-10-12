@@ -222,6 +222,19 @@ public actor SQLiteBlockStore: BlockStore {
         var originalMarkdown: String?; var originalSignature: String?; var originalIndentation: String?; var originalDepth: Int?
         var extensions: PersistencePayload?; var unknownFields: [String: JSONValue]?
         init(_ block: EditorBlock) { originalMarkdown = block.originalMarkdown; originalSignature = block.originalSignature; originalIndentation = block.originalIndentation; originalDepth = block.originalDepth; extensions = block.extensions; unknownFields = block.unknownFields.isEmpty ? nil : block.unknownFields }
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: PersistenceCodingKey.self)
+            let supported: Set<String> = ["originalMarkdown", "originalSignature", "originalIndentation", "originalDepth", "extensions", "unknownFields"]
+            guard values.allKeys.allSatisfy({ supported.contains($0.stringValue) }) else {
+                throw VaultError.invalid("Unsupported SQLite block preservation wrapper.")
+            }
+            originalMarkdown = try values.decodeIfPresent(String.self, forKey: .init("originalMarkdown"))
+            originalSignature = try values.decodeIfPresent(String.self, forKey: .init("originalSignature"))
+            originalIndentation = try values.decodeIfPresent(String.self, forKey: .init("originalIndentation"))
+            originalDepth = try values.decodeIfPresent(Int.self, forKey: .init("originalDepth"))
+            extensions = try values.decodeIfPresent(PersistencePayload.self, forKey: .init("extensions"))
+            unknownFields = try values.decodeIfPresent([String: JSONValue].self, forKey: .init("unknownFields"))
+        }
     }
     private struct Row: Equatable { var block: EditorBlock; var parent: UUID?; var order: Int }
     private func rows(_ document: BlockDocument) -> [UUID: Row] {
@@ -543,6 +556,9 @@ public actor SQLiteBlockStore: BlockStore {
             case .page:
                 let current = try loadDocument(pageID: id)
                 guard current.revision == expected else { throw VaultError.conflict("Page revision changed.") }
+                if case .array(let records) = current.document.extensions?.properties["annotations"], !records.isEmpty {
+                    throw VaultError.invalid("Annotated page purge requires an explicit preservation operation.")
+                }
                 let statement = try statement("SELECT trashed FROM pages WHERE id=?", [.text(id.uuidString)]); defer { sqlite3_finalize(statement) }
                 guard sqlite3_step(statement) == SQLITE_ROW, sqlite3_column_int(statement, 0) == 1 else { throw VaultError.invalid("Only a trashed page can be purged.") }
             case .source:

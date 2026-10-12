@@ -78,6 +78,36 @@ See [SQLiteBlockStoreTests](../../Tests/VaultCoreTests/SQLiteBlockStoreTests.swi
 for affected-row, rollback, coherent-snapshot, corruption, upgrade, cancellation and
 WAL-backup scenarios; these tests do not establish arbitrary power-loss behavior.
 
+### Explicit staging foundation (STOR02A)
+
+`SQLiteBlockStore.expandedSchemaVersion` is 3. Internal explicit staging
+construction creates a fresh database with `vault_state`, `sources`, ordered
+`page_sources`, `tombstones`, `conflicts` and committed-operation evidence.
+Existing schema 1/2 construction retains page-only authority and never upgrades
+to schema 3 on open. Opening an existing expanded database verifies its UUID,
+capability and payload version before WAL configuration. SQLite construction is
+routed through `VaultStorageProvider` for repository and conversion paths.
+
+The available compound `publishSourceAndPage` API admits unavailable source
+identities, checks source/page/collection revisions and records the operation UUID
+in the same transaction. Page source lists are reconstructed from ordered FK
+relationships, not duplicated in page metadata. Logical source Trash retains
+relationships; explicit purge requires Trash and records a tombstone, while source
+FK restriction rejects a referenced purge. Tombstoned identities cannot be reused. Annotated page purge rejects until an
+explicit annotation preservation operation exists; unknown SQL preservation-wrapper
+keys reject reconstruction rather than being discarded.
+Imported and linked source publication reject pending durable/scoped byte receipts;
+conflict records have no publication/disposition API yet.
+
+This is a partial persistence foundation. Production repository admission of the
+schema-3 manifest remains closed: source/Trash/conflict routing, recoverable byte
+publication, explicit verified authority-changing migration and complete lifecycle
+integration are prerequisites. No schema-3 manifest is published, default creation
+remains Markdown, and STOR02B normal-vault admission is not authorized. Fresh
+staging initialization uses transactional incremental DDL; interruption may leave
+page-only staging that must be retained and explicitly reconciled, never admitted
+as expanded authority. Process/power-loss acceptance remains outstanding.
+
 ### Required authority discriminator and explicit upgrade
 
 The minimum future expanded-authority baseline is SQL schema 3. Retain manifest

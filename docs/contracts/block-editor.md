@@ -194,6 +194,25 @@ copy never grants save authority. Older clients must be excluded by the durable
 manifest/schema capability gate before they can destructively rewrite newer
 payloads. No duplicate serialized block-content store is added for this purpose.
 
+### Persistence extension foundation (STOR02A)
+
+`PersistencePayload` carries version 1, required features and typed optional JSON
+properties at document, block, metadata, run/style and page-metadata scopes.
+Unrecognized direct fields also round-trip at these scopes. Admission bounds each
+optional scope to 256 KiB and nesting depth 32; collisions and unknown required
+features reject. Schema 2 rejects new versioned extension writes; explicit schema 3
+validates supported block kinds and payload semantics before publication. Unknown
+kinds remain preservation values and cannot obtain schema-3 write authority.
+
+`TypedEntityReference` identifies origin/target by typed UUID. Document extension
+annotations use stable IDs and version-1 UTF-16 half-open grapheme-boundary targets,
+quoted text, context and revision digest. Bare replacements conservatively retain
+anchors as stale, missing blocks as deleted; exact unchanged text retains anchors.
+This foundation has no annotation UI or semantic target resolver. Dedicated edit
+transformations for split/merge/edge insertions and duplicate identity/provenance
+remain required before annotation-aware editing; callers must retain unresolved
+records. Future annotation consumers must satisfy the transformation rules below.
+
 ### Deferred inline annotation contract
 
 Annotations are semantic records separate from formatting runs. Splitting/coalescing

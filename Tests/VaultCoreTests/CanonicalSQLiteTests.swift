@@ -274,3 +274,15 @@ private final class CanonicalPublicationProbe: @unchecked Sendable {
     #expect(try canonicalSQLInteger(url, "SELECT count(*) FROM sqlite_master WHERE name IN ('pages','blocks','sources','vault_state')") == 0)
     #expect(try canonicalSQLInteger(url, "SELECT count(*) FROM conflicts WHERE preserved='unique old bytes'") == 1)
 }
+
+@Test func canonicalSQLiteRejectsUnknownSQLPreservationWrapperWithoutRewriting() async throws {
+    let root = try canonicalTestRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("blocks.sqlite")
+    let store = try SQLiteBlockStore(canonicalStagingURL: url, vaultID: UUID())
+    let saved = try await store.save(BlockDocument(blocks: [EditorBlock(runs: [RichRun("preserved")])]), pageID: UUID(), condition: .createOnly)
+    try canonicalSQL(url, "UPDATE blocks SET extensions=CAST('{\"futureWrapper\":true}' AS BLOB)")
+    await #expect(throws: VaultError.self) { try await store.load(pageID: saved.pageID) }
+    #expect(try canonicalSQLInteger(url, "SELECT count(*) FROM blocks WHERE CAST(extensions AS TEXT)='{\"futureWrapper\":true}'") == 1)
+    try await store.close()
+}

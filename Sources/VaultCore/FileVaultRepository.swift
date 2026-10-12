@@ -222,7 +222,7 @@ public actor FileVaultRepository: VaultRepository {
             guard let sessionLease, let accessGate else {
                 throw VaultAccessError.missingLease(operation: "blockStore.open")
             }
-            blocks = try SQLiteBlockStore(url: database, sessionLease: sessionLease, accessGate: accessGate, createIfMissing: false)
+            blocks = try storageProvider.makeBlockStore(url: database, sessionLease: sessionLease, accessGate: accessGate, createIfMissing: false)
         } else { blocks = nil }
         return FileVaultRepository(
             root: root,
