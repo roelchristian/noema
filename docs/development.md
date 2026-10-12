@@ -41,9 +41,10 @@ Each added test must demonstrate a distinct regression risk, boundary condition 
 contract. Extend an existing happy path when it already covers that risk. Reductions
 need evidence of equivalent retained assertions; moving an exhaustive matrix into
 specialised validation is different from deleting coverage. Protect transactional
-integrity, revision conflicts, source-byte preservation, migration rollback, recovery
-drafts, authentication, AI submission consent and stale-result rejection. Markdown
-tests remain required while Markdown storage and migration obligations are supported.
+integrity, revision conflicts, source-byte preservation, transaction rollback, recovery
+drafts, authentication, AI submission consent and stale-result rejection. Markdown codecs and explicit import/export remain tested. Tests solely for retired
+Markdown vault authority or historical schema upgrades are removed; canonical
+schema-5 fixtures retain current revision, lifecycle, access and preservation checks.
 
 ## Test inventory and timing
 

@@ -19,7 +19,7 @@ struct AIActivityIntegrationTests {
                                     beginGate: ActivityInferenceGate? = nil) async throws -> ActivityFixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-activity-integration-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         let note = try await repository.create(title: "Fixture", body: "Private model input never stored in history")
         let store = try SQLiteAIActivityStore(url: root.appendingPathComponent("activity.sqlite"))
         let recordingStore: any AIActivityStore

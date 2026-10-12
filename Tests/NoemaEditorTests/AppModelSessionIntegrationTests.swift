@@ -8,11 +8,11 @@ import Testing
 extension VaultUIIntegrationTests {
 @Suite(.serialized)
 struct AppModelSessionIntegrationTests {
-    private func makeTempVault(name: String = "Vault") throws -> URL {
+    private func makeTempVault(name: String = "Vault") async throws -> URL {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("noema-d02-5-\(UUID().uuidString)", isDirectory: true)
         let root = base.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        _ = try FileVaultRepository.open(root: root, create: true)
+        _ = try await openCanonicalAppFixture(root: root, create: true)
         return root
     }
 
@@ -48,10 +48,10 @@ struct AppModelSessionIntegrationTests {
             SourceReader.closeAll()
             try? FileManager.default.removeItem(at: base)
         }
-        let repoA = try FileVaultRepository.open(root: rootA, create: true)
+        let repoA = try await openCanonicalAppFixture(root: rootA, create: true)
         let pageA = try await repoA.create(title: "Page A", body: "See [[Target A]].")
         let targetA = try await repoA.create(title: "Target A", body: "See [[Page A]].")
-        let repoB = try FileVaultRepository.open(root: rootB, create: true)
+        let repoB = try await openCanonicalAppFixture(root: rootB, create: true)
         let pageB = try await repoB.create(title: "Page B", body: "See [[Only In B]].")
 
         let model = AppModel()
@@ -89,7 +89,7 @@ struct AppModelSessionIntegrationTests {
         defer { try? FileManager.default.removeItem(at: base) }
         let root = base.appendingPathComponent("Vault")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         let local = base.appendingPathComponent("Local")
         let draftsDirectory = local.appendingPathComponent("KnowledgeVault/\(repository.manifest.id.uuidString)/Drafts")
         let fixture = try RecoveryStore(unguardedTestingDirectory: draftsDirectory)
@@ -154,13 +154,13 @@ struct AppModelSessionIntegrationTests {
     }
 
     @Test @MainActor func appModelObservesSessionStateAndPurgesAllContentEditorSearchAndPreviewStateOnLock() async throws {
-        let root = try makeTempVault(name: "AtlasVault")
+        let root = try await makeTempVault(name: "AtlasVault")
         defer {
             try? FileManager.default.removeItem(at: root.deletingLastPathComponent())
             SourceReader.closeAll()
         }
 
-        let repo = try FileVaultRepository.open(root: root)
+        let repo = try await openCanonicalAppFixture(root: root)
         var blockDoc = BlockDocument()
         var metadata = BlockMetadata()
         metadata.semantic = "claim"
@@ -301,13 +301,13 @@ struct AppModelSessionIntegrationTests {
     }
 
     @Test @MainActor func centralSessionStateObservationClearsAppModelAndSecondaryWindowsOnDirectSessionTransitions() async throws {
-        let root = try makeTempVault(name: "ObservedVault")
+        let root = try await makeTempVault(name: "ObservedVault")
         defer {
             try? FileManager.default.removeItem(at: root.deletingLastPathComponent())
             SourceReader.closeAll()
         }
 
-        let repo = try FileVaultRepository.open(root: root)
+        let repo = try await openCanonicalAppFixture(root: root)
         let note = try await repo.create(title: "Observed Page", body: "Observed body content")
         let source = try await repo.importSource(
             data: Data("Observed source bytes".utf8),
@@ -358,13 +358,13 @@ struct AppModelSessionIntegrationTests {
     }
 
     @Test @MainActor func unlockReacquiresAccessAndHandlesMissingICloudOrPermissionErrors() async throws {
-        let root = try makeTempVault(name: "UnlockResilienceVault")
+        let root = try await makeTempVault(name: "UnlockResilienceVault")
         defer {
             try? FileManager.default.removeItem(at: root.deletingLastPathComponent())
             SourceReader.closeAll()
         }
 
-        let repo = try FileVaultRepository.open(root: root)
+        let repo = try await openCanonicalAppFixture(root: root)
         let note = try await repo.create(title: "Resilient Note", body: "Content preserved across lock/unlock")
 
         let simulateICloudUnavailable = LockFlag(false)
@@ -426,8 +426,8 @@ struct AppModelSessionIntegrationTests {
     }
 
     @Test @MainActor func reopenUnavailableVaultAndSwitchBetweenVaultsFromOpenAndLockedStatesWithoutCrossContamination() async throws {
-        let rootA = try makeTempVault(name: "VaultAlpha")
-        let rootB = try makeTempVault(name: "VaultBeta")
+        let rootA = try await makeTempVault(name: "VaultAlpha")
+        let rootB = try await makeTempVault(name: "VaultBeta")
         let invalidRoot = rootA.deletingLastPathComponent().appendingPathComponent("InvalidVault", isDirectory: true)
         try FileManager.default.createDirectory(at: invalidRoot, withIntermediateDirectories: true)
         let unsupportedRoot = rootA.deletingLastPathComponent().appendingPathComponent("UnsupportedVault", isDirectory: true)
@@ -435,7 +435,7 @@ struct AppModelSessionIntegrationTests {
         try Data(#"{"id":"00000000-0000-0000-0000-000000000099","formatVersion":99,"createdAt":"2026-10-12T00:00:00Z"}"#.utf8)
             .write(to: unsupportedRoot.appendingPathComponent("vault.json"), options: .atomic)
         let missingRoot = rootA.deletingLastPathComponent().appendingPathComponent("MissingVault", isDirectory: true)
-        let unhydratedRoot = try makeTempVault(name: "UnhydratedVault")
+        let unhydratedRoot = try await makeTempVault(name: "UnhydratedVault")
         defer {
             try? FileManager.default.removeItem(at: rootA.deletingLastPathComponent())
             try? FileManager.default.removeItem(at: rootB.deletingLastPathComponent())
@@ -443,11 +443,11 @@ struct AppModelSessionIntegrationTests {
             SourceReader.closeAll()
         }
 
-        let repoA = try FileVaultRepository.open(root: rootA)
+        let repoA = try await openCanonicalAppFixture(root: rootA)
         let noteA = try await repoA.create(title: "Alpha Only Page", body: "Alpha body")
         let sourceA = try await repoA.importSource(data: Data("Alpha source".utf8), filename: "alpha.txt", title: "Alpha Source", originURL: nil)
 
-        let repoB = try FileVaultRepository.open(root: rootB)
+        let repoB = try await openCanonicalAppFixture(root: rootB)
         let noteB = try await repoB.create(title: "Beta Only Page", body: "Beta body")
 
         let normalizedUnhydrated = unhydratedRoot.standardizedFileURL.resolvingSymlinksInPath()
@@ -561,9 +561,9 @@ struct AppModelSessionIntegrationTests {
     }
 
     @Test @MainActor func rejectedConcurrentCloseAndUnlockRetainOpenResourcesUntilLockCommits() async throws {
-        let root = try makeTempVault(name: "RejectedTransitions")
+        let root = try await makeTempVault(name: "RejectedTransitions")
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        let repo = try FileVaultRepository.open(root: root)
+        let repo = try await openCanonicalAppFixture(root: root)
         let note = try await repo.create(title: "Retained", body: "Recoverable content")
         let model = AppModel()
         model.localStorageRoot = root.deletingLastPathComponent()
@@ -595,7 +595,7 @@ struct AppModelSessionIntegrationTests {
 
     @Test(arguments: [false, true]) @MainActor
     func cancelledCloseReportsTypedFailureAndRetainsResources(force: Bool) async throws {
-        let root = try makeTempVault(name: "CancelledClose")
+        let root = try await makeTempVault(name: "CancelledClose")
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         let model = AppModel()
         model.localStorageRoot = root.deletingLastPathComponent()
@@ -619,7 +619,7 @@ struct AppModelSessionIntegrationTests {
     }
 
     @Test @MainActor func overlappingModelLockCloseAndUnlockCannotReportFalseSuccess() async throws {
-        let root = try makeTempVault(name: "OverlappingActions")
+        let root = try await makeTempVault(name: "OverlappingActions")
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         let model = AppModel()
         model.localStorageRoot = root.deletingLastPathComponent()
@@ -641,7 +641,7 @@ struct AppModelSessionIntegrationTests {
 
     @Test(arguments: [false, true], [false, true]) @MainActor
     func initializationFailureReportsRejectedCleanupAndUsesOnlyCentralFallbackState(unlocking: Bool, concurrentLock: Bool) async throws {
-        let root = try makeTempVault(name: "InitializationFailure")
+        let root = try await makeTempVault(name: "InitializationFailure")
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         let model = AppModel()
         model.localStorageRoot = root.deletingLastPathComponent()
@@ -704,14 +704,13 @@ struct AppModelSessionIntegrationTests {
 
     @Test(arguments: [false, true]) @MainActor
     func failedDerivedIndexInitializationPreservesCanonicalBytesAndRetriesLifecycle(unlocking: Bool) async throws {
-        let root = try makeTempVault(name: "IndexInitializationRetry")
+        let root = try await makeTempVault(name: "IndexInitializationRetry")
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        let repo = try FileVaultRepository.open(root: root)
+        let repo = try await openCanonicalAppFixture(root: root)
         let note = try await repo.create(title: "Retained", body: "Canonical content survives derived failures")
         let manifestURL = root.appendingPathComponent("vault.json")
-        let pageURL = root.appendingPathComponent(note.relativePath)
         let manifestBytes = try Data(contentsOf: manifestURL)
-        let pageBytes = try Data(contentsOf: pageURL)
+        let pageBytes = try await canonicalAppPageSnapshot(repo, id: note.id)
         let model = AppModel()
         model.localStorageRoot = root.deletingLastPathComponent()
         model.persistSecurityScopedBookmark = false
@@ -728,19 +727,19 @@ struct AppModelSessionIntegrationTests {
         #expect(model.root == nil && model.index == nil && model.notes.isEmpty)
         #expect(model.errorMessage?.contains("Injected derived index") == true)
         #expect(try Data(contentsOf: manifestURL) == manifestBytes)
-        #expect(try Data(contentsOf: pageURL) == pageBytes)
+        #expect(try await canonicalAppPageSnapshot(repo, id: note.id) == pageBytes)
         model.searchIndexFactory = factory
         if unlocking { try #require(await model.unlockVault()) }
         else { await model.open(root, create: false) }
         #expect(model.isVaultAvailable && model.sessionPhase == .open && model.errorMessage == nil)
         #expect(model.notes.contains { $0.id == note.id && $0.body == note.body })
         #expect(try Data(contentsOf: manifestURL) == manifestBytes)
-        #expect(try Data(contentsOf: pageURL) == pageBytes)
+        #expect(try await canonicalAppPageSnapshot(repo, id: note.id) == pageBytes)
         #expect(await model.closeVault())
     }
 
     @Test @MainActor func endToEndProtectedOperationEntryPointsAndRecoveryAndSourceReaderAreEnforcedAcrossSessionLifecycle() async throws {
-        let root = try makeTempVault(name: "D027ReleaseGateVault")
+        let root = try await makeTempVault(name: "D027ReleaseGateVault")
         let linkedURL = root.deletingLastPathComponent().appendingPathComponent("external-linked.txt")
         try Data("Linked external source body".utf8).write(to: linkedURL, options: .atomic)
         defer {
@@ -748,7 +747,7 @@ struct AppModelSessionIntegrationTests {
             SourceReader.closeAll()
         }
 
-        let repo = try FileVaultRepository.open(root: root)
+        let repo = try await openCanonicalAppFixture(root: root)
         let note = try await repo.create(title: "Protected Page", body: "Sensitive page body for D02.7")
         let importedSource = try await repo.importSource(
             data: Data("Sensitive imported source body".utf8),

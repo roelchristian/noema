@@ -19,12 +19,9 @@ private func temporaryFolder() throws -> URL {
     #expect(decoded.lcc == "DG270")
 
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
-    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
     var source = try await repo.importSource(data: Data(" Ruth text ".utf8), filename: "ruth.txt", title: "Ruth", originURL: nil)
-    let metaURL = folder.appendingPathComponent("Sources/\(source.id.uuidString.lowercased())/metadata.json")
-    var meta = try JSONDecoder().decode(SourceMetadata.self, from: Data(contentsOf: metaURL))
-    meta.lcc = "BS1315"
-    try JSONEncoder().encode(meta).write(to: metaURL, options: .atomic)
+    source = try await repo.updateSourceLCC(source, lcc: "BS1315")
     let scanned = try await repo.scan()
     source = try #require(scanned.sources.first)
     #expect(source.metadata.lcc == "BS1315")
@@ -34,13 +31,11 @@ private func temporaryFolder() throws -> URL {
 
 @Test func conflictsPreserveBothVersionsAndTrashRejectsStaleData() async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
-    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
     let note = try await repo.create(title: "Conflict", body: "Original")
-    let url = folder.appendingPathComponent(note.relativePath)
-    var external = note; external.body = "External edit"
-    let diskData = try NoteCodec.encode(external); try diskData.write(to: url, options: .atomic)
+    let external = try await repo.save(note: note, title: note.title, body: "External edit", tags: [])
     await #expect(throws: (any Error).self) { try await repo.save(note: note, title: note.title, body: "My unsaved edit", tags: []) }
-    #expect(try Data(contentsOf: url) == diskData)
+    #expect(try await repo.scan().notes.first?.body == external.body)
     let copies = try FileManager.default.contentsOfDirectory(at: folder.appendingPathComponent("Conflicts"), includingPropertiesForKeys: nil)
     #expect(copies.count == 1)
     #expect(try String(contentsOf: copies[0], encoding: .utf8).contains("My unsaved edit"))
@@ -48,12 +43,12 @@ private func temporaryFolder() throws -> URL {
     let fresh = try await repo.scan().notes[0]
     try await repo.trash(note: fresh)
     #expect(try await repo.scan().notes.isEmpty)
-    #expect(!FileManager.default.fileExists(atPath: url.path))
+    #expect(try await repo.scan().notes.isEmpty)
 }
 
 @Test func searchBacklinksAndRebuild() async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
-    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
     let target = try await repo.create(title: "Pertinax", body: "Historical facts, and what leadership means to me.")
     let renamed = try await repo.save(note: target, title: "My Pertinax page", body: target.body, tags: ["history"])
     let related = try await repo.create(title: "Leadership", body: "I connect [[Pertinax]] with trust. #history")
@@ -80,14 +75,13 @@ private func temporaryFolder() throws -> URL {
 
 @Test func draftsSurviveStoreRecreationAndSaveFailures() async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
-    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
     let note = try await repo.create(title: "Draft", body: "Original")
     let journalURL = folder.appendingPathComponent("LocalDrafts")
     let journal = try RecoveryStore(unguardedTestingDirectory: journalURL)
     try await journal.store(DraftRecord(note: note, title: note.title, body: "Recover me", tags: []))
     // A directory in place of the file reliably simulates a failed disk save.
-    try FileManager.default.removeItem(at: folder.appendingPathComponent(note.relativePath))
-    try FileManager.default.createDirectory(at: folder.appendingPathComponent(note.relativePath), withIntermediateDirectories: true)
+    _ = try await repo.save(note: note, title: note.title, body: "Competing revision", tags: [])
     await #expect(throws: (any Error).self) { try await repo.save(note: note, title: note.title, body: "Recover me", tags: []) }
     let reopened = try RecoveryStore(unguardedTestingDirectory: journalURL)
     #expect(try await reopened.drafts().first?.body == "Recover me")
@@ -98,7 +92,7 @@ private func temporaryFolder() throws -> URL {
 @Test(.enabled(if: ProcessInfo.processInfo.environment["NOEMA_PERFORMANCE_TESTS"] == "1"))
 func benchmarkFiveThousandEntries() async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
-    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
     for i in 0..<5000 {
         let path = "Wiki/Page \(i).md"
         var note = try NoteCodec.decode(Data("## Personal context\n\nKnowledge about leadership and history, entry \(i). [[Page 1]] #history\n".utf8), path: path, vaultID: repo.manifest.id)
@@ -133,7 +127,7 @@ func benchmarkFiveThousandEntries() async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
     let root = folder.appendingPathComponent(".hidden-parent/Vault")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let repo = try FileVaultRepository.open(root: root, create: true)
+    let repo = try await canonicalSchema5TestRepository(root: root, create: true)
     _ = try await repo.create(title: "Visible note", body: "Personal context")
     _ = try await repo.importSource(data: Data("Original text".utf8), filename: "raw.txt", title: "Visible source", originURL: nil)
     let scan = try await repo.scan()
@@ -143,7 +137,7 @@ func benchmarkFiveThousandEntries() async throws {
 
 @Test func pageSourceReferencesAreManyToManyAndStaleSafe() async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
-    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
     let first = try await repo.importSource(data: Data("original one".utf8), filename: "one.txt", title: "One", originURL: nil)
     let second = try await repo.importSource(data: Data("original two".utf8), filename: "two.txt", title: "Two", originURL: nil)
     let a = try await repo.create(title: "A", body: "Unchanged body")
@@ -167,7 +161,7 @@ func benchmarkFiveThousandEntries() async throws {
 
 @Test func creatingPageFromSourcePersistsReferenceAndRejectsRemovedSource() async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
-    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
     let bytes = Data("Source facts".utf8)
     let source = try await repo.importSource(data: bytes, filename: "facts.txt", title: "Facts", originURL: nil)
     let existing = try await repo.create(title: "Facts", body: "Existing page")
@@ -188,7 +182,7 @@ func benchmarkFiveThousandEntries() async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
     let root = folder.appendingPathComponent("Vault")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let repo = try FileVaultRepository.open(root: root, create: true)
+    let repo = try await canonicalSchema5TestRepository(root: root, create: true)
     let note = try await repo.create(title: "Research Note", body: "Initial body")
 
     // 1. Linked cloud/OneDrive file not yet downloaded locally
@@ -237,7 +231,7 @@ func benchmarkFiveThousandEntries() async throws {
 
 @Test func mixedTrashRestoresSourcesAndKeepsLinkedOriginals() async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
-    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
     let external = folder.appendingPathComponent("linked.txt")
     let linkedBytes = Data("Linked original".utf8); try linkedBytes.write(to: external)
     let linked = try await repo.linkSources(at: external, maximumFiles: 1)[0]
@@ -261,7 +255,7 @@ func benchmarkFiveThousandEntries() async throws {
 
 @Test func searchIndexOutgoingLinksPreservesOrderDeduplicatesAndEnforcesSessionLease() async throws {
     let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
-    let repo = try FileVaultRepository.open(root: folder, create: true)
+    let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
     let alpha = try await repo.create(
         title: "Alpha",
         body: "See [[Beta]], then [[Gamma|custom label]], repeated [[beta]], and `[[IgnoredInCode]]` plus [[Unresolved Page]]."
@@ -349,26 +343,6 @@ func unsupportedStorageDeclarationsRejectWithoutMutating(storage: String) throws
     #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["vault.json"])
 }
 
-@Test(arguments: ["", #", "storage":{"mode":"markdown"}"#])
-func legacyManifestAndCanonicalBytesSurviveOpeningAndScanning(storage: String) async throws {
-    let root = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: root) }
-    let vaultID = UUID(), pageID = UUID()
-    let manifest = Data("{\"formatVersion\":1,\"id\":\"\(vaultID.uuidString)\",\"optionalFutureHint\":{\"opaque\":true}\(storage)}".utf8)
-    try manifest.write(to: root.appendingPathComponent("vault.json"))
-    try FileManager.default.createDirectory(at: root.appendingPathComponent("Wiki"), withIntermediateDirectories: false)
-    let page = Data("---\nid: \(pageID.uuidString)\ntitle: Legacy\nfuture_property: opaque\n---\n# Body\n\nUnchanged text.\n".utf8)
-    let pageURL = root.appendingPathComponent("Wiki/Legacy.md")
-    try page.write(to: pageURL)
-    let repository = try FileVaultRepository.open(root: root)
-    let note = try #require(try await repository.scan().notes.first)
-    #expect(repository.manifest.id == vaultID)
-    #expect(note.id == pageID)
-    #expect(BlockDocumentCodec.encode(BlockDocumentCodec.decode(note.body)) == note.body)
-    let encoded = try NoteCodec.encode(note)
-    #expect(String(decoding: encoded, as: UTF8.self).contains("future_property: opaque"))
-    #expect(try Data(contentsOf: pageURL) == page)
-    #expect(try Data(contentsOf: root.appendingPathComponent("vault.json")) == manifest)
-}
 
 @Test(arguments: [2, 99])
 func futureVaultVersionsRejectWithoutMutation(version: Int) throws {
@@ -438,5 +412,5 @@ func damagedManifestRejectionPreservesBytesAndCanRetryAfterRepair(input: String)
     // Repair is explicit test action, never an automatic repository downgrade.
     let id = UUID()
     try JSONEncoder().encode(VaultManifest(id: id)).write(to: url)
-    #expect(try FileVaultRepository.open(root: root).manifest.id == id)
+    #expect(throws: VaultError.self) { try FileVaultRepository.open(root: root) }
 }

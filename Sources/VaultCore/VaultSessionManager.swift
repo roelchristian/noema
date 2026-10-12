@@ -756,7 +756,14 @@ public actor VaultSessionManager {
                 pendingState: pendingState,
                 cancelPreCommitSaves: cancelPreCommitSaves
             )
-            try await repository.checkpointPageStorage()
+            // Checkpoint is part of draining this exact locking session. Keep its
+            // actor access inside the same narrowly registered quiescence authority.
+            let checkpointID = UUID()
+            self.accessGate.registerQuiescenceScope(id: checkpointID, session: session)
+            defer { self.accessGate.unregisterQuiescenceScope(id: checkpointID, sessionID: session.id) }
+            try await VaultLockAdmissionBarrier.$currentOperationID.withValue(checkpointID) {
+                try await repository.checkpointPageStorage()
+            }
             try await teardown(session, report)
             reportBox.withLock { $0 = report }
         }

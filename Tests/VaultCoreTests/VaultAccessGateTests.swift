@@ -4,16 +4,16 @@ import Testing
 @testable import VaultCore
 
 struct VaultAccessGateTests {
-    private func makeTempVault() throws -> URL {
+    private func makeTempVault() async throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("noema-gate-test-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        _ = try FileVaultRepository.open(root: root, create: true)
+        _ = try await canonicalSchema5TestRepository(root: root, create: true)
         return root
     }
 
     @Test func readsAndWritesAreDeniedWhileLockedAndManifestInspectionRemainsOutsideProtectedAPI() async throws {
-        let root = try makeTempVault()
+        let root = try await makeTempVault()
         defer { try? FileManager.default.removeItem(at: root) }
 
         let manager = VaultSessionManager()
@@ -44,7 +44,7 @@ struct VaultAccessGateTests {
 
         // Direct protected VaultContentStore reads and writes are denied while locked.
         let gatedStore = try #require(repo.contentStore as? GatedVaultContentStore)
-        #expect(throws: VaultAccessError.sessionLocked(vaultID: session.vaultID, root: session.root, operation: "read Wiki/Protected Page.md")) {
+        #expect(throws: VaultAccessError.sessionLocked(vaultID: session.vaultID, root: session.root, operation: "read " + note.relativePath)) {
             _ = try gatedStore.read(at: note.relativePath)
         }
         #expect(throws: VaultAccessError.sessionLocked(vaultID: session.vaultID, root: session.root, operation: "read vault.json")) {
@@ -96,8 +96,8 @@ struct VaultAccessGateTests {
     }
 
     @Test func staleSessionTokensAreRejectedAfterUnlockAndVaultSwitch() async throws {
-        let rootA = try makeTempVault()
-        let rootB = try makeTempVault()
+        let rootA = try await makeTempVault()
+        let rootB = try await makeTempVault()
         defer {
             try? FileManager.default.removeItem(at: rootA)
             try? FileManager.default.removeItem(at: rootB)
@@ -147,7 +147,7 @@ struct VaultAccessGateTests {
     }
 
     @Test func queuedAndSuspendedOperationsCrossingLockBoundariesAreRejectedWhenIOExecutes() async throws {
-        let root = try makeTempVault()
+        let root = try await makeTempVault()
         defer { try? FileManager.default.removeItem(at: root) }
 
         let manager = VaultSessionManager()
@@ -245,8 +245,8 @@ struct VaultAccessGateTests {
     }
 
     @Test func wrongVaultAccessIsRejectedAcrossRepositoriesStoresAndLeases() async throws {
-        let rootA = try makeTempVault()
-        let rootB = try makeTempVault()
+        let rootA = try await makeTempVault()
+        let rootB = try await makeTempVault()
         defer {
             try? FileManager.default.removeItem(at: rootA)
             try? FileManager.default.removeItem(at: rootB)
@@ -314,7 +314,7 @@ struct VaultAccessGateTests {
     }
 
     @Test func lockAdmissionBarrierAtomicallyRejectsNewOperationsAndDrainsAdmittedOperations() async throws {
-        let root = try makeTempVault()
+        let root = try await makeTempVault()
         defer { try? FileManager.default.removeItem(at: root) }
 
         let manager = VaultSessionManager()
@@ -436,8 +436,8 @@ struct VaultAccessGateTests {
     }
 
     @Test func lockAdmissionBarrierHandlesCancellationAbandonedRegistrationsAndInvalidLeasesWithoutLeaksOrDeadlocks() async throws {
-        let rootA = try makeTempVault()
-        let rootB = try makeTempVault()
+        let rootA = try await makeTempVault()
+        let rootB = try await makeTempVault()
         defer {
             try? FileManager.default.removeItem(at: rootA)
             try? FileManager.default.removeItem(at: rootB)

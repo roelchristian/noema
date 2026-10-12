@@ -40,17 +40,17 @@ private final class ControlledSearchIndex: SearchIndex, Sendable {
 
 extension VaultUIIntegrationTests {
 struct StaleCompletionRaceTests {
-    private func makeTempVault(name: String = "Vault") throws -> URL {
+    private func makeTempVault(name: String = "Vault") async throws -> URL {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("noema-stale-race-\(UUID().uuidString)", isDirectory: true)
         let root = base.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        _ = try FileVaultRepository.open(root: root, create: true)
+        _ = try await openCanonicalAppFixture(root: root, create: true)
         return root
     }
 
     @Test func staleResultGuardValidatesSessionIdentityEpochAndTokens() async throws {
-        let rootA = try makeTempVault(name: "VaultA")
-        let rootB = try makeTempVault(name: "VaultB")
+        let rootA = try await makeTempVault(name: "VaultA")
+        let rootB = try await makeTempVault(name: "VaultB")
         defer {
             try? FileManager.default.removeItem(at: rootA.deletingLastPathComponent())
             try? FileManager.default.removeItem(at: rootB.deletingLastPathComponent())
@@ -90,8 +90,8 @@ struct StaleCompletionRaceTests {
     }
 
     @Test @MainActor func delayedSearchPreviewSourceIndexingAndAICannotPublishAfterLockCloseOrVaultSwitch() async throws {
-        let rootA = try makeTempVault(name: "VaultA")
-        let rootB = try makeTempVault(name: "VaultB")
+        let rootA = try await makeTempVault(name: "VaultA")
+        let rootB = try await makeTempVault(name: "VaultB")
         defer {
             try? FileManager.default.removeItem(at: rootA.deletingLastPathComponent())
             try? FileManager.default.removeItem(at: rootB.deletingLastPathComponent())
@@ -106,10 +106,10 @@ struct StaleCompletionRaceTests {
         }
 
         do {
-            let repoA = try FileVaultRepository.open(root: rootA)
+            let repoA = try await openCanonicalAppFixture(root: rootA)
             _ = try await repoA.create(title: "Vault A Secret", body: "Confidential body in Vault A")
             _ = try await repoA.importSource(data: Data("Source A text".utf8), filename: "a.txt", title: "Source A", originURL: nil)
-            let repoB = try FileVaultRepository.open(root: rootB)
+            let repoB = try await openCanonicalAppFixture(root: rootB)
             _ = try await repoB.create(title: "Vault B Public", body: "Public body in Vault B")
         }
 
@@ -224,9 +224,9 @@ struct StaleCompletionRaceTests {
     }
 
     @Test @MainActor func rapidLockUnlockCyclesRemainSafe() async throws {
-        let root = try makeTempVault(name: "RapidVault")
+        let root = try await makeTempVault(name: "RapidVault")
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        let repo = try FileVaultRepository.open(root: root)
+        let repo = try await openCanonicalAppFixture(root: root)
         _ = try await repo.create(title: "Note", body: "Body")
 
         let model = AppModel()
@@ -245,9 +245,9 @@ struct StaleCompletionRaceTests {
     }
 
     @Test @MainActor func delayedOutgoingLinksAndBacklinksCannotOverwriteNewlySelectedPage() async throws {
-        let root = try makeTempVault(name: "LinkRaceVault")
+        let root = try await makeTempVault(name: "LinkRaceVault")
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        let repo = try FileVaultRepository.open(root: root)
+        let repo = try await openCanonicalAppFixture(root: root)
         let pageA = try await repo.create(title: "Page A", body: "Links to [[Target A]].")
         let pageB = try await repo.create(title: "Page B", body: "Links to [[Target B]].")
 

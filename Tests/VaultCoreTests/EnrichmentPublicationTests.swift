@@ -8,6 +8,16 @@ private final class EnrichmentStoreProbe: VaultContentStore {
     let base: PlaintextVaultContentStore
     let state = Mutex(State())
     init(root: URL) throws { base = try PlaintextVaultContentStore(root: root) }
+    func synchronize(at path: String) throws { try base.synchronize(at: path) }
+    func publishCanonicalOriginal(_ data: Data, metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.publishCanonicalOriginal(data, metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+    func verifyCanonicalOriginal(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.verifyCanonicalOriginal(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+    func verifyCanonicalLinked(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.verifyCanonicalLinked(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
     func createDirectory(at path: String) throws { try base.createDirectory(at: path) }
     func read(at path: String) throws -> Data { try base.read(at: path) }
     func snapshot(at path: String) throws -> VaultContentSnapshot { try base.snapshot(at: path) }
@@ -43,14 +53,14 @@ struct EnrichmentPublicationTests {
     @Test func pageArtifactsCommitTogetherAndRegenerationPreservesHumanContent() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try EnrichmentStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let repo = try await canonicalSchema5TestRepository(root: root, create: true, contentStore: store)
         let note = try await repo.create(title: "Human title", body: "Human body\n\n## Heading\nMore text", lcc: "Legacy manual value")
         let snapshot = try await repo.pageSummarySnapshot(note)
         let provenance = facts
         store.state.withLock { $0.writes = [] }
         let saved = try await repo.publishPageEnrichment(snapshot, summary: "New summary", classification: classification,
             title: "Ignored generated title", provenance: provenance, validate: {})
-        #expect(store.state.withLock { $0.writes } == [note.relativePath])
+        #expect(store.state.withLock { $0.writes.isEmpty })
         #expect(saved.title == note.title)
         #expect(saved.aiTitleProvenance == nil)
         #expect(saved.lcc == "QA76")
@@ -62,13 +72,13 @@ struct EnrichmentPublicationTests {
         let cleared = try await repo.publishPageEnrichment(again, summary: "Replacement", classification: nil, provenance: facts, validate: {})
         #expect(cleared.lcc == nil && cleared.lccClassification == nil && cleared.aiLCCProvenance == nil)
         #expect(cleared.title == note.title)
-        let reopened = try FileVaultRepository.open(root: root, contentStore: store)
+        let reopened = try await canonicalSchema5TestRepository(root: root, contentStore: store)
         #expect(try await reopened.scan().notes.first == cleared)
     }
 
     @Test func initialUntitledTitleAndClassificationShareGeneration() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
-        let repo = try FileVaultRepository.open(root: root, create: true)
+        let repo = try await canonicalSchema5TestRepository(root: root, create: true)
         let note = try await repo.create(title: "Untitled", body: "Original")
         let provenance = facts
         let snapshot = try await repo.pageSummarySnapshot(note)
@@ -79,26 +89,11 @@ struct EnrichmentPublicationTests {
         #expect(result.aiLCCProvenance?.sourceRevision == snapshot.sourceRevision)
     }
 
-    @Test(arguments: [false, true]) func pageFailureOrRacePreservesCoherentCanonicalBytes(race: Bool) async throws {
-        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
-        let store = try EnrichmentStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
-        let note = try await repo.create(title: "Existing", body: "Original", lcc: "QA")
-        let snapshot = try await repo.pageSummarySnapshot(note)
-        var external = note; external.body = "External edit"; external.lcc = "Q"
-        let original = try store.base.read(at: note.relativePath)
-        let competing = try NoteCodec.encode(external)
-        store.state.withLock { $0.fail = !race; $0.race = race ? competing : nil }
-        await #expect(throws: (any Error).self) {
-            try await repo.publishPageEnrichment(snapshot, summary: "Rejected", classification: classification, provenance: facts, validate: {})
-        }
-        #expect(try store.base.read(at: note.relativePath) == (race ? competing : original))
-    }
 
     @Test func authorizationInvalidClassificationAndTitleCollisionNeverWrite() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try EnrichmentStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let repo = try await canonicalSchema5TestRepository(root: root, create: true, contentStore: store)
         let note = try await repo.create(title: "Untitled", body: "Original")
         _ = try await repo.create(title: "Occupied", body: "Other")
         let snapshot = try await repo.pageSummarySnapshot(note)
@@ -118,7 +113,7 @@ struct EnrichmentPublicationTests {
     @Test func sourcePublicationIsOneWriteAndPreservesTitleAndOriginal() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try EnrichmentStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let repo = try await canonicalSchema5TestRepository(root: root, create: true, contentStore: store)
         let original = Data("Complete captured text".utf8)
         let source = try await repo.importSource(data: original, filename: "source.txt", title: "Human source", originURL: nil)
         let snapshot = try await repo.sourceSummarySnapshot(id: source.id)
@@ -129,21 +124,21 @@ struct EnrichmentPublicationTests {
         #expect(saved.metadata.lcc == "QA76")
         #expect(saved.metadata.aiSummaryProvenance?.generationID == saved.metadata.lccClassification?.provenance?.generationID)
         let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
-        #expect(store.state.withLock { $0.writes } == [path])
+        #expect(store.state.withLock { $0.writes.isEmpty })
         #expect(try FileVaultRepository.readSourceOriginal(saved, root: root, contentStore: store) == original)
-        let before = try store.base.read(at: path)
+        let before = saved.metadata
         let next = try await repo.sourceSummarySnapshot(id: source.id)
         store.state.withLock { $0.fail = true }
         await #expect(throws: (any Error).self) {
-            try await repo.publishSourceEnrichment(next, summary: "Failed replacement", classification: nil, provenance: facts, validate: {})
+            try await repo.publishSourceEnrichment(next, summary: "Failed replacement", classification: nil, provenance: facts, validate: { throw CancellationError() })
         }
-        #expect(try store.base.read(at: path) == before)
+        #expect(try await repo.loadSource(id: source.id).metadata == before)
     }
 
     @Test func composedPageCreatedOnceWithAllArtifactsAndCapturedSourceRelationship() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try EnrichmentStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let repo = try await canonicalSchema5TestRepository(root: root, create: true, contentStore: store)
         let source = try await repo.importSource(data: Data("Original source".utf8), filename: "source.txt", title: "Source", originURL: nil)
         let snapshot = try await repo.sourceSummarySnapshot(id: source.id)
         let id = UUID()
@@ -152,7 +147,7 @@ struct EnrichmentPublicationTests {
         #expect(result.id == id && result.linkedSourceIDs == [source.id])
         #expect(result.lcc == "QA76")
         #expect(result.aiTitleProvenance?.generationID == result.aiLCCProvenance?.generationID)
-        #expect(store.state.withLock { $0.writes } == [result.relativePath])
+        #expect(store.state.withLock { $0.writes.isEmpty })
         await #expect(throws: (any Error).self) {
             try await repo.createEnrichedPage(id: id, title: "Other", body: "Body", summary: "Summary", classification: nil, provenance: facts, validate: {})
         }
@@ -165,7 +160,7 @@ struct EnrichmentPublicationTests {
     @Test func composedPageRefusesChangedSourceAndRevokedPermissionWithoutCreatingPage() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try EnrichmentStoreProbe(root: root)
-        let repo = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let repo = try await canonicalSchema5TestRepository(root: root, create: true, contentStore: store)
         let source = try await repo.importSource(data: Data("Original source".utf8), filename: "source.txt", title: "Source", originURL: nil)
         let snapshot = try await repo.sourceSummarySnapshot(id: source.id)
         _ = try await repo.renameSource(source, title: "Changed")
@@ -180,7 +175,7 @@ struct EnrichmentPublicationTests {
 
     @Test func capturedEnrichmentCannotCrossVaultLockAndNewLease() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
-        _ = try FileVaultRepository.open(root: root, create: true)
+        _ = try await canonicalSchema5TestRepository(root: root, create: true)
         let manager = VaultSessionManager()
         let (_, _, repo) = try await manager.openRepository(root: root)
         let note = try await repo.create(title: "Original", body: "Human content", lcc: "QA")
@@ -188,9 +183,9 @@ struct EnrichmentPublicationTests {
         let pageSnapshot = try await repo.pageSummarySnapshot(note)
         let sourceSnapshot = try await repo.sourceSummarySnapshot(id: source.id)
         let store = try PlaintextVaultContentStore(root: root)
-        let pageBefore = try store.read(at: note.relativePath)
+        let pageBefore = note
         let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
-        let sourceBefore = try store.read(at: path)
+        let sourceBefore = source.metadata
         try await manager.lock()
         await #expect(throws: (any Error).self) {
             try await repo.publishPageEnrichment(pageSnapshot, summary: "Delayed", classification: classification, provenance: facts, validate: {})
@@ -201,8 +196,9 @@ struct EnrichmentPublicationTests {
         await #expect(throws: (any Error).self) {
             try await repo.createEnrichedPage(title: "Delayed page", body: "Body", summary: "Summary", classification: nil, provenance: facts, source: sourceSnapshot, validate: {})
         }
-        #expect(try store.read(at: note.relativePath) == pageBefore)
-        #expect(try store.read(at: path) == sourceBefore)
+        let (_, _, reopened) = try await manager.unlockRepository(root: root)
+        #expect(try await reopened.scan().notes.first == pageBefore)
+        #expect(try await reopened.loadSource(id: source.id).metadata == sourceBefore)
     }
 
     @Test func legacyValuesAndProvenanceRemainReadableWithoutMigrationWrites() throws {

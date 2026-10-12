@@ -89,11 +89,11 @@ private final class DelayedOriginalStore: VaultContentStore, Sendable {
 extension VaultUIIntegrationTests {
 @Suite(.serialized)
 struct LifecycleReconstructionRaceTests {
-    private func fixture() throws -> (base: URL, root: URL, repository: FileVaultRepository) {
+    private func fixture() async throws -> (base: URL, root: URL, repository: FileVaultRepository) {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("reconstruction-race-\(UUID())")
         let root = base.appendingPathComponent("Vault")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        return (base, root, try FileVaultRepository.open(root: root, create: true))
+        return (base, root, try await openCanonicalAppFixture(root: root, create: true))
     }
 
     @MainActor private func model(base: URL) -> AppModel {
@@ -105,7 +105,7 @@ struct LifecycleReconstructionRaceTests {
 
     @Test @MainActor
     func supersededScheduledRefreshDoesNotPresentAnError() async throws {
-        let fixture = try fixture()
+        let fixture = try await fixture()
         defer { try? FileManager.default.removeItem(at: fixture.base) }
         _ = try await fixture.repository.create(title: "Existing page", body: "Content")
         let model = model(base: fixture.base)
@@ -142,7 +142,7 @@ struct LifecycleReconstructionRaceTests {
 
     @Test(arguments: RefreshOutcome.allCases) @MainActor
     private func semanticEditSurvivesCancelledRefreshAndNavigation(outcome: RefreshOutcome) async throws {
-        let fixture = try fixture()
+        let fixture = try await fixture()
         defer { try? FileManager.default.removeItem(at: fixture.base) }
         let block = EditorBlock(runs: [RichRun("Existing block")])
         let original = BlockDocument(blocks: [block])
@@ -200,7 +200,7 @@ struct LifecycleReconstructionRaceTests {
 
     @Test @MainActor
     func delayedCommittedIndexResultCannotPublishIntoReopenedSession() async throws {
-        let fixture = try fixture()
+        let fixture = try await fixture()
         defer { SourceReader.closeAll(); try? FileManager.default.removeItem(at: fixture.base) }
         // Finish fixture writes before installing the live watcher, so it cannot race
         // the explicit refresh to claim the publication barrier.
@@ -218,8 +218,7 @@ struct LifecycleReconstructionRaceTests {
         }
         await model.open(fixture.root, create: false)
         let oldSession = try #require(await model.sessionManager.currentSession)
-        let canonicalURL = fixture.root.appendingPathComponent(changed.relativePath)
-        let canonicalBytes = try Data(contentsOf: canonicalURL)
+        let canonicalBytes = try await canonicalAppPageSnapshot(fixture.repository, id: changed.id)
         armed.withLock { $0 = true }
         let refresh = Task { @MainActor in defer { finished.signal() }; await model.refresh() }
         defer { refresh.cancel() }
@@ -238,7 +237,7 @@ struct LifecycleReconstructionRaceTests {
         #expect(model.notes.map(\.id) == [changed.id] && model.notes.first?.body == changed.body)
         #expect(model.rows.map(\.id) == rowsBeforeCompletion)
         #expect(model.staleResultGuard.rejectedRecords.contains { $0.kind == .indexing && $0.operation == "refresh.reconcile" })
-        #expect(try Data(contentsOf: canonicalURL) == canonicalBytes)
+        #expect(try await canonicalAppPageSnapshot(fixture.repository, id: changed.id) == canonicalBytes)
         #expect(model.sessionManager.operationRegistrySnapshot().activeCount == 0)
         #expect(await model.sessionManager.inFlightWaiterCount == 0)
         #expect(await model.closeVault(force: true))
@@ -246,7 +245,7 @@ struct LifecycleReconstructionRaceTests {
 
     @Test(arguments: [false, true], ["txt", "html", "pdf"]) @MainActor
     func importedReaderCannotPresentAfterFinalPredicateRevokesLease(reopen: Bool, extensionName: String) async throws {
-        let fixture = try fixture()
+        let fixture = try await fixture()
         defer { SourceReader.closeAll(); try? FileManager.default.removeItem(at: fixture.base) }
         let source = try await fixture.repository.importSource(data: Data("%PDF-1.4\nsynthetic private preview".utf8),
             filename: "private." + extensionName, title: "Private preview", originURL: nil)
@@ -272,7 +271,7 @@ struct LifecycleReconstructionRaceTests {
 
     @Test(arguments: [false, true]) @MainActor
     func delayedOriginalReadCannotPresentReaderAfterLockOrUnlock(reopen: Bool) async throws {
-        let fixture = try fixture()
+        let fixture = try await fixture()
         defer { SourceReader.closeAll(); try? FileManager.default.removeItem(at: fixture.base) }
         let original = Data("Private original read before revocation".utf8)
         let source = try await fixture.repository.importSource(data: original, filename: "private.txt", title: "Private", originURL: nil)
@@ -309,11 +308,10 @@ struct LifecycleReconstructionRaceTests {
 
     @Test @MainActor
     func failedUnlockAfterCentralOpenRollsBackWithoutLosingDirtyRecoveryDraft() async throws {
-        let fixture = try fixture()
+        let fixture = try await fixture()
         defer { SourceReader.closeAll(); try? FileManager.default.removeItem(at: fixture.base) }
         let note = try await fixture.repository.create(title: "Canonical", body: "Original durable body")
-        let canonicalURL = fixture.root.appendingPathComponent(note.relativePath)
-        let canonicalBytes = try Data(contentsOf: canonicalURL)
+        let canonicalBytes = try await canonicalAppPageSnapshot(fixture.repository, id: note.id)
         let model = model(base: fixture.base)
         await model.open(fixture.root, create: false)
         // Supply a dirty buffer synchronously, avoiding an autosave timer as a race scheduler.
@@ -347,7 +345,7 @@ struct LifecycleReconstructionRaceTests {
         #expect(model.errorMessage != nil && model.sessionTransitionErrors.isEmpty)
         #expect(model.sessionManager.operationRegistrySnapshot().activeCount == 0)
         #expect(await model.sessionManager.inFlightWaiterCount == 0)
-        #expect(try Data(contentsOf: canonicalURL) == canonicalBytes)
+        #expect(try await canonicalAppPageSnapshot(fixture.repository, id: note.id) == canonicalBytes)
         #expect(try Data(contentsOf: draftURL) == draftBytes)
         model.searchIndexFactory = { try SQLiteSearchIndex(url: $0, sessionLease: $1, accessGate: $2) }
         #expect(await model.unlockVault())
@@ -355,7 +353,7 @@ struct LifecycleReconstructionRaceTests {
         #expect(recovered.id == note.id && recovered.title == "Dirty title")
         #expect(recovered.body == "Dirty draft must survive unsuccessful reconstruction" && recovered.tags == ["retained"])
         #expect(model.notes.first?.body == note.body)
-        #expect(try Data(contentsOf: canonicalURL) == canonicalBytes)
+        #expect(try await canonicalAppPageSnapshot(fixture.repository, id: note.id) == canonicalBytes)
         #expect(try Data(contentsOf: draftURL) == draftBytes)
         #expect(model.sessionManager.operationRegistrySnapshot().activeCount == 0)
         #expect(await model.closeVault(force: true))

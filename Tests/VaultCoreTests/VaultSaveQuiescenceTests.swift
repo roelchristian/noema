@@ -4,19 +4,19 @@ import Testing
 @testable import VaultCore
 
 struct VaultSaveQuiescenceTests {
-    private func makeTempVaultAndRecovery() throws -> (root: URL, recoveryDir: URL, recovery: RecoveryStore) {
+    private func makeTempVaultAndRecovery() async throws -> (root: URL, recoveryDir: URL, recovery: RecoveryStore) {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("noema-quiescence-test-\(UUID().uuidString)", isDirectory: true)
         let root = base.appendingPathComponent("Vault", isDirectory: true)
         let recoveryDir = base.appendingPathComponent("Drafts", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        _ = try FileVaultRepository.open(root: root, create: true)
+        _ = try await canonicalSchema5TestRepository(root: root, create: true)
         let recovery = try RecoveryStore(unguardedTestingDirectory: recoveryDir)
         return (root, recoveryDir, recovery)
     }
 
     @Test func inFlightSavesEnteringCommitWindowCompleteAndRemainRecognizedWhilePreCommitSavesPreserveRecoveryDraft() async throws {
-        let (root, _, recovery) = try makeTempVaultAndRecovery()
+        let (root, _, recovery) = try await makeTempVaultAndRecovery()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
 
         let manager = VaultSessionManager()
@@ -135,7 +135,7 @@ struct VaultSaveQuiescenceTests {
     }
 
     @Test func pendingDebouncedDirtyEditorAndLCCEditsAreFlushedOrPreservedInRecoveryBeforeLocked() async throws {
-        let (root, _, recovery) = try makeTempVaultAndRecovery()
+        let (root, _, recovery) = try await makeTempVaultAndRecovery()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
 
         let manager = VaultSessionManager()
@@ -227,7 +227,7 @@ struct VaultSaveQuiescenceTests {
     }
 
     @Test func cancelledImportsCleanOnlyOwnedStagingAndPreserveUnknownCopiesAcrossLockAndReopen() async throws {
-        let (root, _, recovery) = try makeTempVaultAndRecovery()
+        let (root, _, recovery) = try await makeTempVaultAndRecovery()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
 
         let manager = VaultSessionManager()
@@ -348,7 +348,7 @@ struct VaultSaveQuiescenceTests {
     }
 
     @Test func unrecoverableQuiescenceFailureReportsErrorAndAvoidsFalselyPublishingLocked() async throws {
-        let (root, _, _) = try makeTempVaultAndRecovery()
+        let (root, _, _) = try await makeTempVaultAndRecovery()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
 
         // Create a read-only file where the RecoveryStore directory should be, or point RecoveryStore to a removed/unwritable path

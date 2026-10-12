@@ -156,7 +156,7 @@ struct InspectorRedesignTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { SourceReader.closeAll(); try? FileManager.default.removeItem(at: base) }
 
-        let repo = try FileVaultRepository.open(root: root, create: true)
+        let repo = try await openCanonicalAppFixture(root: root, create: true)
         let note = try await repo.create(title: "Test Page", body: "Content")
         let source = try await repo.importSource(data: Data("Source text".utf8), filename: "source.txt", title: "Test Source", originURL: nil)
 
@@ -262,7 +262,7 @@ struct InspectorRedesignTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { SourceReader.closeAll(); try? FileManager.default.removeItem(at: base) }
 
-        let repo = try FileVaultRepository.open(root: root, create: true)
+        let repo = try await openCanonicalAppFixture(root: root, create: true)
         let sourcePage = try await repo.create(title: "Source Page", body: "Links to [[Original Target]].")
         let targetPage = try await repo.create(title: "Original Target", body: "Content")
 

@@ -180,7 +180,7 @@ import NoemaBrand
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let store = try PlaintextVaultContentStore(root: root)
-        let repository = try FileVaultRepository.open(root: root, create: true, contentStore: store)
+        let repository = try await openCanonicalAppFixture(root: root, create: true, contentStore: store)
         let bytes = Data(markdown.utf8)
         let source = try await repository.importSource(data: bytes, filename: "reading.md", title: "Reading fixture", originURL: nil)
         let path = "Sources/" + source.id.uuidString.lowercased() + "/" + source.metadata.storedFilename

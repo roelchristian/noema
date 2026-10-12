@@ -204,17 +204,18 @@ private final class BlockPublicationValidation: @unchecked Sendable {
     let store = try SQLiteBlockStore(url: url, sessionLease: session.lease, accessGate: manager.accessGate, canonicalVaultID: session.vaultID, requiredCapabilities: SQLiteBlockStore.semanticRequiredCapabilities, schemaVersion: 5)
     let document = BlockDocument(blocks: [EditorBlock(runs: [RichRun("preserved")])])
     let initial = try await store.save(document, pageID: page, condition: .createOnly)
+    let vaultRevision = try await store.canonicalVaultRevision()
     try await manager.lock()
     await #expect(throws: VaultAccessError.self) { _ = try await store.load(pageID: page) }
     await #expect(throws: VaultAccessError.self) { _ = try await store.save(document, pageID: page, condition: .replace(expected: initial.revision)) }
-    await #expect(throws: VaultAccessError.self) { try await store.delete(pageID: page, expected: initial.revision) }
+    await #expect(throws: VaultAccessError.self) { try await store.purgeCanonicalEntity(id: page, kind: .page, expected: initial.revision, expectedVaultRevision: vaultRevision) }
     try await store.close()
     let inspection = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: session.vaultID, createIfMissing: false)
     #expect(try await inspection.load(pageID: page) == initial)
     try await inspection.close()
 }
 
-@Test func sqliteSchemaUpgradePreservesPagesAndTrashCyclesResetRetentionIdentity() async throws {
+@Test func sqliteTrashCyclesResetRetentionIdentity() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -225,13 +226,9 @@ private final class BlockPublicationValidation: @unchecked Sendable {
     let initial = try await initialStore.savePage(record: record, document: document, condition: .createOnly)
     let oldTrash = try await initialStore.setTrashed(pageID: page, expected: initial.revision, trashed: true)
     try await initialStore.close()
-    // Recreate the prior version's shape, retaining its page/block records.
-    try blockSQL(url, "ALTER TABLE pages DROP COLUMN trashed_at; PRAGMA user_version=1")
     let store = try SQLiteBlockStore(unguardedTestingURL: url)
     #expect(try blockSQLValue(url, "PRAGMA user_version") == SQLiteBlockStore.schemaVersion)
     #expect(try await store.load(pageID: page) == oldTrash)
-    let undated = try await store.loadPage(pageID: page).record
-    #expect(undated.relativePath.hasPrefix("sqlite/undated-trash-"))
     #expect(try await store.allTrashedPages().map(\.id) == [page])
     #expect(try await store.allPages().isEmpty)
     let restored = try await store.setTrashed(pageID: page, expected: oldTrash.revision, trashed: false)

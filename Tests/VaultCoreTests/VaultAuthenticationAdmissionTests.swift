@@ -8,7 +8,7 @@ import Testing
 struct VaultAuthenticationAdmissionTests {
     @Test
     func protectedOpenStaysClosedWithoutLeaseOrContentIOUntilAdmission() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         f.policy.setRequired(true, for: f.vaultID)
         let calls = AdmissionIORecorder()
@@ -33,7 +33,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func protectedReopenRelaunchAndUnlockEachRequireFreshPurpose() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         f.policy.setRequired(true, for: f.vaultID)
         let first = Task { try await f.manager.open(root: f.root) }
@@ -67,7 +67,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func unprotectedProductionEntryPointsRemainPromptFree() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         let initial = try await f.manager.open(root: f.root)
         let repository = try await f.manager.openRepository(root: f.root, create: true)
@@ -85,7 +85,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func duplicatePendingOpenCannotIssueSecondPromptAndCreateFlagCannotBypass() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         f.policy.setRequired(true, for: f.vaultID)
         let first = Task { try await f.manager.openRepository(root: f.root, create: true) }
@@ -102,7 +102,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func closeCancelsPendingOpenBeforeLateSuccessAndRetryIsIndependent() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         f.policy.setRequired(true, for: f.vaultID)
         let original = Task { try await f.manager.openRepository(root: f.root) }
@@ -125,7 +125,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func callerCancellationResolvesWithoutNativeCallbackAndLeavesLockedRetryable() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         _ = try await f.manager.openRepository(root: f.root)
         f.policy.setRequired(true, for: f.vaultID)
@@ -149,11 +149,11 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func sameUUIDAtDifferentRootCannotConsumePriorRootsAttempt() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         let other = f.base.appendingPathComponent("Copy")
         try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
-        _ = try FileVaultRepository.open(root: other, create: true)
+        _ = try await canonicalSchema5TestRepository(root: other, create: true)
         try JSONEncoder().encode(VaultManifest(id: f.vaultID)).write(to: other.appendingPathComponent("vault.json"))
         f.policy.setRequired(true, for: f.vaultID)
         let first = Task { try await f.manager.open(root: f.root) }
@@ -172,7 +172,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func manifestIdentityMutationDuringAuthenticationRejectsAdmission() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         f.policy.setRequired(true, for: f.vaultID)
         let task = Task { try await f.manager.openRepository(root: f.root) }
@@ -189,7 +189,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func lockedRootOverrideRejectsCopiedUUIDBeforeAnyNativePrompt() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         _ = try await f.manager.open(root: f.root)
         f.policy.setRequired(true, for: f.vaultID)
@@ -197,7 +197,7 @@ struct VaultAuthenticationAdmissionTests {
         let locked = await f.manager.state
         let other = f.base.appendingPathComponent("Copied Locked Vault")
         try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
-        _ = try FileVaultRepository.open(root: other, create: true)
+        _ = try await canonicalSchema5TestRepository(root: other, create: true)
         try JSONEncoder().encode(VaultManifest(id: f.vaultID)).write(to: other.appendingPathComponent("vault.json"))
         await #expect(throws: VaultSessionError.cancelled(action: "unlock")) {
             _ = try await f.manager.unlockRepository(root: other)
@@ -211,7 +211,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func sameValuePolicyRevisionChangeRejectsPendingAttempt() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         f.policy.setRequired(true, for: f.vaultID)
         let task = Task { try await f.manager.openRepository(root: f.root) }
@@ -225,7 +225,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func preferenceChangesAuthenticateBothDirectionsAndBindExactOpenSession() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         let session = try await f.manager.open(root: f.root)
         let enable = Task { try await f.manager.setAccessAuthenticationRequired(true, expectedSession: session) }
@@ -250,7 +250,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func lifecycleGenerationChangeCannotCommitPendingPolicyWrite() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         let original = try await f.manager.open(root: f.root)
         let change = Task { try await f.manager.setAccessAuthenticationRequired(true, expectedSession: original) }
@@ -267,7 +267,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func staleScopedCloseAndLockCannotCancelCurrentSessionsPolicyAttempt() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         let stale = try await f.manager.open(root: f.root)
         try await f.manager.lock()
@@ -289,7 +289,7 @@ struct VaultAuthenticationAdmissionTests {
     @Test(arguments: [false, true])
     func policyRevisionChangeAfterLoaderRejectsFinalOpenOrUnlockCommit(unlocking: Bool) async throws {
         let latch = AdmissionLatch(armed: false)
-        let f = try AdmissionFixture(beforeAccessCommit: { _ in await latch.hold() })
+        let f = try await AdmissionFixture(beforeAccessCommit: { _ in await latch.hold() })
         defer { f.finish() }
         if unlocking {
             _ = try await f.manager.open(root: f.root)
@@ -319,7 +319,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func optInCreationPersistsBeforeAdmissionAndCancelPreservesPublishedVault() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         let root = try await f.manager.createVault(parent: f.base, name: "Protected New",
             encryptionRequested: false, accessAuthenticationRequested: true)
@@ -340,7 +340,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test(arguments: [NativeAuthenticationError.cancelled, .failed, .unavailable])
     func nativeFailureNeverOpensOrIssuesLease(_ failure: NativeAuthenticationError) async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         f.policy.setRequired(true, for: f.vaultID)
         let task = Task { try await f.manager.open(root: f.root) }
@@ -358,7 +358,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test(arguments: [false, true])
     func compatibilityCreateCannotInitializeDifferentRootWhileOpenOrLocked(locked: Bool) async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         _ = try await f.manager.open(root: f.root)
         if locked { try await f.manager.lock() }
@@ -375,7 +375,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func compatibilityCreateCancellationCannotInitializeFreshRoot() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         let fresh = f.base.appendingPathComponent("Fresh")
         try FileManager.default.createDirectory(at: fresh, withIntermediateDirectories: false)
@@ -391,7 +391,7 @@ struct VaultAuthenticationAdmissionTests {
 
     @Test
     func compatibilityCreateCannotInitializeFreshRootDuringCloseTeardown() async throws {
-        let f = try AdmissionFixture()
+        let f = try await AdmissionFixture()
         defer { f.finish() }
         _ = try await f.manager.open(root: f.root)
         let latch = AdmissionLatch()
@@ -419,14 +419,14 @@ private struct AdmissionFixture: Sendable {
     let auth: AdmissionAuthenticator
     let manager: VaultSessionManager
 
-    init(beforeAccessCommit: (@Sendable (VaultSession) async -> Void)? = nil) throws {
+    init(beforeAccessCommit: (@Sendable (VaultSession) async -> Void)? = nil) async throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         base = repositoryRoot.appendingPathComponent(".local/agent-runs/d03b-admission-fixture-\(UUID())")
         root = base.appendingPathComponent("Vault")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try Data().write(to: base.appendingPathComponent(".active"))
-        vaultID = try FileVaultRepository.open(root: root, create: true).manifest.id
+        vaultID = try await canonicalSchema5TestRepository(root: root, create: true).manifest.id
         suite = "noema.d03b.admission.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
         policy = VaultAccessPolicyStore(defaults: defaults)
@@ -501,6 +501,16 @@ private final class AdmissionRecordingStore: VaultContentStore, Sendable {
     func read(at path: String) throws -> Data { calls.record("read:\(path)"); return try base.read(at: path) }
     func snapshot(at path: String) throws -> VaultContentSnapshot { calls.record("snapshot:\(path)"); return try base.snapshot(at: path) }
     func changeToken(at path: String) throws -> VaultContentChangeToken? { try base.changeToken(at: path) }
+    func synchronize(at path: String) throws { try base.synchronize(at: path) }
+    func publishCanonicalOriginal(_ data: Data, metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.publishCanonicalOriginal(data, metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+    func verifyCanonicalOriginal(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.verifyCanonicalOriginal(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
+    func verifyCanonicalLinked(metadata: SourceMetadata, vaultID: UUID, operationID: UUID) throws -> CanonicalSourceByteReceipt {
+        try base.verifyCanonicalLinked(metadata: metadata, vaultID: vaultID, operationID: operationID)
+    }
     func createDirectory(at path: String) throws { calls.record("mkdir:\(path)"); try base.createDirectory(at: path) }
     func write(_ data: Data, at path: String, condition: VaultWriteCondition) throws { calls.record("write:\(path)"); try base.write(data, at: path, condition: condition) }
     func move(from source: String, to destination: String, expected: VaultContentSnapshot) throws { calls.record("move:\(source)"); try base.move(from: source, to: destination, expected: expected) }

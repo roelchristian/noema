@@ -58,7 +58,7 @@ struct VaultUIIntegrationTests {
         let folder = base.appendingPathComponent("Vault", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
-        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let repo = try await openCanonicalAppFixture(root: folder, create: true)
         var metadata = BlockMetadata(); metadata.semantic = "question"
         let block = EditorBlock(runs: [RichRun("Stars question")], metadata: metadata)
         let note = try await repo.create(title: "Stars", body: BlockDocumentCodec.encode(BlockDocument(blocks: [block])))
@@ -86,7 +86,7 @@ struct VaultUIIntegrationTests {
         let folder = base.appendingPathComponent("Vault", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
-        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let repo = try await openCanonicalAppFixture(root: folder, create: true)
         let note = try await repo.create(title: "Stars", body: "# Stars")
         let model = try await openRichArticleFixtureVault(at: folder)
         model.currentNote = note; model.selectedID = note.id
@@ -104,7 +104,7 @@ struct VaultUIIntegrationTests {
         let folder = base.appendingPathComponent("Vault", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
-        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let repo = try await openCanonicalAppFixture(root: folder, create: true)
         let note = try await repo.create(title: "Referenced", body: "Page body")
         let model = try await openRichArticleFixtureVault(at: folder)
         model.scope = .sources; model.searchText = "unrelated filter"
@@ -125,7 +125,7 @@ struct VaultUIIntegrationTests {
         let folder = base.appendingPathComponent("Vault", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
-        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let repo = try await openCanonicalAppFixture(root: folder, create: true)
         var note = try await repo.create(title: "Older", body: "Original")
         note = try await repo.setEditingLock(note: note, locked: initiallyLocked)
         let newer = try await repo.create(title: "Newer", body: "Other")
@@ -155,7 +155,7 @@ struct VaultUIIntegrationTests {
         let folder = base.appendingPathComponent("Vault", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
-        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let repo = try await openCanonicalAppFixture(root: folder, create: true)
         let note = try await repo.create(title: "Page", body: "Original")
         let changed = try await repo.save(note: note, title: note.title, body: "External edit", tags: [])
         let model = try await openRichArticleFixtureVault(at: folder)
@@ -187,10 +187,10 @@ struct VaultUIIntegrationTests {
         let folder = base.appendingPathComponent("Vault", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
-        let repo = try FileVaultRepository.open(root: folder, create: true)
+        let repo = try await openCanonicalAppFixture(root: folder, create: true)
         let note = try await repo.create(title: "Page", body: "Original")
-        var old = note; old.updatedAt = "2020-01-01T00:00:00Z"
-        try NoteCodec.encode(old).write(to: folder.appendingPathComponent(note.relativePath), options: .atomic)
+        // Ensure a distinct timestamp without mutating a retired Markdown file.
+        try await Task.sleep(for: .milliseconds(1100))
         let scanned = try #require(try await repo.scan().notes.first)
         let model = try await openRichArticleFixtureVault(at: folder)
         model.notes = [scanned]; model.currentNote = scanned; model.title = scanned.title; model.body = "Pending edit"

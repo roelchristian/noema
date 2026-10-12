@@ -93,7 +93,7 @@ extension VaultUIIntegrationTests {
         let root = base.appendingPathComponent("Atlas", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
-        let repo = try FileVaultRepository.open(root: root, create: true)
+        let repo = try await openCanonicalAppFixture(root: root, create: true)
         let note = try await repo.create(title: "Initial page", body: "Content")
         let source = try await repo.importSource(data: Data("Source body".utf8), filename: "reference.txt", title: "Reference source", originURL: nil)
         let model = AppModel()

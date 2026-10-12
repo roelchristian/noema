@@ -10,7 +10,7 @@ extension VaultUIIntegrationTests {
 struct VaultAuthenticationIntegrationTests {
     @Test @MainActor
     func initialOpenCancellationLoadsNoResourcesAndPreservesRecoveryForFreshRetry() async throws {
-        let f = try IntegrationFixture()
+        let f = try await IntegrationFixture()
         defer { f.finish() }
         let note = try await f.repository.create(title: "Protected Page", body: "Canonical body")
         let drafts = f.local.appendingPathComponent("KnowledgeVault/\(f.vaultID)/Drafts")
@@ -62,7 +62,7 @@ struct VaultAuthenticationIntegrationTests {
 
     @Test @MainActor
     func cancelledUnlockRemainsLockedAndSameFolderReselectionAuthenticatesFresh() async throws {
-        let f = try IntegrationFixture()
+        let f = try await IntegrationFixture()
         defer { f.finish() }
         let note = try await f.repository.create(title: "Page", body: "Protected content")
         f.policy.setRequired(true, for: f.vaultID)
@@ -98,7 +98,7 @@ struct VaultAuthenticationIntegrationTests {
 
     @Test @MainActor
     func preferenceInteractionsAuthenticateAndUnprotectedCompatibilityStaysPromptFree() async throws {
-        let f = try IntegrationFixture()
+        let f = try await IntegrationFixture()
         defer { f.finish() }
         await f.model.open(f.root, create: false)
         #expect(f.model.isVaultAvailable && !f.model.vaultAccessAuthenticationRequired)
@@ -130,7 +130,7 @@ struct VaultAuthenticationIntegrationTests {
 
     @Test @MainActor
     func optedInCreatePersistsRequirementBeforePromptAndCancellationKeepsCreatedBytes() async throws {
-        let f = try IntegrationFixture()
+        let f = try await IntegrationFixture()
         defer { f.finish() }
         let createdRoot = f.base.appendingPathComponent("Created Protected Vault")
         let create = Task { @MainActor in
@@ -160,7 +160,7 @@ struct VaultAuthenticationIntegrationTests {
 
     @Test @MainActor
     func authenticationFailurePublishesNoContentAndReleasesTemporarySecurityScope() async throws {
-        let f = try IntegrationFixture()
+        let f = try await IntegrationFixture()
         defer { f.finish() }
         f.policy.setRequired(true, for: f.vaultID)
         let acquired = IntegrationCounter(), released = IntegrationCounter()
@@ -193,7 +193,7 @@ private struct IntegrationFixture: Sendable {
     let manager: VaultSessionManager
     let model: AppModel
 
-    @MainActor init() throws {
+    @MainActor init() async throws {
         let repositoryRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         base = repositoryRoot.appendingPathComponent(".local/agent-runs/d03b-integration-fixture-\(UUID())")
@@ -201,7 +201,7 @@ private struct IntegrationFixture: Sendable {
         local = base.appendingPathComponent("Local")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try Data().write(to: base.appendingPathComponent(".active"))
-        repository = try FileVaultRepository.open(root: root, create: true)
+        repository = try await openCanonicalAppFixture(root: root, create: true)
         vaultID = repository.manifest.id
         suite = "noema.d03b.integration.\(UUID())"
         policy = VaultAccessPolicyStore(defaults: UserDefaults(suiteName: suite)!)

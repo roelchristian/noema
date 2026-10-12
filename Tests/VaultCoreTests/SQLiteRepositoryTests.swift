@@ -6,12 +6,7 @@ struct SQLiteRepositoryTests {
     private func fixture() async throws -> (URL, FileVaultRepository) {
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("noema-sqlite-repository-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        _ = try FileVaultRepository.open(root: root, create: true)
-        var manifest = try FileVaultRepository.inspectManifest(at: root)
-        manifest.formatVersion = 2; manifest.storageMode = .sqliteBlocks
-        let database = try SQLiteBlockStore(unguardedTestingURL: root.appendingPathComponent(VaultManifest.sqliteDatabasePath))
-        try await database.close()
-        try JSONEncoder().encode(manifest).write(to: root.appendingPathComponent("vault.json"))
+        try await FileVaultRepository.initializeSchema5(root: root, storageProvider: .plaintext)
         let manager = VaultSessionManager()
         let (_, _, repository) = try await manager.openRepository(root: root)
         return (root, repository)
@@ -31,7 +26,7 @@ struct SQLiteRepositoryTests {
         } catch {}
         let reopened = try FileVaultRepository.open(root: root, sessionLease: repository.sessionLease, accessGate: repository.accessGate)
         #expect(try await reopened.scan().notes == [saved])
-        #expect(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Wiki").path).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("Wiki").path))
         try await repository.trash(note: saved)
         #expect(try await repository.scan().notes.isEmpty)
         let removed = try #require(try await repository.trashedPages().first)

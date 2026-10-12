@@ -18,7 +18,7 @@ struct CloudSummaryIntegrationTests {
     @MainActor private func fixture() async throws -> (URL, AppModel, NoteRecord, FileVaultRepository) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-cloud-summary-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         var document = BlockDocumentCodec.decode("Selected page body")
         document.setAISummary("Existing local summary")
         let note = try await repository.create(title: "Fixture", body: BlockDocumentCodec.encode(document))
@@ -133,7 +133,7 @@ struct CloudSummaryIntegrationTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-cloud-cas-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         let source = try await repository.importSource(data: Data("Original".utf8), filename: "fixture.txt", title: "Source", originURL: nil)
         let snapshot = try await repository.sourceSummarySnapshot(id: source.id)
         let path = "Sources/" + source.id.uuidString.lowercased() + "/" + source.metadata.storedFilename
@@ -148,7 +148,7 @@ struct CloudSummaryIntegrationTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("noema-cloud-provenance-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         let source = try await repository.importSource(data: Data("Original".utf8), filename: "fixture.txt", title: "Source", originURL: nil)
         let snapshot = try await repository.sourceSummarySnapshot(id: source.id)
         let cloud = try await repository.publishSourceSummary(snapshot, summary: "Cloud", provenance: SummaryProvenance(provider: "OpenAI", model: "gpt-4.1-mini", generatedAt: Date()), validate: {})

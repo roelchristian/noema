@@ -119,7 +119,7 @@ extension VaultUIIntegrationTests {
             let root = base.appendingPathComponent("Vault")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: base) }
-            let repository = try FileVaultRepository.open(root: root, create: true)
+            let repository = try await openCanonicalAppFixture(root: root, create: true)
             let local = base.appendingPathComponent("Local")
             let drafts = local.appendingPathComponent("KnowledgeVault/\(repository.manifest.id.uuidString)/Drafts")
             _ = try RecoveryStore(unguardedTestingDirectory: drafts)
@@ -162,7 +162,7 @@ extension VaultUIIntegrationTests {
                 SourceReader.closeAll()
                 try? FileManager.default.removeItem(at: base)
             }
-            let repository = try FileVaultRepository.open(root: root, create: true)
+            let repository = try await openCanonicalAppFixture(root: root, create: true)
             let note = try await repository.create(title: "Command Page", body: "Saved command body")
             let model = AppModel()
             model.localStorageRoot = base
@@ -205,7 +205,7 @@ extension VaultUIIntegrationTests {
             let root = base.appendingPathComponent("Vault")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: base) }
-            let repository = try FileVaultRepository.open(root: root, create: true)
+            let repository = try await openCanonicalAppFixture(root: root, create: true)
             let note = try await repository.create(title: "Toolbar Page", body: "Toolbar test body")
             let model = AppModel()
             model.localStorageRoot = base

@@ -103,7 +103,7 @@ import VaultCore
         let root = base.appendingPathComponent("Vault")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
-        let repository = try FileVaultRepository.open(root: root, create: true)
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
         let page = try await repository.create(title: "Session fixture", body: "Original")
         let model = AppModel(); model.localStorageRoot = base.appendingPathComponent("Local")
         model.persistSecurityScopedBookmark = false

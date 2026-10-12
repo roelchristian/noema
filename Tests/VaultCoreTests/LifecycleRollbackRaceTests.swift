@@ -52,7 +52,7 @@ struct LifecycleRollbackRaceTests {
         let recovery = try RecoveryStore(directory: fixture.drafts, sessionLease: lease, accessGate: manager.accessGate)
         let note = try await repo.create(title: "Canonical", body: "Original durable body")
         let canonicalURL = fixture.root.appendingPathComponent(note.relativePath)
-        let canonicalBytes = try Data(contentsOf: canonicalURL)
+        let canonicalBytes = try await canonicalTestNoteBytes(root: fixture.root, id: note.id)
         let unsavedBody = "Only unsaved draft; cancellation must not write this to canonical storage"
         let entered = RollbackRaceSignal()
         let cancelRequested = RollbackRaceSignal()
@@ -88,7 +88,7 @@ struct LifecycleRollbackRaceTests {
         await #expect(throws: VaultSessionError.cancelled(action: "lock")) { _ = try await locking.value }
         #expect(await manager.state == .open(session))
         #expect(manager.admissionBarrier.isOpen)
-        #expect(try Data(contentsOf: canonicalURL) == canonicalBytes)
+        #expect(try await canonicalTestNoteBytes(root: fixture.root, id: note.id) == canonicalBytes)
         #expect(try await recovery.drafts().first?.body == unsavedBody)
         #expect(contextBox.withLock { $0?.noteSnapshot?.body } == unsavedBody)
 
@@ -99,13 +99,13 @@ struct LifecycleRollbackRaceTests {
         #expect(registry.activeCount == 0 && registry.totalCancelledCount == 1 && registry.totalAbandonedCount == 0)
         #expect(manager.quiescenceCoordinator.activeContexts.isEmpty)
         #expect(await manager.inFlightWaiterCount == 0)
-        #expect(try Data(contentsOf: canonicalURL) == canonicalBytes)
+        #expect(try await canonicalTestNoteBytes(root: fixture.root, id: note.id) == canonicalBytes)
         #expect(try await recovery.drafts().first?.body == unsavedBody)
         let report = try #require(try await manager.lockWithQuiescence(repository: repo, recovery: recovery))
         #expect(report.preservedDraftIDs == [note.id])
         #expect(await manager.state.phase == .locked)
         #expect(manager.admissionBarrier.snapshot().activeCount == 0)
-        #expect(try Data(contentsOf: canonicalURL) == canonicalBytes)
+        #expect(try await canonicalTestNoteBytes(root: fixture.root, id: note.id) == canonicalBytes)
     }
 
     @Test
@@ -117,7 +117,7 @@ struct LifecycleRollbackRaceTests {
         let recovery = try RecoveryStore(directory: fixture.drafts, sessionLease: lease, accessGate: manager.accessGate)
         let note = try await repo.create(title: "Canonical", body: "Durable content before recovery failure")
         let canonicalURL = fixture.root.appendingPathComponent(note.relativePath)
-        let canonicalBytes = try Data(contentsOf: canonicalURL)
+        let canonicalBytes = try await canonicalTestNoteBytes(root: fixture.root, id: note.id)
         let draft = DraftRecord(note: note, title: "Unsaved title", body: "Unsaved buffer retained across rollback", tags: ["dirty"])
         let entered = RollbackRaceSignal()
         let cancelRequested = RollbackRaceSignal()
@@ -171,7 +171,7 @@ struct LifecycleRollbackRaceTests {
         #expect(manager.admissionBarrier.snapshot().totalAbandonedCount == 0)
         #expect(manager.quiescenceCoordinator.activeContexts.isEmpty)
         #expect(await manager.inFlightWaiterCount == 0)
-        #expect(try Data(contentsOf: canonicalURL) == canonicalBytes)
+        #expect(try await canonicalTestNoteBytes(root: fixture.root, id: note.id) == canonicalBytes)
         #expect(try Data(contentsOf: fixture.drafts) == blockerBytes)
         #expect(contextBox.withLock { $0?.noteSnapshot?.body } == draft.body)
         #expect(contextBox.withLock { $0?.isDraftPreserved } == false)
@@ -187,11 +187,11 @@ struct LifecycleRollbackRaceTests {
         #expect(report.preservedDraftIDs == [note.id])
         #expect(await manager.state.phase == .locked)
         #expect(manager.admissionBarrier.snapshot().activeCount == 0)
-        #expect(try Data(contentsOf: canonicalURL) == canonicalBytes)
+        #expect(try await canonicalTestNoteBytes(root: fixture.root, id: note.id) == canonicalBytes)
         let unlocked = try await manager.unlock()
         let freshRecovery = try RecoveryStore(directory: fixture.drafts, sessionLease: unlocked.lease, accessGate: manager.accessGate)
         let recovered = try #require(try await freshRecovery.drafts().first)
         #expect(recovered.id == note.id && recovered.body == draft.body && recovered.title == draft.title && recovered.tags == draft.tags)
-        #expect(try Data(contentsOf: canonicalURL) == canonicalBytes)
+        #expect(try await canonicalTestNoteBytes(root: fixture.root, id: note.id) == canonicalBytes)
     }
 }
