@@ -202,43 +202,27 @@ struct NoemaSettings: View {
                         sidebarRow(for: category)
                     }
                 } header: {
-                    Text(group.title.uppercased())
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(theme.text(for: .textSecondary, on: .sidebar))
-                        .padding(.top, 4)
-                        .padding(.bottom, 2)
+                    NoemaSidebarSectionHeader(title: group.title.uppercased())
+                        .listRowInsets(NoemaSidebarLayout.sectionHeaderInsets)
                 }
             }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        .background {
-            if theme.usesFullPalette { theme.color(for: .sidebar) }
-            else { SettingsSidebarMaterialView() }
-        }
+        .noemaSidebarBackground(theme: theme)
         .frame(width: SettingsModalMetrics.sidebarWidth)
         .accessibilityLabel("Settings categories")
     }
 
     private func sidebarRow(for category: SettingsCategory) -> some View {
         let isSelected = selectedCategory == category
-        return HStack(spacing: NoemaSpacing.sm) {
-            Image(systemName: category.symbol)
-                .font(.system(size: 14, weight: .regular))
-                .foregroundStyle(.secondary)
-                .frame(width: NoemaMetrics.iconWidth, alignment: .center)
-                .accessibilityHidden(true)
-            Text(category.title)
-                .font(isSelected ? NoemaTypography.navigationEmphasis : NoemaTypography.navigation)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .layoutPriority(1)
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight, alignment: .leading)
-        .contentShape(Rectangle())
+        return NoemaSidebarRowLabel(
+            title: category.title,
+            symbol: category.symbol,
+            isSelected: isSelected
+        )
         .tag(category)
-        .listRowInsets(EdgeInsets(top: 1, leading: 3, bottom: 1, trailing: 3))
+        .listRowInsets(NoemaSidebarLayout.rowInsets)
         .listRowSeparator(.hidden)
         .accessibilityLabel(category.title)
         .help(category.title)
@@ -285,22 +269,6 @@ struct NoemaSettings: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-}
-
-private struct SettingsSidebarMaterialView: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .sidebar
-        view.blendingMode = .behindWindow
-        view.state = .followsWindowActiveState
-        return view
-    }
-
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.material = .sidebar
-        nsView.blendingMode = .behindWindow
-        nsView.state = .followsWindowActiveState
     }
 }
 

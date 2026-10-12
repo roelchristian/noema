@@ -24,6 +24,7 @@ struct ContentView: View {
     @State private var paneState: WorkspacePaneState
     @State private var workspaceWidth: CGFloat = 1280
     @State private var pageSortOrder: PageSortOrder = .updated
+    @State private var selectedSemanticFilter: String?
     private var sourceSelection: UUID? { model.librarySourceSelection }
     private var sourceSelectionBinding: Binding<UUID?> {
         Binding(get: { model.librarySourceSelection }, set: { model.setLibrarySourceSelection($0) })
@@ -93,6 +94,7 @@ struct ContentView: View {
         dismissedExternalChange = false
         sourceOriginal = false
         showAllSearchResults = false
+        selectedSemanticFilter = nil
     }
     private var workspacePresentation: some View {
         Group {
@@ -133,7 +135,7 @@ struct ContentView: View {
         workspacePresentation
         .disabled(!model.canInteractWithWorkspace)
         .navigationTitle(model.windowTitle.title)
-        .navigationSubtitle(model.windowTitle.subtitle)
+        .navigationSubtitle(model.windowTitle.hasSubtitle ? model.windowTitle.subtitle : "")
         .focusedSceneValue(\.workspacePaneActions, paneActions)
         .toolbar(removing: .sidebarToggle)
         .toolbar { workspaceToolbar }
@@ -227,7 +229,7 @@ struct ContentView: View {
         .onChange(of: model.body) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.title) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false; showAllSearchResults = false }
-        .onChange(of: model.scope) { showAllSearchResults = false }
+        .onChange(of: model.scope) { showAllSearchResults = false; selectedSemanticFilter = nil }
         .onChange(of: model.workspaceNavigationToken) { showAllSearchResults = false }
         .onChange(of: model.externalChange) { dismissedExternalChange = false }
         // UI.R.REM02: Reconcile even while the inspector is hidden or unmounted.
@@ -388,7 +390,7 @@ struct ContentView: View {
                             .font(NoemaTypography.metadata)
                             .foregroundStyle(.secondary)
                             .frame(minHeight: NoemaMetrics.compactRowHeight)
-                            .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+                            .listRowInsets(NoemaSidebarLayout.rowInsets)
                     } else {
                         ForEach(model.sidebarRecentItems) { item in
                             sidebarRecentRow(item)
@@ -396,9 +398,8 @@ struct ContentView: View {
                         }
                     }
                 } header: {
-                    Text("RECENT ITEMS")
-                        .font(NoemaTypography.sidebarSection)
-                        .foregroundStyle(theme.text(for: .textSecondary, on: .sidebar))
+                    NoemaSidebarSectionHeader(title: "RECENT ITEMS")
+                        .listRowInsets(NoemaSidebarLayout.sectionHeaderInsets)
                 }
             }
             .listStyle(.sidebar)
@@ -442,25 +443,7 @@ struct ContentView: View {
                         Label("Create Vault…", systemImage: "folder.badge.plus")
                     }.disabled(!model.canPerformWorkspaceCommand(.createVault))
                 } label: {
-                    HStack(spacing: NoemaSpacing.sm) {
-                        Image(systemName: "folder")
-                            .font(NoemaTypography.navigation)
-                            .foregroundStyle(theme.text(for: .textSecondary, on: .sidebar))
-                            .frame(width: NoemaMetrics.iconWidth)
-                        Text(model.vaultName)
-                            .font(NoemaTypography.navigationEmphasis)
-                            .foregroundStyle(theme.text(for: .textPrimary, on: .sidebar))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Spacer(minLength: NoemaSpacing.xs)
-                        Image(systemName: "chevron.down")
-                            .font(NoemaTypography.caption)
-                            .foregroundStyle(theme.text(for: .textSecondary, on: .sidebar))
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
-                    .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight)
-                    .contentShape(Rectangle())
+                    NoemaSidebarVaultSelectorLabel(vaultName: model.vaultName)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -468,14 +451,11 @@ struct ContentView: View {
                 .help("Vault options")
                 .accessibilityLabel("Vault menu. Current vault: \(model.vaultName)")
             }
-            .padding(.horizontal, NoemaMetrics.sidebarInset)
+            .padding(.horizontal, NoemaSidebarLayout.footerHorizontalPadding)
             .padding(.top, 6)
             .padding(.bottom, 8)
         }
-        .background {
-            if theme.usesFullPalette { theme.color(for: .sidebar).ignoresSafeArea() }
-            else { SidebarMaterialView().ignoresSafeArea() }
-        }
+        .noemaSidebarBackground(theme: theme)
     }
     @ViewBuilder private var searchResultSections: some View {
         let results = model.visibleSearchResults
@@ -555,27 +535,11 @@ struct ContentView: View {
         .accessibilityLabel("\(title), \(excerpt)")
         .help(title)
     }
-    private func sidebarRowLabel(_ title: String, symbol: String) -> some View {
-        HStack(spacing: NoemaSpacing.sm) {
-            Image(systemName: symbol)
-                .font(NoemaTypography.navigation)
-                .foregroundStyle(.secondary)
-                .frame(width: NoemaMetrics.iconWidth)
-                .accessibilityHidden(true)
-            Text(title)
-                .font(NoemaTypography.navigation)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .layoutPriority(1)
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight, alignment: .leading)
-        .contentShape(Rectangle())
-    }
     private func sidebarNavigationRow(_ title: String, symbol: String, scope: LibraryScope) -> some View {
-        sidebarRowLabel(title, symbol: symbol)
+        let isSelected = sidebarSelection == .destination(scope)
+        return NoemaSidebarRowLabel(title: title, symbol: symbol, isSelected: isSelected)
             .tag(SidebarSelection.destination(scope))
-            .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+            .listRowInsets(NoemaSidebarLayout.rowInsets)
             .listRowSeparator(.hidden)
             .accessibilityLabel(title)
             .help(title)
@@ -584,7 +548,7 @@ struct ContentView: View {
         let note = item.pageID.flatMap { id in model.notes.first { $0.id == id } }
         let active = sidebarSelection == .recent(item.id)
         return HStack(spacing: 2) {
-            sidebarRowLabel(item.title, symbol: item.symbol)
+            NoemaSidebarRowLabel(title: item.title, symbol: item.symbol, isSelected: active)
             if let note {
                 SidebarEditingLockControl(locked: note.isEditingLocked,
                                           selected: active,
@@ -600,7 +564,7 @@ struct ContentView: View {
             if hovering { hoveredSidebarPageID = item.pageID }
             else if hoveredSidebarPageID == item.pageID { hoveredSidebarPageID = nil }
         }
-        .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+        .listRowInsets(NoemaSidebarLayout.rowInsets)
         .listRowSeparator(.hidden)
         .help(item.accessibilityLabel)
         .accessibilityElement(children: .contain)
@@ -636,7 +600,7 @@ struct ContentView: View {
             HStack(spacing: NoemaSpacing.md) {
                 VStack(alignment: .leading, spacing: NoemaSpacing.xs) {
                     Text(model.searchMode == .quickOpen ? "Quick Open" : "Search Results")
-                        .font(NoemaTypography.libraryTitle)
+                        .font(NoemaTypography.sectionHeader)
                     Text(model.searchText.isEmpty
                          ? "\(model.visibleSearchResults.totalCount) results · \(model.searchScope.title)"
                          : "“\(model.searchText)” · \(model.visibleSearchResults.totalCount) results · \(model.searchScope.title)")
@@ -773,7 +737,13 @@ struct ContentView: View {
         }
         .background(theme.color(for: .canvas))
         .safeAreaBar(edge: .top) {
-            if (isPagesScope && !model.tags.isEmpty) || model.busy {
+            if model.scope == .semantic, (!model.semanticRows.isEmpty || model.busy) {
+                SemanticBlocksFilterBar(
+                    options: semanticFilterOptions,
+                    selectedSemantic: $selectedSemanticFilter,
+                    busy: model.busy
+                )
+            } else if (isPagesScope && !model.tags.isEmpty) || model.busy {
                 HStack(spacing: NoemaSpacing.sm) {
                     if isPagesScope && !model.tags.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -947,39 +917,44 @@ struct ContentView: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
+    private var semanticFilterOptions: [SemanticTypeFilterOption] {
+        SemanticCollectionPresentation.availableFilters(from: model.semanticRows)
+    }
+    private var filteredSemanticRows: [SemanticBlockHit] {
+        SemanticCollectionPresentation.filteredRows(model.semanticRows, selectedSemantic: selectedSemanticFilter)
+    }
     private var semanticBlockList: some View {
         Group {
             if model.semanticRows.isEmpty {
                 ContentUnavailableView("No semantic blocks",
                     systemImage: "tag", description: Text("Search block text, semantic type, or page title."))
                     .frame(maxHeight: .infinity)
+            } else if filteredSemanticRows.isEmpty {
+                ContentUnavailableView("No matching semantic blocks",
+                    systemImage: "line.3.horizontal.decrease.circle", description: Text("Try clearing the semantic type filter or adjusting your search."))
+                    .frame(maxHeight: .infinity)
             } else {
                 List(selection: Binding(get: { model.selectedSemanticID }, set: { id in
-                    if let hit = model.semanticRows.first(where: { $0.id == id }) {
+                    if let hit = filteredSemanticRows.first(where: { $0.id == id }) {
                         model.select(hit.pageID, block: hit.blockID)
                     }
                 })) {
-                    ForEach(model.semanticRows) { hit in
-                        let presentation = SemanticPresentation.find(hit.semantic)
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: presentation?.symbol ?? "tag")
-                                .font(.headline)
-                                .foregroundStyle(Color(nsColor: presentation?.accent ?? .secondaryLabelColor))
-                                .frame(width: 20)
-                                .accessibilityHidden(true)
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(presentation?.title ?? hit.semantic.capitalized).font(.headline)
-                                Text(hit.preview.isEmpty ? "Empty block" : hit.preview).lineLimit(1)
-                                Text(hit.pageTitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            }
-                        }.padding(.horizontal, 12).padding(.vertical, 8).tag(hit.id)
+                    ForEach(filteredSemanticRows) { hit in
+                        SemanticBlockCollectionRow(hit: hit)
+                            .tag(hit.id)
                     }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
             }
         }
     }
     private var libraryCount: String {
-        if model.scope == .semantic { return "\(model.semanticRows.count) semantic blocks" }
+        if model.scope == .semantic {
+            return SemanticCollectionPresentation.countLabel(
+                filteredCount: filteredSemanticRows.count,
+                totalCount: model.semanticRows.count,
+                selectedSemantic: selectedSemanticFilter
+            )
+        }
         let count = model.rows.count
         let noun = model.scope == .sources ? (count == 1 ? "source" : "sources") : (count == 1 ? "page" : "pages")
         return "\(count) \(noun)"
@@ -1024,7 +999,6 @@ struct ContentView: View {
                     showAllSearchResults = true
                 }
             }
-            ToolbarSpacer(.fixed, placement: .primaryAction)
             if isPagesScope && model.currentNote == nil && model.currentSource == nil && !showAllSearchResults {
                 ToolbarItem(id: "pages.sort", placement: .primaryAction) {
                     Menu {
@@ -1041,7 +1015,6 @@ struct ContentView: View {
                     .accessibilityLabel("Sort Pages")
                     .accessibilityValue(pageSortOrder.rawValue)
                 }
-                ToolbarSpacer(.fixed, placement: .primaryAction)
             }
             ToolbarItem(id: "workspace.add", placement: .primaryAction) {
                 Menu {
@@ -1063,7 +1036,6 @@ struct ContentView: View {
                 .accessibilityLabel("Add Page or Source")
             }
             if let note = model.currentNote {
-                ToolbarSpacer(.fixed, placement: .primaryAction)
                 ToolbarItem(id: "document.edit", placement: .primaryAction) {
                     Button {
                         if model.reading { model.beginEditing() } else { model.finishEditing() }
@@ -1098,7 +1070,6 @@ struct ContentView: View {
                     .accessibilityLabel("Move to Trash")
                 }
             }
-            ToolbarSpacer(.fixed, placement: .primaryAction)
             trailingWorkspaceToolbar
         }
     }
@@ -1157,7 +1128,6 @@ struct ContentView: View {
             .help("Document and vault options")
             .accessibilityLabel("Document and Vault Options")
         }
-        ToolbarSpacer(.fixed, placement: .primaryAction)
         ToolbarItem(id: "workspace.inspector", placement: .primaryAction) { inspectorToolbarToggle }
     }
     private var pageFooter: some View {
@@ -1425,21 +1395,6 @@ private struct SidebarEditingLockControl: View {
         .help(actionTitle)
         .accessibilityLabel(actionTitle)
         .accessibilityValue(pending ? "Saving" : locked ? "Editing locked" : "Editing unlocked")
-    }
-}
-
-private struct SidebarMaterialView: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .sidebar
-        view.blendingMode = .behindWindow
-        view.state = .followsWindowActiveState
-        return view
-    }
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.material = .sidebar
-        nsView.blendingMode = .behindWindow
-        nsView.state = .followsWindowActiveState
     }
 }
 

@@ -125,9 +125,11 @@ The hygiene checker fails on root Markdown outside `README.md`/`AGENTS.md`, trac
 
 ## Native workspace controls
 
-The native window toolbar presents the document title once, alongside navigation,
-document editing and lock controls, and global commands. Its contextual actions menu
-provides Rename, summary actions and Delete. `⌃⌘S` toggles sidebar, `⌥⌘I` toggles
+The compact unified window toolbar (`.unifiedCompact`) presents the active collection
+(`Pages`, `Sources`, `Semantic Blocks`, `Trash`) or opened document title once, alongside
+navigation, contextual collection sorting (`Pages`), document editing and lock controls,
+and global commands without a second competing title bar below it. Its contextual actions
+menu provides Rename, summary actions and Delete. `⌃⌘S` toggles sidebar, `⌥⌘I` toggles
 contextual inspector, and
 `⇧⌘F` expands and focuses toolbar vault search; `⌘P` opens title-oriented Quick Open
 in the same control. Search retains the current document, query and library scope;
@@ -174,7 +176,7 @@ Automatic title, classification and source processing run locally via Apple Inte
 Select text and activate hyperlinks with ordinary clicks while reading. Press **Edit**, choose **Edit Article** in the context menu, or Option-click an unlocked article to start native block editing; edits autosave after 500 ms of inactivity. Document font family and size (`10–32 pt`, default `16 pt` for new preferences) are configurable in **Settings → Reading & Editor**. Existing saved sizes remain selected. Articles and readable Markdown, HTML and plain-text sources share these preferences; unavailable fonts retain their saved choice and use the system face. Headings, paragraph rhythm, code and semantic labels scale together within a centered reading measure capped at 680 pt. Controls, metadata and Quick Look retain native typography. See the [editorial contract](contracts/block-editor.md#editorial-typography).
 
 - **Slash commands (`/`):** Type `/` in an empty block or after whitespace (with fuzzy matching and aliases like `/h2`, `/math`, `/ques`) to insert basic blocks (paragraphs, 3 heading levels, bullets, numbered lists, tasks, quotes, code, display math `$$`, dividers, callouts, nested toggles) or semantic blocks (**Question**, **Idea**, **Important**, **Starred**, **Definition**, **Example**, **Insight**, **Warning**, **Reference**, **Summary**).
-- **Semantic blocks:** Semantic icons appear in the left margin (with optional statuses for **Question** and **Idea**); turn on **Settings → Reading & Editor → Show semantic block headings** to show labels above block text. The sidebar **Semantic Blocks** collection and the page inspector index all tagged blocks across the vault for filtering and one-click jump navigation.
+- **Semantic blocks:** Semantic icons appear in the left margin (with optional statuses for **Question** and **Idea**); turn on **Settings → Reading & Editor → Show semantic block headings** to show labels above block text. The sidebar **Semantic Blocks** collection presents a compact two-line browser with contextual semantic-type filters and the page inspector indexes all tagged blocks across the vault for filtering and one-click jump navigation.
 - **Math & TeX:** Supports inline (`$...$`, `\(...\)`) and display (`$$...$$`, `\[...\]`) math in the editor and previews. Configure reusable `\newcommand` macros (0–3 arguments) in **Settings → Reading & Editor → Custom Commands…** or define them inline.
 - **Block handles:** Hover a paragraph or focus the editor to reveal its content-relative handle. Click to select a block, Shift-click to extend the block selection, or Command-click to toggle membership. Drag a handle to reorder siblings; Escape cancels. Block Actions applies move, duplicate, delete, copy and transformations to the selected blocks. Native text selection remains available through the text itself.
 - **Shortcuts & actions:**

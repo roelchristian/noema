@@ -80,16 +80,17 @@ A global two-level foreground style must remain removed or limited to prevent ne
 | `NoemaTypography` property | Initial system style | Purpose and consumer |
 | --- | --- | --- |
 | `documentTitle` | `.title.weight(.semibold)` | Document title chrome in `ContentView`; body/block headings are excluded |
-| `libraryTitle` | `.title2.weight(.bold)` | Sources, Pages, Trash and search collection headings |
-| `sectionHeader` | `.headline.weight(.semibold)` | Inspector panel headings |
-| `navigation` | `.callout` | Sidebar row labels and custom navigation icons |
-| `navigationEmphasis` | `.callout.weight(.medium)` | Selected tab or vault label |
+| `libraryTitle` | `.title2.weight(.bold)` | Standalone empty/welcome headings where an introductory heading is needed |
+| `sectionHeader` | `.headline.weight(.semibold)` | Inspector panel headings, search results bar and modal detail headers |
+| `navigation` | `.callout` | Sidebar primary and recent row labels (13 pt regular on macOS) |
+| `navigationEmphasis` | `.callout.weight(.medium)` | Selected sidebar row or vault selector label (13 pt medium on macOS) |
 | `interface` | `.callout` | Property values and custom search text |
-| `interfaceEmphasis` | `.callout.weight(.medium)` | Link/source row titles and actions |
+| `interfaceEmphasis` | `.callout.weight(.medium)` | Link/source/semantic block row titles and actions |
 | `metadata` | `.caption` | Dates, counts, inspector supporting text |
-| `metadataEmphasis` | `.caption.weight(.medium)` | Count badges and emphasized metadata |
+| `metadataEmphasis` | `.caption.weight(.medium)` | Count badges, semantic type badges and emphasized metadata |
 | `caption` | `.caption2` | Keyboard hints and minor icon annotations |
-| `sidebarSection` | `.caption.weight(.semibold)` | Recent/All Pages uppercase labels |
+| `sidebarSection` | `.subheadline.weight(.medium)` | Uppercase sidebar section headers (11 pt medium on macOS) |
+| `sidebarIcon` | `.system(size: 14, weight: .regular)` | Shared 14 pt sidebar navigation and vault icon scale |
 
 Native AppKit companions, when needed for application chrome, should resolve the corresponding system font rather than read editor preferences. No blanket font override is added at root. Symbol optical adjustments can remain local when their purpose is documented.
 
@@ -111,10 +112,14 @@ Zero spacing, native default padding and small 1–3 point optical corrections a
 
 | Property | Points | Purpose and first consumer |
 | --- | ---: | --- |
-| `compactRowHeight` | 28 | Custom sidebar row minimum; current 28pt rows |
-| `comfortableRowHeight` | 30 | Vault menu/comfortable custom navigation |
+| `compactRowHeight` | 28 | Sidebar navigation and recent row minimum height (28–30 pt target) |
+| `comfortableRowHeight` | 30 | Comfortable custom navigation row reference |
 | `searchHeight` | 30 | Compact popover search field; inline native field retains intrinsic height |
-| `sidebarInset` | 10 | Shared sidebar horizontal framing |
+| `sidebarInset` | 8 | Shared sidebar outer horizontal margin (8–10 pt target) |
+| `sidebarRowHorizontalInset` | 3 | Additional row horizontal inset inside native `.sidebar` list (2–4 pt target) |
+| `sidebarIconSize` | 14 | Sidebar icon point size (14–15 pt target) |
+| `sidebarIconSpacing` | 8 | Sidebar icon-to-label spacing (7–8 pt target) |
+| `sidebarSectionSpacing` | 12 | Spacing between sidebar sections (10–14 pt target) |
 | `inspectorInset` | 16 | Inspector shell, header and panel horizontal alignment |
 | `radiusSmall` | 6 | Custom selected tabs and compact controls |
 | `radiusStandard` | 8 | Search and grouped custom control containers |
@@ -122,7 +127,7 @@ Zero spacing, native default padding and small 1–3 point optical corrections a
 | `borderWidth` | 0.5 | Custom group/search hairline; increased contrast may strengthen |
 | `focusRingWidth` | 2 | Visible keyboard-focus and selected-press outlines on custom controls |
 | `controlGroupInset` | 3 | Optical inset around tab groups |
-| `iconWidth` | 16 | Shared chrome icon column |
+| `iconWidth` | 16 | Shared chrome icon alignment column |
 | `toolbarControlHeight` | 28 | Custom compact action target reference |
 | `readingMeasure` | 680 | Future reading-container reference in the 600–760pt range; not a block editor migration |
 
@@ -130,9 +135,9 @@ Prefer minimum heights and content-driven width for text-bearing custom controls
 
 ## Integrated implementation
 
-The shared chrome implements the contract in `Theme.swift`, `DesignTokens.swift` and `ChromeInteractionStyle.swift`, with consumers in `ContentView.swift` and the inspector views. The AppKit `nativeText(for:on:active:)` companion resolves the same actual-surface foreground as the SwiftUI API.
+The shared chrome implements the contract in `Theme.swift`, `DesignTokens.swift`, `SidebarChrome.swift` and `ChromeInteractionStyle.swift`, with consumers in `ContentView.swift`, `NoemaSettings.swift` and the inspector views. The AppKit `nativeText(for:on:active:)` companion resolves the same actual-surface foreground as the SwiftUI API.
 
-Custom controls use `NoemaChromeButtonStyle` and state-aware leaf foregrounds. Selection persists through hover, press and inactive-window states; pressing a selected control adds an outline. Focus adds a separate native-colored ring. Native controls retain their own state drawing. The sidebar List no longer animates as a whole, and retained local transitions respect Reduce Motion.
+Custom controls use `NoemaChromeButtonStyle` and state-aware leaf foregrounds. Selection persists through hover, press and inactive-window states; pressing a selected control adds an outline. Focus adds a separate native-colored ring. Native controls retain their own state drawing. Workspace and Settings sidebars use native `.listStyle(.sidebar)` selection with shared `NoemaSidebarRowLabel`, `NoemaSidebarSectionHeader` and `NoemaSidebarVaultSelectorLabel` geometry. The sidebar List no longer animates as a whole, and retained local transitions respect Reduce Motion.
 
 Custom icon actions have at least 28-point widths and navigation targets use minimum heights. The wider action targets can truncate long sidebar titles sooner at the minimum pane width; the page button exposes the full title through its accessibility text and tooltip.
 
@@ -143,10 +148,10 @@ Custom icon actions have at least 28-point widths and navigation targets use min
 ### Native and component-specific approved exceptions
 
 1. **Native controls and selection.** `SourcesLibraryView.Table`, standard List selection, table column minimum/ideal widths, native Form, Toggle, Slider, Menu, Picker, progress spinner, text editor, alert and sheet roles keep platform sizing and state drawing. Theme does not globally recolor labels inside native selected/prominent controls.
-2. **Sidebar material and system appearance.** `SidebarMaterialView` uses a native visual-effect sidebar material for System/accent-only themes. A surface role identifies the purpose without replacing vibrancy. Menu material and source Quick Look retain native rendering.
+2. **Sidebar material and system appearance.** `NoemaSidebarMaterialView` uses a native visual-effect `.sidebar` material for System/accent-only themes across both the workspace sidebar and modal sidebars. A surface role identifies the purpose without replacing vibrancy. Menu material and source Quick Look retain native rendering.
 3. **Editorial font and layout.** `EditorTypography` owns default15pt and allowed10–32pt font settings. `NativeTextViews` insets28×24, source reader24×24, rich editor80×24, block indentation24, block/text decoration geometry and semantic heading space remain component-owned. AppKit text selection uses `selectedTextColor` and `selectedTextBackgroundColor`.
 4. **Brand identity.** `NoemaBrandPalette` RGB values, `NoemaMark` proportional tile radius/inset, Orbit geometry, app icon and About branding stay separate from interface palette. Existing palette RGB values in `MidnightIrisPalette` are data, not hard-coded view colors.
-5. **Window/pane/layout constraints.** Main window960×620 minimum; sidebar250/265/280 range; Sources workspace520 minimum versus420; inspector280/340/420 range; sheet-specific dimensions and reading980/80/85 geometry remain semantic component constraints. Tokens may reference them later without changing behavior in this series.
+5. **Window/pane/layout constraints.** Main window960×620 minimum; sidebar190/220/320 range (and Settings modal sidebar 200pt); Sources workspace520 minimum versus420; inspector280/340/420 range; sheet-specific dimensions and reading980/80/85 geometry remain semantic component constraints. Tokens may reference them later without changing behavior in this series.
 6. **Optical geometry.** 0.5pt List insets, 1/1.5/2/3pt badge/control alignment, capsule shape, SF Symbol optical adjustments, native hairlines and zero-sized lifetime/state bridge views are intentional. `Color.clear` represents absence, not a missing theme role.
 7. **Specialized editor palette/settings.** Non-activating block-command panel240pt width, native button cells/menu material and custom TeX command input sizes are established editor behaviors outside shared chrome scope. They may consume primitives only after their behavior is verified.
 8. **Status semantics.** Semantic category colors in `SemanticRegistry` and unread blue indicators retain status/category meaning. Text/accessibility labels accompany them; themes must not turn all categories into accent.
@@ -177,12 +182,16 @@ Run the repository's existing build and test scripts and retain relevant regress
 
 ## Native toolbar integration
 
-The native toolbar retains SwiftUI/AppKit fonts, geometry, focus, hover, pressed and
-disabled drawing with the scene's `NoemaTheme` tint. Do not apply custom row fonts,
-hit-target frames or `NoemaChromeButtonStyle` to native toolbar controls. Shared
-sidebar/search/footer and inspector content retain semantic typography, spacing,
-colors and focus. Content stays below the native titlebar; sidebar top inset uses
-`NoemaSpacing.md`, and welcome/locked text resolves against `.window`. Native glass
-buttons retain their own foreground and sizing. Window/pane dimensions remain
-component-owned rather than density tokens. Isolated hosted fixture preferences must
-not modify real workspace defaults. See [validation](../validation.md#native-window-acceptance).
+The main window uses `.windowToolbarStyle(.unifiedCompact(showsTitle: true))` (with
+`window.toolbarStyle = .unifiedCompact` enforced by `WorkspaceWindowState`) so collection
+views (`Pages`, `Sources`, `Semantic Blocks`, `Trash`) and opened documents share a
+single compact horizontal toolbar band without redundant collection headings or empty
+subtitle space. The native toolbar retains SwiftUI/AppKit fonts, geometry, focus, hover,
+pressed and disabled drawing with the scene's `NoemaTheme` tint. Do not apply custom row
+fonts, hit-target frames, fixed blank spacers or `NoemaChromeButtonStyle` to native
+toolbar controls. Shared sidebar/search/footer and inspector content retain semantic
+typography, spacing, colors and focus. Content stays below the native titlebar, and
+welcome/locked text resolves against `.window`. Native glass buttons retain their own
+foreground and sizing. Window/pane dimensions remain component-owned rather than density
+tokens. Isolated hosted fixture preferences must not modify real workspace defaults. See
+[validation](../validation.md#native-window-acceptance).
