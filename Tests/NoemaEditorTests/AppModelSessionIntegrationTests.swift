@@ -36,6 +36,50 @@ struct AppModelSessionIntegrationTests {
         try #require(model.outgoingLinkTargets == targets)
     }
 
+    @Test @MainActor
+    func sidebarOrganisationDropsPreserveMembershipAndRejectInvalidHierarchy() async throws {
+        let root = try await makeTempVault(name: "Sidebar Organisation")
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let repository = try await openCanonicalAppFixture(root: root)
+        let page = try await repository.create(title: "Sidebar page", body: "Canonical content")
+        let store = repository.sqliteBlockStore
+        var revision = try await store.canonicalVaultRevision()
+        let collection = try await store.createContainer(kind: .collection, name: "Reading", parentID: nil, expectedVaultRevision: revision, operationID: UUID())
+        revision = collection.vaultRevision
+        let folder = try await store.createContainer(kind: .folder, name: "Notes", parentID: collection.value.id, expectedVaultRevision: revision, operationID: UUID())
+        revision = folder.vaultRevision
+        let child = try await store.createContainer(kind: .folder, name: "Child", parentID: folder.value.id, expectedVaultRevision: revision, operationID: UUID())
+        revision = child.vaultRevision
+        let reference = OrganisationItemReference(kind: .page, itemID: page.id)
+        _ = try await store.addMembership(containerID: collection.value.id, reference: reference, expectedVaultRevision: revision, operationID: UUID())
+        let pageBefore = try await store.load(pageID: page.id)
+        let model = AppModel()
+        model.localStorageRoot = root.deletingLastPathComponent().appendingPathComponent("Local")
+        model.persistSecurityScopedBookmark = false
+        await model.open(root, create: false)
+        try #require(model.isVaultAvailable)
+        #expect(!model.receiveOrganisationDrop([model.organisationDragBatch([OrganisationDrag.container(collection.value.id)])], into: folder.value.id))
+        #expect(!model.receiveOrganisationDrop([model.organisationDragBatch([OrganisationDrag.container(folder.value.id)])], into: child.value.id))
+        #expect(!model.receiveOrganisationDrop([model.organisationDragBatch([OrganisationDrag.item(reference)])], into: nil))
+        #expect(!model.receiveOrganisationDrop(["noema-session:\(UUID()):" + OrganisationDrag.item(reference)], into: folder.value.id))
+        let itemDrag = model.organisationDragBatch([OrganisationDrag.movingItem(reference, from: collection.value.id)])
+        try #require(model.receiveOrganisationDrop([itemDrag], into: folder.value.id))
+        await waitUntil { !model.organisationMutationInProgress }
+        #expect(model.errorMessage == nil)
+        #expect(model.organisationMemberships.contains { $0.containerID == folder.value.id && $0.reference == reference })
+        #expect(!model.organisationMemberships.contains { $0.containerID == collection.value.id && $0.reference == reference })
+        #expect(try await store.load(pageID: page.id).revision == pageBefore.revision)
+        let folderDrag = model.organisationDragBatch([OrganisationDrag.container(folder.value.id), OrganisationDrag.container(child.value.id)])
+        try #require(model.receiveOrganisationDrop([folderDrag], into: nil))
+        await waitUntil { !model.organisationMutationInProgress }
+        #expect(model.organisationContainers.first { $0.id == folder.value.id }?.parentID == nil)
+        #expect(model.organisationContainers.first { $0.id == child.value.id }?.parentID == folder.value.id)
+        try #require(await model.closeVault())
+        #expect(!model.receiveOrganisationDrop([itemDrag], into: folder.value.id))
+        let persisted = try await store.organisationSnapshot(includingHidden: false)
+        #expect(persisted.memberships.contains { $0.containerID == folder.value.id && $0.reference == reference })
+    }
+
     // Both initialization paths must discard the previous vault's links.
     @Test @MainActor
     func populatedInspectorLinksArePurgedAcrossLockUnlockVaultSwitchAndClose() async throws {

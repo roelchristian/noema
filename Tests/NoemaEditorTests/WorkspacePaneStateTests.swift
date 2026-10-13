@@ -5,10 +5,23 @@ import Testing
 
 @Suite("Workspace pane preferences and geometry") @MainActor
 struct WorkspacePaneStateTests {
+    @Test func freshWorkspaceStartsWithInspectorClosed() {
+        let name = "WorkspacePaneStateTests.Default.\(UUID())"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let state = WorkspacePaneState(defaults: defaults)
+        #expect(state.isSidebarVisible && state.isCollectionVisible)
+        #expect(!state.isInspectorVisible)
+        #expect(defaults.object(forKey: WorkspacePaneState.inspectorVisibilityKey) == nil)
+    }
+
     private func withDefaults(_ body: (UserDefaults) -> Void) {
         let name = "WorkspacePaneStateTests.\(UUID())"
         let defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
+        // Geometry scenarios exercise an explicitly open inspector, independently
+        // of the workspace's closed-by-default preference.
+        defaults.set(true, forKey: WorkspacePaneState.inspectorVisibilityKey)
         body(defaults)
     }
 
@@ -36,7 +49,7 @@ struct WorkspacePaneStateTests {
             #expect(tiny == WorkspacePanePresentation(sidebar: false, inspector: false))
             #expect(state.isSidebarVisible && state.isInspectorVisible)
             #expect(defaults.object(forKey: WorkspacePaneState.sidebarVisibilityKey) == nil)
-            #expect(defaults.object(forKey: WorkspacePaneState.inspectorVisibilityKey) == nil)
+            #expect(defaults.bool(forKey: WorkspacePaneState.inspectorVisibilityKey))
             let restored = state.presentation(width: 1280, mainMinimum: 520, inspectorAvailable: true)
             #expect(restored == WorkspacePanePresentation(sidebar: true, collection: true, inspector: true))
         }

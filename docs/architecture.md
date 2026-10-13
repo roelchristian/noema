@@ -91,7 +91,12 @@ retaining the draft on failure. The native command is available after the cohere
 snapshot loads. The page Insight inspector resolves associations by canonical UUID,
 including shared entity names/descriptions/aliases and independent Question and
 Definition properties. Native context-menu inspection opens the matching entry;
-canonical target edits compare target/vault revisions, while association replacement
+the Entities section groups page-local annotations by canonical identity, with type
+filters, mention counts and exact annotation navigation. Stale mentions remain visible
+but cannot navigate; deleted anchors are excluded. Shared target editing and individual
+association changes remain in menus and sheets, while semantic objects retain their
+separate association rows. No entity mini-article or graph is introduced.
+Canonical target edits compare target/vault revisions, while association replacement
 and removal use the editor command, undo, recovery and semantic page save path.
 Canonical target edits retain the existing association IDs and refresh referent
 revision evidence for subsequent saves. Canonical entity occurrence queries include
@@ -225,7 +230,11 @@ highlight follows the active collection. Favorites and Recent Items are top-leve
 entries in a separate sidebar group, divided from Pages, Sources, and Knowledge.
 Both open the same inbox list in the collection pane; individual items do not appear
 in the sidebar. Vault-owned collections and folders appear in a separate sidebar section
-and reuse the inbox list. Collections remain at the vault root; folders can be created
+and reuse the inbox list. Each container expands or collapses independently; expanded
+containers show their page, source and semantic-block memberships as draggable sidebar rows.
+Collapsing an ancestor hides its descendants without changing their individual disclosure state.
+Drop targets highlight on hover, and an accepted drop expands its destination.
+Collections remain at the vault root; folders can be created
 or moved under a collection or another folder. Container menus create, rename, and
 delete containers and add or remove the current document; deleting a container removes
 its descendant containers and memberships while retaining canonical items. Stored page,
