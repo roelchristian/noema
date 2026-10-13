@@ -147,15 +147,16 @@ and auxiliary-window isolation using the [standing matrix](validation.md#native-
 
 ## Core workflow
 
-Create a temporary schema-5 vault for a tour. Keep personal vaults outside this source repository.
+Create a temporary schema-6 vault for a tour. Keep personal vaults outside this source repository.
 
 ### Vaults
-- **Create a vault:** Click **Create a vault** (default name **My Knowledge Vault**) and choose a parent folder such as **iCloud Drive / Noema**. Creation publishes a complete plaintext schema-5 SQLite vault only after confirmation and rejects occupied names. Optionally enable **Require authentication in Noema** before creation: Noema then authenticates before showing the new vault. Cancelling authentication preserves the created folder and its preference for a later **Open Vault** retry. **Encrypted vault** remains unavailable; encryption and recovery-key protection are separate future work.
+- **Create a vault:** Click **Create a vault** (default name **My Knowledge Vault**) and choose a parent folder such as **iCloud Drive / Noema**. Creation publishes a complete plaintext schema-6 SQLite vault only after confirmation and rejects occupied names. Optionally enable **Require authentication in Noema** before creation: Noema then authenticates before showing the new vault. Cancelling authentication preserves the created folder and its preference for a later **Open Vault** retry. **Encrypted vault** remains unavailable; encryption and recovery-key protection are separate future work.
 - **Access authentication:** **Settings → Vault Access** changes the open vault's preference after native macOS authentication. Enabled vaults require a fresh attempt on initial opening, unlocking, reopening after close, or restarting Noema; selecting the same locked folder to restore permission follows the same requirement. Existing vaults default to disabled. The preference is stored locally under the vault UUID and does not travel with the folder to another Mac. This protects casual access through Noema; editable preferences, direct filesystem access and compromised process code remain outside the boundary. Files, indexes, drafts and previews remain plaintext. Native prompt/accessibility acceptance remains [pending](validation.md#native-authentication-device-acceptance).
 - **Vault menu, session locking & notices:** The vault-name menu at the bottom of the sidebar (and the **Vault** menu bar item) groups **Open Vault in Finder**, **Refresh from Files**, **Lock Vault** / **Unlock Vault** (`⌥⌘L`), **Close Vault** (`⇧⌘W`), **Trash** (with item count), recoverable drafts, vault notices, and **Open / Create Vault…**. Locking a vault flushes or journals pending edits, closes open source readers and dismisses the modal Settings sheet (including any nested sheet), detaches the search index and closes canonical SQLite storage, clears loaded notes and sources from memory, and revokes in-app session access until unlocked (application-level access revocation; Markdown or SQLite/WAL and source files remain plaintext until cryptographic vault storage is enabled). Global Settings (`⌘,`) presents as a workspace-modal sheet with sidebar categories (**Personalisation**: Appearance, Reading & Editor; **Intelligence**: Intelligence, OpenAI; **Security**: Vault Access), gating workspace commands while open and remaining accessible while locked. Error banners and vault notices can be dismissed individually or with **Dismiss All** for the current session.
 
 ### Pages
 - **Browse & organize:** Select **Pages**, **Sources**, or **Knowledge** in the sidebar. The middle list stays visible while the selected page or source opens on the right. Sort Pages by update date or title from that list, and filter Pages by tag there. The sidebar keeps **Pages**, **Sources**, and **Knowledge** above a shared **Recent Items** list of up to ten successfully opened items. Choosing a recent item opens it; choosing a document from the list does not move the sidebar highlight onto Recent. Recent block entries jump to their parent page and block. History stores identifiers locally per vault and is hidden while locked. **Return to Library** (`⌘[`) clears the open document and reveals the list. Create a blank page (`⌘N`) or use **New Personal Page** for an Overview / Personal context / Connections template.
+- Successful opens update persisted recency immediately. Visible Recent Items keep survivor order during the unlocked vault session, append newly encountered items, and remove evicted or unavailable entries; catalog refresh and renames do not reshuffle rows. Opening or unlocking a vault restores the latest most-recent-first order. Selection uses typed item identity, including distinct page and block entries.
 - **Links & tags:** Add comma-separated topics or inline `#tags`. Type `[[` for wiki-link suggestions (`[[Pertinax|my reading]]`). Renaming a page keeps its filename stable and records the old title as an alias so existing links continue to resolve.
 - **Editing lock:** Toggle **Lock Editing** via row swipe, hover/focus button, toolbar, context menu, or **Properties → Status → Editing** in the inspector. Locking prevents accidental content or reference edits without encrypting the file or changing its `updated_at` timestamp.
 - **Provenance references:** Link pages and sources many-to-many under **References → Sources** for a page or **References → Referring pages** for a source. Linked items can be opened directly from the inspector even when a page is locked.
@@ -203,7 +204,7 @@ Select text and activate hyperlinks with ordinary clicks while reading. Press **
 
 ```text
 My Vault/
-  vault.json       # format 2; schema 5, UUID and required capabilities
+  vault.json       # format 2; schema 6, UUID and required capabilities
   blocks.sqlite    # canonical pages, blocks, sources, knowledge and annotations
   Sources/         # immutable imported originals
   Conflicts/       # required preservation bytes
@@ -214,7 +215,7 @@ unsaved copy. Search indexes are derived and rebuildable. All files remain plain
 
 ## Local SQLite vault format
 
-Creation initializes schema 5 directly in an owned staging root, verifies identity,
+Creation initializes schema 6 directly in an owned staging root, verifies identity,
 capabilities and integrity, closes the database and publishes create-only. No historical
 format conversion or Markdown authority remains. Old and future formats reject without
 mutation. Imported originals remain controlled immutable files; linked originals are
@@ -235,7 +236,7 @@ currently have no dedicated archive UI.
 
 ## Canonical fixture validation
 
-The historical repository demo has been removed. Tests generate disposable schema-5
+The historical repository demo has been removed. Tests generate disposable schema-6
 vaults; no opaque generated SQLite database is committed. Run
 `./scripts/validate-fixtures.sh --skip-update` for native archive integrity fixtures.
 

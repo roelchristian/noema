@@ -36,7 +36,7 @@ public struct KnowledgeEntityType: Codable, Equatable, Sendable {
     public var key: String { descriptor.key }
     public var version: Int { descriptor.version }
     public init(key: String, version: Int = 1, metadata: PersistencePayload = .init()) { descriptor = .init(key: key, version: version, metadata: metadata) }
-    public static let initial: [Self] = ["person", "place", "concept"].map { .init(key: $0) }
+    public static let initial: [Self] = ["person", "place", "concept", "event"].map { .init(key: $0) }
     public init(from decoder: any Decoder) throws { descriptor = try .init(from: decoder) }
     public func encode(to encoder: any Encoder) throws { try descriptor.encode(to: encoder) }
 }

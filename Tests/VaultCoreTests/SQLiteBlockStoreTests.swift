@@ -199,9 +199,9 @@ private final class BlockPublicationValidation: @unchecked Sendable {
     let manager = VaultSessionManager()
     let session = try await manager.open(root: root) { _ in UUID() }
     let url = root.appendingPathComponent("blocks.sqlite"), page = UUID()
-    let staging = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: session.vaultID)
+    let staging = try VaultStorageProvider.plaintext.makeOrganisationStagingStore(url: url, vaultID: session.vaultID)
     try await staging.close()
-    let store = try SQLiteBlockStore(url: url, sessionLease: session.lease, accessGate: manager.accessGate, canonicalVaultID: session.vaultID, requiredCapabilities: SQLiteBlockStore.semanticRequiredCapabilities, schemaVersion: 5)
+    let store = try SQLiteBlockStore(url: url, sessionLease: session.lease, accessGate: manager.accessGate, canonicalVaultID: session.vaultID, requiredCapabilities: SQLiteBlockStore.organisationRequiredCapabilities, schemaVersion: SQLiteBlockStore.organisationSchemaVersion)
     let document = BlockDocument(blocks: [EditorBlock(runs: [RichRun("preserved")])])
     let initial = try await store.save(document, pageID: page, condition: .createOnly)
     let vaultRevision = try await store.canonicalVaultRevision()
@@ -210,7 +210,7 @@ private final class BlockPublicationValidation: @unchecked Sendable {
     await #expect(throws: VaultAccessError.self) { _ = try await store.save(document, pageID: page, condition: .replace(expected: initial.revision)) }
     await #expect(throws: VaultAccessError.self) { try await store.purgeCanonicalEntity(id: page, kind: .page, expected: initial.revision, expectedVaultRevision: vaultRevision) }
     try await store.close()
-    let inspection = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: session.vaultID, createIfMissing: false)
+    let inspection = try VaultStorageProvider.plaintext.makeOrganisationStagingStore(url: url, vaultID: session.vaultID, createIfMissing: false)
     #expect(try await inspection.load(pageID: page) == initial)
     try await inspection.close()
 }

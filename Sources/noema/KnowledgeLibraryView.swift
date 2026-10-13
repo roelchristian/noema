@@ -7,7 +7,7 @@ enum KnowledgeLibraryFamily: String, CaseIterable, Identifiable {
     var explanation: String {
         switch self {
         case .blocks: "Blocks designated as semantically meaningful. Filter by designation and status."
-        case .entities: "Independently identified people, places, and concepts. Occurrences are optional."
+        case .entities: "Independently identified people, places, concepts, and events. Occurrences are optional."
         case .objects: "Independently stored questions and definitions. These are not blocks or pages."
         case .annotations: "Explicit associations between content locations and canonical referents."
         }
@@ -48,7 +48,7 @@ struct KnowledgeLibraryView<Blocks: View>: View {
                     case .entities:
                         ForEach((model.knowledgeCatalogue?.entities ?? []).filter { matches($0.entity.label + " " + ($0.entity.description ?? "") + " " + $0.entity.aliases.map(\.label).joined(separator: " ")) }, id: \.entity.id) { value in
                             Button { selection = .entity(value) } label: {
-                                row(value.entity.label, subtitle: value.entity.typeKey.capitalized + " · " + value.entity.id.uuidString.prefix(8))
+                                row(value.entity.label, symbol: KnowledgeTypePresentation.symbol(for: value.entity.typeKey), subtitle: value.entity.typeKey.capitalized + " · " + value.entity.id.uuidString.prefix(8))
                             }.buttonStyle(.plain)
                         }
                     case .objects:
@@ -73,9 +73,12 @@ struct KnowledgeLibraryView<Blocks: View>: View {
         .onChange(of: model.knowledgeFamily) { query = ""; Task { await model.refreshKnowledgeCatalogue() } }
         .sheet(item: $selection) { selected in KnowledgeCatalogueDetail(model: model, selection: selected) }
     }
-    private func row(_ title: String, subtitle: String) -> some View {
+    private func row(_ title: String, symbol: String? = nil, subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(NoemaTypography.interfaceEmphasis).lineLimit(2)
+            HStack {
+                if let symbol { Image(systemName: symbol).accessibilityHidden(true) }
+                Text(title).font(NoemaTypography.interfaceEmphasis).lineLimit(2)
+            }
             Text(subtitle).font(NoemaTypography.metadata).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3)
     }
@@ -98,7 +101,7 @@ struct KnowledgeCatalogueDetail: View {
         VStack(alignment: .leading, spacing: NoemaSpacing.md) {
             if let target {
                 Text(target.title).font(.headline)
-                Text(target.kind.capitalized).font(.caption).foregroundStyle(.secondary)
+                Label(target.kind.capitalized, systemImage: KnowledgeTypePresentation.symbol(for: target.kind)).font(.caption).foregroundStyle(.secondary)
                 switch target {
                 case .entity(let value):
                     Text(value.entity.lifecycle.rawValue.capitalized).font(.caption).foregroundStyle(.secondary)

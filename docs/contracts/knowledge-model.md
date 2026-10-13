@@ -36,7 +36,7 @@ alone does not authorize writing an unknown required type implementation.
 
 | Family | Initially supported types | Canonical fields and meaning |
 | --- | --- | --- |
-| Knowledge entity | `person`, `place`, `concept` | UUID, type key, canonical label, optional description, aliases, typed properties, store revision, created/modified timestamps, lifecycle. A person is a particular person; a place is a geographical/historically identifiable place; a concept is an idea, term, theory, subject or abstraction. |
+| Knowledge entity | `person`, `place`, `concept`, `event` | UUID, type key, canonical label, optional description, aliases, typed properties, store revision, created/modified timestamps, lifecycle. A person is a particular person; a place is a geographical/historically identifiable place; a concept is an idea, term, theory, subject or abstraction; an event is a particular occurrence or happening, without scheduling or timeline semantics. |
 | Semantic object | `question`, `definition` | Independent UUID, type key, store revision, typed properties, lifecycle and timestamps. A question has optional answer text and status `unanswered` or `answered`; `answered` requires nonempty answer text. A definition has nonempty definitional text and optional term string. Both may have explicit related entity references; a definition may have one subject entity reference. |
 | Annotation | Independent record | UUID, location, typed referent, designation, revision, payload, timestamps, anchor disposition and referent disposition. A location may be whole block, inline range, entity or semantic object. An annotation links a location to a referent; it owns neither. |
 | Knowledge relation | Directed typed edge | UUID, registered predicate, source/target entity UUIDs, store revision, lifecycle, timestamps and optional provenance payload. Initial predicate `relatedTo` is manual/programmatic and directed; it makes no inferred factual claim. |
@@ -45,8 +45,11 @@ Labels are nonempty after whitespace trimming; retained display spelling is not
 normalized. Duplicate names and aliases are valid and produce disambiguated search
 results with UUID/type/label. Search matching may case-fold, but never defines
 identity. Entity renaming leaves UUID, relations and occurrences unchanged.
-`organisation`, `event`, `work` and `period` illustrate future registered types;
-none is implemented here. Questions are not entity subtypes, and entities need
+`organisation`, `work` and `period` illustrate future registered types;
+none is implemented here. Event uses the existing version-1 registry and entity
+record. Fresh vaults seed its descriptor; existing schema-5 vaults register it in
+the explicit entity-creation transaction, without changing schema or admission.
+Opening a vault does not mutate its registry. Questions are not entity subtypes, and entities need
 neither pages nor blocks. Question/definition text is object-owned content, while
 an annotation quote is verification evidence and never a second block-text owner.
 
@@ -204,7 +207,7 @@ KNOW02 creates schema 4 requiring deterministic set
 The nested manifest `storage.schemaVersion`, `PRAGMA user_version`, vault UUID and
 database required-capability set must agree before writable admission. Unknown or
 missing required capabilities and unsupported payload versions deny writes before
-schema changes or publication. Only schema 5 is admitted in production; historical schemas reject without mutation.
+schema changes or publication. Only schema 6 is admitted in production. Schema 6 keeps the schema-5 semantic tables and adds vault-owned organisation tables under `organisationV1`. Schema 5 is not upgraded on open. Historical schemas reject without mutation.
 
 Schema 3's singular `vault_state.capability = canonicalMetadataV1` retains its
 meaning. Schema 4 adds an explicitly versioned `required_capabilities` set and
@@ -214,7 +217,7 @@ Capability presence denotes actually implemented preservation/writes, not a prom
 No schema-4 semantic tables or semantic feature activation is assumed by KNOW02;
 KNOW03's new relational authority therefore requires schema 5.
 
-Production initializes fresh schema 5 directly. Historical schema 1–4 upgrade routes
+Production initializes fresh schema 6 directly. Historical schema 1–5 upgrade routes
 are retired by STOR02B–STOR03; no automatic or explicit historical migration is
 supported. Internal fresh constructors provide test isolation only. Opening never
 reinterprets old Wiki/source files as canonical authority.

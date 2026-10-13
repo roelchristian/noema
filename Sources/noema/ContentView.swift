@@ -131,8 +131,6 @@ struct ContentView: View {
                         if presentation.collection {
                             collectionPane
                                 .frame(minWidth: WorkspacePaneState.collectionMinimum, idealWidth: paneState.collectionWidth, maxWidth: WorkspacePaneState.collectionMaximum, maxHeight: .infinity)
-                                .focusable()
-                                .focused($collectionListFocused)
                         }
                         contentPane
                             .frame(minWidth: contentMinimum, maxHeight: .infinity)
@@ -248,7 +246,7 @@ struct ContentView: View {
                  : "Move ‘\(deletingSource?.title ?? "")’ and its imported original to Trash? Restore them within 15 days.")
         }
     }
-    var body: some View {
+    private var workspaceContentObservers: some View {
         workspaceConfirmations
         .onChange(of: model.semanticInspectionOpenRequest) {
             guard case .page = inspectorContext else { return }
@@ -265,6 +263,9 @@ struct ContentView: View {
             selectedSemanticStatus = nil
             if model.scope != .sources { model.setLibrarySourceSelection(nil) }
         }
+    }
+    private var workspaceNavigationObservers: some View {
+        workspaceContentObservers
         .onChange(of: model.workspaceNavigationToken) {
             showAllSearchResults = false
             if model.currentNote == nil && model.currentSource == nil {
@@ -284,6 +285,9 @@ struct ContentView: View {
             guard model.scope == .sources, model.librarySourceSelection != id else { return }
             model.setLibrarySourceSelection(id)
         }
+    }
+    var body: some View {
+        workspaceNavigationObservers
         .onChange(of: model.externalChange) { dismissedExternalChange = false }
         // UI.R.REM02: Reconcile even while the inspector is hidden or unmounted.
         .onChange(of: inspectorContext.targetID, initial: true) {
@@ -308,7 +312,8 @@ struct ContentView: View {
     }
     private func revealCollectionList() {
         paneState.revealCollection()
-        collectionListFocused = true
+        collectionListFocused = false
+        Task { @MainActor in collectionListFocused = true }
     }
     private var collectionTitle: String {
         switch model.scope {
@@ -498,7 +503,7 @@ struct ContentView: View {
                 Section {
                     sidebarNavigationRow("Pages", symbol: "book.closed", scope: .wiki)
                     sidebarNavigationRow("Sources", symbol: "tray.full", scope: .sources)
-                    sidebarNavigationRow("Knowledge", symbol: "tag", scope: .semantic)
+                    sidebarNavigationRow("Knowledge", symbol: KnowledgeTypePresentation.knowledgeSymbol, scope: .semantic)
                 }
                 Section {
                     if model.sidebarRecentItems.isEmpty {
@@ -736,6 +741,7 @@ struct ContentView: View {
                 presentation: sourceTablePresentation,
                 selection: sourceSelectionBinding,
                 scrollPosition: $sourceListScroll,
+                listFocus: $collectionListFocused,
                 rename: { source in sourceName = source.title; renamingSource = source },
                 delete: { deletingSource = $0 }
             )
@@ -838,6 +844,7 @@ struct ContentView: View {
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .scrollPosition($pageListScroll)
+                .focused($collectionListFocused)
             }
             HStack {
                 Text(libraryCount)
@@ -1071,6 +1078,7 @@ struct ContentView: View {
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .scrollPosition($semanticListScroll)
+                .focused($collectionListFocused)
             }
         }
     }

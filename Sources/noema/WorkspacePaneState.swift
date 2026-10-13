@@ -300,18 +300,23 @@ struct WorkspaceSplitViewPersistence: NSViewRepresentable {
             // SwiftUI owns an NSSplitViewController. AppKit prohibits setting holding
             // priorities directly on its split view; preserve the controller's layout policy.
             let divider = split.dividerThickness
+            var positions: [(Int, CGFloat)] = []
             if presentation.sidebar {
                 let collectionReserve = presentation.collection ? WorkspacePaneState.collectionMinimum + divider : 0
                 let inspectorReserve = presentation.inspector ? InspectorState.minWidth + divider : 0
                 let maximum = min(WorkspacePaneState.sidebarMaximum, split.bounds.width - mainMinimum - collectionReserve - inspectorReserve - divider)
-                split.setPosition(min(state.sidebarWidth, max(WorkspacePaneState.sidebarMinimum, maximum)), ofDividerAt: 0)
+                let position = min(state.sidebarWidth, max(WorkspacePaneState.sidebarMinimum, maximum))
+                positions.append((0, position))
+                split.setPosition(position, ofDividerAt: 0)
             }
             if presentation.collection {
                 let sidebarSpan = presentation.sidebar ? split.arrangedSubviews[0].frame.width + divider : 0
                 let inspectorReserve = presentation.inspector ? InspectorState.minWidth + divider : 0
                 let maximum = min(WorkspacePaneState.collectionMaximum, split.bounds.width - sidebarSpan - mainMinimum - inspectorReserve - divider)
                 let width = min(state.collectionWidth, max(WorkspacePaneState.collectionMinimum, maximum))
-                split.setPosition(sidebarSpan + width, ofDividerAt: presentation.sidebar ? 1 : 0)
+                let index = presentation.sidebar ? 1 : 0
+                positions.append((index, sidebarSpan + width))
+                split.setPosition(sidebarSpan + width, ofDividerAt: index)
             }
             if presentation.inspector {
                 var leading: CGFloat = 0
@@ -326,6 +331,11 @@ struct WorkspaceSplitViewPersistence: NSViewRepresentable {
                 let maximum = min(InspectorState.maxWidth, split.bounds.width - mainMinimum - leading - divider)
                 let width = min(state.inspectorWidth, max(InspectorState.minWidth, maximum))
                 split.setPosition(split.bounds.width - width - divider, ofDividerAt: expectedCount - 2)
+            }
+            // A trailing divider can redistribute the preceding controller-owned panes.
+            // Restore leading boundaries last, keeping the established trailing boundary.
+            for (index, position) in positions.reversed() {
+                split.setPosition(position, ofDividerAt: index)
             }
         }
 

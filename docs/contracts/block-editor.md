@@ -15,7 +15,7 @@ continues to apply to changed construction and canonical I/O.
 
 | Layer | Owner and responsibility |
 | --- | --- |
-| Interactive session | `EditorSession` owns the active value document, vault/page/session identity, revision, selection, changed IDs and mutation history. `BlockEditorCoordinator` bridges native composition, text storage and undo to that session; it does not own a second editable document. The view binds a `BlockDocument` and publishes revisioned `EditorSession.DocumentSnapshot` values. AppModel rejects stale page/vault/session identities, session generations and revisions, then autosaves the captured document through the repository to SQLite without a Markdown/envelope round trip. Save/navigation flush native composition synchronously; ordinary publication yields on the main actor without a timed debounce or codec task. Recovery drafts carry the structured document, while legacy string drafts remain readable. AppKit presentation is never an independent content authority. Invalid or ineffective `BlockMutation` commands leave the complete document unchanged and produce no undo, dirty notification or serialization. |
+| Interactive session | `EditorSession` owns the active value document, vault/page/session identity, revision, selection, changed IDs and mutation history. `BlockEditorCoordinator` bridges native composition, text storage and undo to that session; it does not own a second editable document. The view binds a `BlockDocument` and publishes revisioned `EditorSession.DocumentSnapshot` values. AppModel rejects stale page/vault/session identities, session generations and revisions, then autosaves the captured document through the repository to SQLite without a Markdown/envelope round trip. Save/navigation flush native composition synchronously; ordinary publication yields on the main actor without a timed debounce or codec task. Recovery drafts carry the structured document, while legacy string drafts remain readable. Identity-keyed native views retain their hosting identity through replacement; an outgoing view cannot acquire the destination’s semantic authority, and teardown releases only its own publication callback. Semantic readiness checks the captured session generation as well as identity, local revision, document equality and canonical revision. AppKit presentation is never an independent content authority. Invalid or ineffective `BlockMutation` commands leave the complete document unchanged and produce no undo, dirty notification or serialization. |
 | Canonical domain document | `BlockDocument`, `EditorBlock`, rich runs and `BlockMutation` stay in `VaultCore`. Ordered children, stable UUIDs, source spellings and metadata are content; caret/layout/undo are session state. Storage must not replace this domain foundation with SQL rows exposed to the editor. |
 | Persistence adapter | AppKit-independent [BlockStore](../../Sources/VaultCore/BlockStore.swift) loads a document snapshot and performs create-only or revision-checked save/delete by page UUID. One mode is selected per vault. Revisions are opaque, scoped to vault/page/mode and checked inside the commit window. Asynchronous protocol operations execute on the owning store actor; no transaction across protocol calls is implied. |
 | Export | `BlockDocumentCodec` produces readable Markdown and its lossless envelope. Markdown, HTML and other exports are projections of a committed snapshot or an explicitly selected draft. Export never becomes an autosave channel or silently changes vault mode. |
@@ -26,7 +26,7 @@ transaction; sequential `BlockStore` calls do not establish that guarantee.
 
 ### One authority per vault
 
-Format 2 with explicit schema 5 is the only production authority. `blocks.sqlite`
+Format 2 with explicit schema 6 is the only production authority. `blocks.sqlite`
 contains pages, blocks, page/source metadata, relationships, knowledge and semantic
 records. Identity and required capabilities agree with `vault.json` before admission.
 Historical Markdown and schema-1–4 vaults reject without mutation. Missing/damaged
@@ -268,7 +268,7 @@ and their storage schema remain deferred until a separately reviewed feature.
 ### Breaking production cutover
 
 STOR02B–STOR03 retires historical format conversion and upgrades. Unsupported vaults
-are preserved and rejected. New production vaults initialize schema 5 directly;
+are preserved and rejected. New production vaults initialize schema 6 directly;
 archive restoration validates the same schema and never merges occupied identities.
 
 ## Explicit Markdown interchange (EDT.BLK13)
@@ -359,6 +359,14 @@ clearing selection. Marked-text composition reserves native candidate navigation
 commitment keys before structural commands. Clicking outside does not end editing.
 
 Keyboard behavior: Return splits; empty list Return exits; structural Backspace converts to paragraph before merging; Tab/Shift Tab indent/outdent; Shift Return inserts a code newline; Command A selects the current block in editable pages and the entire document in read-only text; Command Option A and **Select Entire Document** explicitly select the document. Command Option Up/Down moves a subtree among siblings. Command Shift Return toggles a task. Slash commands and context actions use the same mutations. Content-relative drag handles share the native block layout geometry. Handle interactions preserve the text caret, native drag sessions target sibling reordering, and viewport-edge scrolling and cancellation clear transient drop state. Pointer completion and layout transitions still require device acceptance; see the standing validation gaps. Indent/outdent explicitly changes parentage.
+
+Contextual gutter controls reuse native block geometry without changing paragraph layout.
+Plus creates a new sibling after the targeted subtree through `BlockMutation` and
+restores the native caret to its beginning; cancellation is a content no-op. The
+selection toolbar routes formatting and Annotate to the existing coordinator and
+annotation chooser. Delayed actions capture page/session identity, reload generation,
+local revision and native selection; retired, stale, locked and unready interactions
+cannot mutate. Persistence acknowledgements alone do not retire these contexts.
 
 Block selection is a separate set of stable UUIDs. A handle selects a block, Shift extends across adjacent visible blocks, and Command toggles membership without replacing native character selection. Selecting a parent includes its complete subtree; selected descendants of a selected ancestor are deduplicated. Batch copy, move, duplicate, delete and transformations retain document order and use one document transaction for undo. Moves retain identities and parentage; duplication generates fresh UUIDs throughout each copied subtree. Structural kind, semantic designation and status remain separate mutations. Unknown semantic designations and extension metadata survive structural transformations.
 

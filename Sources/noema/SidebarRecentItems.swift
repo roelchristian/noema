@@ -27,6 +27,18 @@ struct SidebarRecentHistory: Equatable, Codable, Sendable {
     }
 }
 
+/// Session presentation order; persisted history remains most-recent-first.
+struct SidebarRecentPresentation: Equatable {
+    private(set) var ids: [RecentItemID] = []
+
+    mutating func reconcile(_ recentIDs: [RecentItemID]) {
+        let members = Set(recentIDs)
+        ids.removeAll { !members.contains($0) }
+        var seen = Set(ids)
+        ids.append(contentsOf: recentIDs.filter { seen.insert($0).inserted })
+    }
+}
+
 struct SidebarRecentItem: Identifiable, Equatable {
     var id: RecentItemID
     var title: String

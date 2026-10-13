@@ -120,7 +120,7 @@ struct SemanticInspectionRow: View {
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(record.target.title).font(NoemaTypography.interfaceEmphasis).lineLimit(2)
-                Text(record.target.kind.capitalized).font(NoemaTypography.metadata).foregroundStyle(.secondary)
+                Label(record.target.kind.capitalized, systemImage: KnowledgeTypePresentation.symbol(for: record.target.kind)).font(NoemaTypography.metadata).foregroundStyle(.secondary)
             }
         }
         .onAppear { expanded = model.semanticInspectionFocusID == record.id }
@@ -213,7 +213,7 @@ struct SemanticAssociationPicker: View {
             Text("Change association").font(.headline)
             Text("Choose a target for this occurrence. Canonical targets remain unchanged.").font(.caption).foregroundStyle(.secondary)
             Picker("Target", selection: $selected) {
-                ForEach(choices.indices, id: \.self) { index in Text(choices[index].title).tag(index) }
+                ForEach(choices.indices, id: \.self) { index in Label(choices[index].title, systemImage: choices[index].symbol).tag(index) }
             }
             if let error = model.semanticInspectionError { Text(error).font(.caption).foregroundStyle(.secondary) }
             HStack {

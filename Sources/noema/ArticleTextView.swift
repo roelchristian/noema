@@ -5,6 +5,7 @@ import VaultCore
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         updateReadingGeometry()
+        updateContextualBlockControls()
     }
 
     func updateReadingGeometry() {
@@ -36,6 +37,7 @@ import VaultCore
     // hasMarkedText(). Reserve that call for the native input manager as well.
     private(set) var isSettingMarkedText = false
     override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        contextualInteractionDismiss?()
         var replacement = replacementRange
         if !hasMarkedText(), let coordinator = delegate as? RichArticleView.Coordinator {
             let requested = replacement.location == NSNotFound ? self.selectedRange() : replacement
@@ -46,9 +48,13 @@ import VaultCore
         super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacement)
     }
     var handleKey: ((NSEvent) -> Bool)?
+    var contextualSelectionCompleted: (() -> Void)?
+    var contextualInteractionDismiss: (() -> Void)?
     var annotationAction: (() -> Void)?
     var annotationAvailable: (() -> Bool)?
     var blockMenu: (() -> NSMenu)?
+    var insertBlockMenu: ((UUID) -> NSMenu)?
+    private lazy var contextualBlockControls = EditorBlockControls(editor: self)
     var activateBlock: ((UUID, BlockMutation) -> Void)?
     var pasteContent: ((NSPasteboard) -> Void)?
     var canReorder: ((UUID, UUID) -> Bool)?
@@ -112,6 +118,27 @@ import VaultCore
                       y: firstBaseline(for: range) - 17, width: 22, height: 24)
     }
 
+    private func updateContextualBlockControls() {
+        guard isEditable, !locked, !hasMarkedText(),
+              (delegate as? RichArticleView.Coordinator)?.changing != true,
+              let id = hoverID ?? focusedBlockID, let storage = textStorage,
+              let range = blockRange(for: id, storage: storage),
+              range.location >= 0, range.location < storage.length,
+              range.length <= storage.length - range.location else {
+            contextualBlockControls.isHidden = true; return
+        }
+        if contextualBlockControls.superview == nil { addSubview(contextualBlockControls) }
+        contextualBlockControls.show(blockID: id, handleRect: gutterRect(for: range))
+    }
+
+    func showFocusedBlockMenu() {
+        guard isEditable, !locked, let id = contextualBlockControls.blockID else { return }
+        if !selectedBlockIDs.contains(id) { selectBlock?(id, []) }
+        guard let menu = blockMenu?() else { return }
+        contextualInteractionDismiss?()
+        menu.popUp(positioning: nil, at: NSPoint(x: contextualBlockControls.frame.maxX, y: contextualBlockControls.frame.maxY), in: self)
+    }
+
     private var focusedBlockID: UUID? {
         guard window?.firstResponder === self, selectedRange().length == 0,
               let storage = textStorage, storage.length > 0 else { return nil }
@@ -124,6 +151,7 @@ import VaultCore
         super.setSelectedRange(charRange)
         invalidateDecoration(for: previous)
         invalidateDecoration(for: focusedBlockID)
+        updateContextualBlockControls()
     }
 
     private func stopBlockDrag() {
@@ -214,8 +242,9 @@ import VaultCore
         let next = blockAt(convert(event.locationInWindow, from: nil))
         guard next != hoverID else { return }
         invalidateDecoration(for: hoverID); hoverID = next; invalidateDecoration(for: next)
+        updateContextualBlockControls()
     }
-    override func mouseExited(with event: NSEvent) { invalidateDecoration(for: hoverID); hoverID = nil }
+    override func mouseExited(with event: NSEvent) { invalidateDecoration(for: hoverID); hoverID = nil; updateContextualBlockControls() }
     func semanticHeadingRect(for range: NSRange) -> NSRect? {
         guard showSemanticHeadings, let storage = textStorage, let layoutManager,
               SemanticPresentation.find(storage.attribute(.semanticTag, at: range.location, effectiveRange: nil) as? String) != nil else { return nil }
@@ -378,20 +407,13 @@ import VaultCore
                     (rendered as NSString).draw(in: previewRect, withAttributes: mathPreviewAttributes)
                 }
             }
-            if (id == hoverID || id == focusedBlockID || selectedBlockIDs.contains(id)) && !locked && isEditable {
-                let handle = gutterRect(for: range)
-                theme.nativeText(.textMuted).setFill()
-                for column in 0..<2 { for row in 0..<3 {
-                    NSBezierPath(ovalIn: NSRect(x: handle.midX - 4 + CGFloat(column * 5),
-                        y: handle.midY - 6 + CGFloat(row * 5), width: 2, height: 2)).fill()
-                } }
-            }
             if id == dropID {
                 theme.native(.accentPrimary).setFill()
                 NSRect(x: textContainerOrigin.x - 8, y: dropAfter ? rect.maxY + 3 : rect.minY - 3, width: max(30, bounds.width - 2 * textContainerOrigin.x + 16), height: 2).fill()
             }
         }
         super.draw(dirtyRect)
+        updateContextualBlockControls()
     }
     private func drawSymbol(_ name: String, at rect: NSRect, color: NSColor) {
         guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return }
@@ -439,11 +461,18 @@ import VaultCore
                 }
             }
         }
+        contextualInteractionDismiss?()
         super.mouseDown(with: event)
+        contextualSelectionCompleted?()
     }
     override func mouseUp(with event: NSEvent) {
-        if dragStart != nil { dragStart = nil; return }
+        if dragStart != nil {
+            dragStart = nil
+            if event.modifierFlags.intersection([.shift, .command, .option, .control]).isEmpty { showFocusedBlockMenu() }
+            return
+        }
         super.mouseUp(with: event)
+        contextualSelectionCompleted?()
     }
     override func mouseDragged(with event: NSEvent) {
         guard let (id, point) = dragStart else { super.mouseDragged(with: event); return }
@@ -566,6 +595,12 @@ import VaultCore
     /// Keyboard/VoiceOver access uses the current text selection, without a pointer hit test.
     func accessibilityContextMenu() -> NSMenu {
         let menu = isEditable && !locked ? blockMenu?() ?? NSMenu() : NSMenu()
+        if isEditable, !locked, let storage = textStorage, storage.length > 0,
+           let id = (storage.attribute(.blockID, at: min(selectedRange().location, storage.length - 1), effectiveRange: nil) as? String).flatMap(UUID.init(uuidString:)),
+           let insertion = insertBlockMenu?(id) {
+            let item = NSMenuItem(title: "Insert Block After", action: nil, keyEquivalent: "")
+            item.submenu = insertion; menu.insertItem(item, at: 0)
+        }
         if let storage = textStorage, selectedRange().location < storage.length {
             let value = storage.attribute(.link, at: selectedRange().location, effectiveRange: nil)
             if let url = (value as? URL) ?? (value as? String).flatMap(URL.init(string:)), openLink != nil {
@@ -611,6 +646,7 @@ import VaultCore
         else { pasteContent?(NSPasteboard.general) }
     }
     override func keyDown(with event: NSEvent) {
+        contextualInteractionDismiss?()
         // Return, arrows, Tab and Escape belong to the input manager while it has
         // marked text. Structural shortcuts must not split or discard candidates.
         if hasMarkedText() { super.keyDown(with: event); return }

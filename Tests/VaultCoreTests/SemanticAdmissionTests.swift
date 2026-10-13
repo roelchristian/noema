@@ -4,9 +4,12 @@ import Testing
 
 @Test func semanticFreshAdmissionRejectsUnknownDeclarationsBeforeCreation() async throws {
     var declaration = VaultCanonicalStorageDeclaration()
+    #expect(declaration.isSupported)
+    #expect(declaration.schemaVersion == SQLiteBlockStore.organisationSchemaVersion)
     declaration.schemaVersion = 5
     declaration.requiredCapabilities = SQLiteBlockStore.semanticRequiredCapabilities
-    #expect(declaration.isSupported)
+    #expect(!declaration.isSupported)
+    declaration = VaultCanonicalStorageDeclaration()
     declaration.requiredCapabilities.append("futureRequired")
     #expect(!declaration.isSupported)
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("semantic-admission-\(UUID())")

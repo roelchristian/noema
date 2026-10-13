@@ -10,7 +10,7 @@ that a later change has been tested. Rerun the relevant commands for each PR.
 
 ## STOR02B–STOR03 acceptance scope
 
-The production baseline is format 2, directly initialized schema 5. Historical
+The production baseline is format 2, directly initialized schema 6. Schema 5 remains explicit semantic staging and is not upgraded on open. Historical
 Markdown/schema-1–4 vaults are intentionally unsupported. The repository demo and its
 content-only checks are retired; canonical fixtures are generated in temporary roots.
 Native archive APIs include committed SQLite and controlled originals/preservation,

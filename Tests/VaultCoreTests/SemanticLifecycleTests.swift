@@ -15,7 +15,7 @@ private struct SemanticLifecycleFixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("semantic-lifecycle-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let url = root.appendingPathComponent("blocks.sqlite"), vaultID = UUID()
-        let store = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: vaultID)
+        let store = try VaultStorageProvider.plaintext.makeOrganisationStagingStore(url: url, vaultID: vaultID)
         let person = try await store.createEntity(KnowledgeFixtures.entities[0], expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID()).value
         var object = SemanticObject(typeKey: "question", relatedEntityIDs: [person.entity.id])
         object.unknownFields["futureObject"] = .string("preserved")
@@ -54,7 +54,7 @@ private struct SemanticLifecycleFixture {
     #expect(try await f.store.searchEntities(query: "", limit: 100).count == 1)
     #expect(try await f.store.loadEntity(id: f.person.entity.id) == f.person)
     try await f.store.close()
-    let reopened = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: f.url, vaultID: f.vaultID, createIfMissing: false)
+    let reopened = try VaultStorageProvider.plaintext.makeOrganisationStagingStore(url: f.url, vaultID: f.vaultID, createIfMissing: false)
     #expect(try await reopened.loadSemanticPage(pageID: copy.pageID) == copied)
     #expect(try await reopened.loadSemanticPage(pageID: f.page.snapshot.pageID) == duplicated)
     #expect(try await reopened.loadObject(id: copiedQuestion.object.id) == copiedQuestion)
@@ -107,14 +107,14 @@ private struct SemanticLifecycleFixture {
     try await f.store.close()
     let manager = VaultSessionManager()
     let session = try await manager.open(root: f.root) { _ in f.vaultID }
-    let store = try SQLiteBlockStore(url: f.url, sessionLease: session.lease, accessGate: manager.accessGate, canonicalVaultID: f.vaultID, requiredCapabilities: SQLiteBlockStore.semanticRequiredCapabilities, schemaVersion: 5)
+    let store = try SQLiteBlockStore(url: f.url, sessionLease: session.lease, accessGate: manager.accessGate, canonicalVaultID: f.vaultID, requiredCapabilities: SQLiteBlockStore.organisationRequiredCapabilities, schemaVersion: SQLiteBlockStore.organisationSchemaVersion)
     #expect(try await store.loadSemanticPage(pageID: f.page.snapshot.pageID) == f.page)
     try await manager.lock()
     await #expect(throws: VaultAccessError.self) { try await store.loadSemanticPage(pageID: f.page.snapshot.pageID) }
     await #expect(throws: VaultAccessError.self) { try await store.questions(entityID: f.person.entity.id, association: .explicit) }
     await #expect(throws: VaultAccessError.self) { try await store.updateObject(id: f.question.object.id, patch: .init(answerText: "denied"), expected: f.question.revision, expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID()) }
     try await store.close()
-    let reopened = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: f.url, vaultID: f.vaultID, createIfMissing: false)
+    let reopened = try VaultStorageProvider.plaintext.makeOrganisationStagingStore(url: f.url, vaultID: f.vaultID, createIfMissing: false)
     #expect(try await reopened.loadSemanticPage(pageID: f.page.snapshot.pageID) == f.page)
     #expect(try await reopened.loadObject(id: f.question.object.id) == f.question)
     try await reopened.close()
@@ -169,6 +169,6 @@ private func lifecycleSQL(_ url: URL, _ sql: String) throws {
         let f = try await SemanticLifecycleFixture.make(); defer { try? FileManager.default.removeItem(at: f.root) }
         try await f.store.close()
         try lifecycleSQL(f.url, "UPDATE semantic_object_types SET descriptor='\(descriptor)' WHERE key='question'")
-        #expect(throws: (any Error).self) { try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: f.url, vaultID: f.vaultID, createIfMissing: false) }
+        #expect(throws: (any Error).self) { try VaultStorageProvider.plaintext.makeOrganisationStagingStore(url: f.url, vaultID: f.vaultID, createIfMissing: false) }
     }
 }

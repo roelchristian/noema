@@ -5,6 +5,7 @@ extension RichArticleView {
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         typealias Snapshot = EditorSession.DocumentSnapshot
         var parent: RichArticleView
+        let hostedIdentity: EditorSession.Identity
         weak var view: ArticleTextView?
         let session = EditorSession()
         var document: BlockDocument {
@@ -22,8 +23,13 @@ extension RichArticleView {
         var lastTypography: EditorTypography?
         var lastMacros: String?
         var lastAction: UUID?
+        var contextualInteractionsRetired = false
+        var contextualIdentitySuspended = false
+        var activeBlockMenuContext: EditorInteractionContext?
+        var activeInsertionMenu: NSMenu?
         var changing = false
         var presentationRefreshPending = false
+        lazy var inlineControls = EditorInlineControls(coordinator: self)
         let palette = BlockPalette()
         lazy var suggestions = BlockSuggestionPanel(palette: palette)
         var slashRange: NSRange?
@@ -65,7 +71,9 @@ extension RichArticleView {
             pasteboard.setString(BlockDocumentCodec.readable(BlockDocument(blocks: actionBlocks)), forType: .string)
         }
         init(_ parent: RichArticleView) {
-            self.parent = parent; super.init()
+            self.parent = parent
+            hostedIdentity = .init(pageID: parent.noteID, vaultID: parent.vaultID, sessionID: parent.sessionID)
+            super.init()
             suggestions.dismiss = { [weak self] in self?.dismissPalette() }
             palette.choose = { [weak self] in self?.apply($0, removingQuery: true) }
         }
@@ -75,10 +83,12 @@ extension RichArticleView {
         }
         @objc private func scrollBoundsChanged(_ notification: Notification) {
             guard let clip = notification.object as? NSClipView else { return }
+            inlineControls.update()
             let offset = clip.bounds.minY
             Task { @MainActor [weak self] in self?.parent.onScrollOffset(offset) }
         }
         func load(_ value: BlockDocument) {
+            inlineControls.close()
             publicationTask?.cancel()
             pendingSingleBlock = nil; deferredComposition = false
             clearBlockSelection()
@@ -259,6 +269,7 @@ extension RichArticleView {
             }
         }
         func textDidChange(_ notification: Notification) {
+            inlineControls.close()
             guard let view, !changing, !view.locked else { return }
             if view.hasMarkedText() || view.isSettingMarkedText { deferredComposition = true; return }
             if !deferredComposition, let (id, location) = pendingSingleBlock, let storage = view.textStorage, location < storage.length {
@@ -323,7 +334,7 @@ extension RichArticleView {
             session.selection = view.selectedRange()
             updateAnnotationAvailability()
             parent.onSemanticSelection?(view.semanticAssociations(in: view.selectedRange()).map { $0.annotation.id })
-            updateTypingAttributes(); updatePalette(); updateWikiQuery()
+            updateTypingAttributes(); updatePalette(); updateWikiQuery(); inlineControls.update()
         }
         func updateTypingAttributes() {
             guard let view, !view.hasMarkedText(), !view.isSettingMarkedText, let storage = view.textStorage, storage.length > 0 else { return }
@@ -423,6 +434,7 @@ extension RichArticleView {
             }
         }
         func handleKey(_ event: NSEvent) -> Bool {
+            inlineControls.close()
             guard let view, view.isEditable, !view.locked, let (block, range) = current() else { return false }
             if suggestions.isShown {
                 switch event.keyCode {
@@ -601,13 +613,14 @@ extension RichArticleView {
         }
         func editLink() {
             guard let view else { return }
+            guard let context = interactionContext else { return }
             let selected = view.selectedRange()
             let alert = NSAlert(); alert.messageText = "Hyperlink"; alert.informativeText = "Enter a URL. Leave it empty to remove the link."
             let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24)); field.placeholderString = "https://example.com"
             if let storage = view.textStorage, selected.location < storage.length { field.stringValue = String(describing: storage.attribute(.link, at: selected.location, effectiveRange: nil) ?? "") }
             alert.accessoryView = field; alert.addButton(withTitle: "Apply"); alert.addButton(withTitle: "Cancel")
             alert.window.initialFirstResponder = field
-            if alert.runModal() == .alertFirstButtonReturn { view.setSelectedRange(selected); format("link", link: field.stringValue.isEmpty ? nil : field.stringValue) }
+            if alert.runModal() == .alertFirstButtonReturn, accepts(context) { view.setSelectedRange(selected); format("link", link: field.stringValue.isEmpty ? nil : field.stringValue) }
             view.window?.makeFirstResponder(view)
         }
         func perform(_ operation: EditorAction.Operation) {
@@ -687,9 +700,10 @@ extension RichArticleView {
             contextMenu().popUp(positioning: nil, at: NSPoint(x: view.textContainerOrigin.x, y: rect.minY + 20), in: view)
         }
         func contextMenu() -> NSMenu {
+            activeBlockMenuContext = interactionContext
             let menu = NSMenu()
-            let annotation = NSMenuItem(title: "Annotate Selection…", action: #selector(annotateSelection(_:)), keyEquivalent: "A")
-            annotation.target = self; annotation.keyEquivalentModifierMask = [.command, .shift]
+            let annotation = NSMenuItem(title: "Annotate Selection…", action: #selector(contextAction(_:)), keyEquivalent: "A")
+            annotation.target = self; annotation.representedObject = "annotate"; annotation.keyEquivalentModifierMask = [.command, .shift]
             annotation.isEnabled = annotationSelection() != nil
             menu.addItem(annotation)
             let structure = NSMenu(), tags = NSMenu()
@@ -737,7 +751,14 @@ extension RichArticleView {
                 if block.kind == .code { addAction("Code language…", value: "language", to: menu) }
             }
             menu.addItem(.separator())
-            for (title, value) in [("Duplicate", "duplicate"), ("Copy Markdown", "copy"), ("Copy link to block", "link"), ("Move up", "up"), ("Move down", "down"), ("Indent", "indent"), ("Outdent", "outdent"), ("Delete", "delete")] { addAction(title, value: value, to: menu) }
+            for (title, actions) in [
+                ("Duplicate and copy", [("Duplicate", "duplicate"), ("Copy Markdown", "copy"), ("Copy link to block", "link")]),
+                ("Move and indent", [("Move up", "up"), ("Move down", "down"), ("Indent", "indent"), ("Outdent", "outdent")])] {
+                let submenu = NSMenu()
+                for (label, value) in actions { addAction(label, value: value, to: submenu) }
+                let item = NSMenuItem(title: title, action: nil, keyEquivalent: ""); item.submenu = submenu; menu.addItem(item)
+            }
+            addAction("Delete", value: "delete", to: menu)
             let format = NSMenu()
             for title in ["Bold", "Italic", "Underline", "Strike", "Code", "Math", "Highlight", "Link"] { addAction(title, value: "format:" + title.lowercased(), to: format) }
             let item = NSMenuItem(title: "Inline format", action: nil, keyEquivalent: ""); item.submenu = format; menu.addItem(item)
@@ -747,13 +768,16 @@ extension RichArticleView {
             let item = NSMenuItem(title: title, action: #selector(contextAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = value; menu.addItem(item)
         }
         @objc func contextCommand(_ item: NSMenuItem) {
+            guard let context = activeBlockMenuContext, accepts(context, preservingSelection: false) else { return }
             if let id = item.representedObject as? String, let command = BlockCommand.all.first(where: { $0.id == id }) { apply(command, removingQuery: false) }
         }
         @objc func contextAction(_ item: NSMenuItem) {
+            guard let context = activeBlockMenuContext, accepts(context, preservingSelection: false) else { return }
             guard let value = item.representedObject as? String, let block = actionBlocks.first else { return }
             if value.hasPrefix("status:") { let status = String(value.dropFirst(7)); mutate(.status(status.isEmpty ? nil : status), name: "Change status"); return }
             if value.hasPrefix("format:") { let name = String(value.dropFirst(7)); if name == "link" { editLink() } else { format(name) }; return }
             switch value {
+            case "annotate": annotateSelection(nil)
             case "duplicate": mutate(.duplicate, name: "Duplicate block")
             case "delete": mutate(.delete, name: "Delete block")
             case "up": mutate(.move(-1), name: "Move block up")
@@ -771,7 +795,7 @@ extension RichArticleView {
             case "language":
                 let alert = NSAlert(); alert.messageText = "Code language"; let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24)); field.stringValue = block.metadata.language ?? ""
                 alert.accessoryView = field; alert.addButton(withTitle: "Apply"); alert.addButton(withTitle: "Cancel")
-                if alert.runModal() == .alertFirstButtonReturn { mutate(.language(field.stringValue.isEmpty ? nil : field.stringValue), name: "Code language") }
+                if alert.runModal() == .alertFirstButtonReturn, accepts(context, preservingSelection: false) { mutate(.language(field.stringValue.isEmpty ? nil : field.stringValue), name: "Code language") }
             default: break
             }
         }

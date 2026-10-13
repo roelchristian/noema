@@ -162,13 +162,13 @@ struct WorkspacePaneStateTests {
         }
     }
 
-    @Test func nativeCollectionWidthRestorationPreservesSplitOwnership() {
+    @Test(arguments: [false, true]) func nativeCollectionWidthRestorationPreservesSplitOwnership(inspectorVisible: Bool) {
         withDefaults { defaults in
             let state = WorkspacePaneState(defaults: defaults)
-            state.rememberWidths(sidebar: 220, collection: 310, inspector: nil)
+            state.rememberWidths(sidebar: 220, collection: 310, inspector: 350)
             let probe = WorkspaceSplitViewPersistence.Probe()
             probe.state = state
-            probe.presentation = WorkspacePanePresentation(sidebar: true, collection: true, inspector: false)
+            probe.presentation = WorkspacePanePresentation(sidebar: true, collection: true, inspector: inspectorVisible)
             probe.mainMinimum = WorkspacePaneState.contentMinimum
             let controller = NSSplitViewController()
             let sidebar = NSViewController()
@@ -180,21 +180,31 @@ struct WorkspacePaneStateTests {
             controller.addSplitViewItem(NSSplitViewItem(viewController: sidebar))
             controller.addSplitViewItem(NSSplitViewItem(viewController: collection))
             controller.addSplitViewItem(NSSplitViewItem(viewController: center))
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 600),
+            if inspectorVisible {
+                let inspector = NSViewController()
+                inspector.view = NSView()
+                controller.addSplitViewItem(NSSplitViewItem(viewController: inspector))
+            }
+            let width: CGFloat = inspectorVisible ? 1600 : 1200
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 600),
                                   styleMask: [.titled, .resizable], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             window.contentViewController = controller
             defer { probe.disconnect(); window.close() }
-            controller.view.frame = NSRect(x: 0, y: 0, width: 1200, height: 600)
+            controller.view.frame = NSRect(x: 0, y: 0, width: width, height: 600)
             controller.splitView.frame = controller.view.bounds
             controller.view.layoutSubtreeIfNeeded()
             let priorities = controller.splitViewItems.map(\.holdingPriority)
             probe.configure()
             #expect(controller.splitView.delegate as? NSSplitViewController === controller)
             #expect(controller.splitViewItems.map(\.holdingPriority) == priorities)
-            #expect(controller.splitView.arrangedSubviews.count == 3)
+            #expect(controller.splitView.arrangedSubviews.count == (inspectorVisible ? 4 : 3))
             #expect(abs(controller.splitView.arrangedSubviews[0].frame.width - 220) < 2)
             #expect(abs(controller.splitView.arrangedSubviews[1].frame.width - 310) < 2)
+            #expect(controller.splitView.arrangedSubviews[2].frame.width >= WorkspacePaneState.contentMinimum)
+            if inspectorVisible {
+                #expect(abs(controller.splitView.arrangedSubviews[3].frame.width - 350) < 2)
+            }
         }
     }
 
