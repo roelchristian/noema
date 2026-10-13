@@ -205,6 +205,15 @@ struct WorkspacePanePresentation: Equatable {
         static let overlay = PaneMask(rawValue: 8)
     }
 
+    /// Reserve the same reading width in the native split that pane selection budgets.
+    @MainActor func contentMinimum(in width: CGFloat, floor: CGFloat, preferred: CGFloat) -> CGFloat {
+        guard inspector else { return floor }
+        let paneCost = (sidebar ? WorkspacePaneState.sidebarMinimum + 1 : 0)
+            + (collection ? WorkspacePaneState.collectionMinimum + 1 : 0)
+            + InspectorState.minWidth + 1
+        return max(floor, min(preferred, width - paneCost))
+    }
+
     @MainActor static func resolve(
         width: CGFloat,
         mainMinimum: CGFloat,
@@ -261,8 +270,11 @@ struct WorkspacePanePresentation: Equatable {
             sidebarRequested: sidebarRequested, collectionRequested: collectionRequested,
             inspectorRequested: true, priority: priority, contentPreferred: nil
         )
-        if legacy.inspector || fits(width: width, contentMinimum: mainMinimum, sidebar: false, collection: false, inspector: true) {
-            return legacy
+        if legacy.inspector { return legacy }
+        if fits(width: width, contentMinimum: mainMinimum, sidebar: false, collection: false, inspector: true) {
+            // An explicit collection request can supersede inspection; ordinary
+            // narrowing keeps the inspector while the editor approaches its floor.
+            return priority == .collection ? legacy : Self(sidebar: false, collection: false, inspector: true)
         }
         let browsing = resolve(
             width: width, mainMinimum: mainMinimum,

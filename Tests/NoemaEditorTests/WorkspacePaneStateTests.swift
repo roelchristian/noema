@@ -250,6 +250,58 @@ struct WorkspacePaneStateTests {
         #expect(inspection.inspector)
     }
 
+    @Test(arguments: [CGFloat(720), CGFloat(800), CGFloat(850)])
+    func narrowInspectionKeepsInspectorBeforeCompressingEditorToItsFloor(width: CGFloat) {
+        let presentation = WorkspacePanePresentation.resolve(
+            width: width, mainMinimum: WorkspacePaneState.contentMinimum,
+            sidebarRequested: true, collectionRequested: true, inspectorRequested: true,
+            priority: .sidebar, contentPreferred: WorkspacePaneState.contentPreferred
+        )
+        #expect(presentation == WorkspacePanePresentation(sidebar: false, collection: false, inspector: true))
+    }
+
+    @Test(arguments: [CGFloat(900), CGFloat(1100), CGFloat(1350), CGFloat(1500), CGFloat(1800)])
+    func nativeInspectionReservesPreferredEditorWidth(width: CGFloat) {
+        withDefaults { defaults in
+            let state = WorkspacePaneState(defaults: defaults)
+            let presentation = state.presentation(
+                width: width, mainMinimum: WorkspacePaneState.contentMinimum,
+                inspectorAvailable: true, contentPreferred: WorkspacePaneState.contentPreferred
+            )
+            let probe = WorkspaceSplitViewPersistence.Probe()
+            probe.state = state
+            probe.presentation = presentation
+            probe.mainMinimum = presentation.contentMinimum(
+                in: width, floor: WorkspacePaneState.contentMinimum, preferred: WorkspacePaneState.contentPreferred
+            )
+            let controller = NSSplitViewController()
+            if presentation.sidebar {
+                let sidebar = NSViewController(); sidebar.view = NSView()
+                controller.addSplitViewItem(NSSplitViewItem(viewController: sidebar))
+            }
+            if presentation.collection {
+                let collection = NSViewController(); collection.view = NSView()
+                controller.addSplitViewItem(NSSplitViewItem(viewController: collection))
+            }
+            let center = NSViewController(); center.view = probe
+            controller.addSplitViewItem(NSSplitViewItem(viewController: center))
+            let inspector = NSViewController(); inspector.view = NSView()
+            controller.addSplitViewItem(NSSplitViewItem(viewController: inspector))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 600),
+                                  styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentViewController = controller
+            defer { probe.disconnect(); window.close() }
+            controller.view.frame = NSRect(x: 0, y: 0, width: width, height: 600)
+            controller.splitView.frame = controller.view.bounds
+            controller.view.layoutSubtreeIfNeeded()
+            probe.configure()
+            let index = (presentation.sidebar ? 1 : 0) + (presentation.collection ? 1 : 0)
+            #expect(controller.splitView.arrangedSubviews[index].frame.width >= WorkspacePaneState.contentPreferred - 1)
+            #expect(controller.splitView.delegate as? NSSplitViewController === controller)
+        }
+    }
+
     @Test func explicitHideSurvivesWidthThatCouldRestoreThePane() {
         withDefaults { defaults in
             let state = WorkspacePaneState(defaults: defaults)

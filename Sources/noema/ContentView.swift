@@ -309,10 +309,13 @@ struct ContentView: View {
         }
     }
     private func contentColumn(presentation: WorkspacePanePresentation, availableWidth: CGFloat) -> some View {
-        contentPane
-            .frame(minWidth: contentMinimum, maxHeight: .infinity)
+        let minimum = presentation.contentMinimum(
+            in: availableWidth, floor: contentMinimum, preferred: WorkspacePaneState.contentPreferred
+        )
+        return contentPane
+            .frame(minWidth: minimum, maxHeight: .infinity)
             .transaction { $0.animation = nil }
-            .background(WorkspaceSplitViewPersistence(state: paneState, presentation: presentation, mainMinimum: contentMinimum))
+            .background(WorkspaceSplitViewPersistence(state: paneState, presentation: presentation, mainMinimum: minimum))
             .overlay(alignment: .trailing) {
                 if presentation.inspectorOverlay {
                     inspectorColumn(flexibleWidth: true)
