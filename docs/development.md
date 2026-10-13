@@ -127,10 +127,10 @@ The hygiene checker fails on root Markdown outside `README.md`/`AGENTS.md`, trac
 ## Native workspace controls
 
 The standard unified window toolbar (`.unified`, Finder-sized icons) presents the active collection
-(`Pages`, `Sources`, `Semantic Blocks`, `Trash`) or opened document title once, alongside
-navigation, contextual collection sorting (`Pages`), document editing and lock controls,
-and global commands without a second competing title bar below it. Its contextual actions
-menu provides Rename, summary actions and Delete. `⌃⌘S` toggles sidebar, `⌥⌘I` toggles
+(`Pages`, `Sources`, `Knowledge`, `Trash`) or opened document title once, alongside
+navigation, document editing and lock controls, and global commands without a second
+competing title bar below it. Page sorting stays with the collection list. Its contextual actions
+menu provides Rename, summary actions and Delete. `⌃⌘S` toggles sidebar, `⌃⌘L` toggles the collection list, `⌥⌘I` toggles
 contextual inspector, and
 `⇧⌘F` expands and focuses toolbar vault search; `⌘P` opens title-oriented Quick Open
 in the same control. Search retains the current document, query and library scope;
@@ -138,9 +138,10 @@ Up/Down selects a quick result and Return opens it. Escape dismisses results fir
 then collapses the field. Narrow windows use an anchored field presentation.
 Scope refinement supports All, Pages, Sources and Semantic Blocks; **Show all results**
 opens the full list, with **Return to workspace** preserving the previous document.
-Sidebar/inspector intent
+Sidebar, collection-list, and inspector intent
 and divider widths persist independently; narrow windows can temporarily hide a pane
-without changing intent. Welcome/locked and open workspace have separate saved frames.
+without changing intent. The collection list collapses before the content pane is
+reduced below its minimum. Welcome/locked and open workspace have separate saved frames.
 Validate native divider restoration, minimum-size collapse, full-screen transitions
 and auxiliary-window isolation using the [standing matrix](validation.md#native-window-acceptance).
 
@@ -154,7 +155,7 @@ Create a temporary schema-5 vault for a tour. Keep personal vaults outside this 
 - **Vault menu, session locking & notices:** The vault-name menu at the bottom of the sidebar (and the **Vault** menu bar item) groups **Open Vault in Finder**, **Refresh from Files**, **Lock Vault** / **Unlock Vault** (`⌥⌘L`), **Close Vault** (`⇧⌘W`), **Trash** (with item count), recoverable drafts, vault notices, and **Open / Create Vault…**. Locking a vault flushes or journals pending edits, closes open source readers and dismisses the modal Settings sheet (including any nested sheet), detaches the search index and closes canonical SQLite storage, clears loaded notes and sources from memory, and revokes in-app session access until unlocked (application-level access revocation; Markdown or SQLite/WAL and source files remain plaintext until cryptographic vault storage is enabled). Global Settings (`⌘,`) presents as a workspace-modal sheet with sidebar categories (**Personalisation**: Appearance, Reading & Editor; **Intelligence**: Intelligence, OpenAI; **Security**: Vault Access), gating workspace commands while open and remaining accessible while locked. Error banners and vault notices can be dismissed individually or with **Dismiss All** for the current session.
 
 ### Pages
-- **Browse & organize:** Select **Pages** to search, sort (by update date or title), and filter by tag in the main workspace. The native sidebar keeps **Pages**, **Sources** and **Semantic Blocks** visible above a shared **Recent Items** list of up to ten successfully opened items. Recent block entries jump to their parent page and block; source entries open a native preview. History stores identifiers locally per vault and is hidden while locked. Create a blank page (`⌘N`) or use **New Personal Page** for an Overview / Personal context / Connections template.
+- **Browse & organize:** Select **Pages**, **Sources**, or **Knowledge** in the sidebar. The middle list stays visible while the selected page or source opens on the right. Sort Pages by update date or title from that list, and filter Pages by tag there. The sidebar keeps **Pages**, **Sources**, and **Knowledge** above a shared **Recent Items** list of up to ten successfully opened items. Choosing a recent item opens it; choosing a document from the list does not move the sidebar highlight onto Recent. Recent block entries jump to their parent page and block. History stores identifiers locally per vault and is hidden while locked. **Return to Library** (`⌘[`) clears the open document and reveals the list. Create a blank page (`⌘N`) or use **New Personal Page** for an Overview / Personal context / Connections template.
 - **Links & tags:** Add comma-separated topics or inline `#tags`. Type `[[` for wiki-link suggestions (`[[Pertinax|my reading]]`). Renaming a page keeps its filename stable and records the old title as an alias so existing links continue to resolve.
 - **Editing lock:** Toggle **Lock Editing** via row swipe, hover/focus button, toolbar, context menu, or **Properties → Status → Editing** in the inspector. Locking prevents accidental content or reference edits without encrypting the file or changing its `updated_at` timestamp.
 - **Provenance references:** Link pages and sources many-to-many under **References → Sources** for a page or **References → Referring pages** for a source. Linked items can be opened directly from the inspector even when a page is locked.

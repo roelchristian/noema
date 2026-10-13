@@ -38,7 +38,7 @@ struct WorkspacePaneStateTests {
             #expect(defaults.object(forKey: WorkspacePaneState.sidebarVisibilityKey) == nil)
             #expect(defaults.object(forKey: WorkspacePaneState.inspectorVisibilityKey) == nil)
             let restored = state.presentation(width: 1280, mainMinimum: 520, inspectorAvailable: true)
-            #expect(restored == WorkspacePanePresentation(sidebar: true, inspector: true))
+            #expect(restored == WorkspacePanePresentation(sidebar: true, collection: true, inspector: true))
         }
     }
 
@@ -52,7 +52,7 @@ struct WorkspacePaneStateTests {
             #expect(state.isSidebarVisible && state.isInspectorVisible)
             state.toggleSidebar(presented: true)
             #expect(state.presentation(width: 820, mainMinimum: 520, inspectorAvailable: true) == WorkspacePanePresentation(sidebar: false, inspector: true))
-            #expect(state.presentation(width: 1280, mainMinimum: 420, inspectorAvailable: false) == WorkspacePanePresentation(sidebar: false, inspector: false))
+            #expect(state.presentation(width: 1280, mainMinimum: 420, inspectorAvailable: false) == WorkspacePanePresentation(sidebar: false, collection: true, inspector: false))
             #expect(state.isInspectorVisible)
         }
     }
@@ -114,6 +114,99 @@ struct WorkspacePaneStateTests {
             #expect(controller.splitView.arrangedSubviews.count == 2)
             #expect(abs(controller.splitView.arrangedSubviews[0].frame.width - 275) < 2)
         }
+    }
+
+    @Test func collectionListCollapsesBeforeContentWhenTheInspectorNeedsRoom() {
+        let content = WorkspacePaneState.contentMinimum
+        let tight = content + WorkspacePaneState.sidebarMinimum + InspectorState.minWidth + 2
+        let collapsed = WorkspacePanePresentation.resolve(
+            width: tight, mainMinimum: content,
+            sidebarRequested: true, collectionRequested: true, inspectorRequested: true, priority: .inspector
+        )
+        #expect(collapsed == WorkspacePanePresentation(sidebar: true, collection: false, inspector: true))
+        let wide = tight + WorkspacePaneState.collectionMinimum + 1
+        let restored = WorkspacePanePresentation.resolve(
+            width: wide, mainMinimum: content,
+            sidebarRequested: true, collectionRequested: true, inspectorRequested: true, priority: .sidebar
+        )
+        #expect(restored == WorkspacePanePresentation(sidebar: true, collection: true, inspector: true))
+        let contentOnly = WorkspacePanePresentation.resolve(
+            width: content, mainMinimum: content,
+            sidebarRequested: true, collectionRequested: true, inspectorRequested: true, priority: .sidebar
+        )
+        #expect(contentOnly == WorkspacePanePresentation(sidebar: false, collection: false, inspector: false))
+    }
+
+    @Test func explicitCollectionRequestPreservesTheListBesideContent() {
+        let width = WorkspacePaneState.contentMinimum + WorkspacePaneState.sidebarMinimum + WorkspacePaneState.collectionMinimum + 2
+        let presentation = WorkspacePanePresentation.resolve(
+            width: width, mainMinimum: WorkspacePaneState.contentMinimum,
+            sidebarRequested: true, collectionRequested: true, inspectorRequested: true, priority: .collection
+        )
+        #expect(presentation == WorkspacePanePresentation(sidebar: true, collection: true, inspector: false))
+    }
+
+    @Test func collectionVisibilityAndWidthRestoreIndependently() {
+        withDefaults { defaults in
+            let state = WorkspacePaneState(defaults: defaults)
+            #expect(state.isCollectionVisible)
+            #expect(state.collectionWidth == WorkspacePaneState.collectionIdeal)
+            state.toggleCollection(presented: true)
+            state.rememberWidths(sidebar: nil, collection: 340, inspector: nil)
+            let restored = WorkspacePaneState(defaults: defaults)
+            #expect(!restored.isCollectionVisible)
+            #expect(restored.collectionWidth == 340)
+            restored.revealCollection()
+            #expect(restored.isCollectionVisible)
+            #expect(restored.presentation(width: 1280, mainMinimum: 420, inspectorAvailable: true).collection)
+        }
+    }
+
+    @Test func nativeCollectionWidthRestorationPreservesSplitOwnership() {
+        withDefaults { defaults in
+            let state = WorkspacePaneState(defaults: defaults)
+            state.rememberWidths(sidebar: 220, collection: 310, inspector: nil)
+            let probe = WorkspaceSplitViewPersistence.Probe()
+            probe.state = state
+            probe.presentation = WorkspacePanePresentation(sidebar: true, collection: true, inspector: false)
+            probe.mainMinimum = WorkspacePaneState.contentMinimum
+            let controller = NSSplitViewController()
+            let sidebar = NSViewController()
+            sidebar.view = NSView()
+            let collection = NSViewController()
+            collection.view = NSView()
+            let center = NSViewController()
+            center.view = probe
+            controller.addSplitViewItem(NSSplitViewItem(viewController: sidebar))
+            controller.addSplitViewItem(NSSplitViewItem(viewController: collection))
+            controller.addSplitViewItem(NSSplitViewItem(viewController: center))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 600),
+                                  styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentViewController = controller
+            defer { probe.disconnect(); window.close() }
+            controller.view.frame = NSRect(x: 0, y: 0, width: 1200, height: 600)
+            controller.splitView.frame = controller.view.bounds
+            controller.view.layoutSubtreeIfNeeded()
+            let priorities = controller.splitViewItems.map(\.holdingPriority)
+            probe.configure()
+            #expect(controller.splitView.delegate as? NSSplitViewController === controller)
+            #expect(controller.splitViewItems.map(\.holdingPriority) == priorities)
+            #expect(controller.splitView.arrangedSubviews.count == 3)
+            #expect(abs(controller.splitView.arrangedSubviews[0].frame.width - 220) < 2)
+            #expect(abs(controller.splitView.arrangedSubviews[1].frame.width - 310) < 2)
+        }
+    }
+
+    @Test func sidebarHighlightFollowsTheCollectionUnlessRecentWasChosen() {
+        let page = RecentItemID.page(UUID())
+        #expect(WorkspaceSidebarSelection.resolve(scope: .wiki, explicitRecentItem: nil) == .collection(.wiki))
+        #expect(WorkspaceSidebarSelection.resolve(scope: .sources, explicitRecentItem: nil) == .collection(.sources))
+        #expect(WorkspaceSidebarSelection.resolve(scope: .semantic, explicitRecentItem: nil) == .collection(.semantic))
+        #expect(WorkspaceSidebarSelection.resolve(scope: .tag("Research"), explicitRecentItem: nil) == .collection(.wiki))
+        #expect(WorkspaceSidebarSelection.resolve(scope: .trash, explicitRecentItem: nil) == nil)
+        #expect(WorkspaceSidebarSelection.resolve(scope: .wiki, explicitRecentItem: page) == .recent(page))
+        #expect(WorkspaceSidebarSelection.resolve(scope: .sources, explicitRecentItem: page) == .recent(page))
     }
 
 }
