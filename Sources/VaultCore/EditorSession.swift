@@ -17,6 +17,8 @@ import Foundation
         public let semanticEdit: SemanticPageEdit?
         public let expectedEntityRevisions: [UUID: BlockStoreRevision]
         public let expectedObjectRevisions: [UUID: BlockStoreRevision]
+        public let pageRevision: BlockStoreRevision?
+        fileprivate let semanticBaseline: SemanticPageSnapshot?
     }
     public struct Mutation: Sendable {
         public let revision: UInt64
@@ -49,8 +51,37 @@ import Foundation
         expectedEntityRevisions = [:]; expectedObjectRevisions = [:]
     }
     public func snapshot() -> DocumentSnapshot {
-        DocumentSnapshot(identity: identity, generation: generation, revision: revision, document: document, selection: selection, semanticEdit: semanticEdit, expectedEntityRevisions: expectedEntityRevisions, expectedObjectRevisions: expectedObjectRevisions)
+        DocumentSnapshot(identity: identity, generation: generation, revision: revision, document: document, selection: selection, semanticEdit: semanticEdit, expectedEntityRevisions: expectedEntityRevisions, expectedObjectRevisions: expectedObjectRevisions, pageRevision: pageRevision, semanticBaseline: semanticBaseline)
     }
+    /// Resume an immutable in-memory draft when returning to a page before its save completes.
+    public func restorePendingSnapshot(_ snapshot: DocumentSnapshot, identity: Identity) {
+        guard snapshot.identity == identity else { return }
+        load(snapshot.document, identity: identity, selection: snapshot.selection)
+        revision = snapshot.revision
+        semanticEdit = snapshot.semanticEdit; pageRevision = snapshot.pageRevision
+        semanticBaseline = snapshot.semanticBaseline
+        expectedEntityRevisions = snapshot.expectedEntityRevisions
+        expectedObjectRevisions = snapshot.expectedObjectRevisions
+    }
+
+    /// Advance only evidence from an acknowledged predecessor save; retain newer local edits.
+    public func rebaseSemanticEvidence(_ saved: SemanticPageSnapshot) {
+        guard saved.snapshot.pageID == identity.pageID else { return }
+        pageRevision = saved.snapshot.revision; semanticBaseline = saved
+        expectedObjectRevisions.merge(Dictionary(uniqueKeysWithValues: saved.objects.map { ($0.object.id, $0.revision) })) { _, saved in saved }
+        if var edit = semanticEdit {
+            edit.expectedAnnotationRevisions = saved.edit.expectedAnnotationRevisions
+            for index in edit.annotations.indices where edit.annotations[index].anchorDisposition == .resolved {
+                edit.annotations[index].expectedRevision = saved.snapshot.revision.token
+                if case .inline(let page, let block, var target) = edit.annotations[index].location {
+                    target.digest = InlineAnnotationTarget.evidence(quote: target.quote, revision: saved.snapshot.revision.token)
+                    edit.annotations[index].location = .inline(pageID: page, blockID: block, target: target)
+                }
+            }
+            edit.recordSemanticMutation(from: saved.edit); semanticEdit = edit
+        }
+    }
+
     public func accepts(_ snapshot: DocumentSnapshot) -> Bool {
         snapshot.identity == identity && snapshot.generation == generation && snapshot.revision == revision && snapshot.revision > publishedRevision
     }

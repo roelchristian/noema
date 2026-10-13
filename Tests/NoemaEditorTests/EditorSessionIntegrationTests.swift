@@ -293,4 +293,66 @@ import VaultCore
         #expect(model.semanticInspectionRecords.isEmpty && model.semanticInspectionPageID == nil)
     }
 
+    @Test func semanticDraftSurvivesRapidRevisitAndSuccessorSave() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("semantic-navigation-\(UUID())")
+        let root = base.appendingPathComponent("Vault")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
+        let first = try await repository.create(title: "Annotated", body: "Ada Lovelace")
+        let second = try await repository.create(title: "Destination", body: "Other page")
+        let model = AppModel(); model.localStorageRoot = base.appendingPathComponent("Local")
+        model.persistSecurityScopedBookmark = false
+        await model.open(root, create: false)
+        model.select(first.id); model.reading = false
+        func parent() -> RichArticleView {
+            RichArticleView(text: SummarizedArticleView(model: model).editorText,
+                reading: false, locked: false, action: nil, onBegin: {}, onEnd: {}, onWikiLink: { _ in },
+                noteID: first.id, vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID,
+                onSemanticLoad: model.configureSemanticEditor, annotationChoices: model.annotationChoices,
+                onAnnotate: model.annotateSelection)
+        }
+        let (original, view, window) = editor(parent())
+        defer { window.close(); model.flushEditorPublication = nil }
+        model.flushEditorPublication = { original.flushPublication() }
+        for _ in 0..<100 {
+            if original.session.semanticEdit != nil { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try #require(original.session.semanticEdit != nil)
+        view.setSelectedRange(NSRange(location: 0, length: 3))
+        let selection = try #require(original.annotationSelection())
+        try await model.annotateSelection(original, selection.0, selection.1,
+            .newObject(typeKey: "definition", text: "Pioneer"), original.session.revision)
+        let entered = AsyncStream.makeStream(of: Void.self), release = AsyncStream.makeStream(of: Void.self)
+        defer { release.continuation.finish() }
+        var preparationCount = 0
+        model.pageSavePreparation = {
+            preparationCount += 1
+            if preparationCount == 1 {
+                entered.continuation.yield(())
+                for await _ in release.stream { break }
+            }
+        }
+        model.select(second.id)
+        for await _ in entered.stream { break }
+        model.select(first.id); model.reading = false
+        let (resumed, _, resumedWindow) = editor(parent())
+        defer { resumedWindow.close() }
+        model.flushEditorPublication = { resumed.flushPublication() }
+        #expect(resumed.session.semanticEdit?.annotations.count == 1)
+        #expect(resumed.session.pageRevision == original.session.pageRevision)
+        let block = try #require(resumed.document.blocks.first?.id)
+        resumed.session.updateRuns(block, runs: [RichRun("Ada Lovelace extended")], selection: .init(location: 0, length: 0))
+        resumed.flushPublication()
+        model.select(second.id)
+        release.continuation.yield(())
+        #expect(await model.flushPendingEdits())
+        let saved = try await repository.sqliteBlockStore.loadSemanticPage(pageID: first.id)
+        #expect(saved.snapshot.document.blocks.first?.text == "Ada Lovelace extended")
+        #expect(saved.annotations.count == 1 && saved.objects.count == 1)
+        #expect(model.pageSaveFailures.isEmpty)
+        #expect(await model.closeVault())
+    }
+
 }

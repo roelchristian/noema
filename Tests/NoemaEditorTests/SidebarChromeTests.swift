@@ -69,7 +69,7 @@ struct SidebarChromeTests {
         let defaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         defer { defaults.removePersistentDomain(forName: defaultsSuiteName) }
 
-        let repository = try FileVaultRepository.open(root: vaultRoot, create: true)
+        let repository = try await openCanonicalAppFixture(root: vaultRoot, create: true)
         _ = try await repository.create(title: "Architecture Overview", body: "Initial body")
 
         let model = AppModel(aiDefaults: defaults)

@@ -229,7 +229,7 @@ struct SourceAdapterTests {
 
 
 extension SourceAdapterTests {
-    @Test(arguments: [false, true], [0, 1, 2])
+    @Test(.serialized, arguments: [false, true], [0, 1, 2])
     func cancelledDownloadCannotCommitDuringReceiptVerification(shouldImport: Bool, cancellation: Int) async throws {
         let fixture = try folder(); defer { try? FileManager.default.removeItem(at: fixture) }
         let root = fixture.appendingPathComponent("Vault")
@@ -244,7 +244,9 @@ extension SourceAdapterTests {
         let manager = VaultSessionManager()
         let (_, _, repo) = try await manager.openRepository(root: root, create: true) { operation in
             guard operation == (shouldImport ? "canonicalOriginal.receipt" : "canonicalLinked.receipt") else { return }
-            // The fifth hook is inside the final pre-COMMIT receipt verification.
+            // Each receipt verification invokes its wrapper before and after the byte check.
+            // SQLite verifies at transaction entry, during publication, then before COMMIT;
+            // hook five therefore pauses the final verification on the SQLite actor.
             let pause = receiptChecks.withLock { $0 += 1; return $0 == 5 }
             if pause {
                 entered.continuation.yield(())
@@ -255,7 +257,18 @@ extension SourceAdapterTests {
         let completing = Task {
             try await repo.completeSourceDownload(id: pending.id, at: external, data: bytes, shouldImport: shouldImport)
         }
-        for await _ in entered.stream { break }
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for await _ in entered.stream { return }
+                throw VaultError.storage("Receipt verification signal ended before the barrier")
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(5))
+                throw VaultError.storage("Final receipt verification barrier was not reached")
+            }
+            defer { group.cancelAll() }
+            _ = try await group.next()
+        }
         switch cancellation {
         case 0: await repo.cancelSourceDownload(id: pending.id)
         case 1: _ = await repo.cancelAllSourceDownloads()
