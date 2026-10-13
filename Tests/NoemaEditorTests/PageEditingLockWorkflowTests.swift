@@ -8,14 +8,14 @@ import VaultCore
 extension VaultUIIntegrationTests {
     @Suite(.serialized) @MainActor
     struct PageEditingLockWorkflowTests {
-        @Test(arguments: [false, true])
-        func annotatedPageLockKeepsNavigationAndSubsequentEditingAvailable(createNewPage: Bool) async throws {
+        @Test(arguments: [false, true], [false, true])
+        func annotatedPageLockKeepsNavigationAndSubsequentEditingAvailable(createNewPage: Bool, createEntity: Bool) async throws {
             let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaPageLockWorkflow-\(UUID())")
             let root = base.appendingPathComponent("Vault")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: base) }
             let repository = try await openCanonicalAppFixture(root: root, create: true)
-            let page = try await repository.create(title: "Annotated page", body: "Ada Lovelace")
+            let page = try await repository.create(title: "Untitled", body: "Ada Lovelace")
             let model = AppModel()
             model.localStorageRoot = base.appendingPathComponent("Local")
             model.persistSecurityScopedBookmark = false
@@ -44,10 +44,24 @@ extension VaultUIIntegrationTests {
             try #require(coordinator.session.semanticEdit != nil)
             #expect(model.canEditPage)
             #expect(view.isEditable)
+            model.aiClient = .init(unavailabilityReason: { nil }, summarize: { _ in "Summary" },
+                inferLCC: { _ in "QA291" }, lccCode: { _ in "QA291" }, pageTitle: { _ in "Generated title" },
+                pageFromTopic: { _, _ in "" }, pageFromSource: { _ in "" }, researchTopic: { _ in [] })
+            model.prepareUntitledPageForNaming()
+            #expect(await model.finishCurrentPage(waitForTitles: true))
+            #expect(model.currentNote?.title == "Generated title")
+            #expect(coordinator.session.pageRevision?.token.base64EncodedString() == model.currentNote?.contentHash)
+            model.setPageLCC("QA292")
+            for _ in 0..<200 {
+                if model.saveStatus == "Saved locally" { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(model.saveStatus == "Saved locally")
+            #expect(coordinator.session.pageRevision?.token.base64EncodedString() == model.currentNote?.contentHash)
             view.setSelectedRange(NSRange(location: 0, length: 3))
             let selection = try #require(coordinator.annotationSelection())
             try await model.annotateSelection(coordinator, selection.0, selection.1,
-                .newObject(typeKey: "definition", text: "A pioneer"), coordinator.session.revision)
+                createEntity ? .newEntity(typeKey: "person", label: "Ada") : .newObject(typeKey: "definition", text: "A pioneer"), coordinator.session.revision)
             #expect(await model.saveCurrent())
             #expect(!model.dirty)
             view.undoManager?.beginUndoGrouping()

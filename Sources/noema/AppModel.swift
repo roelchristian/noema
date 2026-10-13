@@ -2553,11 +2553,14 @@ struct AISuggestion: Identifiable, Sendable {
         defer { saving = false }
         do {
             note.lcc = lcc
+            let editorSnapshot = semanticCoordinator?.session.identity.pageID == pageID ? semanticCoordinator?.session.snapshot() : nil
             let saved = try await repository.save(note: note, title: note.title, body: note.body, tags: note.tags)
+            let semantic = try await repository.sqliteBlockStore.loadSemanticPage(pageID: pageID)
             guard generation == ticket, canOperateOnLoadedContent else { return }
             if let i = notes.firstIndex(where: { $0.id == pageID }) { notes[i] = saved }
             if currentNote?.id == pageID {
                 currentNote = saved
+                reconcileMetadataPublication(semantic, captured: editorSnapshot)
                 lccInput = saved.lcc ?? ""
                 saveStatus = dirty ? "Unsaved changes" : "Saved locally"
             }
@@ -2928,6 +2931,17 @@ struct AISuggestion: Identifiable, Sendable {
         }
         return true
     }
+    private func reconcileMetadataPublication(_ saved: SemanticPageSnapshot, captured: EditorSession.DocumentSnapshot?) {
+        guard let captured, currentNote?.id == saved.snapshot.pageID,
+              currentNote?.contentHash == saved.snapshot.revision.token.base64EncodedString(),
+              semanticCoordinator?.session.acceptSemanticPublication(saved, for: captured) == true else { return }
+        semanticSavedRevision = captured.revision
+        if semanticCoordinator?.session.revision == captured.revision {
+            editorDocument = saved.snapshot.document
+            semanticCoordinator?.lastDocument = saved.snapshot.document
+        }
+        semanticCoordinator?.refreshSemanticRanges()
+    }
     private func startTitleGeneration(for candidate: NoteRecord? = nil) {
         guard canOperateOnLoadedContent, let note = candidate ?? currentNote, let repository,
               untitledPages[note.id] == note.title,
@@ -2955,7 +2969,9 @@ struct AISuggestion: Identifiable, Sendable {
                     defer { if generation == completionTicket.token { saving = false } }
                     var updatedNote = note
                     if note.lcc == nil, let lcc, !lcc.isEmpty { updatedNote.lcc = lcc }
+                    let editorSnapshot = semanticCoordinator?.session.identity.pageID == note.id ? semanticCoordinator?.session.snapshot() : nil
                     let saved = try await repository.save(note: updatedNote, title: generated, body: note.body, tags: note.tags)
+                    let semantic = try await repository.sqliteBlockStore.loadSemanticPage(pageID: note.id)
                     activity.complete()
                     guard isCompletionValid(completionTicket, operation: "startTitleGeneration.save") else { return }
                     recordPageRename(saved.id, from: note.title, to: saved.title)
@@ -2963,6 +2979,7 @@ struct AISuggestion: Identifiable, Sendable {
                     if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
                     if currentNote?.id == saved.id {
                         currentNote = saved
+                        reconcileMetadataPublication(semantic, captured: editorSnapshot)
                         if title == note.title { title = saved.title }
                     }
                     scheduleRefresh()
