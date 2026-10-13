@@ -220,7 +220,7 @@ import VaultCore
 
 @MainActor private func editor(_ source: String) -> (RichArticleView.Coordinator, ArticleTextView, NSWindow) {
     _ = NSApplication.shared
-    let parent = RichArticleView(text: .constant(source), reading: false, locked: false, action: nil, onBegin: {}, onEnd: {}, onWikiLink: { _ in })
+    let parent = RichArticleView(text: .constant(source), editable: true, locked: false, action: nil, onWikiLink: { _ in })
     let coordinator = parent.makeCoordinator()
     let view = ArticleTextView(frame: NSRect(x: 0, y: 0, width: 900, height: 600)); view.isEditable = true; view.allowsUndo = true; view.isRichText = true
     let window = NSWindow(contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false)
@@ -296,19 +296,37 @@ import VaultCore
     #expect(narrow.width == 200)
 }
 
-@Test @MainActor func articleClickStartsEditingAndLockedClickShowsHint() {
-    let view = ArticleTextView(); view.isEditable = false
-    var starts = 0, lockedNotices = 0
-    view.begin = { starts += 1 }; view.lockedClick = { lockedNotices += 1 }
-    view.requestEditingFromClick()
-    #expect(view.isEditable); #expect(starts == 1)
-    view.requestEditingFromClick()
-    #expect(starts == 1)
+@Test @MainActor func articleEditableLinkActivationPreservesNativeSelection() {
+    let (coordinator, view, window) = editor("A [[Target]] link")
+    defer { window.close() }
+    var targets: [String] = []
+    coordinator.parent.onWikiLink = { targets.append($0) }
+    let url = URL(string: "noema://wiki?title=Target")!
+    let selection = NSRange(location: 2, length: 6)
+    view.setSelectedRange(selection)
+    #expect(coordinator.textView(view, clickedOnLink: url, at: 2))
+    #expect(targets.isEmpty)
+    #expect(view.selectedRange() == selection)
+    view.openLink = { coordinator.followLink($0) }
+    let manager = view.layoutManager!, container = view.textContainer!
+    manager.ensureLayout(for: container)
+    let glyph = manager.glyphIndexForCharacter(at: 2)
+    let rect = manager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
+    let point = NSPoint(x: rect.midX + view.textContainerOrigin.x, y: rect.midY + view.textContainerOrigin.y)
+    let click = NSEvent.mouseEvent(with: .leftMouseDown, location: view.convert(point, to: nil), modifierFlags: .command,
+        timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+    view.mouseDown(with: click)
+    #expect(targets == ["Target"])
+    #expect(view.selectedRange() == selection)
+    let item = NSMenuItem(); item.representedObject = url
+    view.openContextLink(item)
+    #expect(targets == ["Target", "Target"])
+    #expect(view.selectedRange() == selection)
+    #expect(view.accessibilityContextMenu().items.contains { $0.title == "Open Link" })
     view.isEditable = false; view.locked = true
-    view.requestEditingFromClick()
-    #expect(!view.isEditable); #expect(starts == 1); #expect(lockedNotices == 1)
-    view.locked = false; view.requestEditingFromClick()
-    #expect(view.isEditable); #expect(starts == 2)
+    #expect(view.accessibilityContextMenu().items.contains { $0.title == "Open Link" })
+    #expect(coordinator.textView(view, clickedOnLink: url, at: 2))
+    #expect(targets == ["Target", "Target", "Target"])
 }
 
 @Test @MainActor func semanticDecorationExcludesBlockTerminatorAfterSplit() {
@@ -697,7 +715,7 @@ import VaultCore
     let selection = view.selectedRange()
     let rendered = view.textStorage!.copy() as! NSAttributedString
     var writes = 0
-    coordinator.parent = RichArticleView(text: Binding(get: { source }, set: { _ in writes += 1 }), reading: false, locked: false, action: nil, onBegin: {}, onEnd: {}, onWikiLink: { _ in })
+    coordinator.parent = RichArticleView(text: Binding(get: { source }, set: { _ in writes += 1 }), editable: true, locked: false, action: nil, onWikiLink: { _ in })
     let commands: [BlockMutation] = [.transform(.paragraph), .semantic(nil), .status(nil), .language(nil), .move(-1), .indent, .outdent, .mergeBackward, .reorder(before: original.blocks[1].id)]
     for command in commands {
         coordinator.mutate(command, name: "No change")

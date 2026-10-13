@@ -79,7 +79,13 @@ private func creationParent() throws -> URL {
     let stagedName = try #require(stagedNames.first)
     #expect(stagedNames.count == 1)
     let staging = parent.appendingPathComponent(stagedName)
-    #expect(message.contains(staging.path))
+    // macOS may report /tmp for an enumerated /private/tmp URL (or another symlinked parent).
+    let prefix = "Staged content was preserved at "
+    let pathStart = try #require(message.range(of: prefix)?.upperBound)
+    let reportedSuffix = message[pathStart...]
+    let pathEnd = try #require(reportedSuffix.range(of: ". ")?.lowerBound)
+    let reportedStaging = URL(fileURLWithPath: String(reportedSuffix[..<pathEnd]))
+    #expect(reportedStaging.resolvingSymlinksInPath() == staging.resolvingSymlinksInPath())
     let manifestBytes = try Data(contentsOf: staging.appendingPathComponent("vault.json"))
     #expect(try FileVaultRepository.inspectManifest(at: staging).storage?.schemaVersion == 5)
     #expect(try Data(contentsOf: staging.appendingPathComponent("vault.json")) == manifestBytes)

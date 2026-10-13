@@ -7,8 +7,8 @@ import VaultCore
 @MainActor private func annotationEditor() -> (RichArticleView.Coordinator, ArticleTextView) {
     _ = NSApplication.shared
     let source = "Alice 👩🏽‍💻\n\nSecond page phrase"
-    let parent = RichArticleView(text: .constant(source), reading: false, locked: false, action: nil,
-        onBegin: {}, onEnd: {}, onWikiLink: { _ in }, noteID: UUID(), vaultID: UUID(), sessionID: UUID(),
+    let parent = RichArticleView(text: .constant(source), editable: true, locked: false, action: nil,
+        onWikiLink: { _ in }, noteID: UUID(), vaultID: UUID(), sessionID: UUID(),
         annotationChoices: { [] }, onAnnotate: { _, _, _, _, _ in })
     let coordinator = parent.makeCoordinator()
     let view = ArticleTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))

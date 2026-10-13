@@ -901,7 +901,7 @@ struct ContentView: View {
                         SummarizedArticleView(model: model, showsSummary: (AISummaryPlacement(rawValue: aiSummaryPlacement) ?? .defaultValue).showsInEditor(sidebarVisible: isInspectorPresented))
                             .id(model.selectedID)
                     } else { MarkdownPreview(blocks: model.preview, onWikiLink: model.followWikiLink) }
-                    if !model.reading, model.currentNote != nil, model.wikiQuery != nil, !model.linkSuggestions.isEmpty {
+                    if model.canEditPage, model.currentNote != nil, model.wikiQuery != nil, !model.linkSuggestions.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Link a page").font(.caption).foregroundStyle(theme.text()).padding(8)
                             ForEach(model.linkSuggestions) { note in
@@ -916,7 +916,6 @@ struct ContentView: View {
             .onChange(of: model.editorDocument) { model.edited() }
             .onChange(of: model.title) { model.edited() }
             .onChange(of: model.tagInput) { model.edited() }
-            .onChange(of: model.reading) { if model.reading { model.generatePreview() } }
         } else {
             VStack(spacing: 18) {
                 NoemaMark(presentation: .identity).frame(width: 76, height: 76).accessibilityHidden(true)
@@ -1047,17 +1046,6 @@ struct ContentView: View {
                 .accessibilityLabel("Add Page or Source")
             }
             if let note = model.currentNote {
-                ToolbarItem(id: "document.edit", placement: .primaryAction) {
-                    Button {
-                        if model.reading { model.beginEditing() } else { model.finishEditing() }
-                    } label: {
-                        Label(model.reading ? "Edit" : "Done", systemImage: model.reading ? "pencil" : "checkmark")
-                    }
-                    .labelStyle(.iconOnly)
-                    .disabled(model.editingLocked)
-                    .help(model.reading ? "Edit Page" : "Finish Editing")
-                    .accessibilityLabel(model.reading ? "Edit Page" : "Finish Editing")
-                }
                 ToolbarItem(id: "document.lock", placement: .primaryAction) {
                     Button { model.toggleEditingLock() } label: {
                         Label(note.isEditingLocked ? "Unlock Editing" : "Lock Editing", systemImage: note.isEditingLocked ? "lock.fill" : "lock.open")
@@ -1160,8 +1148,8 @@ struct ContentView: View {
                 Label(model.saveStatus, systemImage: model.dirty ? "circle.dotted" : "checkmark.circle").font(NoemaTypography.metadata).foregroundStyle(theme.text(for: .textSecondary, on: .elevated))
                 Spacer()
                 Text("\(model.wordCount) words").font(NoemaTypography.metadata).foregroundStyle(theme.text(for: .textSecondary, on: .elevated))
-                if !model.reading {
-                    Text("/ commands · Esc to finish").font(NoemaTypography.metadata).foregroundStyle(theme.text(for: .textSecondary, on: .elevated))
+                if model.canEditPage {
+                    Text("/ commands · ⌘-click to open links").font(NoemaTypography.metadata).foregroundStyle(theme.text(for: .textSecondary, on: .elevated))
                     HStack(spacing: NoemaSpacing.md) {
                         Button { model.format("**", "**") } label: { Label("Bold", systemImage: "bold").labelStyle(.iconOnly) }.help("Bold · ⌘B")
                         Button { model.format("*", "*") } label: { Label("Italic", systemImage: "italic").labelStyle(.iconOnly) }.help("Italic · ⌘I")

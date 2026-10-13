@@ -238,8 +238,7 @@ struct AppModelSessionIntegrationTests {
         model.wikiQuery = "Top"
 
         // Mutate the editor buffer without saving yet so lockVault must coordinate draft/save preservation.
-        model.reading = false
-        model.body += "\n\nUnsaved paragraph added before lock."
+                model.body += "\n\nUnsaved paragraph added before lock."
         model.edited()
         #expect(model.dirty)
 
@@ -275,7 +274,7 @@ struct AppModelSessionIntegrationTests {
         #expect(model.tagInput.isEmpty)
         #expect(model.lccInput.isEmpty)
         #expect(model.wordCount == 0)
-        #expect(model.reading)
+        #expect(!model.canEditPage)
         #expect(model.searchText.isEmpty)
         #expect(model.sidebarSearchResults.isEmpty)
         #expect(!model.showRecovery && !model.showIssues && !model.showURLSource && !model.showPasteSource && !model.showTopicPage)

@@ -353,7 +353,7 @@ extension RichArticleView {
             view.typingAttributes = attrs
         }
         func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
-            guard !document.unsupportedVersion, !parent.locked else { return false }
+            guard textView.isEditable, view?.locked == false, !document.unsupportedVersion, !parent.locked else { return false }
             clearBlockSelection()
             if textView.hasMarkedText() || view?.isSettingMarkedText == true {
                 deferredComposition = true; pendingSingleBlock = nil; return true
@@ -435,7 +435,6 @@ extension RichArticleView {
             }
             let command = event.modifierFlags.contains(.command), shift = event.modifierFlags.contains(.shift), option = event.modifierFlags.contains(.option)
             if !selectedBlockIDs.isEmpty {
-                if event.keyCode == 53 { clearBlockSelection(); return true }
                 if event.keyCode == 51 || event.keyCode == 117 { mutate(.delete, name: "Delete blocks"); return true }
                 if command, event.charactersIgnoringModifiers?.lowercased() == "c" { copyBlocks(); return true }
                 if command, event.charactersIgnoringModifiers?.lowercased() == "d" { mutate(.duplicate, name: "Duplicate blocks"); return true }
@@ -485,7 +484,10 @@ extension RichArticleView {
             case 48:
                 if block.kind == .code || block.kind == .math { return false }
                 mutate(shift ? .outdent : .indent, name: shift ? "Outdent block" : "Indent block"); return true
-            case 53: dismissPalette(); flushPublication(); parent.onEnd(); return true
+            case 53:
+                if slashRange != nil { dismissPalette() }
+                parent.onWikiQuery(nil)
+                return true
             default: break
             }
             return false
@@ -774,11 +776,17 @@ extension RichArticleView {
             }
         }
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            // Editable text reserves ordinary clicks for caret/selection; ArticleTextView
+            // routes Command-click and the accessible menu directly to followLink.
+            guard !textView.isEditable else { return true }
             guard let url = (link as? URL) ?? (link as? String).flatMap(URL.init(string:)) else { return false }
-            if url.scheme == "noema", let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "title" })?.value { parent.onWikiLink(target); return true }
-            if url.scheme == "noema", url.host == "page" { parent.onBlockLink(url); return true }
-            if ["http", "https", "mailto"].contains(url.scheme ?? "") { NSWorkspace.shared.open(url) }
+            followLink(url)
             return true
+        }
+        func followLink(_ url: URL) {
+            if url.scheme == "noema", let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "title" })?.value { parent.onWikiLink(target); return }
+            if url.scheme == "noema", url.host == "page" { parent.onBlockLink(url); return }
+            if ["http", "https", "mailto"].contains(url.scheme ?? "") { NSWorkspace.shared.open(url) }
         }
     }
 }

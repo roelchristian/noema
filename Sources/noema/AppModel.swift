@@ -125,8 +125,21 @@ struct AISuggestion: Identifiable, Sendable {
 
     var canInteractWithWorkspace: Bool { !showSettings }
 
+    /// Native mutation admission: one page identity and established semantic authority.
+    var canEditPage: Bool {
+        guard canInteractWithWorkspace, isVaultAvailable, currentNote != nil, currentSource == nil,
+              !editingLocked, !externalChange, !busy, !isLifecycleActionInProgress,
+              !isChoosingVault, !isChoosingSource, !workspaceCommandPending,
+              !showVaultCreation, !showTopicPage, !showURLSource, !showPasteSource,
+              !showRecovery, !showIssues, cloudSummaryConfirmation == nil,
+              pendingAISuggestion == nil, ambiguousMatches.isEmpty, unresolvedTarget == nil,
+              semanticReadyIdentity == editorIdentity,
+              let coordinator = semanticCoordinator else { return false }
+        return coordinator.session.identity == editorIdentity && coordinator.session.semanticEdit != nil
+    }
+
     var canFormatDocument: Bool {
-        canInteractWithWorkspace && isVaultAvailable && currentNote != nil && !reading && !editingLocked
+        canEditPage
     }
 
     var canOpenSettings: Bool {
@@ -303,6 +316,7 @@ struct AISuggestion: Identifiable, Sendable {
         editorDocument = snapshot.document
         edited()
     }
+    private var semanticReadyIdentity: EditorSession.Identity?
     @ObservationIgnored weak var semanticCoordinator: RichArticleView.Coordinator?
     var pendingSemanticOccurrence: PendingSemanticOccurrence?
     @ObservationIgnored private var semanticOccurrenceNavigationTicket = UUID()
@@ -321,7 +335,6 @@ struct AISuggestion: Identifiable, Sendable {
     var preview: [PreviewBlock] = []
     var backlinks: [NoteRecord] = []
     var outgoingLinkTargets: [String] = []
-    var reading = true
     var editorNotice: String?
     var editingHint: String?
     var editorReadOnly = false
@@ -803,7 +816,7 @@ struct AISuggestion: Identifiable, Sendable {
         pendingSemanticOccurrence = nil; semanticOccurrenceNavigationTicket = UUID()
         semanticInspectionTicket = UUID(); semanticInspectionRecords = []
         semanticInspectionPageID = nil; semanticInspectionSelectionIDs = []; semanticInspectionFocusID = nil
-        semanticInspectionLoading = false; semanticInspectionError = nil; semanticCoordinator = nil
+        semanticInspectionLoading = false; semanticInspectionError = nil; semanticCoordinator = nil; semanticReadyIdentity = nil
         navigationSaveTask = nil; navigationSaveQueue = []; pendingPageSaves = [:]; pageSaveFailures = [:]
         libraryRowsRevision = nil; libraryRowsScope = nil; libraryRowsEditorRevision = nil
         knowledgeCatalogueTicket = UUID(); knowledgeCatalogue = nil; knowledgeCatalogueLoading = false; knowledgeCatalogueError = nil
@@ -816,7 +829,7 @@ struct AISuggestion: Identifiable, Sendable {
         resetSearch(); scope = .wiki
         setLibrarySourceSelection(nil)
         selectedID = nil; selectedSemanticID = nil; currentNote = nil; currentSource = nil
-        title = ""; body = ""; tagInput = ""; lccInput = ""; wordCount = 0; reading = true
+        title = ""; body = ""; tagInput = ""; lccInput = ""; wordCount = 0
         editorNotice = nil; editingHint = nil; editorReadOnly = false; externalChange = false
         showRecovery = false; showTopicPage = false; generatingTopicPage = false
         showURLSource = false; showPasteSource = false; showIssues = false
@@ -1826,7 +1839,7 @@ struct AISuggestion: Identifiable, Sendable {
             restoreSidebarRecentHistory(vaultID: vaultID)
             root = url; vaultName = url.lastPathComponent; scope = .wiki; resetSearch()
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
-            title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0; reading = true
+            title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0
             notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
             updateTags()
             applyRecoveryListing(drafts)
@@ -2015,7 +2028,7 @@ struct AISuggestion: Identifiable, Sendable {
             restoreSidebarRecentHistory(vaultID: vaultID)
             root = candidateURL; vaultName = candidateURL.lastPathComponent; scope = .wiki; resetSearch()
             selectedID = nil; currentNote = nil; currentSource = nil; externalChange = false
-            title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0; reading = true
+            title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0
             notes = cached.notes; sources = cached.sources; trashedPages = []; trashOperationInProgress = false
             updateTags()
             applyRecoveryListing(drafts)
@@ -2240,7 +2253,7 @@ struct AISuggestion: Identifiable, Sendable {
             self.scope = scope
             if scope == .trash { self.searchText = "" }
             self.selectedID = nil; self.currentNote = nil; self.currentSource = nil; self.selectedSemanticID = nil; self.selectedSidebarRecentItemID = nil
-            self.externalChange = false; self.errorMessage = nil; self.reading = true
+            self.externalChange = false; self.errorMessage = nil
             if self.searchText.isEmpty {
                 switch scope {
                 case .wiki:
@@ -2401,6 +2414,15 @@ struct AISuggestion: Identifiable, Sendable {
     }
     func select(_ id: UUID?, scope targetScope: LibraryScope? = nil, block blockID: UUID? = nil, previewSource: Bool = false) {
         guard canInteractWithWorkspace, canOperateOnLoadedContent else { return }
+        if let id, id == currentNote?.id {
+            if let targetScope { scope = targetScope; searchText = "" }
+            if let blockID, editorDocument.block(blockID) != nil {
+                selectedSemanticID = "\(id):\(blockID)"
+                editorAction = EditorAction(operation: .block(blockID))
+                recordSidebarAccess(.semanticBlock(pageID: id, blockID: blockID))
+            }
+            return
+        }
         pendingSemanticOccurrence = nil; semanticOccurrenceNavigationTicket = UUID()
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: id)
         if let blockID {
@@ -2411,8 +2433,7 @@ struct AISuggestion: Identifiable, Sendable {
         if let targetScope { scope = targetScope; searchText = "" }
         selectedSidebarRecentItemID = nil
         selectedID = id; currentSource = nil; currentNote = nil; externalChange = false; errorMessage = nil
-        semanticCoordinator = nil
-        reading = true
+        semanticCoordinator = nil; semanticReadyIdentity = nil
         if let note = notes.first(where: { $0.id == id }) {
             apply(note)
             recordSidebarAccess(blockID.map { .semanticBlock(pageID: note.id, blockID: $0) } ?? .page(note.id))
@@ -2443,7 +2464,7 @@ struct AISuggestion: Identifiable, Sendable {
                     guard isCompletionValid(completionTicket, expectedTargetID: selectedID, checkTargetID: true, operation: "select.loadSource") else { return }
                     if let position = sources.firstIndex(where: { $0.id == source.id }) { sources[position] = source }
                 }
-                currentSource = source; title = source.title; body = source.body; reading = true
+                currentSource = source; title = source.title; body = source.body
                 generatePreview(recordSourceAccess: !previewSource); backlinks = []; outgoingLinkTargets = []
                 if previewSource, let root, let repository {
                     do {
@@ -2588,32 +2609,16 @@ struct AISuggestion: Identifiable, Sendable {
         guard url.scheme == "noema", url.host == "page", let noteID = UUID(uuidString: url.lastPathComponent),
               let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "block" })?.value, let blockID = UUID(uuidString: value) else { return }
         guard isVaultAvailable, !busy, canInteractWithWorkspace else { pendingBlockURL = url; return }
-        let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: noteID)
-        Task {
-            await waitForSave()
-            guard isCompletionValid(completionTicket, operation: "openBlockURL.wait") else { return }
-            if !(await finishCurrentPage()) { return }
-            guard isCompletionValid(completionTicket, operation: "openBlockURL.finish") else { return }
-            guard let note = notes.first(where: { $0.id == noteID }), BlockDocumentCodec.decode(note.body).block(blockID) != nil else { errorMessage = "This block link is not available in the open vault."; return }
-            autosaveTask?.cancel(); selectedID = noteID; currentSource = nil; apply(note); reading = true
-            selectedSemanticID = "\(noteID):\(blockID)"
-            recordSidebarAccess(.semanticBlock(pageID: noteID, blockID: blockID))
-            editorAction = EditorAction(operation: .block(blockID)); await updateBacklinks()
+        guard let note = notes.first(where: { $0.id == noteID }),
+              BlockDocumentCodec.decode(note.body).block(blockID) != nil else {
+            errorMessage = "This block link is not available in the open vault."; return
         }
+        select(noteID, block: blockID)
     }
     var editingLocked: Bool {
         currentNote?.isEditingLocked == true || editorReadOnly
             || currentNote.map { editingLockOperations.contains($0.id) } == true
     }
-    func beginEditing() {
-        guard canInteractWithWorkspace, canOperateOnLoadedContent, currentNote != nil else { return }
-        guard !editingLocked else {
-            editingHint = editorReadOnly ? "This article is read-only." : "Article locked. Unlock it to edit."
-            return
-        }
-        editingHint = nil; reading = false
-    }
-    func finishEditing() { guard canOperateOnLoadedContent else { return }; flushEditorPublication?(); wikiQuery = nil; editorAction = nil; savePage(); reading = true }
     var updatingSourceReferences = false
     func setSourceReference(pageID: UUID, sourceID: UUID, linked: Bool) {
         guard canInteractWithWorkspace, canOperateOnLoadedContent, !updatingSourceReferences else { return }
@@ -2657,7 +2662,7 @@ struct AISuggestion: Identifiable, Sendable {
                     editingLockOperations.remove(targetID)
                     if currentNote?.id == targetID {
                         semanticCoordinator?.view?.locked = editingLocked
-                        semanticCoordinator?.view?.isEditable = !reading && !editingLocked
+                        semanticCoordinator?.view?.isEditable = canEditPage
                         semanticCoordinator?.updateAnnotationAvailability()
                     }
                 }
@@ -2679,7 +2684,7 @@ struct AISuggestion: Identifiable, Sendable {
                 guard isCompletionValid(completionTicket, operation: "toggleEditingLock.save") else { return }
                 if currentNote?.id == saved.id {
                     let unchangedDocument = editorDocument == (note.document ?? BlockDocumentCodec.decode(note.body))
-                    currentNote = saved; reading = true; editingHint = nil
+                    currentNote = saved; editingHint = nil
                     if unchangedDocument { editorDocument = saved.document ?? BlockDocumentCodec.decode(saved.body) }
                     if let editorSnapshot, let semantic,
                        semantic.snapshot.revision.token.base64EncodedString() == saved.contentHash,
@@ -2691,7 +2696,7 @@ struct AISuggestion: Identifiable, Sendable {
                         semanticCoordinator?.refreshSemanticRanges()
                     }
                     semanticCoordinator?.view?.locked = editingLocked
-                    semanticCoordinator?.view?.isEditable = false
+                    semanticCoordinator?.view?.isEditable = canEditPage
                     semanticCoordinator?.updateAnnotationAvailability()
                 }
                 if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
@@ -3027,7 +3032,7 @@ struct AISuggestion: Identifiable, Sendable {
                 guard isCompletionValid(completionTicket, operation: "newPage.create") else { return }
                 if name == "Untitled" { untitledPages[note.id] = note.title }
                 errorMessage = nil
-                notes.insert(note, at: 0); scope = .wiki; reading = false
+                notes.insert(note, at: 0); scope = .wiki
                 selectedID = note.id; currentSource = nil; apply(note)
                 recordSidebarAccess(.page(note.id))
                 await refresh()
@@ -3113,7 +3118,7 @@ struct AISuggestion: Identifiable, Sendable {
                isCompletionValid(completionTicket, operation: "reloadDiskVersion.scan"),
                let fresh = entries.notes.first(where: { $0.id == selectedID }) {
                 pendingPageSaves.removeValue(forKey: fresh.id); pageSaveFailures.removeValue(forKey: fresh.id)
-                semanticCoordinator = nil
+                semanticCoordinator = nil; semanticReadyIdentity = nil
                 apply(fresh); errorMessage = nil
             } else if isCompletionValid(completionTicket, operation: "reloadDiskVersion.unavailable") {
                 errorMessage = "The original page is unavailable. You can save your draft as a new page."
@@ -3189,8 +3194,8 @@ struct AISuggestion: Identifiable, Sendable {
         else if matches.isEmpty { unresolvedTarget = target }
         else { ambiguousMatches = matches }
     }
-    func suggestLink(_ title: String) { guard canInteractWithWorkspace, canOperateOnLoadedContent, !reading, !editingLocked else { return }; editorAction = EditorAction(operation: .wikiLink(title)); wikiQuery = nil }
-    func format(_ prefix: String, _ suffix: String) { guard canInteractWithWorkspace, canOperateOnLoadedContent, !reading, !editingLocked else { return }; editorAction = EditorAction(operation: .wrap(prefix, suffix)) }
+    func suggestLink(_ title: String) { guard canEditPage else { return }; editorAction = EditorAction(operation: .wikiLink(title)); wikiQuery = nil }
+    func format(_ prefix: String, _ suffix: String) { guard canEditPage else { return }; editorAction = EditorAction(operation: .wrap(prefix, suffix)) }
     func importFiles() { addSource() }
     func linkSources() { addSource() }
     func addSource() {
@@ -3841,7 +3846,7 @@ extension AppModel {
             if let activityID { await activityRecorder.updateOutcome(activityID, outcome: .published) }
             guard aiPageOperationID == identity, draft.context.authority.matches(sessionManager.accessGate.currentLease) else { return false }
             aiPageDraft = nil; aiPageSubmission = nil; aiPageOperationID = nil; aiPageActivityID = nil
-            errorMessage = nil; searchText = ""; scope = .wiki; reading = false
+            errorMessage = nil; searchText = ""; scope = .wiki
             notes.insert(saved, at: 0); selectedID = saved.id; currentSource = nil; apply(saved)
             recordSidebarAccess(.page(saved.id))
             await refresh()
@@ -3859,13 +3864,16 @@ extension AppModel {
 
 extension AppModel {
     func configureSemanticEditor(_ coordinator: RichArticleView.Coordinator?) {
-        semanticCoordinator = coordinator; semanticSavedRevision = 0
+        semanticCoordinator = coordinator; semanticReadyIdentity = nil; semanticSavedRevision = 0
         if let coordinator { registerEditorSession(coordinator.session) }
         guard let coordinator, let repository, let pageID = currentNote?.id else { return }
         let identity = coordinator.session.identity, localRevision = coordinator.session.revision
         if let pending = pendingPageSaves[pageID]?.editor {
             coordinator.session.restorePendingSnapshot(pending, identity: identity)
             registerEditorSession(coordinator.session)
+            semanticReadyIdentity = coordinator.session.semanticEdit == nil ? nil : identity
+            coordinator.view?.locked = editingLocked
+            coordinator.view?.isEditable = canEditPage
             coordinator.refreshSemanticRanges(); coordinator.updateAnnotationAvailability()
             return
         }
@@ -3875,14 +3883,20 @@ extension AppModel {
                 guard let self, let coordinator else { return }
                 var loaded = snapshot.snapshot.document, visible = coordinator.document
                 loaded.originalSource = nil; visible.originalSource = nil
-                guard self.canOperateOnLoadedContent,
+                guard self.canOperateOnLoadedContent, self.semanticCoordinator === coordinator, self.editorIdentity == identity,
                     coordinator.session.identity == identity, coordinator.session.revision == localRevision,
                     BlockDocumentCodec.encode(visible) == BlockDocumentCodec.encode(loaded) else { return }
+                guard self.currentNote?.contentHash == snapshot.snapshot.revision.token.base64EncodedString() else {
+                    self.externalChange = true
+                    self.errorMessage = "This page changed before editing was ready. Reload its disk version to continue."
+                    return
+                }
                 coordinator.session.load(snapshot, identity: identity, selection: coordinator.session.selection)
                 self.registerEditorSession(coordinator.session)
                 self.semanticSavedRevision = 0
-                coordinator.view?.locked = coordinator.parent.locked || coordinator.document.unsupportedVersion
-                coordinator.view?.isEditable = !coordinator.parent.reading && coordinator.view?.locked == false
+                self.semanticReadyIdentity = identity
+                coordinator.view?.locked = self.editingLocked
+                coordinator.view?.isEditable = self.canEditPage
                 coordinator.refreshSemanticRanges()
                 coordinator.updateAnnotationAvailability()
                 self.revealPendingSemanticOccurrence(in: coordinator)
@@ -3899,7 +3913,7 @@ extension AppModel {
     }
     func annotateSelection(_ coordinator: RichArticleView.Coordinator, _ blockID: UUID, _ range: NSRange,
         _ choice: EditorAnnotationChoice, _ localRevision: UInt64) async throws {
-        guard canOperateOnLoadedContent, !reading, !editingLocked, !editorReadOnly, !saving,
+        guard canEditPage, !saving,
               coordinator === semanticCoordinator, coordinator.session.revision == localRevision,
               let repository else { throw VaultError.invalid("The selection changed or the editor is unavailable.") }
         let store = repository.sqliteBlockStore
@@ -3920,7 +3934,7 @@ extension AppModel {
             object = value; referent = .init(identity: .init(kind: typeKey, id: value.id)); referentRevision = nil
         }
         guard coordinator.session.revision == localRevision, coordinator === semanticCoordinator,
-              canOperateOnLoadedContent, !saving else { throw VaultError.invalid("The selection changed. Select it again.") }
+              canEditPage, !saving else { throw VaultError.invalid("The selection changed. Select it again.") }
         try coordinator.commitAnnotation(blockID: blockID, range: range, referent: referent, referentRevision: referentRevision, object: object)
         edited()
     }
@@ -3930,7 +3944,7 @@ extension AppModel {
 extension AppModel {
     var canEditSemanticTarget: Bool { canOperateOnLoadedContent && !editingLocked && !saving }
     var canEditSemanticAssociation: Bool {
-        canEditSemanticTarget && !reading && semanticCoordinator?.session.semanticEdit != nil && semanticCoordinator?.view?.hasMarkedText() != true
+        canEditSemanticTarget && canEditPage && semanticCoordinator?.view?.hasMarkedText() != true
     }
     func semanticSelectionChanged(_ ids: [UUID]) {
         guard semanticInspectionSelectionIDs != ids else { return }
@@ -4026,7 +4040,7 @@ extension AppModel {
                 coordinator.session.pageRevision == page.snapshot.revision {
                 return revealPendingSemanticOccurrence(in: coordinator)
             }
-            autosaveTask?.cancel(); scope = .wiki; searchText = ""; reading = true
+            autosaveTask?.cancel(); scope = .wiki; searchText = ""
             if let index = notes.firstIndex(where: { $0.id == pageID }) { notes[index] = page.record } else { notes.append(page.record) }
             selectedID = pageID; currentSource = nil; apply(page.record)
             selectedSemanticID = "\(pageID):\(blockID)"
