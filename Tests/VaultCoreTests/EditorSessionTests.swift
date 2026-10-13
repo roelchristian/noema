@@ -123,3 +123,17 @@ import Testing
     #expect(session.changedBlockIDs.contains(second.id))
     #expect(session.changedBlockIDs.contains(first.id))
 }
+
+@Test @MainActor func pendingEditorSnapshotRejectsDifferentPageVaultOrSession() {
+    let identity = EditorSession.Identity(pageID: UUID(), vaultID: UUID(), sessionID: UUID())
+    let source = EditorSession(document: BlockDocument(blocks: [EditorBlock(runs: [RichRun("Draft")])]), identity: identity)
+    let target = EditorSession(document: BlockDocument(blocks: [EditorBlock(runs: [RichRun("Untouched")])]))
+    for invalid in [EditorSession.Identity(pageID: UUID(), vaultID: identity.vaultID, sessionID: identity.sessionID),
+                    EditorSession.Identity(pageID: identity.pageID, vaultID: UUID(), sessionID: identity.sessionID),
+                    EditorSession.Identity(pageID: identity.pageID, vaultID: identity.vaultID, sessionID: UUID())] {
+        target.restorePendingSnapshot(source.snapshot(), identity: invalid)
+        #expect(target.document.blocks.first?.text == "Untouched")
+    }
+    target.restorePendingSnapshot(source.snapshot(), identity: identity)
+    #expect(target.document.blocks.first?.text == "Draft")
+}

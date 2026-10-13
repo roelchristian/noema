@@ -804,6 +804,7 @@ struct AISuggestion: Identifiable, Sendable {
         semanticInspectionTicket = UUID(); semanticInspectionRecords = []
         semanticInspectionPageID = nil; semanticInspectionSelectionIDs = []; semanticInspectionFocusID = nil
         semanticInspectionLoading = false; semanticInspectionError = nil; semanticCoordinator = nil
+        navigationSaveTask = nil; navigationSaveQueue = []; pendingPageSaves = [:]; pageSaveFailures = [:]
         libraryRowsRevision = nil; libraryRowsScope = nil; libraryRowsEditorRevision = nil
         knowledgeCatalogueTicket = UUID(); knowledgeCatalogue = nil; knowledgeCatalogueLoading = false; knowledgeCatalogueError = nil
         semanticRowsRevision = nil; semanticRowsEditorRevision = nil
@@ -1626,6 +1627,7 @@ struct AISuggestion: Identifiable, Sendable {
     @discardableResult
     func flushPendingEdits(waitForTitles: Bool = false) async -> Bool {
         flushEditorPublication?()
+        await waitForSave()
         autosaveTask?.cancel(); autosaveTask = nil
         if lccSaveTask != nil {
             lccSaveTask?.cancel(); lccSaveTask = nil
@@ -1640,7 +1642,9 @@ struct AISuggestion: Identifiable, Sendable {
         }
         let pendingSourceLCC = Array(sourceLCCSaveTasks.values)
         for task in pendingSourceLCC { await task.value }
-        return await finishCurrentPage(waitForTitles: waitForTitles)
+        guard await finishCurrentPage(waitForTitles: waitForTitles) else { return false }
+        guard pendingPageSaves.isEmpty else { errorMessage = "Save failed. Recover pending page drafts before closing."; return false }
+        return true
     }
 
     private func beginLifecycleAction(_ action: String) -> Bool {
@@ -1862,6 +1866,11 @@ struct AISuggestion: Identifiable, Sendable {
         }
         guard let repository, let currentRoot = root,
               let lockingSession = sessionManager.accessGate.currentState.activeSession else { return false }
+        await waitForSave()
+        if dirty, semanticCoordinator?.session.semanticEdit != nil {
+            guard await saveCurrent() else { return false }
+        }
+        guard pendingPageSaves.isEmpty else { errorMessage = "Save failed. Recover pending page drafts before locking."; return false }
         busy = true; errorMessage = nil; needsPermissionReauthorization = false
         autosaveTask?.cancel(); autosaveTask = nil
         lccSaveTask?.cancel(); lccSaveTask = nil
@@ -2044,8 +2053,17 @@ struct AISuggestion: Identifiable, Sendable {
         if sessionManager.isAuthenticationPending { await cancelVaultAuthentication() }
         guard beginLifecycleAction("close") else { return false }
         defer { lifecycleAction = nil; lifecycleActionID = nil }
+        await waitForSave()
+        if force, let recovery {
+            if let latest = capturePageSave() { pendingPageSaves[latest.note.id] = latest }
+            do { for snapshot in pendingPageSaves.values { try await recovery.store(snapshot.draft) } }
+            catch { errorMessage = "Could not preserve pending drafts: " + error.localizedDescription; return false }
+        }
         if !force, isVaultAvailable {
-            guard await flushPendingEdits() else { return false }
+            guard await flushPendingEdits() else {
+                if Task.isCancelled { presentLifecycleFailure(VaultSessionError.cancelled(action: "close")) }
+                return false
+            }
         }
         do {
             try await closeSessionChecked()
@@ -2385,36 +2403,44 @@ struct AISuggestion: Identifiable, Sendable {
         guard canInteractWithWorkspace, canOperateOnLoadedContent else { return }
         pendingSemanticOccurrence = nil; semanticOccurrenceNavigationTicket = UUID()
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: id)
+        if let blockID {
+            guard let note = notes.first(where: { $0.id == id }), BlockDocumentCodec.decode(note.body).block(blockID) != nil else { return }
+        }
+        queueCurrentPageSave()
+        wikiQuery = nil; editorAction = nil
+        if let targetScope { scope = targetScope; searchText = "" }
+        selectedSidebarRecentItemID = nil
+        selectedID = id; currentSource = nil; currentNote = nil; externalChange = false; errorMessage = nil
+        semanticCoordinator = nil
+        reading = true
+        if let note = notes.first(where: { $0.id == id }) {
+            apply(note)
+            recordSidebarAccess(blockID.map { .semanticBlock(pageID: note.id, blockID: $0) } ?? .page(note.id))
+        } else if let source = sources.first(where: { $0.id == id }) {
+            currentSource = source; title = source.title; body = source.body
+        } else {
+            title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0
+            editorNotice = nil; editingHint = nil; editorReadOnly = false
+        }
+        selectedSemanticID = nil
+        if let blockID, let note = currentNote {
+            selectedSemanticID = "\(note.id):\(blockID)"
+            editorAction = EditorAction(operation: .block(blockID))
+        }
         Task {
-            await waitForSave()
-            guard isCompletionValid(completionTicket, operation: "select.waitForSave") else { return }
-            if !(await finishCurrentPage()) { return }
-            guard isCompletionValid(completionTicket, operation: "select.finishCurrentPage") else { return }
-            autosaveTask?.cancel(); wikiQuery = nil; editorAction = nil
-            if let targetScope {
-                scope = targetScope; searchText = ""
-                await updateRows()
-                guard isCompletionValid(completionTicket, operation: "select.updateRows") else { return }
-            }
+            guard isCompletionValid(completionTicket, expectedTargetID: selectedID, checkTargetID: true, operation: "select.begin") else { return }
             if let blockID {
                 guard let note = notes.first(where: { $0.id == id }), BlockDocumentCodec.decode(note.body).block(blockID) != nil else {
                     if let id { sidebarRecentHistory.prune(keeping: Set(recentItemIDs.filter { $0 != .semanticBlock(pageID: id, blockID: blockID) })); sidebarRecentCacheRevision = nil; persistSidebarRecentHistory() }
                     return
                 }
             }
-            selectedSidebarRecentItemID = nil
-            selectedID = id; currentSource = nil; currentNote = nil; externalChange = false; errorMessage = nil
-            reading = true
-            if let note = notes.first(where: { $0.id == id }) {
-                apply(note)
-                recordSidebarAccess(blockID.map { .semanticBlock(pageID: note.id, blockID: $0) } ?? .page(note.id))
-            }
-            else if let source = sources.first(where: { $0.id == id }) {
+            if let source = sources.first(where: { $0.id == id }) {
                 var source = source
                 if previewSource, source.contentState == .notLoaded, let repository {
                     do { source = try await repository.loadSource(id: source.id) }
-                    catch { if isCompletionValid(completionTicket, operation: "select.loadSource.error") { errorMessage = error.localizedDescription }; return }
-                    guard isCompletionValid(completionTicket, operation: "select.loadSource") else { return }
+                    catch { if isCompletionValid(completionTicket, expectedTargetID: selectedID, checkTargetID: true, operation: "select.loadSource.error") { errorMessage = error.localizedDescription }; return }
+                    guard isCompletionValid(completionTicket, expectedTargetID: selectedID, checkTargetID: true, operation: "select.loadSource") else { return }
                     if let position = sources.firstIndex(where: { $0.id == source.id }) { sources[position] = source }
                 }
                 currentSource = source; title = source.title; body = source.body; reading = true
@@ -2422,22 +2448,16 @@ struct AISuggestion: Identifiable, Sendable {
                 if previewSource, let root, let repository {
                     do {
                         try await SourceReader.open(source, root: root, contentStore: repository.contentStore,
-                            isStillValid: { [weak self] in self?.isCompletionValid(completionTicket, operation: "select.sourceReader") == true })
-                        guard isCompletionValid(completionTicket, operation: "select.sourceReader.presented") else { return }
+                            isStillValid: { [weak self] in self?.isCompletionValid(completionTicket, expectedTargetID: self?.selectedID, checkTargetID: true, operation: "select.sourceReader") == true })
+                        guard isCompletionValid(completionTicket, expectedTargetID: selectedID, checkTargetID: true, operation: "select.sourceReader.presented") else { return }
                         if SourceReader.openReaderIDs.contains(source.id) { recordSidebarAccess(.source(source.id)) }
                     } catch {
-                        if isCompletionValid(completionTicket, operation: "select.sourceReader.error") { errorMessage = error.localizedDescription }
+                        if isCompletionValid(completionTicket, expectedTargetID: selectedID, checkTargetID: true, operation: "select.sourceReader.error") { errorMessage = error.localizedDescription }
                     }
                 }
-            } else {
-                title = ""; body = ""; tagInput = ""; lccInput = ""; preview = []; backlinks = []; outgoingLinkTargets = []; wordCount = 0
-                editorNotice = nil; editingHint = nil; editorReadOnly = false
             }
-            selectedSemanticID = nil
-            if let blockID, let note = currentNote, BlockDocumentCodec.decode(body).block(blockID) != nil {
-                selectedSemanticID = "\(note.id):\(blockID)"
-                editorAction = EditorAction(operation: .block(blockID))
-            }
+            if targetScope != nil { await updateRows() }
+            guard isCompletionValid(completionTicket, expectedTargetID: selectedID, checkTargetID: true, operation: "select.backlinks") else { return }
             await updateBacklinks()
         }
     }
@@ -2473,7 +2493,15 @@ struct AISuggestion: Identifiable, Sendable {
         let document = editorDocument
         editorReadOnly = document.unsupportedVersion
         editorNotice = document.unsupportedVersion ? "This page uses a newer block format and is read-only. Its original content is preserved." : document.recoveredMetadata != nil ? "External Markdown changed. The earlier editor metadata was preserved for recovery; external text is shown." : nil
-        externalChange = false; saveStatus = "Saved locally"; generatePreview()
+        externalChange = false; saveStatus = "Saved locally"
+        if let pending = pendingPageSaves[note.id] {
+            currentNote = pending.note
+            title = pending.draft.title; editorDocument = pending.draft.document ?? BlockDocumentCodec.decode(pending.draft.contentBody)
+            tagInput = pending.draft.tags.joined(separator: ", "); lccInput = pending.note.lcc ?? ""
+            saveStatus = "Unsaved changes"
+        }
+        if let failure = pageSaveFailures[note.id] { errorMessage = failure; saveStatus = "Save failed · draft retained" }
+        generatePreview()
     }
     func setPageLCC(_ value: String) {
         guard canInteractWithWorkspace, canOperateOnLoadedContent, !editingLocked, let note = currentNote else { return }
@@ -2573,7 +2601,10 @@ struct AISuggestion: Identifiable, Sendable {
             editorAction = EditorAction(operation: .block(blockID)); await updateBacklinks()
         }
     }
-    var editingLocked: Bool { currentNote?.isEditingLocked == true || editorReadOnly }
+    var editingLocked: Bool {
+        currentNote?.isEditingLocked == true || editorReadOnly
+            || currentNote.map { editingLockOperations.contains($0.id) } == true
+    }
     func beginEditing() {
         guard canInteractWithWorkspace, canOperateOnLoadedContent, currentNote != nil else { return }
         guard !editingLocked else {
@@ -2612,23 +2643,56 @@ struct AISuggestion: Identifiable, Sendable {
               let targetID = id ?? currentNote?.id,
               notes.contains(where: { $0.id == targetID }),
               !editingLockOperations.contains(targetID) else { return }
+        if currentNote?.id == targetID { flushEditorPublication?() }
         editingLockOperations.insert(targetID)
+        if currentNote?.id == targetID {
+            semanticCoordinator?.view?.locked = true
+            semanticCoordinator?.view?.isEditable = false
+        }
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: targetID)
         let ticket = completionTicket.token
         Task {
-            defer { if generation == ticket { editingLockOperations.remove(targetID) } }
+            defer {
+                if generation == ticket {
+                    editingLockOperations.remove(targetID)
+                    if currentNote?.id == targetID {
+                        semanticCoordinator?.view?.locked = editingLocked
+                        semanticCoordinator?.view?.isEditable = !reading && !editingLocked
+                        semanticCoordinator?.updateAnnotationAvailability()
+                    }
+                }
+            }
             await waitForSave()
             guard isCompletionValid(completionTicket, operation: "toggleEditingLock.wait") else { return }
             if currentNote?.id == targetID, !(await saveCurrent()) { return }
             guard isCompletionValid(completionTicket, operation: "toggleEditingLock.pre"),
                   let note = notes.first(where: { $0.id == targetID }), let repository else { return }
+            let editorSnapshot = semanticCoordinator?.session.identity.pageID == targetID
+                ? semanticCoordinator?.session.snapshot() : nil
             saving = true
             defer { if generation == ticket { saving = false } }
             do {
                 let saved = try await repository.setEditingLock(note: note, locked: !note.isEditingLocked)
+                // Metadata writes advance the canonical page revision and annotation evidence.
+                // Publish that evidence without treating it as a new user edit or resetting undo.
+                let semantic = try? await repository.sqliteBlockStore.loadSemanticPage(pageID: targetID)
                 guard isCompletionValid(completionTicket, operation: "toggleEditingLock.save") else { return }
                 if currentNote?.id == saved.id {
+                    let unchangedDocument = editorDocument == (note.document ?? BlockDocumentCodec.decode(note.body))
                     currentNote = saved; reading = true; editingHint = nil
+                    if unchangedDocument { editorDocument = saved.document ?? BlockDocumentCodec.decode(saved.body) }
+                    if let editorSnapshot, let semantic,
+                       semantic.snapshot.revision.token.base64EncodedString() == saved.contentHash,
+                       semanticCoordinator?.session.acceptSemanticPublication(semantic, for: editorSnapshot) == true {
+                        semanticSavedRevision = editorSnapshot.revision
+                        if unchangedDocument, semanticCoordinator?.session.revision == editorSnapshot.revision {
+                            semanticCoordinator?.lastDocument = saved.document
+                        }
+                        semanticCoordinator?.refreshSemanticRanges()
+                    }
+                    semanticCoordinator?.view?.locked = editingLocked
+                    semanticCoordinator?.view?.isEditable = false
+                    semanticCoordinator?.updateAnnotationAvailability()
                 }
                 if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
                 scheduleRefresh()
@@ -2653,26 +2717,85 @@ struct AISuggestion: Identifiable, Sendable {
             _ = await saveCurrent()
         }
     }
-    @discardableResult func saveCurrent() async -> Bool {
+    private struct PageSaveSnapshot {
+        let id: UUID
+        let note: NoteRecord
+        let draft: DraftRecord
+        let editor: EditorSession.DocumentSnapshot?
+        let pageRevision: BlockStoreRevision?
+        let generation: UUID
+    }
+    private var navigationSaveTask: Task<Void, Never>?
+    private var navigationSaveQueue: [(pageID: UUID, snapshotID: UUID)] = []
+    @ObservationIgnored var pageSavePreparation: (@MainActor () async throws -> Void)?
+    private var pendingPageSaves: [UUID: PageSaveSnapshot] = [:]
+    var pageSaveFailures: [UUID: String] = [:]
+
+    private func capturePageSave() -> PageSaveSnapshot? {
         flushEditorPublication?()
-        await waitForSave()
-        flushEditorPublication?()
-        guard canOperateOnLoadedContent, dirty, var note = currentNote, let repository, let recovery else { return !saving }
-        guard !saving else { return false }
-        let ticket = generation
-        saving = true; saveStatus = "Saving…"
+        guard canOperateOnLoadedContent, dirty, var note = currentNote else { return nil }
         let trimmedLCC = lccInput.trimmingCharacters(in: .whitespacesAndNewlines)
         note.lcc = trimmedLCC.isEmpty ? nil : trimmedLCC
-        let editorSnapshot = semanticCoordinator?.session.snapshot()
-        let capturedDocument = editorDocument
-        var draft = DraftRecord(note: note, title: title, document: capturedDocument, tags: editedTags)
-        draft.semanticEdit = editorSnapshot?.semanticEdit
+        let editor = semanticCoordinator?.session.identity.pageID == note.id ? semanticCoordinator?.session.snapshot() : nil
+        var draft = DraftRecord(note: note, title: title, document: editorDocument, tags: editedTags)
+        draft.semanticEdit = editor?.semanticEdit
+        return PageSaveSnapshot(id: UUID(), note: note, draft: draft, editor: editor,
+            pageRevision: editor?.pageRevision, generation: generation)
+    }
+
+    private func queueCurrentPageSave() {
+        autosaveTask?.cancel()
+        if needsTitle, title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let id = currentNote?.id, let placeholder = untitledPages[id] { title = placeholder }
+        guard let snapshot = capturePageSave() else { startTitleGeneration(); return }
+        if let pending = pendingPageSaves[snapshot.note.id],
+           pending.draft.title == snapshot.draft.title, pending.draft.document == snapshot.draft.document,
+           pending.draft.tags == snapshot.draft.tags, pending.note.lcc == snapshot.note.lcc,
+           pending.editor?.generation == snapshot.editor?.generation,
+           pending.editor?.revision == snapshot.editor?.revision { return }
+        pendingPageSaves[snapshot.note.id] = snapshot
+        applyRecoveryListing(RecoveryListing(drafts: recoveredDrafts, damagedEntries: damagedRecoveryEntries))
+        navigationSaveQueue.append((snapshot.note.id, snapshot.id))
+        guard navigationSaveTask == nil else { return }
+        navigationSaveTask = Task {
+            defer { navigationSaveTask = nil }
+            while !navigationSaveQueue.isEmpty {
+                let job = navigationSaveQueue.removeFirst()
+                await waitForSave(includeNavigation: false)
+                guard let captured = pendingPageSaves[job.pageID], captured.id == job.snapshotID,
+                      captured.generation == generation, canOperateOnLoadedContent else { continue }
+                _ = await persistPageSave(captured)
+            }
+        }
+    }
+
+    @discardableResult func saveCurrent() async -> Bool {
+        await waitForSave()
+        guard !Task.isCancelled, !saving else { return false }
+        guard let snapshot = capturePageSave() else { return true }
+        // Queued work is drained; an explicit retry replaces this page's failed capture.
+        pendingPageSaves[snapshot.note.id] = snapshot
+        return await persistPageSave(snapshot)
+    }
+
+    private func persistPageSave(_ captured: PageSaveSnapshot) async -> Bool {
+        guard let repository, let recovery, captured.generation == generation else { return false }
+        let note = captured.note, draft = captured.draft, editorSnapshot = captured.editor
+        let capturedDocument = draft.document ?? BlockDocumentCodec.decode(draft.contentBody)
+        let ticket = captured.generation
+        if pendingPageSaves[note.id] == nil { pendingPageSaves[note.id] = captured }
+        saving = true
+        if currentNote?.id == note.id { saveStatus = "Saving…" }
         do {
-            wordCount = capturedDocument.withoutAISummary.flattened.map(\.text).joined(separator: " ").split(whereSeparator: \.isWhitespace).count
+            try await pageSavePreparation?()
+            guard generation == ticket, canOperateOnLoadedContent else { saving = false; return false }
+            let capturedWordCount = capturedDocument.withoutAISummary.flattened.map(\.text).joined(separator: " ").split(whereSeparator: \.isWhitespace).count
+            if currentNote?.id == note.id, editorDocument == capturedDocument { wordCount = capturedWordCount }
             try await recovery.store(draft)
             let saved: NoteRecord
+            var semanticPublication: SemanticPageSnapshot?
             if let snapshot = editorSnapshot, let edit = snapshot.semanticEdit,
-               let pageRevision = semanticCoordinator?.session.pageRevision {
+               let pageRevision = captured.pageRevision {
                 let store = repository.sqliteBlockStore
                 var entities = snapshot.expectedEntityRevisions, objects = snapshot.expectedObjectRevisions
                 for annotation in edit.annotations where annotation.referent.disposition != .unresolved {
@@ -2685,10 +2808,11 @@ struct AISuggestion: Identifiable, Sendable {
                 let result = try await repository.saveSemantic(note: note, title: draft.title, tags: draft.tags, edit: edit,
                     expectedPageRevision: pageRevision, expectedEntityRevisions: entities,
                     expectedObjectRevisions: objects, expectedVaultRevision: vault)
-                saved = result.0
-                guard generation == ticket, canOperateOnLoadedContent,
-                    semanticCoordinator?.session.identity == snapshot.identity else { saving = false; return false }
-                if semanticCoordinator?.session.acceptSemanticPublication(result.1, for: snapshot) == true {
+                saved = result.0; semanticPublication = result.1
+                guard generation == ticket, canOperateOnLoadedContent else { saving = false; return false }
+                if currentNote?.id == note.id,
+                   semanticCoordinator?.session.generation == snapshot.generation,
+                   semanticCoordinator?.session.acceptSemanticPublication(result.1, for: snapshot) == true {
                     semanticCoordinator?.refreshSemanticRanges()
                     semanticSavedRevision = snapshot.revision
                     if semanticCoordinator?.session.revision == snapshot.revision { semanticCoordinator?.lastDocument = saved.document }
@@ -2700,7 +2824,7 @@ struct AISuggestion: Identifiable, Sendable {
             recordPageRename(saved.id, from: note.title, to: saved.title)
             if currentNote?.id == saved.id {
                 currentNote = saved
-                lccInput = saved.lcc ?? ""
+                if lccInput.trimmingCharacters(in: .whitespacesAndNewlines) == (note.lcc ?? "") { lccInput = saved.lcc ?? "" }
                 if title == draft.title { title = saved.title }
                 // Reconcile canonical revision evidence only for the captured document;
                 // edits made while saving retain their newer draft.
@@ -2708,18 +2832,53 @@ struct AISuggestion: Identifiable, Sendable {
                 if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
                 updateTags()
             }
-            if !dirty { try await recovery.remove(saved.id) }
-            saveStatus = dirty ? "Unsaved changes" : "Saved locally"
-            applyRecoveryListing(try await recovery.listing()); errorMessage = nil; externalChange = false
+            if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
+            let latest = pendingPageSaves[saved.id]
+            let superseded = latest != nil && latest?.id != captured.id
+            if let latest, superseded, latest.note.contentHash == note.contentHash {
+                // Advance only our own acknowledged predecessor, never a scan/external revision.
+                var rebasedNote = latest.note; rebasedNote.contentHash = saved.contentHash
+                var rebasedDraft = latest.draft; rebasedDraft.note = rebasedNote
+                var editor = latest.editor
+                if let snapshot = editor, let semanticPublication {
+                    let session = EditorSession()
+                    session.restorePendingSnapshot(snapshot, identity: snapshot.identity)
+                    session.rebaseSemanticEvidence(semanticPublication)
+                    editor = session.snapshot(); rebasedDraft.semanticEdit = editor?.semanticEdit
+                }
+                pendingPageSaves[saved.id] = PageSaveSnapshot(id: latest.id, note: rebasedNote,
+                    draft: rebasedDraft, editor: editor, pageRevision: editor?.pageRevision, generation: latest.generation)
+            } else if !superseded { pendingPageSaves.removeValue(forKey: saved.id) }
+            if let semanticPublication, currentNote?.id == saved.id,
+               let session = semanticCoordinator?.session, session.pageRevision == captured.pageRevision {
+                let unchanged = session.revision == editorSnapshot?.revision && editorDocument == saved.document
+                session.rebaseSemanticEvidence(semanticPublication)
+                if unchanged { semanticSavedRevision = session.revision }
+            }
+            if !superseded && (currentNote?.id != saved.id || !dirty) { try await recovery.remove(saved.id) }
+            pageSaveFailures.removeValue(forKey: saved.id)
+            if currentNote?.id == saved.id {
+                saveStatus = dirty ? "Unsaved changes" : "Saved locally"
+                errorMessage = nil; externalChange = false
+            }
+            applyRecoveryListing(try await recovery.listing())
             saving = false
             scheduleRefresh()
-            if dirty { edited() }
-            return !dirty
+            startTitleGeneration(for: saved)
+            if currentNote?.id == saved.id {
+                if dirty { edited() }
+                return !dirty
+            }
+            return true
         } catch {
             guard generation == ticket, canOperateOnLoadedContent else { saving = false; return false }
-            saving = false; saveStatus = "Draft preserved · save failed"
-            errorMessage = error.localizedDescription
-            if case VaultError.conflict = error { externalChange = true }
+            saving = false
+            pageSaveFailures[note.id] = error.localizedDescription
+            if currentNote?.id == note.id {
+                saveStatus = "Save failed · draft retained"
+                errorMessage = error.localizedDescription
+                if case VaultError.conflict = error { externalChange = true }
+            }
             do {
                 let drafts = try await recovery.listing()
                 guard generation == ticket, canOperateOnLoadedContent else { return false }
@@ -2732,7 +2891,10 @@ struct AISuggestion: Identifiable, Sendable {
             return false
         }
     }
-    private func waitForSave() async {
+    private func waitForSave(includeNavigation: Bool = true) async {
+        if includeNavigation {
+            while let task = navigationSaveTask { await task.value }
+        }
         while saving {
             if Task.isCancelled { return }
             try? await Task.sleep(for: .milliseconds(15))
@@ -2761,9 +2923,11 @@ struct AISuggestion: Identifiable, Sendable {
         }
         return true
     }
-    private func startTitleGeneration() {
-        guard canOperateOnLoadedContent, needsTitle, let note = currentNote, let repository,
-              titleTasks[note.id] == nil, !editingLocked, !externalChange,
+    private func startTitleGeneration(for candidate: NoteRecord? = nil) {
+        guard canOperateOnLoadedContent, let note = candidate ?? currentNote, let repository,
+              untitledPages[note.id] == note.title,
+              titleTasks[note.id] == nil, !note.isEditingLocked,
+              (currentNote?.id != note.id || (!editingLocked && !externalChange)),
               aiClient.unavailabilityReason() == nil else { return }
         let completionTicket = issueCompletionTicket(kind: .aiProcessing, targetID: note.id)
         let content = BlockDocumentCodec.markdownBody(BlockDocumentCodec.encode(BlockDocumentCodec.decode(note.body).withoutAISummary))
@@ -2930,6 +3094,8 @@ struct AISuggestion: Identifiable, Sendable {
         guard canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .pageMutation, targetID: selectedID)
         Task {
+            await waitForSave()
+            guard isCompletionValid(completionTicket, operation: "reloadDiskVersion.wait") else { return }
             if dirty, let note = currentNote, let recovery {
                 do {
                     try await recovery.store(DraftRecord(note: note, title: title, document: editorDocument, tags: editedTags, semanticEdit: semanticCoordinator?.session.semanticEdit))
@@ -2946,6 +3112,8 @@ struct AISuggestion: Identifiable, Sendable {
             if let repository, let entries = try? await repository.scan(),
                isCompletionValid(completionTicket, operation: "reloadDiskVersion.scan"),
                let fresh = entries.notes.first(where: { $0.id == selectedID }) {
+                pendingPageSaves.removeValue(forKey: fresh.id); pageSaveFailures.removeValue(forKey: fresh.id)
+                semanticCoordinator = nil
                 apply(fresh); errorMessage = nil
             } else if isCompletionValid(completionTicket, operation: "reloadDiskVersion.unavailable") {
                 errorMessage = "The original page is unavailable. You can save your draft as a new page."
@@ -2956,6 +3124,7 @@ struct AISuggestion: Identifiable, Sendable {
         guard canOperateOnLoadedContent else { return }
         let completionTicket = issueCompletionTicket(kind: .pageMutation)
         Task {
+            await waitForSave()
             guard isCompletionValid(completionTicket, operation: "saveDraftAsNewPage.start"), let repository else { return }
             let originalID = recovered?.id ?? currentNote?.id
             do {
@@ -2970,6 +3139,7 @@ struct AISuggestion: Identifiable, Sendable {
                 if let originalID { try await recovery?.remove(originalID) }
                 let drafts = try await recovery?.listing() ?? RecoveryListing()
                 guard isCompletionValid(completionTicket, operation: "saveDraftAsNewPage") else { return }
+                if let originalID { pendingPageSaves.removeValue(forKey: originalID); pageSaveFailures.removeValue(forKey: originalID) }
                 applyRecoveryListing(drafts)
                 notes.insert(note, at: 0); scope = .wiki; currentSource = nil; selectedID = note.id; apply(note)
                 recordSidebarAccess(.page(note.id))
@@ -2983,7 +3153,9 @@ struct AISuggestion: Identifiable, Sendable {
         Task {
             guard isCompletionValid(completionTicket, operation: "discardRecovery.start") else { return }
             do {
+                await waitForSave()
                 try await recovery?.remove(draft.id)
+                pendingPageSaves.removeValue(forKey: draft.id); pageSaveFailures.removeValue(forKey: draft.id)
                 let drafts = try await recovery?.listing() ?? RecoveryListing()
                 guard isCompletionValid(completionTicket, operation: "discardRecovery") else { return }
                 applyRecoveryListing(drafts)
@@ -2992,6 +3164,10 @@ struct AISuggestion: Identifiable, Sendable {
     }
     private func applyRecoveryListing(_ listing: RecoveryListing) {
         recoveredDrafts = listing.drafts
+        for pending in pendingPageSaves.values {
+            recoveredDrafts.removeAll { $0.id == pending.note.id }
+            recoveredDrafts.append(pending.draft)
+        }
         damagedRecoveryEntries = listing.damagedEntries
     }
     func updateBacklinks() async {
@@ -3687,6 +3863,12 @@ extension AppModel {
         if let coordinator { registerEditorSession(coordinator.session) }
         guard let coordinator, let repository, let pageID = currentNote?.id else { return }
         let identity = coordinator.session.identity, localRevision = coordinator.session.revision
+        if let pending = pendingPageSaves[pageID]?.editor {
+            coordinator.session.restorePendingSnapshot(pending, identity: identity)
+            registerEditorSession(coordinator.session)
+            coordinator.refreshSemanticRanges(); coordinator.updateAnnotationAvailability()
+            return
+        }
         Task { @MainActor [weak self, weak coordinator] in
             do {
                 let snapshot = try await repository.sqliteBlockStore.loadSemanticPage(pageID: pageID)

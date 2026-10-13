@@ -333,6 +333,18 @@ On reload, metadata is used only when its checksum matches the readable body and
 
 The editable document is the active value model in `EditorSession`, synchronized with native attributed text storage through the coordinator. Ordinary typing captures only the affected block and publishes identity-scoped, versioned snapshots for asynchronous Markdown encoding. Stale revisions and snapshots from another vault/page/session are rejected; explicit save/navigation boundaries flush pending edits. Text storage is its presentation, not a second independent draft or persistence channel. Collapsed descendants stay in the model. Structural commands share `BlockMutation`, and commands register reversible document-and-selection snapshots with the same native undo manager as typing. One text view preserves native cross-block selection and navigation and avoids thousands of focus-owning fields.
 
+Sidebar and quick-open navigation synchronously flush native publication and capture an
+immutable page UUID, canonical revision, editor revision, metadata and semantic draft
+before presenting the destination. AppModel serializes background saves through the
+admitted repository and app-local RecoveryStore. Rapid revisits restore pending drafts;
+only an acknowledged predecessor from the same captured base can advance their revision.
+External revisions still conflict. Failures remain associated with the originating page
+and recovery entry. Lock, close and vault switching drain queued work; failed in-memory
+drafts must be recovered, explicitly discarded or journaled before forced close.
+Page editing-lock metadata writes reconcile canonical document and annotation evidence
+without creating a new editor mutation. See the optimistic navigation and page editing
+lock workflow tests in `Tests/NoemaEditorTests`.
+
 Reading preserves native text selection and hyperlink activation. Editing begins explicitly with **Edit**, the **Edit Article** context action or Option-click. Marked-text composition reserves native candidate navigation and commitment keys before structural commands.
 
 Keyboard behavior: Return splits; empty list Return exits; structural Backspace converts to paragraph before merging; Tab/Shift Tab indent/outdent; Shift Return inserts a code newline; Command A selects the current block while editing and the entire document while reading; Command Option A and **Select Entire Document** explicitly select the document. Command Option Up/Down moves a subtree among siblings. Command Shift Return toggles a task. Slash commands and context actions use the same mutations. Content-relative drag handles share the native block layout geometry. Handle interactions preserve the text caret, native drag sessions target sibling reordering, and viewport-edge scrolling and cancellation clear transient drop state. Pointer completion and layout transitions still require device acceptance; see the standing validation gaps. Indent/outdent explicitly changes parentage.

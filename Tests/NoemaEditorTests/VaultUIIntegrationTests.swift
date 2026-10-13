@@ -16,6 +16,37 @@ struct VaultUIIntegrationTests {
         return model
     }
 
+    @Test @MainActor func navigationCapturesDraftBeforeReturningAndPreservesFailureOnOriginalPage() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaOptimistic-" + UUID().uuidString)
+        let folder = base.appendingPathComponent("Vault", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let repo = try await openCanonicalAppFixture(root: folder, create: true)
+        let first = try await repo.create(title: "First", body: "Original")
+        let second = try await repo.create(title: "Second", body: "Destination")
+        try await repo.shutdownPageStorage()
+        let model = try await openRichArticleFixtureVault(at: folder)
+        model.select(first.id)
+        model.body = "Captured before navigation"
+        // Duplicate title forces a canonical save failure after recovery publication.
+        model.title = second.title
+        model.select(second.id)
+        #expect(model.currentNote?.id == second.id)
+        #expect(model.body == second.body)
+        model.select(first.id)
+        #expect(model.body == "Captured before navigation")
+        model.select(second.id)
+        for _ in 0..<100 {
+            if model.pageSaveFailures[first.id] != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.pageSaveFailures[first.id] != nil)
+        #expect(model.currentNote?.id == second.id)
+        #expect(model.recoveredDrafts.contains { $0.id == first.id && BlockDocumentCodec.markdownBody($0.contentBody) == "Captured before navigation" })
+        #expect(!(await model.closeVault()))
+        _ = await model.closeVault(force: true)
+    }
+
     @Test @MainActor func schemaFiveReopensInAppModelAndPersistsBlockEdits() async throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaSQLiteUI-" + UUID().uuidString).resolvingSymlinksInPath()
         let folder = base.appendingPathComponent("Vault", isDirectory: true)
