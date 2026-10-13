@@ -56,7 +56,15 @@ struct RichArticleView: NSViewRepresentable {
         // SwiftUI can update the outgoing identity-keyed view after creating its
         // replacement. That view must retain its original page and callbacks.
         let identity = EditorSession.Identity(pageID: noteID, vaultID: vaultID, sessionID: sessionID)
-        guard onSemanticLoad == nil || coordinator.hostedIdentity == identity else { return }
+        guard onSemanticLoad == nil || coordinator.hostedIdentity == identity else {
+            coordinator.contextualIdentitySuspended = true
+            coordinator.inlineControls.close()
+            coordinator.activeInsertionMenu?.cancelTracking()
+            coordinator.activeInsertionMenu = nil
+            coordinator.activeBlockMenuContext = nil
+            return
+        }
+        coordinator.contextualIdentitySuspended = false
         coordinator.parent = self
         guard let view = coordinator.view else { return }
         let headingsChanged = view.showSemanticHeadings != showSemanticHeadings
@@ -69,6 +77,9 @@ struct RichArticleView: NSViewRepresentable {
         view.handleKey = { [weak coordinator] in coordinator?.handleKey($0) ?? false }
         view.annotationAction = { [weak coordinator] in coordinator?.annotateSelection(nil) }
         view.annotationAvailable = { [weak coordinator] in coordinator?.annotationSelection() != nil }
+        view.contextualSelectionCompleted = { [weak coordinator] in coordinator?.inlineControls.update() }
+        view.contextualInteractionDismiss = { [weak coordinator] in coordinator?.inlineControls.close() }
+        view.insertBlockMenu = { [weak coordinator] in coordinator?.insertionMenu(after: $0) ?? NSMenu() }
         view.blockMenu = { [weak coordinator] in coordinator?.contextMenu() ?? NSMenu() }
         view.activateBlock = { [weak coordinator] id, command in coordinator?.mutate(command, id: id, name: "Change block") }
         view.selectBlock = { [weak coordinator] in coordinator?.selectBlock($0, modifiers: $1) }
@@ -87,6 +98,7 @@ struct RichArticleView: NSViewRepresentable {
         }
         view.locked = locked || coordinator.document.unsupportedVersion || (onSemanticLoad != nil && coordinator.session.semanticEdit == nil)
         view.isEditable = editable && !view.locked
+        if !view.isEditable { coordinator.inlineControls.close() }
         coordinator.updateAnnotationAvailability()
         if let action, coordinator.lastAction != action.id {
             if case .block = action.operation { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
@@ -94,9 +106,14 @@ struct RichArticleView: NSViewRepresentable {
         }
     }
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        coordinator.contextualInteractionsRetired = true
+        coordinator.activeInsertionMenu?.cancelTracking()
+        coordinator.activeInsertionMenu = nil
+        coordinator.activeBlockMenuContext = nil
         coordinator.flushPublication()
         coordinator.parent.onSessionEnded?(coordinator)
         NotificationCenter.default.removeObserver(coordinator, name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        coordinator.inlineControls.close()
         coordinator.suggestions.close()
         coordinator.view?.delegate = nil
     }
