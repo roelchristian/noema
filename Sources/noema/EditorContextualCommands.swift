@@ -11,7 +11,7 @@ struct EditorInteractionContext: Equatable {
 
 extension RichArticleView.Coordinator {
     var interactionContext: EditorInteractionContext? {
-        guard !contextualInteractionsRetired, parent.editable, !parent.locked,
+        guard !contextualInteractionsRetired, !contextualIdentitySuspended, parent.editable, !parent.locked,
               parent.onSemanticLoad == nil || session.semanticEdit != nil,
               let view, view.isEditable, !view.locked, !view.hasMarkedText(),
               !view.isSettingMarkedText, !changing else { return nil }
@@ -46,7 +46,7 @@ extension RichArticleView.Coordinator {
     }
 
     @objc func insertContextBlock(_ item: NSMenuItem) {
-        guard let request = item.representedObject as? ContextualBlockInsertion else { return }
+        guard activeInsertionMenu != nil, let request = item.representedObject as? ContextualBlockInsertion else { return }
         insert(request.command, after: request.blockID, context: request.context)
     }
 

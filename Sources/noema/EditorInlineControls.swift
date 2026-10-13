@@ -28,7 +28,7 @@ struct EditorInlineSnapshot: Equatable {
     }
 
     func update() {
-        guard let coordinator, !coordinator.contextualInteractionsRetired, let view = coordinator.view, let window = view.window,
+        guard let coordinator, !coordinator.contextualInteractionsRetired, !coordinator.contextualIdentitySuspended, let view = coordinator.view, let window = view.window,
               window.firstResponder === view, view.isEditable, !view.locked,
               coordinator.parent.editable, !coordinator.parent.locked, !coordinator.changing,
               (coordinator.parent.onSemanticLoad == nil || coordinator.session.semanticEdit != nil),
@@ -94,7 +94,8 @@ struct EditorInlineSnapshot: Equatable {
     }
 
     private func execute(_ name: String, evidence: EditorInlineSnapshot) {
-        guard let coordinator, !coordinator.contextualInteractionsRetired, let view = coordinator.view, view.isEditable, !view.locked,
+        guard snapshot == evidence else { return }
+        guard let coordinator, !coordinator.contextualInteractionsRetired, !coordinator.contextualIdentitySuspended, let view = coordinator.view, view.isEditable, !view.locked,
               coordinator.parent.editable, !coordinator.parent.locked,
               (coordinator.parent.onSemanticLoad == nil || coordinator.session.semanticEdit != nil),
               !view.hasMarkedText(), !view.isSettingMarkedText,

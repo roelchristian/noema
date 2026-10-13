@@ -149,6 +149,12 @@ import VaultCore
     coordinator.load(before)
     coordinator.insert(heading, after: root.id, context: context)
     #expect(coordinator.document == before)
+    coordinator.contextualIdentitySuspended = true
+    #expect(coordinator.interactionContext == nil)
+    coordinator.insert(heading, after: root.id, context: context)
+    #expect(coordinator.document == before)
+    coordinator.contextualIdentitySuspended = false
+    #expect(coordinator.interactionContext != nil)
     coordinator.contextualInteractionsRetired = true
     #expect(coordinator.interactionContext == nil)
     coordinator.insert(heading, after: root.id, context: context)
