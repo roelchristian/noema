@@ -155,7 +155,7 @@ time. Unsupported file-only Trash never authorizes a canonical import or overwri
 Semantic designations/status/provenance remain block/source payload content.
 STOR.01 deferred the entity catalogue; [KNOW01](knowledge-model.md) now specifies
 its distinct schema-4 foundation and supersedes that deferral only for the approved
-Person, Place, Concept, Question and Definition domain scope. No runtime schema
+Person, Place, Concept, Event, Question and Definition domain scope. No runtime schema
 change, ontology, canonical FTS, embeddings or inference is authorized by KNOW01.
 STOR02A preserves bounded optional JSON in supported domain scopes and rejects
 unknown SQL wrapper keys and unsupported required features. String-valued `extra`

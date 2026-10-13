@@ -11,10 +11,10 @@ import Testing
     return (session, block.id, token)
 }
 
-@Test @MainActor func editorAnnotationCommandsPreserveTextAndCanonicalRevisionThroughUndo() throws {
+@Test(arguments: ["person", "event"]) @MainActor func editorAnnotationCommandsPreserveTextAndCanonicalRevisionThroughUndo(_ kind: String) throws {
     let (session, block, token) = annotationSession()
-    let original = session.snapshot(), entity = EntityIdentity(kind: "person", id: UUID())
-    let id = try session.applyAnnotation(.create(blockID: block, range: .init(location: 0, length: 3), referent: .init(identity: entity), designation: "person", startAffinity: .before, endAffinity: .after), expectedLocalRevision: 0, expectedReferentRevision: token)
+    let original = session.snapshot(), entity = EntityIdentity(kind: kind, id: UUID())
+    let id = try session.applyAnnotation(.create(blockID: block, range: .init(location: 0, length: 3), referent: .init(identity: entity), designation: kind, startAffinity: .before, endAffinity: .after), expectedLocalRevision: 0, expectedReferentRevision: token)
     let annotated = session.snapshot()
     #expect(session.revision == 1)
     #expect(session.pageRevision == token)

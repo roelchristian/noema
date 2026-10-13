@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Testing
 @testable import VaultCore
 @testable import noema
@@ -16,4 +17,17 @@ import Testing
     let model = AppModel(); model.scope = .semantic
     #expect(model.scopeTitle == "Knowledge")
     #expect(model.knowledgeCatalogue == nil)
+}
+
+@Test @MainActor func knowledgeTypeIconsAreAvailableAndEventIsAnAnnotationChoice() throws {
+    let types = KnowledgeEntityType.initial.map(\.key)
+    #expect(types == ["person", "place", "concept", "event"])
+    let symbols = types.map { KnowledgeTypePresentation.symbol(for: $0) }
+    #expect(Set(symbols).count == types.count)
+    for symbol in symbols + [KnowledgeTypePresentation.knowledgeSymbol] {
+        #expect(NSImage(systemSymbolName: symbol, accessibilityDescription: nil) != nil)
+    }
+    let choice = try #require(EditorAnnotationChoice.newEntityChoices.last)
+    #expect(choice.title == "Create new event…")
+    #expect(choice.symbol == KnowledgeTypePresentation.symbol(for: "event"))
 }
