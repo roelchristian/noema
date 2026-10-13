@@ -388,7 +388,7 @@ struct ContentView: View {
                 Section {
                     sidebarNavigationRow("Pages", symbol: "book.closed", scope: .wiki)
                     sidebarNavigationRow("Sources", symbol: "tray.full", scope: .sources)
-                    sidebarNavigationRow("Knowledge", symbol: "tag", scope: .semantic)
+                    sidebarNavigationRow("Knowledge", symbol: KnowledgeTypePresentation.knowledgeSymbol, scope: .semantic)
                 }
                 Section {
                     if model.sidebarRecentItems.isEmpty {

@@ -57,7 +57,7 @@ Page provenance is an ordered `sources` UUID sequence in format 1 frontmatter or
 
 The [knowledge model contract](contracts/knowledge-model.md) and
 [KNOW01 decision](decisions/0002-canonical-knowledge-model.md) govern registered
-Person, Place and Concept identities, independent Question/Definition objects,
+Person, Place, Concept and Event identities, independent Question/Definition objects,
 typed relationships and overlapping block/inline annotations. KNOW02 and KNOW03
 implement these domain APIs in the existing SQLite actor through KnowledgeStore
 and SemanticStore; no additional connection or block-text authority is introduced.
@@ -99,7 +99,9 @@ reloads the exact page and annotation UUID, validates current block/revision evi
 and selects the annotation's exact native range after editor admission. It never
 substitutes a text-search match for a missing or invalid location. Device accessibility and crash-durability
 acceptance remain separate.
-No AI extraction, inference or additional concrete types is added.
+Event uses the existing entity registry, annotation targets and persistence paths;
+it adds no scheduling, timeline, AI extraction or inference. Entity type symbols
+are shared by annotation choices, catalogue rows and inspection labels.
 
 The single Knowledge library retains four explicit record families: designated
 Semantic Blocks, independent Knowledge Entities, independent Question/Definition

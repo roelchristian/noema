@@ -8,6 +8,16 @@ enum EditorAnnotationChoice {
     case newEntity(typeKey: String, label: String)
     case newObject(typeKey: String, text: String)
 
+    static var newEntityChoices: [Self] {
+        KnowledgeEntityType.initial.map { .newEntity(typeKey: $0.key, label: "") }
+    }
+    var symbol: String {
+        switch self {
+        case .entity(let value): KnowledgeTypePresentation.symbol(for: value.entity.typeKey)
+        case .object(let value): KnowledgeTypePresentation.symbol(for: value.object.typeKey)
+        case .newEntity(let type, _), .newObject(let type, _): KnowledgeTypePresentation.symbol(for: type)
+        }
+    }
     var title: String {
         switch self {
         case .entity(let value): return "\(value.entity.label) · \(value.entity.typeKey) · \(value.entity.id.uuidString.prefix(8))"
@@ -88,7 +98,7 @@ extension RichArticleView.Coordinator {
                       self.view?.selectedRange() == nativeRange,
                       self.annotationSelection() != nil else { return }
                 var options = existing
-                options += ["person", "place", "concept"].map { .newEntity(typeKey: $0, label: "") }
+                options += EditorAnnotationChoice.newEntityChoices
                 options += ["question", "definition"].map { .newObject(typeKey: $0, text: "") }
                 let alert = NSAlert()
                 alert.messageText = "Annotate Selection"
@@ -97,6 +107,9 @@ extension RichArticleView.Coordinator {
                 stack.frame = NSRect(x: 0, y: 0, width: 400, height: 64)
                 let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 400, height: 26), pullsDown: false)
                 picker.addItems(withTitles: options.map(\.title))
+                for (index, option) in options.enumerated() {
+                    picker.item(at: index)?.image = NSImage(systemSymbolName: option.symbol, accessibilityDescription: nil)
+                }
                 picker.setAccessibilityLabel("Annotation referent")
                 let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 400, height: 26))
                 field.placeholderString = "New entity name, question, or definition"

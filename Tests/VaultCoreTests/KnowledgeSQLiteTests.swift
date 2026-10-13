@@ -94,3 +94,44 @@ private func knowledgeSQL(_ url: URL, _ sql: String) throws {
     #expect(!declaration.isSupported)
     declaration.requiredCapabilities.reverse(); #expect(!declaration.isSupported)
 }
+
+@Test func knowledgeEventAnnotationSurvivesOldRegistrySaveAndReopen() async throws {
+    let root = try knowledgeRoot(); defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("blocks.sqlite"), vaultID = UUID(), pageID = UUID()
+    let fresh = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: vaultID)
+    try await fresh.close()
+    // Simulate a pre-Event schema-5 vault without upgrading its admission contract.
+    try knowledgeSQL(url, "DELETE FROM knowledge_entity_types WHERE key='event'")
+    let store = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: vaultID, createIfMissing: false)
+    let event = KnowledgeEntity(typeKey: "event", label: "The launch", aliases: [.init(label: "Launch")], properties: .init(properties: ["future": .string("preserved")]))
+    let created = try await store.createEntity(event, expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID()).value
+    let block = EditorBlock(runs: [RichRun("The launch happened.")])
+    let page = try await store.save(.init(blocks: [block]), pageID: pageID, condition: .createOnly)
+    let annotation = SemanticAnnotation(location: .inline(pageID: pageID, blockID: block.id, target: try InlineAnnotationTarget(text: block.text, range: .init(location: 0, length: 10), revision: page.revision.token)), referent: .init(identity: .init(kind: "event", id: event.id)), designation: "event", expectedRevision: page.revision.token)
+    let saved = try await store.saveSemanticPage(.init(pageID: pageID, document: page.document, annotations: [annotation]), condition: .replace(expected: page.revision), expectedObjectRevisions: [:], expectedEntityRevisions: [event.id: created.revision], expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID()).value
+    #expect(saved.snapshot.document.block(block.id)?.text == block.text)
+    #expect(try await store.occurrences(entityID: event.id).map(\.annotation.id) == [annotation.id])
+    try await store.close()
+    let reopen = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: vaultID, createIfMissing: false)
+    #expect(try await reopen.loadEntity(id: event.id) == created)
+    #expect(try await reopen.loadSemanticPage(pageID: pageID) == saved)
+    #expect(try await reopen.occurrences(entityID: event.id).first?.annotation.referent.disposition == .live)
+    #expect(try await reopen.searchEntities(query: "Launch", limit: 10).first == created)
+    try await reopen.close()
+}
+
+@Test func knowledgeEventRegistryInsertionRollsBackOnFailedCreation() async throws {
+    let root = try knowledgeRoot(); defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("blocks.sqlite"), vaultID = UUID()
+    let store = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: vaultID)
+    try knowledgeSQL(url, "DELETE FROM knowledge_entity_types WHERE key='event'; CREATE TRIGGER fail_event BEFORE INSERT ON knowledge_entities BEGIN SELECT RAISE(ABORT,'injected failure'); END")
+    let revision = try await store.canonicalVaultRevision()
+    await #expect(throws: VaultError.self) {
+        try await store.createEntity(.init(typeKey: "event", label: "Launch"), expectedVaultRevision: revision, operationID: UUID())
+    }
+    #expect(try await store.canonicalVaultRevision() == revision)
+    // This trigger fails if the registry row escaped the failed entity transaction.
+    try knowledgeSQL(url, "DROP TRIGGER fail_event; CREATE TRIGGER registry_was_retained BEFORE INSERT ON knowledge_entity_types WHEN EXISTS(SELECT 1 FROM knowledge_entity_types WHERE key='event') BEGIN SELECT RAISE(ABORT,'registry leaked'); END")
+    _ = try await store.createEntity(.init(typeKey: "event", label: "Retry"), expectedVaultRevision: revision, operationID: UUID())
+    try await store.close()
+}

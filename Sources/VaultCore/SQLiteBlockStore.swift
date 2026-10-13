@@ -214,7 +214,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
     private static let knowledgeSchema = """
     CREATE TABLE knowledge_entity_types(key TEXT PRIMARY KEY, version INTEGER NOT NULL, descriptor BLOB NOT NULL);
     CREATE TABLE knowledge_relation_types(key TEXT PRIMARY KEY, version INTEGER NOT NULL, descriptor BLOB NOT NULL);
-    INSERT INTO knowledge_entity_types VALUES('person',1,'{}'),('place',1,'{}'),('concept',1,'{}');
+    INSERT INTO knowledge_entity_types VALUES('person',1,'{}'),('place',1,'{}'),('concept',1,'{}'),('event',1,'{}');
     INSERT INTO knowledge_relation_types VALUES('relatedTo',1,'{}');
     CREATE TABLE knowledge_entities(id TEXT PRIMARY KEY, type_key TEXT NOT NULL REFERENCES knowledge_entity_types(key), revision BLOB NOT NULL, lifecycle TEXT NOT NULL CHECK(lifecycle IN ('live','tombstoned')), payload BLOB NOT NULL);
     CREATE TABLE knowledge_entity_aliases(id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES knowledge_entities(id) ON DELETE RESTRICT, payload BLOB NOT NULL);
@@ -936,6 +936,11 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore {
     }
     private func persistKnowledgeEntity(_ entity: KnowledgeEntity, inserting: Bool) throws -> KnowledgeEntitySnapshot {
         try entity.validateWritable()
+        // Existing schema-5 vaults register this additive supported type only on
+        // explicit creation, inside the entity transaction; opening never upgrades.
+        if inserting, entity.typeKey == "event" {
+            try run("INSERT OR IGNORE INTO knowledge_entity_types(key,version,descriptor) VALUES('event',1,'{}')", [])
+        }
         let revision = BlockStoreRevision(token: Data(UUID().uuidString.utf8))
         var payload = entity; payload.aliases = []
         if inserting {
@@ -1266,7 +1271,7 @@ extension SQLiteBlockStore {
     }
     private func persistSemanticProjection(_ document: BlockDocument, pageID: UUID, pageRevision: BlockStoreRevision, previousRevision: BlockStoreRevision?) throws {
         var incoming:Set<UUID>=[]
-        if case .array(let values)=document.extensions?.properties["annotations"] { for raw in values { let i=try decoder.decode(InlineAnnotation.self,from:encoder.encode(raw)); incoming.insert(i.id); let ref=SemanticReferent(identity:i.targetEntity ?? .init(kind:"legacy",id:i.id),disposition: i.targetEntity.map { ["person","place","concept","question","definition"].contains($0.kind) ? .live : .unresolved } ?? .unresolved); var a=SemanticAnnotation(id:i.id,location:.inline(pageID:pageID,blockID:i.blockID,target:i.target),referent:ref,designation:i.designation,anchorDisposition:i.disposition,expectedRevision:i.expectedRevision,payload:i.payload,createdAt:i.createdAt,modifiedAt:i.modifiedAt); if case .object(let fields)=raw { a.unknownFields=fields.filter{ !["id","pageID","blockID","designation","targetEntity","payload","createdAt","modifiedAt","expectedRevision","target","disposition"].contains($0.key) } }; if let old = try annotationInTransaction(id:a.id) { guard old.annotation.location.pageID == pageID else { throw KnowledgeStoreError.identityConflict(a.id) }; if old.annotation.referent.identity == a.referent.identity { a.referent = old.annotation.referent }; a.locationUnknownFields = old.annotation.locationUnknownFields }; try persistAnnotation(a,document:document,allowExisting:true) } }
+        if case .array(let values)=document.extensions?.properties["annotations"] { for raw in values { let i=try decoder.decode(InlineAnnotation.self,from:encoder.encode(raw)); incoming.insert(i.id); let ref=SemanticReferent(identity:i.targetEntity ?? .init(kind:"legacy",id:i.id),disposition: i.targetEntity.map { ["person","place","concept","event","question","definition"].contains($0.kind) ? .live : .unresolved } ?? .unresolved); var a=SemanticAnnotation(id:i.id,location:.inline(pageID:pageID,blockID:i.blockID,target:i.target),referent:ref,designation:i.designation,anchorDisposition:i.disposition,expectedRevision:i.expectedRevision,payload:i.payload,createdAt:i.createdAt,modifiedAt:i.modifiedAt); if case .object(let fields)=raw { a.unknownFields=fields.filter{ !["id","pageID","blockID","designation","targetEntity","payload","createdAt","modifiedAt","expectedRevision","target","disposition"].contains($0.key) } }; if let old = try annotationInTransaction(id:a.id) { guard old.annotation.location.pageID == pageID else { throw KnowledgeStoreError.identityConflict(a.id) }; if old.annotation.referent.identity == a.referent.identity { a.referent = old.annotation.referent }; a.locationUnknownFields = old.annotation.locationUnknownFields }; try persistAnnotation(a,document:document,allowExisting:true) } }
         for old in try annotationRows(pageID:pageID) where !incoming.contains(old.annotation.id) { var a=old.annotation; if case .wholeBlock = a.location, a.anchorDisposition == .resolved, let blockID=a.location.blockID, document.block(blockID) != nil { guard a.expectedRevision == (previousRevision?.token ?? Data()) else { throw KnowledgeStoreError.staleRevision }; a.expectedRevision=pageRevision.token }; if case .inline=a.location { a.anchorDisposition = .deleted }; if let b=a.location.blockID, document.block(b) == nil { a.anchorDisposition = .deleted }; try persistAnnotation(a,document:document,allowExisting:true) }
     }
     private func semanticPageObjects(_ pageID: UUID) throws -> [SemanticObjectSnapshot] {
@@ -1354,7 +1359,7 @@ extension SQLiteBlockStore {
         }
     }
     public func occurrences(entityID: UUID) throws -> [SemanticAnnotationSnapshot] {
-        try requireSemantic(); return try readTransaction { _ = try entityInTransaction(id:entityID); return Array(try annotationRows().filter { $0.annotation.referent.identity.id == entityID && ["person","place","concept"].contains($0.annotation.referent.identity.kind) }.prefix(1000)) }
+        try requireSemantic(); return try readTransaction { _ = try entityInTransaction(id:entityID); return Array(try annotationRows().filter { $0.annotation.referent.identity.id == entityID && ["person","place","concept","event"].contains($0.annotation.referent.identity.kind) }.prefix(1000)) }
     }
     public func annotations(pageID: UUID, blockID: UUID? = nil) throws -> [SemanticAnnotationSnapshot] {
         try requireSemantic(); return try readTransaction { Array(try annotationRows(pageID:pageID).filter { blockID == nil || $0.annotation.location.blockID == blockID }.prefix(1000)) }
