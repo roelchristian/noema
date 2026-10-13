@@ -122,10 +122,31 @@ import VaultCore
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var model: AppModel?
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(applicationMenuDidChange(_:)), name: NSMenu.didAddItemNotification, object: nil)
+        center.addObserver(self, selector: #selector(applicationMenuDidChange(_:)), name: NSMenu.didChangeItemNotification, object: nil)
+        DispatchQueue.main.async { [weak self] in self?.trimApplicationMenuTail() }
         Task.detached(priority: .utility) {
             // Best effort and bounded; an unavailable temporary directory must not block launch.
             try? SourcePreviewDirectory.application.cleanupOrphans()
         }
+    }
+    @objc private func applicationMenuDidChange(_ notification: Notification) {
+        guard let menu = notification.object as? NSMenu,
+              menu === NSApp.mainMenu?.items.first?.submenu else { return }
+        // SwiftUI may finish composing a command group after inserting its items.
+        DispatchQueue.main.async { [weak self] in self?.trimApplicationMenuTail() }
+    }
+    private func trimApplicationMenuTail() {
+        guard let menu = NSApp.mainMenu?.items.first?.submenu,
+              let quitIndex = menu.items.lastIndex(where: { $0.action == #selector(NSApplication.terminate(_:)) }),
+              quitIndex + 1 < menu.numberOfItems else { return }
+        let tail = menu.items.dropFirst(quitIndex + 1)
+        // Preserve every real command, submenu, and custom view after Quit.
+        guard tail.allSatisfy({ item in
+            item.isSeparatorItem || (item.title.isEmpty && item.action == nil && item.submenu == nil && item.view == nil)
+        }) else { return }
+        menu.items = Array(menu.items.prefix(quitIndex + 1))
     }
     func applicationDidResignActive(_ notification: Notification) {
         model?.appIsActive = false
