@@ -272,13 +272,36 @@ struct AISuggestion: Identifiable, Sendable {
             }
         }
     }
-    var body = "" {
+    var editorDocument = BlockDocumentCodec.decode("") {
         didSet {
-            if body != oldValue {
+            if editorDocument != oldValue {
+                bodyProjection = nil
                 cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate()
                 if isSearching || searchMode == .quickOpen || scope == .semantic { invalidateSearch() }
             }
         }
+    }
+    @ObservationIgnored private var bodyProjection: String? = ""
+    /// Compatibility projection for interchange, AI and source presentation.
+    var body: String {
+        get { bodyProjection ?? BlockDocumentCodec.encode(editorDocument) }
+        set { editorDocument = BlockDocumentCodec.decode(newValue); bodyProjection = newValue }
+    }
+    var editorIdentity: EditorSession.Identity {
+        .init(pageID: currentNote?.id, vaultID: sessionState.vaultID, sessionID: sessionState.sessionID)
+    }
+    @ObservationIgnored private var editorGeneration: UUID?
+    @ObservationIgnored private var editorRevision: UInt64 = 0
+    func registerEditorSession(_ session: EditorSession) {
+        guard session.identity == editorIdentity else { return }
+        editorGeneration = session.generation; editorRevision = session.revision
+    }
+    func acceptEditorSnapshot(_ snapshot: EditorSession.DocumentSnapshot) {
+        guard canOperateOnLoadedContent, !editingLocked, snapshot.identity == editorIdentity,
+              snapshot.generation == editorGeneration, snapshot.revision > editorRevision else { return }
+        editorRevision = snapshot.revision
+        editorDocument = snapshot.document
+        edited()
     }
     @ObservationIgnored weak var semanticCoordinator: RichArticleView.Coordinator?
     var pendingSemanticOccurrence: PendingSemanticOccurrence?
@@ -559,7 +582,8 @@ struct AISuggestion: Identifiable, Sendable {
     var editedTags: [String] { normalizeTags(tagInput.components(separatedBy: ",")) }
     var dirty: Bool {
         guard let note = currentNote else { return false }
-        return title != note.title || body != note.body || editedTags != note.tags || (semanticCoordinator?.session.semanticEdit != nil && (semanticCoordinator?.session.revision ?? 0) != semanticSavedRevision)
+        let contentChanged = note.document.map { editorDocument != $0 } ?? (body != note.body)
+        return title != note.title || contentChanged || editedTags != note.tags || (semanticCoordinator?.session.semanticEdit != nil && (semanticCoordinator?.session.revision ?? 0) != semanticSavedRevision)
     }
     var scopeTitle: String {
         switch scope { case .wiki: "Pages"; case .sources: "Sources"; case .semantic: "Knowledge"; case .trash: "Trash"; case .tag(let tag): "#" + tag }
@@ -1433,7 +1457,7 @@ struct AISuggestion: Identifiable, Sendable {
         guard let currentNote, !editingLocked, !isSummarizing(target: .page(currentNote.id)) else { return }
         var document = BlockDocumentCodec.decode(body)
         guard document.removeAISummary() else { return }
-        body = BlockDocumentCodec.encode(document); aiSummaryNotice = nil; edited()
+        editorDocument = document; aiSummaryNotice = nil; edited()
     }
 
     func summarizePage() {
@@ -2464,15 +2488,15 @@ struct AISuggestion: Identifiable, Sendable {
             backlinks = []
             outgoingLinkTargets = []
         }
-        currentNote = note; title = note.title; body = note.body; tagInput = note.tags.joined(separator: ", ")
+        currentNote = note; title = note.title; editorDocument = note.document ?? BlockDocumentCodec.decode(note.body); bodyProjection = note.body; tagInput = note.tags.joined(separator: ", ")
         lccInput = note.lcc ?? ""
-        let document = BlockDocumentCodec.decode(note.body)
+        let document = editorDocument
         editorReadOnly = document.unsupportedVersion
         editorNotice = document.unsupportedVersion ? "This page uses a newer block format and is read-only. Its original content is preserved." : document.recoveredMetadata != nil ? "External Markdown changed. The earlier editor metadata was preserved for recovery; external text is shown." : nil
         externalChange = false; saveStatus = "Saved locally"
         if let pending = pendingPageSaves[note.id] {
             currentNote = pending.note
-            title = pending.draft.title; body = pending.draft.body
+            title = pending.draft.title; editorDocument = pending.draft.document ?? BlockDocumentCodec.decode(pending.draft.contentBody)
             tagInput = pending.draft.tags.joined(separator: ", "); lccInput = pending.note.lcc ?? ""
             saveStatus = "Unsaved changes"
         }
@@ -2654,15 +2678,15 @@ struct AISuggestion: Identifiable, Sendable {
                 let semantic = try? await repository.sqliteBlockStore.loadSemanticPage(pageID: targetID)
                 guard isCompletionValid(completionTicket, operation: "toggleEditingLock.save") else { return }
                 if currentNote?.id == saved.id {
-                    let unchangedBody = body == note.body
+                    let unchangedDocument = editorDocument == (note.document ?? BlockDocumentCodec.decode(note.body))
                     currentNote = saved; reading = true; editingHint = nil
-                    if unchangedBody { body = saved.body }
+                    if unchangedDocument { editorDocument = saved.document ?? BlockDocumentCodec.decode(saved.body) }
                     if let editorSnapshot, let semantic,
                        semantic.snapshot.revision.token.base64EncodedString() == saved.contentHash,
                        semanticCoordinator?.session.acceptSemanticPublication(semantic, for: editorSnapshot) == true {
                         semanticSavedRevision = editorSnapshot.revision
-                        if unchangedBody, semanticCoordinator?.session.revision == editorSnapshot.revision {
-                            semanticCoordinator?.lastText = saved.body
+                        if unchangedDocument, semanticCoordinator?.session.revision == editorSnapshot.revision {
+                            semanticCoordinator?.lastDocument = saved.document
                         }
                         semanticCoordinator?.refreshSemanticRanges()
                     }
@@ -2713,7 +2737,7 @@ struct AISuggestion: Identifiable, Sendable {
         let trimmedLCC = lccInput.trimmingCharacters(in: .whitespacesAndNewlines)
         note.lcc = trimmedLCC.isEmpty ? nil : trimmedLCC
         let editor = semanticCoordinator?.session.identity.pageID == note.id ? semanticCoordinator?.session.snapshot() : nil
-        var draft = DraftRecord(note: note, title: title, body: body, tags: editedTags)
+        var draft = DraftRecord(note: note, title: title, document: editorDocument, tags: editedTags)
         draft.semanticEdit = editor?.semanticEdit
         return PageSaveSnapshot(id: UUID(), note: note, draft: draft, editor: editor,
             pageRevision: editor?.pageRevision, generation: generation)
@@ -2725,7 +2749,7 @@ struct AISuggestion: Identifiable, Sendable {
            let id = currentNote?.id, let placeholder = untitledPages[id] { title = placeholder }
         guard let snapshot = capturePageSave() else { startTitleGeneration(); return }
         if let pending = pendingPageSaves[snapshot.note.id],
-           pending.draft.title == snapshot.draft.title, pending.draft.body == snapshot.draft.body,
+           pending.draft.title == snapshot.draft.title, pending.draft.document == snapshot.draft.document,
            pending.draft.tags == snapshot.draft.tags, pending.note.lcc == snapshot.note.lcc,
            pending.editor?.generation == snapshot.editor?.generation,
            pending.editor?.revision == snapshot.editor?.revision { return }
@@ -2749,12 +2773,15 @@ struct AISuggestion: Identifiable, Sendable {
         await waitForSave()
         guard !Task.isCancelled, !saving else { return false }
         guard let snapshot = capturePageSave() else { return true }
+        // Queued work is drained; an explicit retry replaces this page's failed capture.
+        pendingPageSaves[snapshot.note.id] = snapshot
         return await persistPageSave(snapshot)
     }
 
     private func persistPageSave(_ captured: PageSaveSnapshot) async -> Bool {
         guard let repository, let recovery, captured.generation == generation else { return false }
         let note = captured.note, draft = captured.draft, editorSnapshot = captured.editor
+        let capturedDocument = draft.document ?? BlockDocumentCodec.decode(draft.contentBody)
         let ticket = captured.generation
         if pendingPageSaves[note.id] == nil { pendingPageSaves[note.id] = captured }
         saving = true
@@ -2762,9 +2789,8 @@ struct AISuggestion: Identifiable, Sendable {
         do {
             try await pageSavePreparation?()
             guard generation == ticket, canOperateOnLoadedContent else { saving = false; return false }
-            let draftBody = draft.body
-            let capturedWordCount = await Task.detached { BlockDocumentCodec.markdownBody(draftBody).split(whereSeparator: \.isWhitespace).count }.value
-            if currentNote?.id == note.id, body == draft.body { wordCount = capturedWordCount }
+            let capturedWordCount = capturedDocument.withoutAISummary.flattened.map(\.text).joined(separator: " ").split(whereSeparator: \.isWhitespace).count
+            if currentNote?.id == note.id, editorDocument == capturedDocument { wordCount = capturedWordCount }
             try await recovery.store(draft)
             let saved: NoteRecord
             var semanticPublication: SemanticPageSnapshot?
@@ -2789,10 +2815,10 @@ struct AISuggestion: Identifiable, Sendable {
                    semanticCoordinator?.session.acceptSemanticPublication(result.1, for: snapshot) == true {
                     semanticCoordinator?.refreshSemanticRanges()
                     semanticSavedRevision = snapshot.revision
-                    if semanticCoordinator?.session.revision == snapshot.revision { semanticCoordinator?.lastText = saved.body }
+                    if semanticCoordinator?.session.revision == snapshot.revision { semanticCoordinator?.lastDocument = saved.document }
                 }
             } else {
-                saved = try await repository.save(note: note, title: draft.title, body: draft.body, tags: draft.tags)
+                saved = try await repository.save(note: note, title: draft.title, document: capturedDocument, tags: draft.tags)
             }
             guard generation == ticket, canOperateOnLoadedContent else { saving = false; return false }
             recordPageRename(saved.id, from: note.title, to: saved.title)
@@ -2800,9 +2826,9 @@ struct AISuggestion: Identifiable, Sendable {
                 currentNote = saved
                 if lccInput.trimmingCharacters(in: .whitespacesAndNewlines) == (note.lcc ?? "") { lccInput = saved.lcc ?? "" }
                 if title == draft.title { title = saved.title }
-                // Canonical persistence can add codec evidence to an unchanged input.
-                // Reconcile only the captured body; later user edits retain their draft.
-                if body == draft.body { body = saved.body }
+                // Reconcile canonical revision evidence only for the captured document;
+                // edits made while saving retain their newer draft.
+                if editorDocument == draft.document { editorDocument = saved.document ?? BlockDocumentCodec.decode(saved.body) }
                 if let i = notes.firstIndex(where: { $0.id == saved.id }) { notes[i] = saved }
                 updateTags()
             }
@@ -2825,7 +2851,7 @@ struct AISuggestion: Identifiable, Sendable {
             } else if !superseded { pendingPageSaves.removeValue(forKey: saved.id) }
             if let semanticPublication, currentNote?.id == saved.id,
                let session = semanticCoordinator?.session, session.pageRevision == captured.pageRevision {
-                let unchanged = session.revision == editorSnapshot?.revision && body == saved.body
+                let unchanged = session.revision == editorSnapshot?.revision && editorDocument == saved.document
                 session.rebaseSemanticEvidence(semanticPublication)
                 if unchanged { semanticSavedRevision = session.revision }
             }
@@ -3072,7 +3098,7 @@ struct AISuggestion: Identifiable, Sendable {
             guard isCompletionValid(completionTicket, operation: "reloadDiskVersion.wait") else { return }
             if dirty, let note = currentNote, let recovery {
                 do {
-                    try await recovery.store(DraftRecord(note: note, title: title, body: body, tags: editedTags, semanticEdit: semanticCoordinator?.session.semanticEdit))
+                    try await recovery.store(DraftRecord(note: note, title: title, document: editorDocument, tags: editedTags, semanticEdit: semanticCoordinator?.session.semanticEdit))
                     let drafts = try await recovery.listing()
                     guard isCompletionValid(completionTicket, operation: "reloadDiskVersion.drafts") else { return }
                     applyRecoveryListing(drafts)
@@ -3102,12 +3128,12 @@ struct AISuggestion: Identifiable, Sendable {
             guard isCompletionValid(completionTicket, operation: "saveDraftAsNewPage.start"), let repository else { return }
             let originalID = recovered?.id ?? currentNote?.id
             do {
-                let preservationDraft = recovered ?? currentNote.map { DraftRecord(note: $0, title: title, body: body, tags: editedTags, semanticEdit: semanticCoordinator?.session.semanticEdit) }
+                let preservationDraft = recovered ?? currentNote.map { DraftRecord(note: $0, title: title, document: editorDocument, tags: editedTags, semanticEdit: semanticCoordinator?.session.semanticEdit) }
                 let note: NoteRecord
                 if let preservationDraft, preservationDraft.semanticEdit != nil {
                     note = try await repository.recoverSemanticDraft(preservationDraft)
                 } else {
-                    let created = try await repository.create(title: (recovered?.title ?? title) + " (recovered)", body: recovered?.body ?? body)
+                    let created = try await repository.create(title: (recovered?.title ?? title) + " (recovered)", body: recovered?.contentBody ?? body)
                     note = try await repository.save(note: created, title: created.title, body: created.body, tags: recovered?.tags ?? editedTags)
                 }
                 if let originalID { try await recovery?.remove(originalID) }
@@ -3834,10 +3860,12 @@ extension AppModel {
 extension AppModel {
     func configureSemanticEditor(_ coordinator: RichArticleView.Coordinator?) {
         semanticCoordinator = coordinator; semanticSavedRevision = 0
+        if let coordinator { registerEditorSession(coordinator.session) }
         guard let coordinator, let repository, let pageID = currentNote?.id else { return }
         let identity = coordinator.session.identity, localRevision = coordinator.session.revision
         if let pending = pendingPageSaves[pageID]?.editor {
             coordinator.session.restorePendingSnapshot(pending, identity: identity)
+            registerEditorSession(coordinator.session)
             coordinator.refreshSemanticRanges(); coordinator.updateAnnotationAvailability()
             return
         }
@@ -3851,6 +3879,7 @@ extension AppModel {
                     coordinator.session.identity == identity, coordinator.session.revision == localRevision,
                     BlockDocumentCodec.encode(visible) == BlockDocumentCodec.encode(loaded) else { return }
                 coordinator.session.load(snapshot, identity: identity, selection: coordinator.session.selection)
+                self.registerEditorSession(coordinator.session)
                 self.semanticSavedRevision = 0
                 coordinator.view?.locked = coordinator.parent.locked || coordinator.document.unsupportedVersion
                 coordinator.view?.isEditable = !coordinator.parent.reading && coordinator.view?.locked == false

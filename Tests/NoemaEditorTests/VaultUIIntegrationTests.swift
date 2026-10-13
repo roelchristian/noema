@@ -42,7 +42,7 @@ struct VaultUIIntegrationTests {
         }
         #expect(model.pageSaveFailures[first.id] != nil)
         #expect(model.currentNote?.id == second.id)
-        #expect(model.recoveredDrafts.contains { $0.id == first.id && $0.body == "Captured before navigation" })
+        #expect(model.recoveredDrafts.contains { $0.id == first.id && BlockDocumentCodec.markdownBody($0.contentBody) == "Captured before navigation" })
         #expect(!(await model.closeVault()))
         _ = await model.closeVault(force: true)
     }

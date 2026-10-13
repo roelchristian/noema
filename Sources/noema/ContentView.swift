@@ -232,7 +232,7 @@ struct ContentView: View {
             inspectorState.selectTab(.insights, for: inspectorContext)
         }
         .onChange(of: model.searchText) { model.queryChanged() }
-        .onChange(of: model.body) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
+        .onChange(of: model.editorDocument) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.title) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false; showAllSearchResults = false }
         .onChange(of: model.scope) { showAllSearchResults = false; selectedSemanticFilter = nil; selectedSemanticStatus = nil }
@@ -913,7 +913,7 @@ struct ContentView: View {
                 if model.currentNote != nil { pageFooter }
             }
             .background(theme.color(for: .canvas))
-            .onChange(of: model.body) { model.edited() }
+            .onChange(of: model.editorDocument) { model.edited() }
             .onChange(of: model.title) { model.edited() }
             .onChange(of: model.tagInput) { model.edited() }
             .onChange(of: model.reading) { if model.reading { model.generatePreview() } }
@@ -1180,7 +1180,7 @@ struct ContentView: View {
                 ForEach(model.recoveredDrafts) { draft in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(draft.title).font(.headline)
-                        Text(draft.body.prefix(240)).font(.caption).foregroundStyle(theme.text()).textSelection(.enabled)
+                        Text(draft.contentBody.prefix(240)).font(.caption).foregroundStyle(theme.text()).textSelection(.enabled)
                         HStack {
                             Button("Recover as new page") { model.saveDraftAsNewPage(draft) }
                             Button("Discard draft", role: .destructive) { model.discardRecovery(draft) }

@@ -116,11 +116,12 @@ import VaultCore
         try #require(model.currentNote?.id == page.id)
         let article = SummarizedArticleView(model: model)
         let binding = article.editorText
-        let parent = RichArticleView(text: article.editorText, reading: false, locked: false, action: nil,
+        let parent = RichArticleView(document: article.editorDocument, reading: false, locked: false, action: nil,
             onBegin: {}, onEnd: {}, onWikiLink: { _ in }, noteID: page.id,
-            vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID)
+            vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID, onSnapshot: model.acceptEditorSnapshot)
         let (coordinator, view, window) = editor(parent)
         defer { window.close(); model.flushEditorPublication = nil }
+        model.registerEditorSession(coordinator.session)
         model.flushEditorPublication = { [weak coordinator] in coordinator?.flushPublication() }
         view.undoManager?.beginUndoGrouping()
         view.insertText("Saved ", replacementRange: NSRange(location: 0, length: 0))
@@ -156,9 +157,10 @@ import VaultCore
         }
         try #require(model.currentNote?.id == page.id)
         model.reading = false
-        let parent = RichArticleView(text: SummarizedArticleView(model: model).editorText,
+        let parent = RichArticleView(document: SummarizedArticleView(model: model).editorDocument,
             reading: false, locked: false, action: nil, onBegin: {}, onEnd: {}, onWikiLink: { _ in },
             noteID: page.id, vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID,
+            onSnapshot: model.acceptEditorSnapshot,
             onSemanticLoad: model.configureSemanticEditor, annotationChoices: model.annotationChoices,
             onAnnotate: model.annotateSelection)
         let (coordinator, view, window) = editor(parent)
@@ -189,7 +191,17 @@ import VaultCore
         let redone = try await repository.sqliteBlockStore.loadSemanticPage(pageID: page.id)
         #expect(redone.annotations[0].annotation.anchorDisposition == .resolved)
         #expect(redone.objects[0].object.id == saved.objects[0].object.id)
-        coordinator.load(model.body)
+        view.undoManager?.beginUndoGrouping()
+        view.insertText("!", replacementRange: NSRange(location: view.string.utf16.count - 1, length: 0))
+        view.undoManager?.endUndoGrouping()
+        coordinator.flushPublication()
+        #expect(model.editorDocument.blocks[0].text == "Ada Lovelace!")
+        #expect(await model.saveCurrent())
+        let typed = try await repository.sqliteBlockStore.loadSemanticPage(pageID: page.id)
+        #expect(typed.snapshot.document.blocks[0].text == "Ada Lovelace!")
+        #expect(typed.annotations[0].annotation.id == saved.annotations[0].annotation.id)
+        #expect(typed.annotations[0].annotation.anchorDisposition == .stale)
+        coordinator.load(model.editorDocument)
         for _ in 0..<100 {
             if coordinator.session.semanticEdit != nil { break }
             try await Task.sleep(for: .milliseconds(10))
@@ -306,9 +318,10 @@ import VaultCore
         await model.open(root, create: false)
         model.select(first.id); model.reading = false
         func parent() -> RichArticleView {
-            RichArticleView(text: SummarizedArticleView(model: model).editorText,
+            RichArticleView(document: SummarizedArticleView(model: model).editorDocument,
                 reading: false, locked: false, action: nil, onBegin: {}, onEnd: {}, onWikiLink: { _ in },
                 noteID: first.id, vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID,
+                onSnapshot: model.acceptEditorSnapshot,
                 onSemanticLoad: model.configureSemanticEditor, annotationChoices: model.annotationChoices,
                 onAnnotate: model.annotateSelection)
         }
@@ -355,4 +368,61 @@ import VaultCore
         #expect(await model.closeVault())
     }
 
+}
+
+@Suite("Structured editor publication", .serialized)
+@MainActor struct StructuredEditorPublicationTests {
+    @Test func revisionsAndGenerationsGuardStructuredRecoveryAndSave() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("structured-editor-" + UUID().uuidString)
+        let root = base.appendingPathComponent("Vault")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let repository = try await openCanonicalAppFixture(root: root, create: true)
+        let page = try await repository.create(title: "Structured snapshot", body: "Original")
+        let model = AppModel(); model.localStorageRoot = base.appendingPathComponent("Local")
+        model.persistSecurityScopedBookmark = false
+        await model.open(root, create: false)
+        model.select(page.id)
+        for _ in 0..<100 {
+            if model.currentNote?.id == page.id { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try #require(model.currentNote?.id == page.id)
+        let session = EditorSession(document: model.editorDocument, identity: model.editorIdentity)
+        model.registerEditorSession(session)
+        let id = try #require(session.document.blocks.first?.id)
+        session.updateRuns(id, runs: [RichRun("First revision")], selection: .init(location: 2, length: 0))
+        let old = session.snapshot()
+        var rich = session.document
+        rich.blocks[0].children = [EditorBlock(kind: .callout, runs: [RichRun("Nested 😀")])]
+        rich.setAISummary("Preserved summary")
+        session.replaceDocument(rich)
+        let latest = session.snapshot()
+        model.acceptEditorSnapshot(latest)
+        model.acceptEditorSnapshot(old)
+        #expect(model.editorDocument == latest.document)
+        #expect(model.dirty)
+
+        model.title = ""
+        #expect(!(await model.saveCurrent()))
+        let draft = try #require(model.recoveredDrafts.first(where: { $0.id == page.id }))
+        #expect(draft.document == latest.document)
+        #expect(draft.body.isEmpty)
+        let bytes = try JSONEncoder().encode(draft)
+        #expect(try JSONDecoder().decode(DraftRecord.self, from: bytes).document == latest.document)
+
+        model.title = page.title
+        #expect(await model.saveCurrent())
+        let saved = try #require(try await repository.scan().notes.first(where: { $0.id == page.id }))
+        #expect(saved.document?.blocks == latest.document.blocks)
+        #expect(!model.dirty)
+
+        session.load(model.editorDocument, identity: model.editorIdentity, selection: .init(location: 0, length: 0))
+        model.registerEditorSession(session)
+        model.acceptEditorSnapshot(latest)
+        #expect(!model.dirty)
+        #expect(await model.lockVault())
+        model.acceptEditorSnapshot(latest)
+        #expect(model.currentNote == nil)
+    }
 }

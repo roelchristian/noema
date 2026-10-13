@@ -68,7 +68,8 @@ public struct NoteRecord: Codable, Identifiable, Sendable, Equatable {
     public var inlineTags: [String]
     public var createdAt: String
     public var updatedAt: String
-    public var body: String
+    public var body: String { didSet { document = nil } }
+    public var document: BlockDocument? = nil
     public var relativePath: String
     public var contentHash: String
     public var lcc: String? = nil
@@ -188,6 +189,8 @@ public struct TextAnalysis: Sendable {
 public struct DraftRecord: Codable, Identifiable, Sendable {
     public var note: NoteRecord
     public var title: String
+    public var document: BlockDocument? = nil
+    public var contentBody: String { document.map(BlockDocumentCodec.encode) ?? body }
     public var body: String
     public var tags: [String]
     public var capturedAt: String
@@ -195,6 +198,10 @@ public struct DraftRecord: Codable, Identifiable, Sendable {
     public var id: UUID { note.id }
     public init(note: NoteRecord, title: String, body: String, tags: [String], semanticEdit: SemanticPageEdit? = nil) {
         self.note = note; self.title = title; self.body = body; self.tags = tags; self.semanticEdit = semanticEdit
+        self.capturedAt = timestamp()
+    }
+    public init(note: NoteRecord, title: String, document: BlockDocument, tags: [String], semanticEdit: SemanticPageEdit? = nil) {
+        self.note = note; self.title = title; self.body = ""; self.document = document; self.tags = tags; self.semanticEdit = semanticEdit
         self.capturedAt = timestamp()
     }
 }

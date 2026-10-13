@@ -63,6 +63,38 @@ extension VaultUIIntegrationTests {
             #expect(await model.closeVault())
         }
 
+        @Test func structuredDraftRetainsBlockIdentityAndMetadataAcrossDelayedSaveAndRevisit() async throws {
+            let (base, _, repository, model, first, second) = try await fixture()
+            defer { try? FileManager.default.removeItem(at: base) }
+            let barrier = NavigationSaveBarrier(); defer { barrier.release() }
+            var waits = 0
+            model.pageSavePreparation = { waits += 1; if waits == 1 { await barrier.wait() } }
+            var document = model.editorDocument
+            let blockID = try #require(document.blocks.first?.id)
+            document.blocks[0].runs = [RichRun("Structured captured draft")]
+            document.blocks[0].metadata.extra["future-property"] = "Preserved"
+            document.setAISummary("Preserved summary")
+            model.editorDocument = document
+            model.select(second.id)
+            try await entered(barrier)
+            model.select(first.id)
+            #expect(model.editorDocument == document)
+            #expect(model.editorDocument.withoutAISummary.blocks.first?.id == blockID)
+            let blockIndex = try #require(model.editorDocument.blocks.firstIndex { $0.id == blockID })
+            model.editorDocument.blocks[blockIndex].runs = [RichRun("Structured successor draft")]
+            let successor = model.editorDocument
+            model.select(second.id)
+            barrier.release()
+            #expect(await model.flushPendingEdits())
+            let saved = try await repository.sqliteBlockStore.loadPage(pageID: first.id)
+            #expect(saved.snapshot.document.withoutAISummary.blocks.first?.id == blockID)
+            #expect(saved.snapshot.document.withoutAISummary.blocks.first?.metadata.extra["future-property"] == "Preserved")
+            #expect(saved.snapshot.document.aiSummary == successor.aiSummary)
+            #expect(saved.snapshot.document.withoutAISummary.blocks.first?.text == "Structured successor draft")
+            #expect(model.pageSaveFailures.isEmpty)
+            #expect(await model.closeVault())
+        }
+
         @Test(arguments: [true, false]) func lifecycleDrainsBackgroundSaveBeforeRetiringSession(lock: Bool) async throws {
             let (base, root, repository, model, first, second) = try await fixture()
             defer { try? FileManager.default.removeItem(at: base) }
@@ -102,7 +134,7 @@ extension VaultUIIntegrationTests {
                 try await Task.sleep(for: .milliseconds(5))
             }
             #expect(BlockDocumentCodec.markdownBody(model.body) == "External update")
-            #expect(model.recoveredDrafts.contains { $0.id == first.id && $0.body == "Local draft" })
+            #expect(model.recoveredDrafts.contains { $0.id == first.id && BlockDocumentCodec.markdownBody($0.contentBody) == "Local draft" })
             #expect(await model.closeVault())
         }
 
@@ -112,11 +144,11 @@ extension VaultUIIntegrationTests {
             model.pageSavePreparation = { throw NavigationFixtureError.saveFailure }
             model.body = "Memory draft"; model.select(second.id)
             #expect(!(await model.flushPendingEdits()))
-            #expect(model.recoveredDrafts.contains { $0.id == first.id && $0.body == "Memory draft" })
+            #expect(model.recoveredDrafts.contains { $0.id == first.id && BlockDocumentCodec.markdownBody($0.contentBody) == "Memory draft" })
             #expect(await model.closeVault(force: true))
             model.pageSavePreparation = nil
             await model.open(root, create: false)
-            #expect(model.recoveredDrafts.contains { $0.id == first.id && $0.body == "Memory draft" })
+            #expect(model.recoveredDrafts.contains { $0.id == first.id && BlockDocumentCodec.markdownBody($0.contentBody) == "Memory draft" })
             #expect(await model.closeVault())
         }
     }
