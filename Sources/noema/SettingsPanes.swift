@@ -69,7 +69,6 @@ struct ReadingEditorSettingsPane: View {
                 }
                 ForEach(NSFontManager.shared.availableFontFamilies.sorted(), id: \.self) { family in
                     Text(family)
-                        .font(Font(EditorTypography(family: family, size: 13).font(for: .body)))
                         .tag(family)
                 }
             }
