@@ -405,6 +405,7 @@ struct WorkspaceSplitViewPersistence: NSViewRepresentable {
         view.state = state
         view.presentation = presentation
         view.mainMinimum = mainMinimum
+        view.configure()
         view.scheduleConfiguration()
     }
     static func dismantleNSView(_ view: Probe, coordinator: ()) { view.disconnect() }
@@ -417,11 +418,15 @@ struct WorkspaceSplitViewPersistence: NSViewRepresentable {
         private var lastPresentation: WorkspacePanePresentation?
         private var lastMainMinimum: CGFloat?
         private var scheduled = false
+        private var configuring = false
         override var isOpaque: Bool { false }
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); scheduleConfiguration() }
         override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); scheduleConfiguration() }
-        override func layout() { super.layout(); scheduleConfiguration() }
+        override func layout() {
+            super.layout()
+            configure()
+        }
 
         func scheduleConfiguration() {
             guard !scheduled else { return }
@@ -441,7 +446,7 @@ struct WorkspaceSplitViewPersistence: NSViewRepresentable {
         }
 
         func configure() {
-            guard window != nil, let state else { return }
+            guard !configuring, window != nil, let state else { return }
             var ancestor = superview
             while let view = ancestor, !(view is NSSplitView) { ancestor = view.superview }
             guard let split = ancestor as? NSSplitView, split.isVertical else { return }
@@ -455,50 +460,49 @@ struct WorkspaceSplitViewPersistence: NSViewRepresentable {
                   lastPresentation != presentation || lastMainMinimum != mainMinimum else { return }
             lastPresentation = presentation
             lastMainMinimum = mainMinimum
+            configuring = true
+            defer { configuring = false }
             // SwiftUI owns an NSSplitViewController. AppKit prohibits setting holding
             // priorities directly on its split view; preserve the controller's layout policy.
             let divider = split.dividerThickness
             var positions: [(Int, CGFloat)] = []
+            var leading: CGFloat = 0
             if presentation.sidebar {
                 let collectionReserve = presentation.collection ? WorkspacePaneState.collectionMinimum + divider : 0
                 let inspectorReserve = presentation.inspector ? InspectorState.minWidth + divider : 0
                 let maximum = min(WorkspacePaneState.sidebarMaximum, split.bounds.width - mainMinimum - collectionReserve - inspectorReserve - divider)
                 let position = min(state.sidebarWidth, max(WorkspacePaneState.sidebarMinimum, maximum))
                 positions.append((0, position))
-                split.setPosition(position, ofDividerAt: 0)
+                leading = position + divider
             }
             if presentation.collection {
-                let sidebarSpan = presentation.sidebar ? split.arrangedSubviews[0].frame.width + divider : 0
+                let sidebarSpan = leading
                 let inspectorReserve = presentation.inspector ? InspectorState.minWidth + divider : 0
                 let maximum = min(WorkspacePaneState.collectionMaximum, split.bounds.width - sidebarSpan - mainMinimum - inspectorReserve - divider)
                 let width = min(state.collectionWidth, max(WorkspacePaneState.collectionMinimum, maximum))
                 let index = presentation.sidebar ? 1 : 0
                 positions.append((index, sidebarSpan + width))
-                split.setPosition(sidebarSpan + width, ofDividerAt: index)
+                leading = sidebarSpan + width + divider
             }
             if presentation.inspector {
-                var leading: CGFloat = 0
-                var index = 0
-                if presentation.sidebar {
-                    leading += split.arrangedSubviews[index].frame.width + divider
-                    index += 1
-                }
-                if presentation.collection {
-                    leading += split.arrangedSubviews[index].frame.width + divider
-                }
                 let maximum = min(InspectorState.maxWidth, split.bounds.width - mainMinimum - leading - divider)
                 let width = min(state.inspectorWidth, max(InspectorState.minWidth, maximum))
-                split.setPosition(split.bounds.width - width - divider, ofDividerAt: expectedCount - 2)
+                positions.append((expectedCount - 2, split.bounds.width - width - divider))
             }
-            // A trailing divider can redistribute the preceding controller-owned panes.
-            // Restore leading boundaries last, keeping the established trailing boundary.
-            for (index, position) in positions.reversed() {
-                split.setPosition(position, ofDividerAt: index)
+            // Compute all boundaries first, then restore each once before drawing.
+            // The trailing boundary goes first because it can redistribute leading panes.
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                context.allowsImplicitAnimation = false
+                for (index, position) in positions.reversed() {
+                    split.setPosition(position, ofDividerAt: index)
+                }
             }
         }
 
         @objc private func dividerResized(_ notification: Notification) {
             guard let split = splitView, (notification.object as? NSSplitView) === split,
+                  !configuring,
                   NSApp.currentEvent?.type == .leftMouseDragged,
                   split.arrangedSubviews.count == Self.arrangedCount(for: presentation) else { return }
             var index = 0

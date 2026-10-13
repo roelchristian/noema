@@ -182,6 +182,8 @@ Implementation and acceptance are tracked separately in the [milestone evidence 
 The singleton `Window("Noema", id: "main")` owns one `AppModel`. Native titled chrome
 owns standard controls and top safe areas; no traffic-light coordinate enforcer or
 workspace titlebar overlap is permitted. Global controls live in one native toolbar;
+its visible background spans the window, and full-size content is disabled so split
+dividers start below the toolbar rather than passing through its controls.
 document editing controls remain with the document heading. Toolbar and menu actions
 share guarded `AppModel.performWorkspaceCommand`, with lifecycle admission reserved
 before queuing. Activation/termination still use existing save/recovery/session hooks.
@@ -211,7 +213,9 @@ and vault subtitle are available only to an authorized open session. Locking/loc
 unlocking presentation must withhold previous private document names immediately,
 including before asynchronous observations catch up. Keep full accessibility labels
 while native titlebar truncation handles long names. An open page or source in the
-content pane is the window title. A Sources row opens that source there; the title
+content pane is the window title. `WorkspaceWindowState` applies that identity directly
+to the workspace's native window, independently of split panes and sidebar visibility.
+A Sources row opens that source there; the title
 stays the collection name only while no document is open.
 
 `HSplitView` arranges the navigation sidebar, persistent collection list, content
@@ -238,7 +242,9 @@ list is 260/300/360 pt, the sidebar is 190/220/320 pt, and the inspector is
 280/340/420 pt. Native dividers own dragging.
 The split probe preserves controller holding priorities and the SwiftUI delegate,
 restores widths through `setPosition` only for pane arrangement/center-minimum changes,
-and records widths only from native resize notifications during mouse dragging.
+computes divider positions together and applies each once without animation during
+layout, and records widths only from native resize notifications during mouse dragging.
+Programmatic divider restoration cannot overwrite the saved width preferences.
 Window resizing must not overwrite preferred widths or animate heavy document/Table
 layout; pane/title/toolbar evaluation must not decode source bodies or rebuild the
 Sources metadata/status presentation bridge. Inspector respects native top safe area.

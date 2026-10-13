@@ -6,30 +6,39 @@ import VaultCore
 /// Pane visibility and widths belong to the split-view state, not the window frame.
 struct WorkspaceWindowState: NSViewRepresentable {
     let phase: VaultSessionPhase
+    let title: WorkspaceWindowTitle
 
     @MainActor static func configureToolbarStyle(for window: NSWindow) {
-        window.toolbarStyle = .unified
-        window.titleVisibility = .visible
+        // Reserve one full-width native chrome band above every split pane.
+        // Full-size content lets AppKit extend pane dividers behind toolbar controls.
+        if window.styleMask.contains(.fullSizeContentView) {
+            window.styleMask.remove(.fullSizeContentView)
+        }
+        if window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = false }
+        if window.toolbarStyle != .unified { window.toolbarStyle = .unified }
+        if window.titleVisibility != .visible { window.titleVisibility = .visible }
     }
 
     @MainActor static func titlebarChromeHeight(for window: NSWindow) -> CGFloat {
         max(0, window.frame.height - window.contentLayoutRect.height)
     }
 
-    func makeNSView(context: Context) -> WindowStateView { WindowStateView(phase: phase) }
-    func updateNSView(_ view: WindowStateView, context: Context) { view.update(phase: phase) }
+    func makeNSView(context: Context) -> WindowStateView { WindowStateView(phase: phase, title: title) }
+    func updateNSView(_ view: WindowStateView, context: Context) { view.update(phase: phase, title: title) }
     static func dismantleNSView(_ view: WindowStateView, coordinator: ()) { view.detach() }
 
     final class WindowStateView: NSView {
         private var state: WindowGeometryState
+        private var title: WorkspaceWindowTitle
         private weak var observedWindow: NSWindow?
         private var observers: [NSObjectProtocol] = []
         private var pendingTransition: Task<Void, Never>?
         private var changingFrame = false
         private var inFullScreenTransition = false
 
-        init(phase: VaultSessionPhase) {
+        init(phase: VaultSessionPhase, title: WorkspaceWindowTitle) {
             state = WindowGeometryState(phase: phase)
+            self.title = title
             super.init(frame: .zero)
         }
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -41,12 +50,18 @@ struct WorkspaceWindowState: NSViewRepresentable {
             guard let window else { return }
             observedWindow = window
             WorkspaceWindowState.configureToolbarStyle(for: window)
+            applyTitle()
             state.applyPending(canResize: canChangeFrame)
             observe(window)
             applyProfile(restore: true)
         }
 
-        func update(phase: VaultSessionPhase) {
+        func update(phase: VaultSessionPhase, title: WorkspaceWindowTitle) {
+            self.title = title
+            if let window = observedWindow {
+                WorkspaceWindowState.configureToolbarStyle(for: window)
+            }
+            applyTitle()
             guard state.phase != phase else { return }
             state.request(phase)
             pendingTransition?.cancel()
@@ -61,6 +76,13 @@ struct WorkspaceWindowState: NSViewRepresentable {
             } else {
                 transition()
             }
+        }
+
+        private func applyTitle() {
+            guard let window = observedWindow else { return }
+            // Window identity survives pane insertion/removal and sidebar visibility.
+            if window.title != title.title { window.title = title.title }
+            if window.subtitle != title.subtitle { window.subtitle = title.subtitle }
         }
 
         func detach() {

@@ -12,7 +12,7 @@ import VaultCore
         Window("Noema", id: "main") {
             ContentView(model: model)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(WorkspaceWindowState(phase: model.sessionPhase))
+                .background(WorkspaceWindowState(phase: model.sessionPhase, title: model.windowTitle))
                 .systemNoemaTheme()
                 .task { delegate.model = model; await model.restore() }
                 .onOpenURL { model.openBlockURL($0) }

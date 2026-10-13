@@ -145,6 +145,7 @@ struct ContentView: View {
                         contentColumn(presentation: presentation, availableWidth: geometry.size.width)
                         if presentation.inspector {
                             inspectorColumn(flexibleWidth: false)
+                                .frame(idealWidth: paneState.inspectorWidth)
                                 .transaction { $0.animation = nil }
                         }
                     }
@@ -159,11 +160,10 @@ struct ContentView: View {
     private var titledWorkspace: some View {
         workspacePresentation
         .disabled(!model.canInteractWithWorkspace)
-        .navigationTitle(model.windowTitle.title)
-        .navigationSubtitle(model.windowTitle.hasSubtitle ? model.windowTitle.subtitle : "")
         .focusedSceneValue(\.workspacePaneActions, paneActions)
         .toolbar(removing: .sidebarToggle)
         .toolbar { workspaceToolbar }
+        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
         .safeAreaInset(edge: .bottom, spacing: 0) { AISummaryProviderNotice(model: model) }
     }
     private var workspaceSheets: some View {
