@@ -19,7 +19,8 @@ struct RichArticleView: NSViewRepresentable {
     var vaultID: UUID? = nil
     var sessionID: UUID? = nil
     var hidesAISummary = false
-    var onSessionReady: ((Coordinator?) -> Void)? = nil
+    var onSessionReady: ((Coordinator) -> Void)? = nil
+    var onSessionEnded: ((Coordinator) -> Void)? = nil
     var onSnapshot: ((EditorSession.DocumentSnapshot) -> Void)? = nil
     var onBlockLink: (URL) -> Void = { _ in }
     var onSemanticLoad: ((Coordinator) -> Void)? = nil
@@ -51,7 +52,12 @@ struct RichArticleView: NSViewRepresentable {
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        let coordinator = context.coordinator; coordinator.parent = self
+        let coordinator = context.coordinator
+        // SwiftUI can update the outgoing identity-keyed view after creating its
+        // replacement. That view must retain its original page and callbacks.
+        let identity = EditorSession.Identity(pageID: noteID, vaultID: vaultID, sessionID: sessionID)
+        guard onSemanticLoad == nil || coordinator.hostedIdentity == identity else { return }
+        coordinator.parent = self
         guard let view = coordinator.view else { return }
         let headingsChanged = view.showSemanticHeadings != showSemanticHeadings
         let macrosChanged = coordinator.lastMacros != texMacros
@@ -89,7 +95,7 @@ struct RichArticleView: NSViewRepresentable {
     }
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
         coordinator.flushPublication()
-        coordinator.parent.onSessionReady?(nil)
+        coordinator.parent.onSessionEnded?(coordinator)
         NotificationCenter.default.removeObserver(coordinator, name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         coordinator.suggestions.close()
         coordinator.view?.delegate = nil
@@ -165,12 +171,7 @@ struct SummarizedArticleView: View {
                 .background(.ultraThinMaterial)
                 Divider().scaleEffect(y: 0.5).frame(height: 0.5)
             }
-            RichArticleView(document: editorDocument, editable: model.canEditPage, locked: model.editingLocked, action: model.editorAction, onWikiLink: model.followWikiLink, onWikiQuery: { model.wikiQuery = $0 }, noteID: model.currentNote?.id, vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID, hidesAISummary: true, onSessionReady: { coordinator in
-                if let coordinator {
-                    model.registerEditorSession(coordinator.session)
-                    model.flushEditorPublication = { [weak coordinator] in coordinator?.flushPublication() }
-                } else { model.flushEditorPublication = nil }
-            }, onSnapshot: model.acceptEditorSnapshot, onBlockLink: model.openBlockURL, onSemanticLoad: model.configureSemanticEditor, annotationChoices: model.annotationChoices, onAnnotate: model.annotateSelection, onInspectAssociation: model.inspectSemanticAssociation, onSemanticSelection: model.semanticSelectionChanged, onAnnotationAvailabilityChange: { model.canAnnotateSelection = $0 }, onScrollOffset: { disclosure.scrolled(to: $0) })
+            RichArticleView(document: editorDocument, editable: model.canEditPage, locked: model.editingLocked, action: model.editorAction, onWikiLink: model.followWikiLink, onWikiQuery: { model.wikiQuery = $0 }, noteID: model.currentNote?.id, vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID, hidesAISummary: true, onSessionReady: model.registerHostedEditor, onSessionEnded: model.unregisterHostedEditor, onSnapshot: model.acceptEditorSnapshot, onBlockLink: model.openBlockURL, onSemanticLoad: model.configureSemanticEditor, annotationChoices: model.annotationChoices, onAnnotate: model.annotateSelection, onInspectAssociation: model.inspectSemanticAssociation, onSemanticSelection: model.semanticSelectionChanged, onAnnotationAvailabilityChange: { model.canAnnotateSelection = $0 }, onScrollOffset: { disclosure.scrolled(to: $0) })
                 .frame(maxWidth: .infinity)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: disclosure.collapsed)

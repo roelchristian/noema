@@ -5,6 +5,7 @@ extension RichArticleView {
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         typealias Snapshot = EditorSession.DocumentSnapshot
         var parent: RichArticleView
+        let hostedIdentity: EditorSession.Identity
         weak var view: ArticleTextView?
         let session = EditorSession()
         var document: BlockDocument {
@@ -65,7 +66,9 @@ extension RichArticleView {
             pasteboard.setString(BlockDocumentCodec.readable(BlockDocument(blocks: actionBlocks)), forType: .string)
         }
         init(_ parent: RichArticleView) {
-            self.parent = parent; super.init()
+            self.parent = parent
+            hostedIdentity = .init(pageID: parent.noteID, vaultID: parent.vaultID, sessionID: parent.sessionID)
+            super.init()
             suggestions.dismiss = { [weak self] in self?.dismissPalette() }
             palette.choose = { [weak self] in self?.apply($0, removingQuery: true) }
         }
