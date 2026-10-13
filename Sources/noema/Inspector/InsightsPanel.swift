@@ -1,6 +1,18 @@
 import SwiftUI
 import VaultCore
 
+struct InspectionAuthorityCaption: View {
+    let authority: InspectionAuthority
+
+    var body: some View {
+        Text(authority.note)
+            .font(NoemaTypography.metadata)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel(authority.note)
+    }
+}
+
 /// Equatable group of semantic blocks for cached inspector presentation.
 struct SemanticBlockGroup: Identifiable, Equatable, Sendable {
     let tag: String
@@ -110,6 +122,9 @@ struct InsightsPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                     InspectorSection(title: "AI summary", showTopDivider: false) {
+                        if snapshot.summaryText != nil {
+                            InspectionAuthorityCaption(authority: .document)
+                        }
                         AISummaryProviderDisclosure(provider: model.preferredAIProvider(for: .summarizePage))
                         AISummaryStatus(model: model, target: .page(note.id))
                         AISummaryControls(model: model, target: .page(note.id))
@@ -171,6 +186,9 @@ struct InsightsPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                     InspectorSection(title: "AI summary", showTopDivider: false) {
+                        if hasSummary {
+                            InspectionAuthorityCaption(authority: .document)
+                        }
                         AISummaryProviderDisclosure(provider: model.preferredAIProvider(for: .summarizeSource))
                         AISummaryStatus(model: model, target: .source(source.id))
                         AISummaryControls(model: model, target: .source(source.id))

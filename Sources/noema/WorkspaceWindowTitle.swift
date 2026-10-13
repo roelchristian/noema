@@ -70,6 +70,17 @@ struct WorkspaceWindowTitle: Equatable, Sendable {
     }
 }
 
+/// The native window title is the only primary document name.
+/// Collection chrome keeps the collection name and does not repeat that title.
+enum WorkspaceTitleOwnership {
+    static func collectionChromeTitle(window: WorkspaceWindowTitle, collectionName: String) -> String? {
+        guard !window.isCollectionScope else { return nil }
+        let name = collectionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.caseInsensitiveCompare(window.title) != .orderedSame else { return nil }
+        return name
+    }
+}
+
 extension AppModel {
     var windowTitle: WorkspaceWindowTitle {
         // Consult the admission gate synchronously so the title does not retain a private

@@ -43,6 +43,7 @@ struct SemanticInspectionSection: View {
     }
     var body: some View {
         InspectorSection(title: "Associations", count: records.count) {
+            InspectionAuthorityCaption(authority: model.semanticInspectionSelectionIDs.isEmpty ? .canonicalKnowledge : .selection)
             if let error = model.semanticInspectionError {
                 Text(error).font(NoemaTypography.metadata).foregroundStyle(.secondary)
             }

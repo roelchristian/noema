@@ -85,6 +85,20 @@ import VaultCore
     #expect(!emptySource.isCollectionScope)
 }
 
+@Test func collectionChromeDoesNotRepeatTheDocumentTitle() {
+    let page = WorkspaceWindowTitle(
+        phase: .open, vaultName: "Atlas", scope: .wiki,
+        document: .page("Field notes"), vaultAvailable: true
+    )
+    #expect(WorkspaceTitleOwnership.collectionChromeTitle(window: page, collectionName: "Pages") == "Pages")
+    #expect(WorkspaceTitleOwnership.collectionChromeTitle(window: page, collectionName: "Field notes") == nil)
+    let collection = WorkspaceWindowTitle(
+        phase: .open, vaultName: "Atlas", scope: .sources, vaultAvailable: true
+    )
+    #expect(collection.isCollectionScope)
+    #expect(WorkspaceTitleOwnership.collectionChromeTitle(window: collection, collectionName: "Sources") == nil)
+}
+
 @Test func collectionScopeAndSubtitleHierarchyMatchOpenAndTransitionalStates() {
     let scopes: [LibraryScope] = [.wiki, .sources, .semantic, .trash, .tag("Research")]
     for scope in scopes {

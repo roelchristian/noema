@@ -11,6 +11,11 @@ import SwiftUI
     static let collectionIdeal: CGFloat = 300
     static let collectionMaximum: CGFloat = 360
     static let contentMinimum: CGFloat = 420
+    /// Reading width kept when the inspector is open and the window can spare it.
+    /// The 420 pt minimum remains the floor; this is not a second layout mode.
+    static let contentPreferred: CGFloat = 600
+    /// Extra width required before an automatically collapsed pane returns.
+    static let layoutHysteresis: CGFloat = 20
     static let sidebarVisibilityKey = "workspace.sidebar.visible"
     static let collectionVisibilityKey = "workspace.collection.visible"
     static let inspectorVisibilityKey = "workspace.inspector.visible"
@@ -26,6 +31,10 @@ import SwiftUI
     private(set) var collectionWidth: CGFloat
     private(set) var inspectorWidth: CGFloat
     private(set) var priority: WorkspacePane = .sidebar
+    /// Escape dismissed a temporary inspector overlay. The visibility preference stays.
+    private(set) var inspectorOverlayDismissed = false
+    @ObservationIgnored private var lastLayoutRequest: LayoutRequest?
+    @ObservationIgnored private var lastLayoutPresentation: WorkspacePanePresentation?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -59,7 +68,18 @@ import SwiftUI
 
     func toggleInspector(presented: Bool) {
         priority = .inspector
+        inspectorOverlayDismissed = false
         isInspectorVisible = !presented
+    }
+
+    func dismissInspectorOverlay() {
+        guard !inspectorOverlayDismissed else { return }
+        inspectorOverlayDismissed = true
+    }
+
+    func clearInspectorOverlayDismissal() {
+        guard inspectorOverlayDismissed else { return }
+        inspectorOverlayDismissed = false
     }
 
     func rememberWidths(sidebar: CGFloat?, collection: CGFloat? = nil, inspector: CGFloat?) {
@@ -77,14 +97,73 @@ import SwiftUI
         }
     }
 
-    func presentation(width: CGFloat, mainMinimum: CGFloat, inspectorAvailable: Bool) -> WorkspacePanePresentation {
-        WorkspacePanePresentation.resolve(
+    func presentation(width: CGFloat, mainMinimum: CGFloat, inspectorAvailable: Bool, contentPreferred: CGFloat? = nil) -> WorkspacePanePresentation {
+        let preferred = contentPreferred ?? mainMinimum
+        let inspectorRequested = isInspectorVisible && inspectorAvailable
+        let request = LayoutRequest(
+            mainMinimum: mainMinimum, contentPreferred: preferred,
+            sidebar: isSidebarVisible, collection: isCollectionVisible,
+            inspector: inspectorRequested, priority: priority,
+            overlayDismissed: inspectorOverlayDismissed
+        )
+        var immediate = WorkspacePanePresentation.resolve(
             width: width, mainMinimum: mainMinimum,
             sidebarRequested: isSidebarVisible,
             collectionRequested: isCollectionVisible,
-            inspectorRequested: isInspectorVisible && inspectorAvailable,
-            priority: priority
+            inspectorRequested: inspectorRequested,
+            priority: priority,
+            contentPreferred: contentPreferred
         )
+        immediate = applyingOverlayDismissal(immediate)
+        let resolved: WorkspacePanePresentation
+        if lastLayoutRequest != request || lastLayoutPresentation == nil {
+            resolved = immediate
+        } else {
+            var held = WorkspacePanePresentation.resolve(
+                width: max(0, width - Self.layoutHysteresis), mainMinimum: mainMinimum,
+                sidebarRequested: isSidebarVisible,
+                collectionRequested: isCollectionVisible,
+                inspectorRequested: inspectorRequested,
+                priority: priority,
+                contentPreferred: contentPreferred
+            )
+            held = applyingOverlayDismissal(held)
+            resolved = Self.stabilize(previous: lastLayoutPresentation!, immediate: immediate, held: held)
+        }
+        lastLayoutRequest = request
+        lastLayoutPresentation = resolved
+        return resolved
+    }
+
+    private func applyingOverlayDismissal(_ presentation: WorkspacePanePresentation) -> WorkspacePanePresentation {
+        guard presentation.inspectorOverlay, inspectorOverlayDismissed else { return presentation }
+        return WorkspacePanePresentation(
+            sidebar: presentation.sidebar, collection: presentation.collection,
+            inspector: false, inspectorOverlay: false
+        )
+    }
+
+    /// Collapse as soon as the width requires it. Restore a pane only after the
+    /// hysteresis band also shows it, so small resizes do not oscillate.
+    private static func stabilize(
+        previous: WorkspacePanePresentation, immediate: WorkspacePanePresentation, held: WorkspacePanePresentation
+    ) -> WorkspacePanePresentation {
+        if immediate == previous { return immediate }
+        let added = immediate.panes.subtracting(previous.panes)
+        let removed = previous.panes.subtracting(immediate.panes)
+        if !removed.isEmpty, added.isEmpty { return immediate }
+        if !added.isEmpty, removed.isEmpty { return held == immediate ? immediate : previous }
+        return immediate
+    }
+
+    private struct LayoutRequest: Equatable {
+        var mainMinimum: CGFloat
+        var contentPreferred: CGFloat
+        var sidebar: Bool
+        var collection: Bool
+        var inspector: Bool
+        var priority: WorkspacePane
+        var overlayDismissed: Bool
     }
 
     private static func validWidth(_ value: Double, minimum: CGFloat, maximum: CGFloat, fallback: CGFloat) -> CGFloat {
@@ -99,11 +178,40 @@ struct WorkspacePanePresentation: Equatable {
     let sidebar: Bool
     let collection: Bool
     let inspector: Bool
+    /// Inspector is requested but cannot share the split with the editor minimum.
+    let inspectorOverlay: Bool
 
-    init(sidebar: Bool, collection: Bool = false, inspector: Bool) {
+    init(sidebar: Bool, collection: Bool = false, inspector: Bool, inspectorOverlay: Bool = false) {
         self.sidebar = sidebar
         self.collection = collection
         self.inspector = inspector
+        self.inspectorOverlay = inspectorOverlay
+    }
+
+    fileprivate var panes: PaneMask {
+        var mask = PaneMask()
+        if sidebar { mask.insert(.sidebar) }
+        if collection { mask.insert(.collection) }
+        if inspector { mask.insert(.inspector) }
+        if inspectorOverlay { mask.insert(.overlay) }
+        return mask
+    }
+
+    fileprivate struct PaneMask: OptionSet {
+        let rawValue: Int
+        static let sidebar = PaneMask(rawValue: 1)
+        static let collection = PaneMask(rawValue: 2)
+        static let inspector = PaneMask(rawValue: 4)
+        static let overlay = PaneMask(rawValue: 8)
+    }
+
+    /// Reserve the same reading width in the native split that pane selection budgets.
+    @MainActor func contentMinimum(in width: CGFloat, floor: CGFloat, preferred: CGFloat) -> CGFloat {
+        guard inspector else { return floor }
+        let paneCost = (sidebar ? WorkspacePaneState.sidebarMinimum + 1 : 0)
+            + (collection ? WorkspacePaneState.collectionMinimum + 1 : 0)
+            + InspectorState.minWidth + 1
+        return max(floor, min(preferred, width - paneCost))
     }
 
     @MainActor static func resolve(
@@ -112,8 +220,16 @@ struct WorkspacePanePresentation: Equatable {
         sidebarRequested: Bool,
         collectionRequested: Bool = false,
         inspectorRequested: Bool,
-        priority: WorkspacePane
+        priority: WorkspacePane,
+        contentPreferred: CGFloat? = nil
     ) -> Self {
+        if let adaptive = resolvePreferredInspection(
+            width: width, mainMinimum: mainMinimum, contentPreferred: contentPreferred,
+            sidebarRequested: sidebarRequested, collectionRequested: collectionRequested,
+            inspectorRequested: inspectorRequested, priority: priority
+        ) {
+            return adaptive
+        }
         if !collectionRequested {
             return resolveOuterPanes(
                 width: width, mainMinimum: mainMinimum,
@@ -124,6 +240,48 @@ struct WorkspacePanePresentation: Equatable {
             width: width, mainMinimum: mainMinimum,
             sidebarRequested: sidebarRequested, inspectorRequested: inspectorRequested, priority: priority
         )
+    }
+
+    /// Keeps a 600 pt editor while the inspector is open, when that width is feasible.
+    /// An explicit collection request still uses the hard-floor priority rules.
+    @MainActor private static func resolvePreferredInspection(
+        width: CGFloat,
+        mainMinimum: CGFloat,
+        contentPreferred: CGFloat?,
+        sidebarRequested: Bool,
+        collectionRequested: Bool,
+        inspectorRequested: Bool,
+        priority: WorkspacePane
+    ) -> Self? {
+        guard let contentPreferred, contentPreferred > mainMinimum, inspectorRequested else { return nil }
+        if fits(width: width, contentMinimum: contentPreferred, sidebar: sidebarRequested, collection: collectionRequested, inspector: true) {
+            return Self(sidebar: sidebarRequested, collection: collectionRequested, inspector: true)
+        }
+        if priority != .collection {
+            if sidebarRequested, fits(width: width, contentMinimum: contentPreferred, sidebar: true, collection: false, inspector: true) {
+                return Self(sidebar: true, collection: false, inspector: true)
+            }
+            if fits(width: width, contentMinimum: contentPreferred, sidebar: false, collection: false, inspector: true) {
+                return Self(sidebar: false, collection: false, inspector: true)
+            }
+        }
+        let legacy = resolve(
+            width: width, mainMinimum: mainMinimum,
+            sidebarRequested: sidebarRequested, collectionRequested: collectionRequested,
+            inspectorRequested: true, priority: priority, contentPreferred: nil
+        )
+        if legacy.inspector { return legacy }
+        if fits(width: width, contentMinimum: mainMinimum, sidebar: false, collection: false, inspector: true) {
+            // An explicit collection request can supersede inspection; ordinary
+            // narrowing keeps the inspector while the editor approaches its floor.
+            return priority == .collection ? legacy : Self(sidebar: false, collection: false, inspector: true)
+        }
+        let browsing = resolve(
+            width: width, mainMinimum: mainMinimum,
+            sidebarRequested: sidebarRequested, collectionRequested: collectionRequested,
+            inspectorRequested: false, priority: priority, contentPreferred: nil
+        )
+        return Self(sidebar: browsing.sidebar, collection: browsing.collection, inspector: false, inspectorOverlay: true)
     }
 
     /// Sidebar and inspector only. Collection is not part of this budget.

@@ -219,16 +219,23 @@ pane, and inspector. Selecting a page or source keeps the collection list mounte
 and shows the existing editor or source reader in the content pane. Sidebar
 highlight follows the active collection. A Recent row is highlighted only when the
 user chooses that row; opening a document does not move the highlight onto Recent
-merely because the document is listed there. `WorkspacePaneState` persists sidebar,
-collection-list, and inspector intent and widths separately from effective
-visibility. Narrow windows keep the content pane at its minimum and collapse the
-collection list before the inspector reduces that width. Widening restores requested
-panes without erasing intent. Search is independent of sidebar visibility. An
-explicit inspector request collapses the collection list when the window cannot fit
-both beside the content minimum. Session resets clear transient tabs/caches while retaining visibility/widths.
+merely because the document is listed there. The native window title is the open
+document; the collection-list header shows the collection name and does not repeat
+that title. `WorkspacePaneState` persists sidebar, collection-list, and inspector
+intent and widths separately from effective visibility. With the inspector requested,
+layout keeps a 600 pt editor when the window can spare it: the collection list
+collapses first, then the sidebar, before the editor is compressed toward its 420 pt
+minimum. A 20 pt hysteresis band stops those panes from oscillating. Below the
+minimum where the editor and inspector cannot share the split, the inspector is a
+temporary trailing overlay; Escape dismisses that overlay without clearing the
+visibility preference. Explicitly hidden panes stay hidden, and widening restores
+only panes the user still wants. An explicit collection request can keep the list
+at the 420 pt floor. Search is independent of sidebar visibility. Session resets
+clear transient tabs/caches while retaining visibility/widths.
 
-Content minimum is 420 pt. The collection list is 260/300/360 pt, the sidebar is
-190/220/320 pt, and the inspector is 280/340/420 pt. Native dividers own dragging.
+Content minimum is 420 pt and the preferred editor width is 600 pt. The collection
+list is 260/300/360 pt, the sidebar is 190/220/320 pt, and the inspector is
+280/340/420 pt. Native dividers own dragging.
 The split probe preserves controller holding priorities and the SwiftUI delegate,
 restores widths through `setPosition` only for pane arrangement/center-minimum changes,
 and records widths only from native resize notifications during mouse dragging.

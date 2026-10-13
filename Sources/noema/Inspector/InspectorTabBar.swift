@@ -87,6 +87,8 @@ struct InspectorPanelHeader<Actions: View>: View {
             Text(title)
                 .font(NoemaTypography.sectionHeader)
                 .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
+                .lineLimit(1)
+                .truncationMode(.tail)
             if let count {
                 Text(count.formatted())
                     .font(NoemaTypography.metadataEmphasis)
