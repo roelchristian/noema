@@ -12,8 +12,9 @@ struct ContentView: View {
     @Environment(\.noemaTheme) private var theme
     @State private var showAllSearchResults = false
     @State private var showFavourites = false
+    @State private var showRecentItems = false
+    @State private var inboxSelection: RecentItemID?
     @State private var showTrashConfirmation = false
-    @State private var hoveredSidebarPageID: UUID?
     @State private var trashPageID: UUID?
     @State private var permanentDeletion: TrashedItem?
     @State private var showPermanentDeletion = false
@@ -92,12 +93,16 @@ struct ContentView: View {
     }
     private func switchSidebarScope(_ scope: LibraryScope) {
         showFavourites = false
+        showRecentItems = false
+        inboxSelection = nil
         showAllSearchResults = false
         SourcesPerformance.event("SidebarScopeChange")
         model.changeScope(scope)
     }
     private func resetLocalWorkspaceState() {
         showFavourites = false
+        showRecentItems = false
+        inboxSelection = nil
         model.setLibrarySourceSelection(nil)
         sourceTablePresentation.clear()
         inspectorState.resetForSessionChange()
@@ -112,7 +117,6 @@ struct ContentView: View {
         emptyTrashPages = []
         showTrashConfirmation = false
         trashPageID = nil
-        hoveredSidebarPageID = nil
         dismissedExternalChange = false
         sourceOriginal = false
         showAllSearchResults = false
@@ -360,6 +364,7 @@ struct ContentView: View {
     }
     private var collectionTitle: String {
         if showFavourites { return "Favorites" }
+        if showRecentItems { return "Recent Items" }
         return switch model.scope {
         case .wiki, .tag: "Pages"
         case .sources: "Sources"
@@ -378,7 +383,9 @@ struct ContentView: View {
     @ViewBuilder private var collectionPane: some View {
         VStack(spacing: 0) {
             if showsCollectionHeader { collectionHeader }
-            if model.scope == .trash && !showFavourites {
+            if showFavourites || showRecentItems {
+                sharedInbox
+            } else if model.scope == .trash {
                 trashLibrary
             } else {
                 pageLibrary
@@ -526,30 +533,41 @@ struct ContentView: View {
     }
     private var isPagesScope: Bool {
         if showFavourites { return true }
+        if showRecentItems { return false }
         if case .wiki = model.scope { return true }
         if case .tag = model.scope { return true }
         return false
     }
     private var sidebarSelection: WorkspaceSidebarSelection? {
-        showFavourites ? nil : WorkspaceSidebarSelection.resolve(scope: model.scope, explicitRecentItem: model.selectedSidebarRecentItemID)
+        if showFavourites { return .favorites }
+        if showRecentItems { return .recentItems }
+        return WorkspaceSidebarSelection.resolve(scope: model.scope, explicitRecentItem: nil)
     }
     private var sidebarSelectionBinding: Binding<WorkspaceSidebarSelection?> {
         Binding(get: { sidebarSelection }, set: { selection in
             guard let selection else { return }
             showAllSearchResults = false
             showFavourites = false
+            showRecentItems = false
             switch selection {
             case .collection(let scope):
                 model.setLibrarySourceSelection(nil)
                 switchSidebarScope(scope)
+            case .favorites:
+                openInbox(favorites: true)
+            case .recentItems:
+                openInbox(favorites: false)
             case .recent(let id):
                 model.openSidebarRecentItem(id)
             }
         })
     }
-    private func openFavourites() {
+    private func openInbox(favorites: Bool) {
         showAllSearchResults = false
-        showFavourites = true
+        showFavourites = favorites
+        showRecentItems = !favorites
+        inboxSelection = nil
+        model.setLibrarySourceSelection(nil)
         revealCollectionList()
     }
     private var sidebar: some View {
@@ -561,45 +579,20 @@ struct ContentView: View {
                     sidebarNavigationRow("Knowledge", symbol: KnowledgeTypePresentation.knowledgeSymbol, scope: .semantic)
                 }
                 Section {
-                    ForEach(Array(model.favouriteRows.prefix(5))) { row in
-                        Button {
-                            openFavourites()
-                            model.select(row.id, scope: row.kind == .wiki ? .wiki : .sources, previewSource: row.kind != .wiki)
-                        } label: {
-                            Label(row.title, systemImage: row.kind == .wiki ? "doc.text" : "doc")
-                                .lineLimit(1)
-                        }
-                        .buttonStyle(.plain)
+                    Divider()
+                        .overlay(theme.color(for: .separator).opacity(0.5))
                         .listRowInsets(NoemaSidebarLayout.rowInsets)
-                    }
-                    if model.favouriteRows.isEmpty {
-                        Text("No favorites yet").font(NoemaTypography.metadata).foregroundStyle(.secondary)
-                    }
-                    Button("Show All") { openFavourites() }
+                        .listRowSeparator(.hidden)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                    NoemaSidebarRowLabel(title: "Favorites", symbol: "star", isSelected: showFavourites)
+                        .tag(WorkspaceSidebarSelection.favorites)
                         .listRowInsets(NoemaSidebarLayout.rowInsets)
-                } header: {
-                    Button { openFavourites() } label: {
-                        Label("FAVORITES", systemImage: "star.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .listRowInsets(NoemaSidebarLayout.sectionHeaderInsets)
-                }
-                Section {
-                    if model.sidebarRecentItems.isEmpty {
-                        Text("No recently opened items")
-                            .font(NoemaTypography.metadata)
-                            .foregroundStyle(.secondary)
-                            .frame(minHeight: NoemaMetrics.compactRowHeight)
-                            .listRowInsets(NoemaSidebarLayout.rowInsets)
-                    } else {
-                        ForEach(model.sidebarRecentItems) { item in
-                            sidebarRecentRow(item)
-                                .tag(WorkspaceSidebarSelection.recent(item.id))
-                        }
-                    }
-                } header: {
-                    NoemaSidebarSectionHeader(title: "RECENT ITEMS")
-                        .listRowInsets(NoemaSidebarLayout.sectionHeaderInsets)
+                        .listRowSeparator(.hidden)
+                    NoemaSidebarRowLabel(title: "Recent Items", symbol: "clock", isSelected: showRecentItems)
+                        .tag(WorkspaceSidebarSelection.recentItems)
+                        .listRowInsets(NoemaSidebarLayout.rowInsets)
+                        .listRowSeparator(.hidden)
                 }
             }
             .listStyle(.sidebar)
@@ -743,41 +736,97 @@ struct ContentView: View {
             .accessibilityLabel(title)
             .help(title)
     }
-    private func sidebarRecentRow(_ item: SidebarRecentItem) -> some View {
-        let note = item.pageID.flatMap { id in model.notes.first { $0.id == id } }
-        let active = sidebarSelection == .recent(item.id)
-        return HStack(spacing: 2) {
-            NoemaSidebarRowLabel(title: item.title, symbol: item.symbol, isSelected: active)
-            if let note {
-                SidebarEditingLockControl(locked: note.isEditingLocked,
-                                          selected: active,
-                                          visible: active || hoveredSidebarPageID == note.id,
-                                          pending: model.editingLockOperations.contains(note.id)) {
-                    model.toggleEditingLock(note.id)
-                }
-            }
+    private var inboxItems: [SidebarRecentItem] {
+        if showRecentItems { return model.sidebarRecentItems }
+        return sortedPageRows.map { row in
+            SidebarRecentItem(
+                id: row.kind == .wiki ? .page(row.id) : .source(row.id),
+                title: row.title, symbol: row.kind == .wiki ? "doc.text" : "doc",
+                accessibilityLabel: "\(row.kind == .wiki ? "Page" : "Source"), \(row.title)",
+                pageID: row.kind == .wiki ? row.id : nil
+            )
         }
-        .frame(minHeight: NoemaMetrics.compactRowHeight)
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            if hovering { hoveredSidebarPageID = item.pageID }
-            else if hoveredSidebarPageID == item.pageID { hoveredSidebarPageID = nil }
-        }
-        .listRowInsets(NoemaSidebarLayout.rowInsets)
-        .listRowSeparator(.hidden)
-        .help(item.accessibilityLabel)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(item.accessibilityLabel)
-        .contextMenu {
-            if let note {
-                AISummaryMenuCommands(model: model, target: .page(note.id))
-                Button(note.isEditingLocked ? "Unlock Editing" : "Lock Editing") {
-                    model.toggleEditingLock(note.id)
+    }
+    private var sharedInbox: some View {
+        let items = inboxItems
+        return VStack(spacing: 0) {
+            if items.isEmpty {
+                ContentUnavailableView(
+                    "\(collectionTitle) is empty",
+                    systemImage: showFavourites ? "star" : "clock",
+                    description: Text(showFavourites
+                        ? "Use the star in the document toolbar to add favorites."
+                        : "Pages, sources, and knowledge blocks you open appear here.")
+                )
+                .frame(maxHeight: .infinity)
+            } else {
+                List(selection: Binding(get: { inboxSelection }, set: { id in
+                    guard let id else { return }
+                    inboxSelection = id
+                    model.openSidebarRecentItem(id)
+                })) {
+                    ForEach(items) { item in
+                        let note = item.pageID.flatMap { id in model.notes.first { $0.id == id } }
+                        HStack(spacing: NoemaSpacing.sm) {
+                            Image(systemName: item.symbol)
+                                .foregroundStyle(.secondary)
+                                .frame(width: NoemaMetrics.sidebarIconSize)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.title)
+                                    .font(NoemaTypography.interfaceEmphasis)
+                                    .lineLimit(1)
+                                Text(inboxItemKind(item.id))
+                                    .font(NoemaTypography.metadata)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                            if note?.isEditingLocked == true {
+                                Image(systemName: "lock.fill")
+                                    .font(NoemaTypography.metadata)
+                                    .foregroundStyle(.secondary)
+                                    .accessibilityLabel("Page locked against editing")
+                            }
+                        }
+                        .padding(.horizontal, NoemaSpacing.sm)
+                        .padding(.vertical, 4)
+                        .tag(item.id)
+                        .accessibilityLabel(item.accessibilityLabel)
+                        .contextMenu {
+                            if let note {
+                                AISummaryMenuCommands(model: model, target: .page(note.id))
+                                Button(note.isEditingLocked ? "Unlock Editing" : "Lock Editing") {
+                                    model.toggleEditingLock(note.id)
+                                }
+                                .disabled(model.editingLockOperations.contains(note.id))
+                                Button("Delete…", role: .destructive) {
+                                    trashPageID = note.id
+                                    showTrashConfirmation = true
+                                }
+                                .disabled(!Self.canTrashPage(note, model: model))
+                            }
+                        }
+                    }
                 }
-                .disabled(model.editingLockOperations.contains(note.id))
-                Button("Delete…", role: .destructive) { trashPageID = note.id; showTrashConfirmation = true }
-                    .disabled(!Self.canTrashPage(note, model: model))
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .focused($collectionListFocused)
             }
+            HStack {
+                Text("\(items.count) \(items.count == 1 ? "item" : "items")")
+                Spacer()
+                Text("⌘P")
+            }
+            .font(NoemaTypography.metadata)
+            .foregroundStyle(.secondary)
+            .padding(NoemaSpacing.md)
+        }
+        .background(theme.color(for: .canvas))
+    }
+    private func inboxItemKind(_ id: RecentItemID) -> String {
+        switch id {
+        case .page: "Page"
+        case .source: "Source"
+        case .semanticBlock: "Knowledge block"
         }
     }
     static func canTrashPage(_ note: NoteRecord, model: AppModel) -> Bool {

@@ -221,9 +221,11 @@ stays the collection name only while no document is open.
 `HSplitView` arranges the navigation sidebar, persistent collection list, content
 pane, and inspector. Selecting a page or source keeps the collection list mounted
 and shows the existing editor or source reader in the content pane. Sidebar
-highlight follows the active collection. A Recent row is highlighted only when the
-user chooses that row; opening a document does not move the highlight onto Recent
-merely because the document is listed there. The native window title is the open
+highlight follows the active collection. Favorites and Recent Items are top-level
+entries in a separate sidebar group, divided from Pages, Sources, and Knowledge.
+Both open the same inbox list in the collection pane; individual items do not appear
+in the sidebar. Selecting an inbox item retains that collection's highlight and
+opens its page, source, or knowledge block in the content pane. The native window title is the open
 document; the collection-list header shows the collection name and does not repeat
 that title. `WorkspacePaneState` persists sidebar, collection-list, and inspector
 intent and widths separately from effective visibility. With the inspector requested,

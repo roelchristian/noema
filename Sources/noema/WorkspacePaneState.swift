@@ -526,6 +526,8 @@ struct WorkspaceSplitViewPersistence: NSViewRepresentable {
 /// Sidebar highlight follows the collection. A recent row is selected only when the user chose it.
 enum WorkspaceSidebarSelection: Hashable {
     case collection(LibraryScope)
+    case favorites
+    case recentItems
     case recent(RecentItemID)
 
     static func resolve(scope: LibraryScope, explicitRecentItem: RecentItemID?) -> WorkspaceSidebarSelection? {
