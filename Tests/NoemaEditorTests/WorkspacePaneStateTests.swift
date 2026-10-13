@@ -219,4 +219,162 @@ struct WorkspacePaneStateTests {
         #expect(WorkspaceSidebarSelection.resolve(scope: .sources, explicitRecentItem: page) == .recent(page))
     }
 
+    @Test(arguments: [CGFloat(900), CGFloat(1100), CGFloat(1300), CGFloat(1500), CGFloat(1800)])
+    func preferredEditorWidthCollapsesLowerPriorityPanesBeforeTheFloor(width: CGFloat) {
+        let browsing = WorkspacePanePresentation.resolve(
+            width: width, mainMinimum: WorkspacePaneState.contentMinimum,
+            sidebarRequested: true, collectionRequested: true, inspectorRequested: false,
+            priority: .sidebar, contentPreferred: WorkspacePaneState.contentPreferred
+        )
+        #expect(browsing == WorkspacePanePresentation(sidebar: true, collection: true, inspector: false))
+        #expect(!browsing.inspectorOverlay)
+
+        let inspection = WorkspacePanePresentation.resolve(
+            width: width, mainMinimum: WorkspacePaneState.contentMinimum,
+            sidebarRequested: true, collectionRequested: true, inspectorRequested: true,
+            priority: .sidebar, contentPreferred: WorkspacePaneState.contentPreferred
+        )
+        let fourPaneMinimum = WorkspacePaneState.contentPreferred
+            + WorkspacePaneState.sidebarMinimum + WorkspacePaneState.collectionMinimum
+            + InspectorState.minWidth + 3
+        let sidebarAndInspector = WorkspacePaneState.contentPreferred
+            + WorkspacePaneState.sidebarMinimum + InspectorState.minWidth + 2
+        if width >= fourPaneMinimum {
+            #expect(inspection == WorkspacePanePresentation(sidebar: true, collection: true, inspector: true))
+        } else if width >= sidebarAndInspector {
+            #expect(inspection == WorkspacePanePresentation(sidebar: true, collection: false, inspector: true))
+        } else {
+            #expect(inspection == WorkspacePanePresentation(sidebar: false, collection: false, inspector: true))
+        }
+        #expect(!inspection.inspectorOverlay)
+        #expect(inspection.inspector)
+    }
+
+    @Test func explicitHideSurvivesWidthThatCouldRestoreThePane() {
+        withDefaults { defaults in
+            let state = WorkspacePaneState(defaults: defaults)
+            state.toggleCollection(presented: true)
+            state.toggleSidebar(presented: true)
+            let wide = state.presentation(
+                width: 1800, mainMinimum: WorkspacePaneState.contentMinimum,
+                inspectorAvailable: true, contentPreferred: WorkspacePaneState.contentPreferred
+            )
+            #expect(wide == WorkspacePanePresentation(sidebar: false, collection: false, inspector: true))
+            #expect(!state.isSidebarVisible && !state.isCollectionVisible && state.isInspectorVisible)
+        }
+    }
+
+    @Test func automaticSuppressionRestoresAfterTheHysteresisBand() {
+        withDefaults { defaults in
+            let state = WorkspacePaneState(defaults: defaults)
+            let wide = state.presentation(
+                width: 1800, mainMinimum: WorkspacePaneState.contentMinimum,
+                inspectorAvailable: true, contentPreferred: WorkspacePaneState.contentPreferred
+            )
+            #expect(wide.collection && wide.inspector)
+            let collapsed = state.presentation(
+                width: 1200, mainMinimum: WorkspacePaneState.contentMinimum,
+                inspectorAvailable: true, contentPreferred: WorkspacePaneState.contentPreferred
+            )
+            #expect(collapsed == WorkspacePanePresentation(sidebar: true, collection: false, inspector: true))
+            #expect(state.isCollectionVisible)
+            let jitter = state.presentation(
+                width: 1216, mainMinimum: WorkspacePaneState.contentMinimum,
+                inspectorAvailable: true, contentPreferred: WorkspacePaneState.contentPreferred
+            )
+            #expect(jitter.collection == false)
+            let restored = state.presentation(
+                width: 1800, mainMinimum: WorkspacePaneState.contentMinimum,
+                inspectorAvailable: true, contentPreferred: WorkspacePaneState.contentPreferred
+            )
+            #expect(restored.collection && restored.sidebar && restored.inspector)
+        }
+    }
+
+    @Test func resizingAroundThePreferredThresholdDoesNotOscillate() {
+        withDefaults { defaults in
+            let state = WorkspacePaneState(defaults: defaults)
+            let threshold = WorkspacePaneState.contentPreferred
+                + WorkspacePaneState.sidebarMinimum + WorkspacePaneState.collectionMinimum
+                + InspectorState.minWidth + 3
+            var previous = state.presentation(
+                width: threshold - 8, mainMinimum: WorkspacePaneState.contentMinimum,
+                inspectorAvailable: true, contentPreferred: WorkspacePaneState.contentPreferred
+            )
+            #expect(!previous.collection)
+            for width in [threshold - 4, threshold + 4, threshold - 2, threshold + 8, threshold + 2] {
+                let next = state.presentation(
+                    width: width, mainMinimum: WorkspacePaneState.contentMinimum,
+                    inspectorAvailable: true, contentPreferred: WorkspacePaneState.contentPreferred
+                )
+                if previous.collection != next.collection {
+                    #expect(next.collection)
+                    #expect(width >= threshold + WorkspacePaneState.layoutHysteresis)
+                }
+                previous = next
+            }
+            #expect(!previous.collection)
+        }
+    }
+
+    @Test func narrowWindowUsesInspectorOverlayWithoutForgettingIntent() {
+        withDefaults { defaults in
+            let state = WorkspacePaneState(defaults: defaults)
+            let width = WorkspacePaneState.contentMinimum + InspectorState.minWidth
+            let overlay = state.presentation(
+                width: width, mainMinimum: WorkspacePaneState.contentMinimum,
+                inspectorAvailable: true, contentPreferred: WorkspacePaneState.contentPreferred
+            )
+            #expect(overlay.inspectorOverlay && !overlay.inspector)
+            #expect(state.isInspectorVisible)
+            state.dismissInspectorOverlay()
+            let dismissed = state.presentation(
+                width: width, mainMinimum: WorkspacePaneState.contentMinimum,
+                inspectorAvailable: true, contentPreferred: WorkspacePaneState.contentPreferred
+            )
+            #expect(!dismissed.inspectorOverlay && !dismissed.inspector && state.isInspectorVisible)
+            let inline = state.presentation(
+                width: 1800, mainMinimum: WorkspacePaneState.contentMinimum,
+                inspectorAvailable: true, contentPreferred: WorkspacePaneState.contentPreferred
+            )
+            #expect(inline.inspector && !inline.inspectorOverlay)
+            state.clearInspectorOverlayDismissal()
+            let narrowed = state.presentation(
+                width: width, mainMinimum: WorkspacePaneState.contentMinimum,
+                inspectorAvailable: true, contentPreferred: WorkspacePaneState.contentPreferred
+            )
+            #expect(narrowed.inspectorOverlay)
+        }
+    }
+
+    @Test func focusModeKeepsOnlyTheEditorAndInspectorContextSurvivesLayout() {
+        withDefaults { defaults in
+            let state = WorkspacePaneState(defaults: defaults)
+            state.toggleSidebar(presented: true)
+            state.toggleCollection(presented: true)
+            state.toggleInspector(presented: true)
+            let focused = state.presentation(
+                width: 1800, mainMinimum: WorkspacePaneState.contentMinimum,
+                inspectorAvailable: true, contentPreferred: WorkspacePaneState.contentPreferred
+            )
+            #expect(focused == WorkspacePanePresentation(sidebar: false, collection: false, inspector: false))
+            let inspector = InspectorState(paneState: state)
+            inspector.selectTab(.links, for: .page)
+            _ = state.presentation(
+                width: 900, mainMinimum: WorkspacePaneState.contentMinimum,
+                inspectorAvailable: true, contentPreferred: WorkspacePaneState.contentPreferred
+            )
+            #expect(inspector.activeTab(for: .page) == .links)
+            #expect(!state.isInspectorVisible)
+        }
+    }
+
+    @Test func derivedSuggestionsStayNonAuthoritative() {
+        #expect(InspectionFacets.insights(hasStoredSummary: true, selectionActive: false) == [.document, .canonicalKnowledge])
+        #expect(InspectionFacets.insights(hasStoredSummary: false, selectionActive: true) == [.selection])
+        #expect(!InspectionAuthority.derivedSuggestion.isAuthoritative)
+        #expect(InspectionAuthority.document.isAuthoritative)
+        #expect(InspectionAuthority.canonicalKnowledge.isAuthoritative)
+    }
+
 }

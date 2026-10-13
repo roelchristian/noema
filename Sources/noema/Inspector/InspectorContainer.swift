@@ -7,6 +7,7 @@ struct InspectorContainer: View {
     @Bindable var model: AppModel
     @Bindable var state: InspectorState
     let context: InspectorContext
+    var flexibleWidth = false
     var onCloseSourceSelection: () -> Void = {}
 
     @Environment(\.noemaTheme) private var theme
@@ -23,8 +24,8 @@ struct InspectorContainer: View {
                         onSelect: { state.selectTab($0, for: context) }
                     )
                     .padding(.horizontal, NoemaMetrics.inspectorInset)
-                    .padding(.top, NoemaSpacing.md)
-                    .padding(.bottom, NoemaSpacing.md)
+                    .padding(.top, NoemaSpacing.sm)
+                    .padding(.bottom, NoemaSpacing.sm)
                     Divider().overlay(theme.color(for: .separator))
                     activePanelView(for: activeTab)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -38,9 +39,9 @@ struct InspectorContainer: View {
             }
         }
         .frame(
-            minWidth: InspectorState.minWidth,
-            idealWidth: InspectorState.idealWidth,
-            maxWidth: InspectorState.maxWidth,
+            minWidth: flexibleWidth ? nil : InspectorState.minWidth,
+            idealWidth: flexibleWidth ? nil : InspectorState.idealWidth,
+            maxWidth: flexibleWidth ? nil : InspectorState.maxWidth,
             maxHeight: .infinity
         )
         .onChange(of: context.targetID) {
@@ -135,6 +136,8 @@ struct InspectorProperty: View {
             Text(value.isEmpty ? "None" : value)
                 .font(NoemaTypography.interface)
                 .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
+                .lineLimit(4)
+                .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -181,6 +184,8 @@ struct InspectorSection<Content: View, Actions: View>: View {
                         Text(title)
                             .font(NoemaTypography.sectionHeader)
                             .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                         if let count {
                             Text(count.formatted())
                                 .font(NoemaTypography.metadata)
@@ -240,6 +245,8 @@ struct SourceAssociationRow: View {
             HStack {
                 Text(title).font(NoemaTypography.interfaceEmphasis)
                     .foregroundStyle(theme.text(for: .textPrimary, on: .inspector))
+                    .lineLimit(2)
+                    .truncationMode(.tail)
                 Spacer()
                 Button(action: open) {
                     Label(openLabel, systemImage: "arrow.up.forward.square").labelStyle(.iconOnly)

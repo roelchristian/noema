@@ -52,9 +52,15 @@ struct ContentView: View {
     }
     private var contentMinimum: CGFloat { WorkspacePaneState.contentMinimum }
     private var panePresentation: WorkspacePanePresentation {
-        paneState.presentation(width: workspaceWidth, mainMinimum: contentMinimum, inspectorAvailable: inspectorContext.isInspectable)
+        paneState.presentation(
+            width: workspaceWidth, mainMinimum: contentMinimum,
+            inspectorAvailable: inspectorContext.isInspectable,
+            contentPreferred: WorkspacePaneState.contentPreferred
+        )
     }
-    private var isInspectorPresented: Bool { model.isVaultAvailable && panePresentation.inspector }
+    private var isInspectorPresented: Bool {
+        model.isVaultAvailable && (panePresentation.inspector || panePresentation.inspectorOverlay)
+    }
     private var paneActions: WorkspacePaneActions {
         WorkspacePaneActions(
             toggleSidebar: toggleSidebarPane,
@@ -65,7 +71,7 @@ struct ContentView: View {
             inspectorPresented: isInspectorPresented,
             canToggleSidebar: model.canInteractWithWorkspace && model.isVaultAvailable && workspaceWidth >= contentMinimum + WorkspacePaneState.sidebarMinimum + 1,
             canToggleCollection: model.canInteractWithWorkspace && model.isVaultAvailable && workspaceWidth >= contentMinimum + WorkspacePaneState.collectionMinimum + 1,
-            canToggleInspector: model.canInteractWithWorkspace && model.isVaultAvailable && inspectorContext.isInspectable && workspaceWidth >= contentMinimum + InspectorState.minWidth + 1
+            canToggleInspector: model.canInteractWithWorkspace && model.isVaultAvailable && inspectorContext.isInspectable
         )
     }
     private func toggleSidebarPane() {
@@ -123,7 +129,11 @@ struct ContentView: View {
                 welcome
             } else {
                 GeometryReader { geometry in
-                    let presentation = paneState.presentation(width: geometry.size.width, mainMinimum: contentMinimum, inspectorAvailable: inspectorContext.isInspectable)
+                    let presentation = paneState.presentation(
+                        width: geometry.size.width, mainMinimum: contentMinimum,
+                        inspectorAvailable: inspectorContext.isInspectable,
+                        contentPreferred: WorkspacePaneState.contentPreferred
+                    )
                     HSplitView {
                         if presentation.sidebar {
                             sidebar.frame(minWidth: WorkspacePaneState.sidebarMinimum, idealWidth: paneState.sidebarWidth, maxWidth: WorkspacePaneState.sidebarMaximum, maxHeight: .infinity)
@@ -132,18 +142,10 @@ struct ContentView: View {
                             collectionPane
                                 .frame(minWidth: WorkspacePaneState.collectionMinimum, idealWidth: paneState.collectionWidth, maxWidth: WorkspacePaneState.collectionMaximum, maxHeight: .infinity)
                         }
-                        contentPane
-                            .frame(minWidth: contentMinimum, maxHeight: .infinity)
-                            .transaction { $0.animation = nil }
-                            .background(WorkspaceSplitViewPersistence(state: paneState, presentation: presentation, mainMinimum: contentMinimum))
+                        contentColumn(presentation: presentation, availableWidth: geometry.size.width)
                         if presentation.inspector {
-                            InspectorContainer(
-                                model: model,
-                                state: inspectorState,
-                                context: inspectorContext,
-                                onCloseSourceSelection: { model.setLibrarySourceSelection(nil) }
-                            )
-                            .transaction { $0.animation = nil }
+                            inspectorColumn(flexibleWidth: false)
+                                .transaction { $0.animation = nil }
                         }
                     }
                     .frame(width: geometry.size.width, height: geometry.size.height)
@@ -302,6 +304,41 @@ struct ContentView: View {
                 resetLocalWorkspaceState()
             }
         }
+        .onChange(of: panePresentation.inspector) { _, inline in
+            if inline { paneState.clearInspectorOverlayDismissal() }
+        }
+    }
+    private func contentColumn(presentation: WorkspacePanePresentation, availableWidth: CGFloat) -> some View {
+        contentPane
+            .frame(minWidth: contentMinimum, maxHeight: .infinity)
+            .transaction { $0.animation = nil }
+            .background(WorkspaceSplitViewPersistence(state: paneState, presentation: presentation, mainMinimum: contentMinimum))
+            .overlay(alignment: .trailing) {
+                if presentation.inspectorOverlay {
+                    inspectorColumn(flexibleWidth: true)
+                        .frame(width: inspectorOverlayWidth(in: availableWidth))
+                        .background(theme.color(for: .inspector))
+                        .overlay(alignment: .leading) { Divider().overlay(theme.color(for: .separator)) }
+                        .accessibilityHint("Temporary overlay. Press Escape to dismiss.")
+                        .onExitCommand { paneState.dismissInspectorOverlay() }
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(model.currentNote != nil || model.currentSource != nil ? "Editor" : "Content")
+    }
+    private func inspectorOverlayWidth(in availableWidth: CGFloat) -> CGFloat {
+        let preferred = min(paneState.inspectorWidth, InspectorState.maxWidth)
+        let ceiling = max(160, availableWidth - 48)
+        return min(preferred, ceiling)
+    }
+    private func inspectorColumn(flexibleWidth: Bool) -> some View {
+        InspectorContainer(
+            model: model,
+            state: inspectorState,
+            context: inspectorContext,
+            flexibleWidth: flexibleWidth,
+            onCloseSourceSelection: { model.setLibrarySourceSelection(nil) }
+        )
     }
     private func completeLibraryFocus() {
         guard pendingLibraryFocus else { return }
@@ -344,15 +381,19 @@ struct ContentView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(collectionTitle)
     }
+    private var collectionChromeTitle: String? {
+        WorkspaceTitleOwnership.collectionChromeTitle(window: model.windowTitle, collectionName: collectionTitle)
+    }
     private var showsCollectionHeader: Bool {
-        !model.windowTitle.isCollectionScope || isPagesScope
+        collectionChromeTitle != nil || isPagesScope
     }
     private var collectionHeader: some View {
         HStack(spacing: NoemaSpacing.sm) {
-            if !model.windowTitle.isCollectionScope {
-                Text(collectionTitle)
+            if let collectionChromeTitle {
+                Text(collectionChromeTitle)
                     .font(NoemaTypography.sectionHeader)
                     .lineLimit(1)
+                    .truncationMode(.tail)
                     .accessibilityAddTraits(.isHeader)
             }
             Spacer(minLength: 0)
@@ -567,7 +608,6 @@ struct ContentView: View {
                     NoemaSidebarVaultSelectorLabel(vaultName: model.vaultName)
                 }
                 .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
                 .buttonStyle(.plain)
                 .help("Vault options")
                 .accessibilityLabel("Vault menu. Current vault: \(model.vaultName)")

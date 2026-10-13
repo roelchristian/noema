@@ -102,3 +102,32 @@ enum InspectorContext: Equatable, Sendable {
         return .none
     }
 }
+
+/// What an inspector facet represents. Showing a suggestion does not admit it
+/// into canonical knowledge; only an existing explicit save can do that.
+enum InspectionAuthority: String, Equatable, Sendable {
+    case document
+    case selection
+    case canonicalKnowledge
+    case derivedSuggestion
+
+    var note: String {
+        switch self {
+        case .document: "Saved with this document"
+        case .selection: "Selected text or block"
+        case .canonicalKnowledge: "Canonical knowledge"
+        case .derivedSuggestion: "Suggestion. Not part of canonical knowledge."
+        }
+    }
+
+    var isAuthoritative: Bool { self != .derivedSuggestion }
+}
+
+enum InspectionFacets {
+    static func insights(hasStoredSummary: Bool, selectionActive: Bool) -> [InspectionAuthority] {
+        var facets: [InspectionAuthority] = []
+        if hasStoredSummary { facets.append(.document) }
+        facets.append(selectionActive ? .selection : .canonicalKnowledge)
+        return facets
+    }
+}
