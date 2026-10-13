@@ -65,7 +65,7 @@ The schema below describes persisted columns, not a new SQL API for consumers.
 | `blocks.created_at`, `blocks.modified_at` | Non-null `REAL`, Foundation reference-date seconds, distinct from Unix `trashed_at` |
 | `blocks.extensions` | Non-null JSON `BLOB` for original Markdown/signature/indentation/depth; this is a fixed Codable payload, not arbitrary unknown JSON preservation |
 
-Direct schema-5 initialization preserves these page/block definitions with nullable
+Direct schema-6 initialization preserves these page/block definitions with nullable
 trashed_at present from the beginning. Missing/unversioned/future/older production
 databases reject before WAL or schema mutation. Read reconstruction validates
 contiguous sibling order, reachable acyclic parentage, unique block UUIDs and valid
@@ -121,7 +121,7 @@ the older result. Automatic source processing publishes title, summary and any
 previously unset LCC together, with on-device provenance, while retaining existing
 classification. Provider preference changes never regenerate stored artifacts.
 
-Manifest requires explicit schemaVersion=5, blocks.sqlite, localOnly=true and the
+Manifest requires explicit schemaVersion=6, blocks.sqlite, localOnly=true and the
 complete capability set. Missing, contradictory, malformed or unknown required
 features and UUID disagreement reject before writable access. Preservation
 inspection never authorizes saving or reimporting Markdown over canonical records.
@@ -190,7 +190,7 @@ with an independent architectural approval required before implementation.
 | --- | --- |
 | KNOW02 identity/registry | Create independent Person/Place/Concept records; equal labels and aliases remain disambiguated UUIDs; rename retains links; register a future type without reshaping identity storage; unknown required versions/features reject writes. |
 | KNOW02 atomicity/lifecycle | Reopen exact supported properties/unknown optional JSON; stale entity and vault-collection revisions, lease loss and injected precommit failure publish nothing; tombstoning preserves occurrences and relation endpoints; restore retains UUID. |
-| KNOW02 admission | Only schema 5 production authority is admitted; mismatch/unsupported capabilities and historical schemas reject before writable access without changing existing bytes. |
+| KNOW02 admission | Only schema 6 production authority is admitted; mismatch/unsupported capabilities and historical schemas reject before writable access without changing existing bytes. |
 | KNOW03 authority transfer | Migrate existing extension annotations once, preserving UUIDs, opaque fields and stale/deleted state; unresolvable legacy targets remain explicit preservation data; no entity/object is invented from semantic labels, titles or matching text; no second annotation authority. |
 | KNOW03 overlapping/reference states | Independent whole-block, identical, crossing and nested inline annotations coexist; deleting a Question annotation never deletes Person/Place records; anchor resolution and target tombstone/unresolved state are independently queryable. |
 | KNOW03 editing/publication | Verify UTF-16/grapheme boundaries for surrogate pairs, combining marks and joined emoji; exercise edge affinity, split/merge, move/style, replacement, delete, undo/redo and duplication; failed compound edits leave content/anchors at one revision. |
@@ -198,13 +198,13 @@ with an independent architectural approval required before implementation.
 
 ### Implemented semantic ownership and review handoff (KNOW03)
 
-Fresh schema-5 staging and admission require manifest/database agreement on
-`canonicalKnowledgeV1`, `canonicalMetadataV1` and `semanticAnnotationsV1`.
+Fresh production staging and admission require schema-6 manifest/database agreement on
+`canonicalKnowledgeV1`, `canonicalMetadataV1`, `semanticAnnotationsV1` and `organisationV1`.
 `VaultStorageProvider` selects the admitted root and lease; `SQLiteBlockStore`
 continues to own the sole canonical connection, statements and transactions.
 Unknown schema/capability declarations reject before connection construction;
 unsupported required registry descriptors, including nested metadata payloads,
-reject before writable schema preparation. All production creation initializes schema 5 directly; historical schemas reject
+reject before writable schema preparation. All production creation initializes schema 6 directly; historical schemas reject
 without conversion.
 
 | Semantic record | Authoritative owner and preservation |
@@ -353,7 +353,10 @@ and publish create-only; never overwrite an existing vault, silently merge ident
 reimport Markdown over DB pages or discard unsupported payloads. NativeVaultArchive implements a version-1 directory package with a SQLite backup,
 manifest, controlled originals and in-vault preservation files. Unsaved app-local
 RecoveryStore drafts and linked external originals are explicitly excluded. Unsupported
-schemas are rejected without conversion. Capture and restore retain the operation
+schemas are rejected without conversion. Restore verifies the indexed manifest's
+checksum and supported schema-6 authority before creating or writing staging;
+declared archive database construction also rejects unsupported declarations.
+Capture and restore retain the operation
 lease at every byte and staging SQL boundary, including after suspension; lock
 revocation stops further protected writes. Every included file is checksummed,
 canonical logical payloads and source references are verified, and failed nonempty

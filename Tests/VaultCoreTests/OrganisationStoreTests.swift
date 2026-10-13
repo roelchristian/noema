@@ -118,10 +118,11 @@ private func organisationSQLValue(_ url: URL, _ sql: String) throws -> Int32 {
     let root = try organisationRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let url = root.appendingPathComponent("blocks.sqlite")
-    let store = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: UUID())
+    let vaultID = UUID()
+    let store = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: vaultID)
     await #expect(throws: VaultError.self) { try await store.organisationSnapshot(includingHidden: false) }
     try await store.close()
-    let reopened = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: UUID(), createIfMissing: false)
+    let reopened = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: vaultID, createIfMissing: false)
     try await reopened.close()
     #expect(try organisationSQLValue(url, "PRAGMA user_version") == Int32(SQLiteBlockStore.semanticSchemaVersion))
     #expect(try organisationSQLValue(url, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name LIKE 'organisation_%'") == 0)

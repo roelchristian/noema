@@ -56,6 +56,10 @@ public struct VaultStorageProvider: Sendable {
 
     /// Opens the vault database at the schema declared by its own manifest. Does not create or convert authority.
     func makeDeclaredStagingStore(url: URL, vaultID: UUID, declaration: VaultCanonicalStorageDeclaration, createIfMissing: Bool = false, validating operation: (@Sendable () throws -> Void)? = nil) throws -> SQLiteBlockStore {
+        try operation?()
+        guard declaration.isSupported, !createIfMissing else {
+            throw VaultError.invalid("Archive validation requires an existing schema-6 database.")
+        }
         try SQLiteVaultLocality.requireLocalRoot(url.deletingLastPathComponent())
         return try SQLiteBlockStore(canonicalStagingURL: url, vaultID: vaultID, requiredCapabilities: declaration.requiredCapabilities, schemaVersion: declaration.schemaVersion, createIfMissing: createIfMissing, validating: operation)
     }

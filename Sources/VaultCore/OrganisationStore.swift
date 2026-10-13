@@ -1,7 +1,7 @@
 import Foundation
 import SQLite3
 
-extension SQLiteBlockStore: OrganisationStore {
+extension SQLiteBlockStore {
     public func organisationSnapshot(includingHidden: Bool) throws -> OrganisationSnapshot {
         try requireVaultOrganisation()
         return try readTransaction {

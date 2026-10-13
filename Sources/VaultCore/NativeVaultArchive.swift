@@ -41,6 +41,17 @@ public enum NativeVaultArchive {
               index.files[VaultManifest.sqliteDatabasePath] != nil else {
             throw VaultError.invalid("Unsupported or incomplete native archive.")
         }
+        // Reject unsupported authority before creating or writing restore staging.
+        let manifestBytes = try input.read(at: "vault.json")
+        try validate()
+        guard let manifestEntry = index.files["vault.json"],
+              manifestBytes.count == manifestEntry.size, digest(manifestBytes) == manifestEntry.sha256 else {
+            throw VaultError.invalid("Archive checksum mismatch: vault.json")
+        }
+        let archivedManifest = try JSONDecoder().decode(VaultManifest.self, from: manifestBytes)
+        guard archivedManifest.id == index.vaultID, archivedManifest.isSupported else {
+            throw VaultError.invalid("Unsupported archive vault authority.")
+        }
         let parentStore = try storageProvider.makeStore(root: parent)
         let stagingName = ".noema-restore-" + UUID().uuidString
         try validate(); try parentStore.createDirectory(at: stagingName); try validate()
@@ -62,7 +73,7 @@ public enum NativeVaultArchive {
         try validate()
         let manifest = try JSONDecoder().decode(VaultManifest.self, from: output.read(at: "vault.json"))
         try validate()
-        guard manifest.id == index.vaultID, let declaration = manifest.storage else { throw VaultError.invalid("Archive vault identity mismatch.") }
+        guard manifest.id == index.vaultID, manifest.isSupported, let declaration = manifest.storage else { throw VaultError.invalid("Archive vault identity mismatch.") }
         let db = try storageProvider.makeDeclaredStagingStore(url: staging.appendingPathComponent(VaultManifest.sqliteDatabasePath), vaultID: index.vaultID, declaration: declaration, createIfMissing: false, validating: validate)
         do {
             try await Self.validate(db: db, store: output, validating: validate)
@@ -153,7 +164,7 @@ extension FileVaultRepository {
         try validate()
         let copiedManifest = try JSONDecoder().decode(VaultManifest.self, from: output.read(at: "vault.json"))
         try validate()
-        guard copiedManifest.id == manifest.id, let declaration = copiedManifest.storage else { throw VaultError.invalid("Archived manifest identity changed.") }
+        guard copiedManifest.id == manifest.id, copiedManifest.isSupported, let declaration = copiedManifest.storage else { throw VaultError.invalid("Archived manifest identity changed.") }
         let db = try storageProvider.makeDeclaredStagingStore(url: destination.appendingPathComponent(VaultManifest.sqliteDatabasePath), vaultID: manifest.id, declaration: declaration, createIfMissing: false, validating: validate)
         let externalIDs: [UUID]
         do {
