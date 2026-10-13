@@ -360,6 +360,14 @@ commitment keys before structural commands. Clicking outside does not end editin
 
 Keyboard behavior: Return splits; empty list Return exits; structural Backspace converts to paragraph before merging; Tab/Shift Tab indent/outdent; Shift Return inserts a code newline; Command A selects the current block in editable pages and the entire document in read-only text; Command Option A and **Select Entire Document** explicitly select the document. Command Option Up/Down moves a subtree among siblings. Command Shift Return toggles a task. Slash commands and context actions use the same mutations. Content-relative drag handles share the native block layout geometry. Handle interactions preserve the text caret, native drag sessions target sibling reordering, and viewport-edge scrolling and cancellation clear transient drop state. Pointer completion and layout transitions still require device acceptance; see the standing validation gaps. Indent/outdent explicitly changes parentage.
 
+Contextual gutter controls reuse native block geometry without changing paragraph layout.
+Plus creates a new sibling after the targeted subtree through `BlockMutation` and
+restores the native caret to its beginning; cancellation is a content no-op. The
+selection toolbar routes formatting and Annotate to the existing coordinator and
+annotation chooser. Delayed actions capture page/session identity, reload generation,
+local revision and native selection; retired, stale, locked and unready interactions
+cannot mutate. Persistence acknowledgements alone do not retire these contexts.
+
 Block selection is a separate set of stable UUIDs. A handle selects a block, Shift extends across adjacent visible blocks, and Command toggles membership without replacing native character selection. Selecting a parent includes its complete subtree; selected descendants of a selected ancestor are deduplicated. Batch copy, move, duplicate, delete and transformations retain document order and use one document transaction for undo. Moves retain identities and parentage; duplication generates fresh UUIDs throughout each copied subtree. Structural kind, semantic designation and status remain separate mutations. Unknown semantic designations and extension metadata survive structural transformations.
 
 See `../validation.md` for reproducible checks and remaining native acceptance work.

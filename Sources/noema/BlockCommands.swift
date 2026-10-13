@@ -10,7 +10,12 @@ struct BlockCommand: Identifiable, Equatable {
     var prefix: String?
     var semantic: String?
     var aliases: [String]
-    var category: String { semantic == nil ? "Basic blocks" : "Semantic blocks" }
+    var category: String {
+        if semantic != nil { return "Semantic blocks" }
+        return ["bullet", "number", "todo", "toggle", "divider"].contains(id) ? "Lists and structure" : "Basic blocks"
+    }
+    /// Insertion and slash commands share the authoritative catalogue.
+    static var insertable: [Self] { all.filter { $0.id != "clear-tag" } }
 
     static let all: [Self] = [
         .init(id: "text", title: "Text", symbol: "text.alignleft", detail: "Normal paragraph", prefix: "", aliases: ["paragraph", "plain"]),
@@ -56,7 +61,9 @@ struct BlockCommand: Identifiable, Equatable {
 
     static func matching(_ query: String) -> [Self] {
         let query = query.lowercased()
-        guard !query.isEmpty else { return all }
+        guard !query.isEmpty else {
+            return ["Basic blocks", "Lists and structure", "Semantic blocks"].flatMap { category in all.filter { $0.category == category } }
+        }
         func score(_ command: Self) -> Int? {
             let words = [command.id, command.title.lowercased()] + command.aliases
             if words.contains(query) { return 0 }

@@ -118,3 +118,41 @@ import VaultCore
     let status = try #require(menu.items.first { $0.title == "Status" }?.submenu)
     #expect(status.items.contains { $0.title == "future-state" && $0.state == .on })
 }
+
+@Test @MainActor func contextualInsertionPreservesSubtreeTargetsCaretAndRejectsRetiredContext() throws {
+    let child = EditorBlock(runs: [RichRun("Child")])
+    let root = EditorBlock(runs: [RichRun("Root")], children: [child])
+    let tail = EditorBlock(runs: [RichRun("Tail")])
+    let (coordinator, view, window) = blockInteractionEditor(BlockDocument(blocks: [root, tail]))
+    defer { coordinator.invalidatePublication(); window.close() }
+    view.setSelectedRange(NSRange(location: 2, length: 0))
+    let before = coordinator.document
+    let context = try #require(coordinator.interactionContext)
+    _ = coordinator.insertionMenu(after: root.id)
+    #expect(coordinator.document == before)
+    let heading = try #require(BlockCommand.all.first { $0.id == "h2" })
+    coordinator.insert(heading, after: root.id, context: context)
+    #expect(coordinator.document.blocks.count == 3)
+    #expect(coordinator.document.blocks[0] == root)
+    let inserted = coordinator.document.blocks[1]
+    #expect(inserted.kind == .heading2)
+    #expect(inserted.id != root.id && inserted.id != child.id)
+    let range = try #require(coordinator.rangeIndex?.range(for: inserted.id))
+    #expect(view.selectedRange() == NSRange(location: range.location, length: 0))
+    let after = coordinator.document
+    coordinator.insert(heading, after: tail.id, context: context)
+    #expect(coordinator.document == after)
+    let undo = try #require(view.undoManager)
+    undo.undo()
+    #expect(coordinator.document == before)
+    #expect(view.selectedRange() == context.selection)
+    coordinator.load(before)
+    coordinator.insert(heading, after: root.id, context: context)
+    #expect(coordinator.document == before)
+    coordinator.contextualInteractionsRetired = true
+    #expect(coordinator.interactionContext == nil)
+    coordinator.insert(heading, after: root.id, context: context)
+    #expect(coordinator.document == before)
+    view.locked = true
+    #expect(coordinator.interactionContext == nil)
+}

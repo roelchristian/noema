@@ -4,6 +4,7 @@ public enum BlockMutation: Sendable {
     case transform(BlockKind), semantic(String?), status(String?), checked, collapse, language(String?)
     case split(Int), mergeBackward, duplicate, delete, removeKeepingChildren, move(Int), indent, outdent
     case reorder(before: UUID), reorderAfter(UUID)
+    case insertAfter(BlockKind, semantic: String?)
 }
 
 public struct BlockCursor: Equatable, Sendable {
@@ -26,6 +27,13 @@ extension BlockDocument {
         case .checked: update(id) { $0.metadata.checked.toggle() }
         case .collapse: update(id) { $0.metadata.collapsed.toggle() }
         case .language(let language): update(id) { $0.metadata.language = language }
+        case .insertAfter(let kind, let semantic):
+            siblings(at: Array(path.dropLast())) { list in
+                var inserted = EditorBlock(kind: kind)
+                inserted.metadata.semantic = semantic
+                list.insert(inserted, at: path.last! + 1)
+                cursor = BlockCursor(inserted.id)
+            }
         case .split(let requested):
             let splitOffset = min(max(requested, 0), block(id)!.utf16Count)
             guard InlineAnnotationTarget.validRange(NSRange(location: splitOffset, length: 0), in: block(id)!.text) else { return nil }
