@@ -64,8 +64,8 @@ struct InspectorRedesignTests {
     // MARK: - UI.R1 & UI.R2: Architecture, State, and Shell
 
     @Test @MainActor func inspectorContextAndTabApplicability() {
-        #expect(InspectorTab.pageTabs == [.links, .references, .tags, .properties, .insights])
-        #expect(InspectorTab.sourceTabs == [.references, .properties, .insights])
+        #expect(InspectorTab.pageTabs == [.insights, .links, .references, .tags, .properties])
+        #expect(InspectorTab.sourceTabs == [.insights, .references, .properties])
         #expect(InspectorState.minWidth == 280)
         #expect(InspectorState.idealWidth == 340)
         #expect(InspectorState.maxWidth == 420)
@@ -98,14 +98,14 @@ struct InspectorRedesignTests {
         let pageContext = InspectorContext.page(makeNote(title: "Page A"))
         let sourceContext = InspectorContext.source(makeSource(title: "Source A"), isDetail: false)
 
-        // Default tab is Properties in both contexts
-        #expect(state.activeTab(for: pageContext) == .properties)
-        #expect(state.activeTab(for: sourceContext) == .properties)
+        // Default tab is Insights in both contexts
+        #expect(state.activeTab(for: pageContext) == .insights)
+        #expect(state.activeTab(for: sourceContext) == .insights)
 
-        // Selecting a page-only tab (.links) keeps source context on .properties
+        // Selecting a page-only tab (.links) keeps source context on .insights
         state.selectTab(.links, for: pageContext)
         #expect(state.activeTab(for: pageContext) == .links)
-        #expect(state.activeTab(for: sourceContext) == .properties)
+        #expect(state.activeTab(for: sourceContext) == .insights)
 
         // Selecting a shared tab (.insights) updates both contexts so switching between page and source keeps Insights
         state.selectTab(.insights, for: sourceContext)
@@ -118,11 +118,11 @@ struct InspectorRedesignTests {
         #expect(state.activeTab(for: sourceContext) == .insights)
 
         // Keyboard stepping wraps around applicable tabs
-        state.selectTab(.links, for: pageContext)
+        state.selectTab(.insights, for: pageContext)
         state.stepTab(by: -1, for: pageContext)
-        #expect(state.activeTab(for: pageContext) == .insights)
+        #expect(state.activeTab(for: pageContext) == .properties)
         state.stepTab(by: 1, for: pageContext)
-        #expect(state.activeTab(for: pageContext) == .links)
+        #expect(state.activeTab(for: pageContext) == .insights)
 
         // Visibility toggle and session reset
         #expect(state.shouldPresent(for: pageContext))
@@ -144,8 +144,8 @@ struct InspectorRedesignTests {
         #expect(!state.isSectionExpanded("Status"))
 
         state.resetForSessionChange()
-        #expect(state.activeTab(for: pageContext) == .properties)
-        #expect(state.activeTab(for: sourceContext) == .properties)
+        #expect(state.activeTab(for: pageContext) == .insights)
+        #expect(state.activeTab(for: sourceContext) == .insights)
         #expect(state.isSectionExpanded("Timestamps"))
         #expect(state.isSectionExpanded("Status"))
     }

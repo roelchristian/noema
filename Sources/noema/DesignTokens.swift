@@ -7,10 +7,10 @@ enum NoemaTypography {
     static let documentTitle: Font = .title.weight(.semibold)
     static let libraryTitle: Font = .title2.weight(.bold)
     static let sectionHeader: Font = .headline.weight(.semibold)
-    static let navigation: Font = .callout
-    static let navigationEmphasis: Font = .callout.weight(.medium)
-    static let interface: Font = .callout
-    static let interfaceEmphasis: Font = .callout.weight(.medium)
+    static let navigation: Font = .body
+    static let navigationEmphasis: Font = .body.weight(.medium)
+    static let interface: Font = .body
+    static let interfaceEmphasis: Font = .body.weight(.medium)
     static let metadata: Font = .caption
     static let metadataEmphasis: Font = .caption.weight(.medium)
     static let caption: Font = .caption2
@@ -18,7 +18,7 @@ enum NoemaTypography {
     static let sidebarNavigationEmphasis: Font = navigationEmphasis
     static let sidebarSection: Font = .subheadline.weight(.medium)
     static let sidebarHeading: Font = sidebarSection
-    static let sidebarIcon: Font = .system(size: 14, weight: .regular)
+    static let sidebarIcon: Font = .body
 }
 
 /// Shared spacing rhythm for application chrome, expressed in points.

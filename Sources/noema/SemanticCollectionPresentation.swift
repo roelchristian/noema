@@ -140,7 +140,7 @@ struct SemanticBlockCollectionRow: View {
 
         HStack(alignment: .firstTextBaseline, spacing: NoemaSpacing.sm) {
             Image(systemName: presentation?.symbol ?? "tag")
-                .font(.system(size: 14, weight: .regular))
+                .font(.body)
                 .foregroundStyle(Color(nsColor: presentation?.accent ?? .secondaryLabelColor))
                 .frame(width: NoemaMetrics.iconWidth, alignment: .center)
                 .accessibilityHidden(true)

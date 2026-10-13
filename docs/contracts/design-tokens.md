@@ -82,15 +82,15 @@ A global two-level foreground style must remain removed or limited to prevent ne
 | `documentTitle` | `.title.weight(.semibold)` | Document title chrome in `ContentView`; body/block headings are excluded |
 | `libraryTitle` | `.title2.weight(.bold)` | Standalone empty/welcome headings where an introductory heading is needed |
 | `sectionHeader` | `.headline.weight(.semibold)` | Inspector panel headings, search results bar and modal detail headers |
-| `navigation` | `.callout` | Sidebar primary and recent row labels (13 pt regular on macOS) |
-| `navigationEmphasis` | `.callout.weight(.medium)` | Selected sidebar row or vault selector label (13 pt medium on macOS) |
-| `interface` | `.callout` | Property values and custom search text |
-| `interfaceEmphasis` | `.callout.weight(.medium)` | Link/source/semantic block row titles and actions |
+| `navigation` | `.body` | Sidebar primary and recent row labels at the system default text size |
+| `navigationEmphasis` | `.body.weight(.medium)` | Selected sidebar row or vault selector label |
+| `interface` | `.body` | Property values and custom search text at the system default text size |
+| `interfaceEmphasis` | `.body.weight(.medium)` | Link/source/semantic block row titles and actions |
 | `metadata` | `.caption` | Dates, counts, inspector supporting text |
 | `metadataEmphasis` | `.caption.weight(.medium)` | Count badges, semantic type badges and emphasized metadata |
 | `caption` | `.caption2` | Keyboard hints and minor icon annotations |
 | `sidebarSection` | `.subheadline.weight(.medium)` | Uppercase sidebar section headers (11 pt medium on macOS) |
-| `sidebarIcon` | `.system(size: 14, weight: .regular)` | Shared 14 pt sidebar navigation and vault icon scale |
+| `sidebarIcon` | `.body` | Sidebar navigation and vault icons follow the system default text size |
 
 Native AppKit companions, when needed for application chrome, should resolve the corresponding system font rather than read editor preferences. No blanket font override is added at root. Symbol optical adjustments can remain local when their purpose is documented.
 

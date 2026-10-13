@@ -3,11 +3,11 @@ import VaultCore
 
 /// Typed tab destinations for the contextual right inspector.
 enum InspectorTab: String, CaseIterable, Identifiable, Hashable, Sendable {
+    case insights
     case links
     case references
     case tags
     case properties
-    case insights
 
     var id: String { rawValue }
 
@@ -31,8 +31,8 @@ enum InspectorTab: String, CaseIterable, Identifiable, Hashable, Sendable {
         }
     }
 
-    static let pageTabs: [InspectorTab] = [.links, .references, .tags, .properties, .insights]
-    static let sourceTabs: [InspectorTab] = [.references, .properties, .insights]
+    static let pageTabs: [InspectorTab] = [.insights, .links, .references, .tags, .properties]
+    static let sourceTabs: [InspectorTab] = [.insights, .references, .properties]
 
     static func applicableTabs(for kind: InspectorTargetKind) -> [InspectorTab] {
         switch kind {

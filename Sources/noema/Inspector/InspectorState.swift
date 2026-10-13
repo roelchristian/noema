@@ -17,27 +17,27 @@ import VaultCore
             else { localVisibility = newValue }
         }
     }
-    private(set) var selectedPageTab: InspectorTab = .properties
-    private(set) var selectedSourceTab: InspectorTab = .properties
+    private(set) var selectedPageTab: InspectorTab = .insights
+    private(set) var selectedSourceTab: InspectorTab = .insights
     private(set) var collapsedSections: Set<String> = []
     let insightsCache = InsightsPresentationCache()
     let linksCache = LinksPresentationCache()
 
     init(
         isVisible: Bool = true,
-        selectedPageTab: InspectorTab = .properties,
-        selectedSourceTab: InspectorTab = .properties,
+        selectedPageTab: InspectorTab = .insights,
+        selectedSourceTab: InspectorTab = .insights,
         paneState: WorkspacePaneState? = nil
     ) {
         self.paneState = paneState
         self.localVisibility = isVisible
-        self.selectedPageTab = InspectorTab.pageTabs.contains(selectedPageTab) ? selectedPageTab : .properties
-        self.selectedSourceTab = InspectorTab.sourceTabs.contains(selectedSourceTab) ? selectedSourceTab : .properties
+        self.selectedPageTab = InspectorTab.pageTabs.contains(selectedPageTab) ? selectedPageTab : .insights
+        self.selectedSourceTab = InspectorTab.sourceTabs.contains(selectedSourceTab) ? selectedSourceTab : .insights
     }
 
-    /// Returns the active tab for the given inspector context, falling back to `.properties` if the stored tab is not applicable.
+    /// Returns the active tab for the given inspector context, falling back to `.insights` if the stored tab is not applicable.
     func activeTab(for context: InspectorContext) -> InspectorTab {
-        guard let kind = context.targetKind else { return .properties }
+        guard let kind = context.targetKind else { return .insights }
         return activeTab(for: kind)
     }
 
@@ -51,7 +51,7 @@ import VaultCore
         if applicable.contains(candidate) {
             return candidate
         }
-        return applicable.first(where: { $0 == .properties }) ?? applicable.first ?? .properties
+        return applicable.first ?? .insights
     }
 
     /// Selects a tab for the current context if applicable.
@@ -134,8 +134,8 @@ import VaultCore
 
     /// Resets transient selection state when a vault is locked, closed, or switched.
     func resetForSessionChange() {
-        selectedPageTab = .properties
-        selectedSourceTab = .properties
+        selectedPageTab = .insights
+        selectedSourceTab = .insights
         collapsedSections.removeAll()
         insightsCache.invalidate()
         linksCache.invalidate()

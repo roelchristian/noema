@@ -438,12 +438,12 @@ struct ContentView: View {
     private var lockedVaultView: some View {
         VStack(spacing: 22) {
             Image(systemName: "lock.fill")
-                .font(.system(size: 46, weight: .medium))
+                .font(.largeTitle.weight(.medium))
                 .foregroundStyle(theme.text(for: .textSecondary, on: .window))
                 .accessibilityHidden(true)
             VStack(spacing: 8) {
                 Text(model.vaultName)
-                    .font(.system(size: 32, weight: .semibold))
+                    .font(.largeTitle.weight(.semibold))
                     .foregroundStyle(theme.text(for: .textPrimary, on: .window))
                 Text("This vault session is locked. Unlock to view or edit its pages and sources.")
                     .font(.callout)
@@ -493,7 +493,7 @@ struct ContentView: View {
         VStack(spacing: 24) {
             NoemaMark(presentation: .identity).frame(width: 116, height: 116).accessibilityHidden(true)
             VStack(spacing: 10) {
-                Text("Noema").font(.system(size: 38, weight: .medium))
+                Text("Noema").font(.largeTitle.weight(.medium))
                     .foregroundStyle(theme.text(for: .textPrimary, on: .window))
                 Text("A personal atlas of thought.")
                     .font(.title3).foregroundStyle(theme.text(for: .textSecondary, on: .window))
@@ -826,7 +826,8 @@ struct ContentView: View {
                             HStack(spacing: 6) {
                                 if row.kind == .wiki, model.unseenRenamedPages.contains(row.id) {
                                     Image(systemName: "circle.fill")
-                                        .font(.system(size: 8))
+                                        .font(.caption2)
+                                        .imageScale(.small)
                                         .foregroundStyle(Color(nsColor: .systemBlue))
                                         .help("Page renamed since you last viewed it")
                                         .accessibilityLabel("Unread title change")
