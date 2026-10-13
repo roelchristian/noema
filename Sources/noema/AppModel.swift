@@ -332,6 +332,22 @@ struct AISuggestion: Identifiable, Sendable {
     var canAnnotateSelection = false
     var semanticSavedRevision: UInt64 = 0
     @ObservationIgnored var flushEditorPublication: (() -> Void)?
+    @ObservationIgnored private weak var publicationCoordinator: RichArticleView.Coordinator?
+    func registerHostedEditor(_ coordinator: RichArticleView.Coordinator) {
+        guard coordinator.session.identity == editorIdentity else { return }
+        registerEditorSession(coordinator.session)
+        publicationCoordinator = coordinator
+        flushEditorPublication = { [weak coordinator] in coordinator?.flushPublication() }
+    }
+    func unregisterHostedEditor(_ coordinator: RichArticleView.Coordinator) {
+        if publicationCoordinator === coordinator {
+            publicationCoordinator = nil; flushEditorPublication = nil
+        }
+        if semanticCoordinator === coordinator {
+            semanticCoordinator = nil; semanticReadyIdentity = nil
+            canAnnotateSelection = false
+        }
+    }
     var tagInput = "" { didSet { if tagInput != oldValue { cloudEditorRevision = UUID(); cloudPublicationGuard.invalidate() } } }
     var preview: [PreviewBlock] = []
     var backlinks: [NoteRecord] = []
@@ -597,7 +613,7 @@ struct AISuggestion: Identifiable, Sendable {
     var dirty: Bool {
         guard let note = currentNote else { return false }
         let contentChanged = note.document.map { editorDocument != $0 } ?? (body != note.body)
-        return title != note.title || contentChanged || editedTags != note.tags || (semanticCoordinator?.session.semanticEdit != nil && (semanticCoordinator?.session.revision ?? 0) != semanticSavedRevision)
+        return title != note.title || contentChanged || editedTags != note.tags || (semanticCoordinator?.session.identity == editorIdentity && semanticCoordinator?.session.semanticEdit != nil && (semanticCoordinator?.session.revision ?? 0) != semanticSavedRevision)
     }
     var scopeTitle: String {
         switch scope { case .wiki: "Pages"; case .sources: "Sources"; case .semantic: "Knowledge"; case .trash: "Trash"; case .tag(let tag): "#" + tag }
@@ -2442,7 +2458,8 @@ struct AISuggestion: Identifiable, Sendable {
         if let targetScope { scope = targetScope; searchText = "" }
         selectedSidebarRecentItemID = nil
         selectedID = id; currentSource = nil; currentNote = nil; externalChange = false; errorMessage = nil
-        semanticCoordinator = nil; semanticReadyIdentity = nil
+        // Identity checks suspend the outgoing editor's authority. Preserve its
+        // registration if coalesced navigation returns before SwiftUI replaces it.
         if let note = notes.first(where: { $0.id == id }) {
             apply(note)
             recordSidebarAccess(blockID.map { .semanticBlock(pageID: note.id, blockID: $0) } ?? .page(note.id))
@@ -3890,10 +3907,12 @@ extension AppModel {
 
 extension AppModel {
     func configureSemanticEditor(_ coordinator: RichArticleView.Coordinator?) {
+        guard coordinator == nil || coordinator?.session.identity == editorIdentity else { return }
         semanticCoordinator = coordinator; semanticReadyIdentity = nil; semanticSavedRevision = 0
         if let coordinator { registerEditorSession(coordinator.session) }
         guard let coordinator, let repository, let pageID = currentNote?.id else { return }
         let identity = coordinator.session.identity, localRevision = coordinator.session.revision
+        let loadGeneration = coordinator.session.generation
         if let pending = pendingPageSaves[pageID]?.editor {
             coordinator.session.restorePendingSnapshot(pending, identity: identity)
             registerEditorSession(coordinator.session)
@@ -3910,7 +3929,8 @@ extension AppModel {
                 var loaded = snapshot.snapshot.document, visible = coordinator.document
                 loaded.originalSource = nil; visible.originalSource = nil
                 guard self.canOperateOnLoadedContent, self.semanticCoordinator === coordinator, self.editorIdentity == identity,
-                    coordinator.session.identity == identity, coordinator.session.revision == localRevision,
+                    coordinator.session.identity == identity, coordinator.session.generation == loadGeneration,
+                    coordinator.session.revision == localRevision,
                     BlockDocumentCodec.encode(visible) == BlockDocumentCodec.encode(loaded) else { return }
                 guard self.currentNote?.contentHash == snapshot.snapshot.revision.token.base64EncodedString() else {
                     self.externalChange = true
