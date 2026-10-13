@@ -230,6 +230,7 @@ struct AISuggestion: Identifiable, Sendable {
     private var semanticRowsEditorRevision: UUID?
     var selectedSemanticID: String?
     private var sidebarRecentHistory = SidebarRecentHistory()
+    private var sidebarRecentPresentation = SidebarRecentPresentation()
     var sidebarRecentDefaults: UserDefaults = .standard
     private var sidebarRecentVaultID: UUID?
     private var sidebarRecentCacheRevision: UUID?
@@ -611,7 +612,8 @@ struct AISuggestion: Identifiable, Sendable {
            sidebarRecentCacheEditorRevision == cloudEditorRevision { return sidebarRecentCache }
         let noteMap = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let sourceMap = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        sidebarRecentCache = recentItemIDs.compactMap { id in
+        sidebarRecentPresentation.reconcile(recentItemIDs)
+        sidebarRecentCache = sidebarRecentPresentation.ids.compactMap { id in
             switch id {
             case .page(let pageID):
                 guard let note = noteMap[pageID] else { return nil }
@@ -643,6 +645,8 @@ struct AISuggestion: Identifiable, Sendable {
         let decoded = sidebarRecentDefaults.data(forKey: recentPreferenceKey(vaultID))
             .flatMap { try? JSONDecoder().decode([RecentItemID].self, from: $0) } ?? []
         sidebarRecentHistory = SidebarRecentHistory(ids: decoded)
+        sidebarRecentPresentation = SidebarRecentPresentation()
+        sidebarRecentPresentation.reconcile(sidebarRecentHistory.ids)
         sidebarRecentCacheRevision = nil
     }
 
@@ -655,6 +659,7 @@ struct AISuggestion: Identifiable, Sendable {
     private func recordSidebarAccess(_ id: RecentItemID) {
         guard canOperateOnLoadedContent, !isLocked else { return }
         sidebarRecentHistory.record(id)
+        sidebarRecentPresentation.reconcile(sidebarRecentHistory.ids)
         selectedSidebarRecentItemID = id
         sidebarRecentCacheRevision = nil
         persistSidebarRecentHistory()
@@ -825,6 +830,7 @@ struct AISuggestion: Identifiable, Sendable {
         dismissedVaultNotices = []
         tags = []; backlinks = []; outgoingLinkTargets = []; preview = []; unseenRenamedPages = []
         sidebarRecentHistory = SidebarRecentHistory(); sidebarRecentVaultID = nil
+        sidebarRecentPresentation = SidebarRecentPresentation()
         selectedSidebarRecentItemID = nil; sidebarRecentCacheRevision = nil; sidebarRecentCache = []
         resetSearch(); scope = .wiki
         setLibrarySourceSelection(nil)
@@ -2420,6 +2426,9 @@ struct AISuggestion: Identifiable, Sendable {
                 selectedSemanticID = "\(id):\(blockID)"
                 editorAction = EditorAction(operation: .block(blockID))
                 recordSidebarAccess(.semanticBlock(pageID: id, blockID: blockID))
+            } else if blockID == nil {
+                selectedSemanticID = nil
+                recordSidebarAccess(.page(id))
             }
             return
         }
