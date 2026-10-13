@@ -31,7 +31,7 @@ struct PageInsightsSnapshot: Equatable, Sendable {
     let semanticBlockCount: Int
 
     var hasSummary: Bool {
-        summaryText != nil
+        summaryText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 }
 
@@ -122,21 +122,20 @@ struct InsightsPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                     InspectorSection(title: "AI summary", showTopDivider: false) {
-                        if snapshot.summaryText != nil {
-                            InspectionAuthorityCaption(authority: .document)
+                        if let summaryText = snapshot.summaryText, snapshot.hasSummary {
+                            SidebarAISummary(text: summaryText).id(note.id)
+                        } else {
+                            Text("No summary available.")
+                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         }
-                        AISummaryProviderDisclosure(provider: model.preferredAIProvider(for: .summarizePage))
                         AISummaryStatus(model: model, target: .page(note.id))
                         AISummaryControls(model: model, target: .page(note.id))
-                        if let summaryText = snapshot.summaryText {
-                            SidebarAISummary(text: summaryText).id(note.id)
-                            Text(snapshot.summaryProvenanceLabel)
-                                .font(NoemaTypography.metadata)
-                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
-                        } else {
-                            Text("No AI summary available.")
-                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
-                        }
+                    } actions: {
+                        AISummaryProviderDisclosure(
+                            model: model,
+                            provider: model.preferredAIProvider(for: .summarizePage),
+                            provenance: snapshot.hasSummary ? snapshot.summaryProvenanceLabel : nil
+                        )
                     }
 
                     if isCurrent { SemanticInspectionSection(model: model, pageID: note.id).id("semantic-associations") }
@@ -186,21 +185,23 @@ struct InsightsPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: NoemaSpacing.lg) {
                     InspectorSection(title: "AI summary", showTopDivider: false) {
-                        if hasSummary {
-                            InspectionAuthorityCaption(authority: .document)
-                        }
-                        AISummaryProviderDisclosure(provider: model.preferredAIProvider(for: .summarizeSource))
-                        AISummaryStatus(model: model, target: .source(source.id))
-                        AISummaryControls(model: model, target: .source(source.id))
                         if let summary = source.metadata.aiSummary, hasSummary {
                             SidebarAISummary(text: summary).id(source.id)
-                            Text(aiSummaryProvenanceLabel(provider: source.metadata.aiSummaryProvenance?.provider, model: source.metadata.aiSummaryProvenance?.model))
-                                .font(NoemaTypography.metadata)
-                                .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         } else {
-                            Text("No AI summary available.")
+                            Text("No summary available.")
                                 .foregroundStyle(theme.text(for: .textSecondary, on: .inspector))
                         }
+                        AISummaryStatus(model: model, target: .source(source.id))
+                        AISummaryControls(model: model, target: .source(source.id))
+                    } actions: {
+                        AISummaryProviderDisclosure(
+                            model: model,
+                            provider: model.preferredAIProvider(for: .summarizeSource),
+                            provenance: hasSummary ? aiSummaryProvenanceLabel(
+                                provider: source.metadata.aiSummaryProvenance?.provider,
+                                model: source.metadata.aiSummaryProvenance?.model
+                            ) : nil
+                        )
                     }
                 }
                 .textSelection(.enabled)

@@ -81,14 +81,43 @@ struct AIProviderBadge: View {
 }
 
 struct AISummaryProviderDisclosure: View {
+    @Bindable var model: AppModel
     let provider: AIProvider
+    var provenance: String? = nil
+    @State private var showsDetails = false
+
     var body: some View {
-        HStack(spacing: NoemaSpacing.sm) {
-            AIProviderBadge(provider: provider)
-            Text(provider == .onDevice ? "Runs locally" : "Sends selected text · confirmation policy applies")
-                .font(NoemaTypography.metadata).foregroundStyle(.secondary)
+        Button { showsDetails.toggle() } label: {
+            Image(systemName: "questionmark.circle")
+                .foregroundStyle(.secondary)
         }
-        .accessibilityElement(children: .combine)
+        .buttonStyle(.plain)
+        .help("AI summary details")
+        .accessibilityLabel("AI summary provider and details")
+        .popover(isPresented: $showsDetails) {
+            VStack(alignment: .leading, spacing: NoemaSpacing.sm) {
+                AIProviderBadge(provider: provider)
+                Text(provider == .onDevice
+                    ? "Runs locally on this Mac."
+                    : "Sends selected text to OpenAI using your submission confirmation policy.")
+                Text("Classification updates with the summary.")
+                Text("See Intelligence Settings for provider options and submission preferences.")
+                    .foregroundStyle(.secondary)
+                Button("Intelligence Settings…") {
+                    showsDetails = false
+                    model.openSettings(category: .intelligence)
+                }
+                if let provenance {
+                    Divider()
+                    Text("Saved with this document")
+                    Text(provenance)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(NoemaTypography.metadata)
+            .padding(NoemaSpacing.md)
+            .frame(width: 260, alignment: .leading)
+        }
     }
 }
 
@@ -98,14 +127,17 @@ struct AISummaryControls: View {
     let target: ExternalAISummaryTarget
     private var presentation: AISummaryPresentation { AISummaryPresentation(model: model, target: target) }
 
+    private var commandTitle: String { presentation.hasSummary ? "Regenerate Summary" : "Generate Summary" }
+
     var body: some View {
         HStack(spacing: NoemaSpacing.sm) {
             Button { presentation.request() } label: {
-                Label(presentation.commandTitle, systemImage: "sparkles").labelStyle(.titleAndIcon)
+                Label(commandTitle, systemImage: "sparkles").labelStyle(.titleAndIcon)
             }
+            .buttonStyle(.borderedProminent)
             .disabled(presentation.disabled)
-            .help("\(presentation.commandTitle) using \(aiProviderLabel(presentation.provider)); classification updates with the summary")
-            .accessibilityLabel("\(presentation.commandTitle) using \(aiProviderLabel(presentation.provider))")
+            .help("\(commandTitle) using \(aiProviderLabel(presentation.provider)); classification updates with the summary")
+            .accessibilityLabel("\(commandTitle) using \(aiProviderLabel(presentation.provider))")
             Menu {
                 AISummaryOptionsCommands(model: model, target: target)
             } label: { Label("Summary options", systemImage: "ellipsis").labelStyle(.iconOnly) }

@@ -52,7 +52,7 @@ Page provenance is an ordered `sources` UUID sequence in format 1 frontmatter or
 
 `AppModel` captures the selected provider/client before asynchronous work. Explicit enrichment generates summary and classification together, filling only unset initial titles; regeneration preserves title/body. Both providers compose source/topic/URL drafts for review. Standalone title suggestions retain reviewed, conditional acceptance. The shared summary controls explain coupled classification; the Properties inspector exposes read-only classification metadata. See the unified contract below for publication, consent and acquisition boundaries.
 
-`AISummaryPresentation` shares commands, progress, cancellation, copy and provenance across page/source/inspector views. OpenAI preflight inspects credential status without content dispatch. Required consent uses expanded exact-text disclosure for unauthenticated authority and compact disclosure only for a precise live authenticated lease. The global policy can authorize subsequent explicit submissions, but every inference still uses a fresh request-bound receipt and live gateway authentication/publication checks.
+`AISummaryPresentation` shares commands, progress, cancellation, copy and provenance across page/source/inspector views. The inspector shows “No summary available” with Generate Summary when empty, or the stored summary with Regenerate as its primary action. Provider details and stored provenance are available through the section’s question-mark icon. OpenAI preflight inspects credential status without content dispatch. Required consent uses expanded exact-text disclosure for unauthenticated authority and compact disclosure only for a precise live authenticated lease. The global policy can authorize subsequent explicit submissions, but every inference still uses a fresh request-bound receipt and live gateway authentication/publication checks.
 
 ## Canonical knowledge foundations
 
@@ -224,7 +224,14 @@ and shows the existing editor or source reader in the content pane. Sidebar
 highlight follows the active collection. Favorites and Recent Items are top-level
 entries in a separate sidebar group, divided from Pages, Sources, and Knowledge.
 Both open the same inbox list in the collection pane; individual items do not appear
-in the sidebar. Selecting an inbox item retains that collection's highlight and
+in the sidebar. Vault-owned collections and folders appear in a separate sidebar section
+and reuse the inbox list. Collections remain at the vault root; folders can be created
+or moved under a collection or another folder. Container menus create, rename, and
+delete containers and add or remove the current document; deleting a container removes
+its descendant containers and memberships while retaining canonical items. Stored page,
+source, and block memberships resolve from vault content independently of recent history;
+entity and semantic-object memberships use their existing catalogue detail sheets.
+Selecting an inbox item retains that collection's highlight and
 opens its page, source, or knowledge block in the content pane. The native window title is the open
 document; the collection-list header shows the collection name and does not repeat
 that title. `WorkspacePaneState` persists sidebar, collection-list, and inspector
