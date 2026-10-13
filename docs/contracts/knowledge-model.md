@@ -207,7 +207,7 @@ KNOW02 creates schema 4 requiring deterministic set
 The nested manifest `storage.schemaVersion`, `PRAGMA user_version`, vault UUID and
 database required-capability set must agree before writable admission. Unknown or
 missing required capabilities and unsupported payload versions deny writes before
-schema changes or publication. Only schema 5 is admitted in production; historical schemas reject without mutation.
+schema changes or publication. Only schema 6 is admitted in production. Schema 6 keeps the schema-5 semantic tables and adds vault-owned organisation tables under `organisationV1`. Schema 5 is not upgraded on open. Historical schemas reject without mutation.
 
 Schema 3's singular `vault_state.capability = canonicalMetadataV1` retains its
 meaning. Schema 4 adds an explicitly versioned `required_capabilities` set and
@@ -217,7 +217,7 @@ Capability presence denotes actually implemented preservation/writes, not a prom
 No schema-4 semantic tables or semantic feature activation is assumed by KNOW02;
 KNOW03's new relational authority therefore requires schema 5.
 
-Production initializes fresh schema 5 directly. Historical schema 1–4 upgrade routes
+Production initializes fresh schema 6 directly. Historical schema 1–5 upgrade routes
 are retired by STOR02B–STOR03; no automatic or explicit historical migration is
 supported. Internal fresh constructors provide test isolation only. Opening never
 reinterprets old Wiki/source files as canonical authority.

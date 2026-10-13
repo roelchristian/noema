@@ -39,6 +39,16 @@ struct NativeArchiveTests {
         let original = Data("Immutable original".utf8)
         let source = try await repository.importSource(data: original, filename: "original.txt", title: "Source", originURL: nil)
         let page = try await repository.create(title: "Page", body: "Committed body", source: source)
+        let organisation = repository.sqliteBlockStore
+        let collection = try await organisation.createContainer(kind: .collection, name: "Reading", parentID: nil,
+            expectedVaultRevision: organisation.canonicalVaultRevision(), operationID: UUID())
+        let pageReference = OrganisationItemReference(kind: .page, itemID: page.id)
+        let sourceReference = OrganisationItemReference(kind: .source, itemID: source.id)
+        _ = try await organisation.addMembership(containerID: collection.value.id, reference: sourceReference,
+            expectedVaultRevision: organisation.canonicalVaultRevision(), operationID: UUID())
+        _ = try await organisation.setFavourite(pageReference, favourite: true,
+            expectedVaultRevision: organisation.canonicalVaultRevision(), operationID: UUID())
+        let organisationBefore = try await organisation.organisationSnapshot(includingHidden: true)
         let drafts = parent.appendingPathComponent("Drafts")
         try FileManager.default.createDirectory(at: drafts, withIntermediateDirectories: false)
         let draftBytes = Data("Unsaved preservation data".utf8)
@@ -53,6 +63,8 @@ struct NativeArchiveTests {
         #expect(try await NativeVaultArchive.restore(from: archive, parent: parent, name: "Restored", sessionLease: session.lease, accessGate: gate).path == destination.path)
         let restoredManager = VaultSessionManager()
         let (_, _, restored) = try await restoredManager.openRepository(root: destination)
+        #expect(restored.manifest.storage?.schemaVersion == 6)
+        #expect(try await restored.sqliteBlockStore.organisationSnapshot(includingHidden: true) == organisationBefore)
         #expect(try await restored.scan().notes.contains { $0.id == page.id && $0.body.contains("Committed body") })
         let sourcePath = "Sources/\(source.id.uuidString.lowercased())/\(source.metadata.storedFilename)"
         #expect(try Data(contentsOf: destination.appendingPathComponent(sourcePath)) == original)
@@ -63,6 +75,51 @@ struct NativeArchiveTests {
         #expect(try Data(contentsOf: destination.appendingPathComponent(sourcePath)) == original)
         try await restored.sqliteBlockStore.close(); try await restoredManager.close()
         try await repository.sqliteBlockStore.close(); try await manager.close()
+    }
+
+    @Test(arguments: [3, 4, 5])
+    func restoreRejectsHistoricalAuthorityBeforeWriting(schemaVersion: Int) async throws {
+        let parent = try nativeArchiveParent()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let archive = parent.appendingPathComponent("Archive")
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: false)
+        var manifest = VaultManifest()
+        var declaration = VaultCanonicalStorageDeclaration()
+        declaration.schemaVersion = schemaVersion
+        declaration.requiredCapabilities = schemaVersion == 3 ? ["canonicalMetadataV1"]
+            : schemaVersion == 4 ? SQLiteBlockStore.knowledgeRequiredCapabilities : SQLiteBlockStore.semanticRequiredCapabilities
+        manifest.storage = declaration
+        let databaseURL = archive.appendingPathComponent(VaultManifest.sqliteDatabasePath)
+        let database = try SQLiteBlockStore(canonicalStagingURL: databaseURL, vaultID: manifest.id,
+            requiredCapabilities: declaration.requiredCapabilities, schemaVersion: schemaVersion)
+        try await database.checkpoint()
+        try await database.close()
+        let manifestBytes = try JSONEncoder().encode(manifest)
+        try manifestBytes.write(to: archive.appendingPathComponent("vault.json"))
+        let databaseBytes = try Data(contentsOf: databaseURL)
+        let files = ["vault.json": manifestBytes, VaultManifest.sqliteDatabasePath: databaseBytes]
+        let index = NativeVaultArchive.Index(version: 1, vaultID: manifest.id, capturedAt: Date(),
+            recoveryDraftsIncluded: false, externalSourceIDs: [],
+            files: files.mapValues { .init(size: $0.count, sha256: digest($0)) })
+        let indexBytes = try JSONEncoder().encode(index)
+        try indexBytes.write(to: archive.appendingPathComponent(NativeVaultArchive.indexPath))
+        let entriesBefore = try FileManager.default.contentsOfDirectory(atPath: archive.path)
+        let destination = parent.appendingPathComponent("Restored")
+        let session = VaultSession(vaultID: manifest.id, root: destination, generation: 1)
+        let gate = VaultAccessGate(initialState: .open(session))
+        await #expect(throws: VaultError.self) {
+            try await NativeVaultArchive.restore(from: archive, parent: parent, name: "Restored",
+                sessionLease: session.lease, accessGate: gate)
+        }
+        #expect(throws: VaultError.self) { try FileVaultRepository.inspectManifest(at: archive) }
+        #expect(throws: VaultError.self) {
+            try VaultStorageProvider.plaintext.makeDeclaredStagingStore(url: databaseURL,
+                vaultID: manifest.id, declaration: declaration)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path) == ["Archive"])
+        #expect(Set(try FileManager.default.contentsOfDirectory(atPath: archive.path)) == Set(entriesBefore))
+        for (path, bytes) in files { #expect(try Data(contentsOf: archive.appendingPathComponent(path)) == bytes) }
+        #expect(try Data(contentsOf: archive.appendingPathComponent(NativeVaultArchive.indexPath)) == indexBytes)
     }
 
     @Test(arguments: [false, true])

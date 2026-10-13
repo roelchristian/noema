@@ -27,7 +27,7 @@ private func creationParent() throws -> URL {
     let before = try Data(contentsOf: vault.appendingPathComponent("vault.json"))
     let manager = VaultSessionManager()
     let opened = try await manager.openRepository(root: vault)
-    #expect(opened.repository.manifest.storage?.schemaVersion == 5)
+    #expect(opened.repository.manifest.storage?.schemaVersion == 6)
     let page = try await opened.repository.create(title: "Canonical", body: "Persisted")
     #expect(try await opened.repository.scan().notes.first?.id == page.id)
     try await opened.repository.sqliteBlockStore.close()
@@ -87,7 +87,7 @@ private func creationParent() throws -> URL {
     let reportedStaging = URL(fileURLWithPath: String(reportedSuffix[..<pathEnd]))
     #expect(reportedStaging.resolvingSymlinksInPath() == staging.resolvingSymlinksInPath())
     let manifestBytes = try Data(contentsOf: staging.appendingPathComponent("vault.json"))
-    #expect(try FileVaultRepository.inspectManifest(at: staging).storage?.schemaVersion == 5)
+    #expect(try FileVaultRepository.inspectManifest(at: staging).storage?.schemaVersion == 6)
     #expect(try Data(contentsOf: staging.appendingPathComponent("vault.json")) == manifestBytes)
     #expect(try Data(contentsOf: destination.appendingPathComponent("external.txt")) == occupiedBytes)
     #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("vault.json").path))
@@ -128,11 +128,11 @@ func failedInitializationRemovesOnlyEmptyOwnedStaging(preservedContent: Bool) as
     #expect(decoded.isSupported)
     #expect(decoded.unknownFields == manifest.unknownFields)
     #expect(decoded.storage?.unknownFields == manifest.storage?.unknownFields)
-    for version in [1, 2, 3, 4, 6] {
+    for version in [1, 2, 3, 4, 5] {
         manifest.storage?.schemaVersion = version
         #expect(!manifest.isSupported)
     }
-    manifest.storage?.schemaVersion = 5
+    manifest.storage?.schemaVersion = 6
     manifest.storage?.requiredCapabilities.removeLast()
     #expect(!manifest.isSupported)
     manifest.storage = nil

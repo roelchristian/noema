@@ -2,12 +2,13 @@
 
 ## Canonical storage authority (STOR02B–STOR03)
 
-Every newly created vault uses format 2 with a mandatory schema-5 SQLite declaration.
+Every newly created vault uses format 2 with a mandatory schema-6 SQLite declaration.
 `SQLiteBlockStore` owns the sole connection, schema and transactions for pages, blocks,
 page metadata, source metadata/relationships, logical Trash, tombstones, conflicts,
-knowledge entities/aliases/relations, questions/definitions and annotations. Manifest,
-`user_version`, database vault UUID and capabilities must agree before admission.
-Schema 5 is initialized directly. Historical formats and schemas 1–4 are deliberately
+knowledge entities/aliases/relations, questions/definitions, annotations, favourites,
+collections and folders. Those organisation rows live in the vault's `blocks.sqlite`.
+Manifest, `user_version`, database vault UUID and capabilities must agree before admission.
+Schema 6 is initialized directly. Historical formats and schemas 1–5 are deliberately
 unsupported; opening them rejects without mutation. Markdown is import/export only.
 
 Imported originals remain immutable, checksum-verified controlled vault bytes through
@@ -61,8 +62,9 @@ Person, Place, Concept and Event identities, independent Question/Definition obj
 typed relationships and overlapping block/inline annotations. KNOW02 and KNOW03
 implement these domain APIs in the existing SQLite actor through KnowledgeStore
 and SemanticStore; no additional connection or block-text authority is introduced.
-Schema 3 retains its meaning, schema 4 requires canonicalKnowledgeV1, and schema 5
-also requires semanticAnnotationsV1. Manifest, database identity and capability
+Schema 3 retains its meaning, schema 4 requires canonicalKnowledgeV1, schema 5
+also requires semanticAnnotationsV1, and schema 6 adds organisationV1 for
+vault-owned favourites, collections and folders. Manifest, database identity and capability
 checks agree before admission; fresh staging is explicit, with no upgrade on open.
 
 SemanticPageEdit provides verified UTF-16/grapheme-safe editing, structural edits,

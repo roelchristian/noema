@@ -26,7 +26,7 @@ transaction; sequential `BlockStore` calls do not establish that guarantee.
 
 ### One authority per vault
 
-Format 2 with explicit schema 5 is the only production authority. `blocks.sqlite`
+Format 2 with explicit schema 6 is the only production authority. `blocks.sqlite`
 contains pages, blocks, page/source metadata, relationships, knowledge and semantic
 records. Identity and required capabilities agree with `vault.json` before admission.
 Historical Markdown and schema-1–4 vaults reject without mutation. Missing/damaged
@@ -268,7 +268,7 @@ and their storage schema remain deferred until a separately reviewed feature.
 ### Breaking production cutover
 
 STOR02B–STOR03 retires historical format conversion and upgrades. Unsupported vaults
-are preserved and rejected. New production vaults initialize schema 5 directly;
+are preserved and rejected. New production vaults initialize schema 6 directly;
 archive restoration validates the same schema and never merges occupied identities.
 
 ## Explicit Markdown interchange (EDT.BLK13)

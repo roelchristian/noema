@@ -16,7 +16,8 @@ public enum VaultCreation {
 }
 
 extension FileVaultRepository {
-    /// Initializes a positively empty owned root, publishing its matching manifest last.
+    /// Initializes a positively empty owned root as schema 6, publishing its matching manifest last.
+    /// Favourites, collections, and folders are tables in that vault database.
     /// This explicit async path is also used by session creation of an empty selected root.
     static func initializeSchema5(root: URL, storageProvider: VaultStorageProvider) async throws {
         try SQLiteVaultLocality.requireLocalRoot(root)
@@ -29,7 +30,7 @@ extension FileVaultRepository {
             throw VaultError.invalid("The staging folder changed before initialization.")
         }
         let manifest = VaultManifest()
-        let database = try storageProvider.makeSemanticStagingStore(
+        let database = try storageProvider.makeOrganisationStagingStore(
             url: root.appendingPathComponent(VaultManifest.sqliteDatabasePath), vaultID: manifest.id)
         do {
             try await database.validateIntegrity()
@@ -48,7 +49,7 @@ extension FileVaultRepository {
         try store.synchronize(at: "vault.json")
     }
 
-    /// Publishes a closed schema-5 vault by a create-only, same-parent move.
+    /// Publishes a closed schema-6 vault by a create-only, same-parent move.
     public static func createNewVault(parent: URL, name: String, encryptionRequested: Bool,
                                       storageProvider: VaultStorageProvider = .plaintext) async throws -> URL {
         guard !encryptionRequested else { throw VaultError.invalid(VaultCreation.encryptionUnavailable) }

@@ -11,12 +11,12 @@ public struct VaultStorageProvider: Sendable {
 
     public func makeStore(root: URL) throws -> any VaultContentStore { try factory(root) }
 
-    /// Production construction admits only a declared schema-5 authority and a current lease.
+    /// Production construction admits only a declared schema-6 vault and a current lease.
     func makeBlockStore(url: URL, sessionLease: VaultSessionLease?, accessGate: VaultAccessGate?,
                         createIfMissing: Bool = false, manifest: VaultManifest? = nil) throws -> SQLiteBlockStore {
         guard let manifest, manifest.isSupported, let declaration = manifest.storage,
               let sessionLease, let accessGate, !createIfMissing else {
-            throw VaultError.invalid("Canonical admission requires a schema-5 manifest, existing database and matching session authority.")
+            throw VaultError.invalid("Canonical admission requires a schema-6 manifest, existing database and matching session authority.")
         }
         try SQLiteVaultLocality.requireLocalRoot(url.deletingLastPathComponent())
         return try SQLiteBlockStore(url: url, sessionLease: sessionLease, accessGate: accessGate,
@@ -46,6 +46,22 @@ public struct VaultStorageProvider: Sendable {
     func makeSemanticStagingStore(url: URL, vaultID: UUID, createIfMissing: Bool = true, validating operation: (@Sendable () throws -> Void)? = nil) throws -> SQLiteBlockStore {
         try SQLiteVaultLocality.requireLocalRoot(url.deletingLastPathComponent())
         return try SQLiteBlockStore(canonicalStagingURL:url, vaultID:vaultID, requiredCapabilities:SQLiteBlockStore.semanticRequiredCapabilities, schemaVersion:SQLiteBlockStore.semanticSchemaVersion, createIfMissing:createIfMissing, validating:operation)
+    }
+
+    /// Fresh schema 6, including vault-owned favourites, collections, and folders.
+    func makeOrganisationStagingStore(url: URL, vaultID: UUID, createIfMissing: Bool = true, validating operation: (@Sendable () throws -> Void)? = nil) throws -> SQLiteBlockStore {
+        try SQLiteVaultLocality.requireLocalRoot(url.deletingLastPathComponent())
+        return try SQLiteBlockStore(canonicalStagingURL: url, vaultID: vaultID, requiredCapabilities: SQLiteBlockStore.organisationRequiredCapabilities, schemaVersion: SQLiteBlockStore.organisationSchemaVersion, createIfMissing: createIfMissing, validating: operation)
+    }
+
+    /// Opens the vault database at the schema declared by its own manifest. Does not create or convert authority.
+    func makeDeclaredStagingStore(url: URL, vaultID: UUID, declaration: VaultCanonicalStorageDeclaration, createIfMissing: Bool = false, validating operation: (@Sendable () throws -> Void)? = nil) throws -> SQLiteBlockStore {
+        try operation?()
+        guard declaration.isSupported, !createIfMissing else {
+            throw VaultError.invalid("Archive validation requires an existing schema-6 database.")
+        }
+        try SQLiteVaultLocality.requireLocalRoot(url.deletingLastPathComponent())
+        return try SQLiteBlockStore(canonicalStagingURL: url, vaultID: vaultID, requiredCapabilities: declaration.requiredCapabilities, schemaVersion: declaration.schemaVersion, createIfMissing: createIfMissing, validating: operation)
     }
 
     public static let plaintext = VaultStorageProvider { try PlaintextVaultContentStore(root: $0) }
