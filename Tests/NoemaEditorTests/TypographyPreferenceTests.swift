@@ -132,8 +132,8 @@ import VaultCore
 
     private func fixture(_ source: String) -> (RichArticleView.Coordinator, ArticleTextView, NSScrollView, NSWindow) {
         _ = NSApplication.shared
-        let parent = RichArticleView(text: .constant(source), reading: false, locked: false,
-            action: nil, onBegin: {}, onEnd: {}, onWikiLink: { _ in })
+        let parent = RichArticleView(text: .constant(source), editable: true, locked: false,
+            action: nil, onWikiLink: { _ in })
         let coordinator = parent.makeCoordinator()
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 740, height: 440))
         scroll.hasVerticalScroller = true

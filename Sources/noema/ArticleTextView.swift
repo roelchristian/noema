@@ -16,9 +16,7 @@ import VaultCore
         textContainer?.lineFragmentPadding = 0
     }
 
-    var begin: (() -> Void)?
-    var lockedClick: (() -> Void)?
-    var end: (() -> Void)?
+    var openLink: ((URL) -> Void)?
     let semanticRangeIndex = BlockTextStorage.SemanticRangeIndex()
     var locked = false
     var theme = NoemaTheme()
@@ -402,27 +400,25 @@ import VaultCore
         }
         tinted.draw(in: rect)
     }
-    func requestEditingFromClick() {
-        if locked { lockedClick?(); return }
-        if !isEditable { isEditable = true; begin?(); window?.makeFirstResponder(self) }
+    /// Resolve a rendered glyph, rather than snapping whitespace to the nearest link.
+    func link(at point: NSPoint) -> URL? {
+        guard let manager = layoutManager, let container = textContainer, let storage = textStorage,
+              storage.length > 0 else { return nil }
+        let location = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
+        let glyph = manager.glyphIndex(for: location, in: container)
+        guard glyph < manager.numberOfGlyphs,
+              manager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container).contains(location) else { return nil }
+        let index = manager.characterIndexForGlyph(at: glyph)
+        guard index < storage.length else { return nil }
+        let value = storage.attribute(.link, at: index, effectiveRange: nil)
+        return (value as? URL) ?? (value as? String).flatMap(URL.init(string:))
     }
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        // Reading uses AppKit's normal selection and link tracking. Editing is
-        // an explicit action, so an ordinary pointer gesture never consumes it.
-        if !isEditable {
-            if event.modifierFlags.contains(.option) {
-                requestEditingFromClick()
-                if isEditable {
-                    let index = characterIndexForInsertion(at: point)
-                    setSelectedRange(NSRange(location: min(index, string.utf16.count), length: 0))
-                    return
-                }
-            }
-            super.mouseDown(with: event)
-            return
+        if event.modifierFlags.contains(.command), let url = link(at: point), openLink != nil {
+            openLink?(url); return
         }
-        if locked { super.mouseDown(with: event); return }
+        guard isEditable, !locked else { super.mouseDown(with: event); return }
         if !locked, let id = blockAt(point), let storage = textStorage,
            let range = blockRange(for: id, storage: storage) {
             if gutterRect(for: range).contains(point) {
@@ -439,7 +435,6 @@ import VaultCore
             if point.x >= accessoryX - 3 && point.x <= accessoryX + 19 && point.y >= marker.minY && point.y <= marker.maxY {
                 let kind = storage.attribute(.blockKind, at: range.location, effectiveRange: nil) as? String
                 if kind == BlockKind.task.rawValue || kind == BlockKind.toggle.rawValue {
-                    if !isEditable { isEditable = true; begin?() }
                     window?.makeFirstResponder(self); activateBlock?(id, kind == BlockKind.task.rawValue ? .checked : .collapse); return
                 }
             }
@@ -503,13 +498,8 @@ import VaultCore
     override func menu(for event: NSEvent) -> NSMenu? {
         guard isEditable, !locked else {
             let menu = super.menu(for: event) ?? NSMenu()
-            if !locked {
-                menu.addItem(.separator())
-                let edit = NSMenuItem(title: "Edit Article", action: #selector(beginEditingArticle(_:)), keyEquivalent: "")
-                edit.target = self
-                menu.addItem(edit)
-            }
             addSemanticAssociations(to: menu, at: convert(event.locationInWindow, from: nil))
+            addOpenLinkItem(to: menu, at: convert(event.locationInWindow, from: nil))
             addDocumentSelectionItem(to: menu)
             return menu
         }
@@ -527,10 +517,20 @@ import VaultCore
         }
         let menu = super.menu(for: event) ?? NSMenu()
         if let actions = blockMenu?() { menu.addItem(.separator()); let item = NSMenuItem(title: "Block", action: nil, keyEquivalent: ""); item.submenu = actions; menu.addItem(item) }
+        addOpenLinkItem(to: menu, at: point)
         addAnnotationItem(to: menu)
         addSemanticAssociations(to: menu, at: point)
         addDocumentSelectionItem(to: menu)
         return menu
+    }
+    private func addOpenLinkItem(to menu: NSMenu, at point: NSPoint) {
+        guard let url = link(at: point), openLink != nil else { return }
+        let item = NSMenuItem(title: "Open Link", action: #selector(openContextLink(_:)), keyEquivalent: "")
+        item.target = self; item.representedObject = url
+        menu.addItem(item)
+    }
+    @objc func openContextLink(_ sender: NSMenuItem) {
+        if let url = sender.representedObject as? URL { openLink?(url) }
     }
     private func addAnnotationItem(to menu: NSMenu) {
         let item = NSMenuItem(title: "Annotate Selection…", action: #selector(annotateSelection(_:)), keyEquivalent: "A")
@@ -550,7 +550,6 @@ import VaultCore
         item.target = self
         menu.addItem(item)
     }
-    @objc func beginEditingArticle(_ sender: Any?) { requestEditingFromClick() }
     @objc func selectEntireDocument(_ sender: Any?) { super.selectAll(sender) }
     override func selectAll(_ sender: Any?) {
         guard isEditable, !locked, !hasMarkedText(), let storage = textStorage,
@@ -564,8 +563,21 @@ import VaultCore
         // Every rendered block has one presentation-only terminator.
         setSelectedRange(NSRange(location: range.location, length: max(0, range.length - 1)))
     }
+    /// Keyboard/VoiceOver access uses the current text selection, without a pointer hit test.
+    func accessibilityContextMenu() -> NSMenu {
+        let menu = isEditable && !locked ? blockMenu?() ?? NSMenu() : NSMenu()
+        if let storage = textStorage, selectedRange().location < storage.length {
+            let value = storage.attribute(.link, at: selectedRange().location, effectiveRange: nil)
+            if let url = (value as? URL) ?? (value as? String).flatMap(URL.init(string:)), openLink != nil {
+                let item = NSMenuItem(title: "Open Link", action: #selector(openContextLink(_:)), keyEquivalent: "")
+                item.target = self; item.representedObject = url; menu.addItem(item)
+            }
+        }
+        addDocumentSelectionItem(to: menu)
+        return menu
+    }
     override func accessibilityPerformShowMenu() -> Bool {
-        guard isEditable, !locked, let menu = blockMenu?() else { return false }
+        let menu = accessibilityContextMenu()
         let location = min(selectedRange().location, max(0, string.utf16.count - 1))
         let anchor = rect(for: NSRange(location: location, length: 1))
         menu.popUp(positioning: nil, at: NSPoint(x: textContainerOrigin.x, y: anchor.minY + 20), in: self); return true
@@ -579,8 +591,7 @@ import VaultCore
             guard kind != "paragraph" || metadata.semantic != nil else { continue }
             let frame = rect(for: range); guard frame.intersects(visibleRect) else { continue }
             let element = BlockAccessibilityElement(action: { [weak self] in
-                guard let self, !self.locked, kind == "task" || kind == "toggle" else { return false }
-                if !self.isEditable { self.isEditable = true; self.begin?() }
+                guard let self, self.isEditable, !self.locked, kind == "task" || kind == "toggle" else { return false }
                 self.activateBlock?(id, kind == "task" ? .checked : .collapse); return true
             })
             element.setAccessibilityParent(self)
@@ -588,7 +599,7 @@ import VaultCore
             let label = ([kind, semantic, metadata.status ?? "", kind == "task" ? (metadata.checked ? "checked" : "unchecked") : "", kind == "toggle" ? (metadata.collapsed ? "collapsed" : "expanded") : ""].filter { !$0.isEmpty }).joined(separator: ", ")
             element.setAccessibilityLabel(label); element.setAccessibilityRole(kind == "task" || kind == "toggle" ? .button : .staticText)
             element.setAccessibilityFrame(window.convertToScreen(convert(frame, to: nil)))
-            element.setAccessibilityEnabled(!locked)
+            element.setAccessibilityEnabled(isEditable && !locked)
             children.append(element)
         }
         return children
@@ -604,7 +615,7 @@ import VaultCore
         // marked text. Structural shortcuts must not split or discard candidates.
         if hasMarkedText() { super.keyDown(with: event); return }
         if isEditable, !locked, handleKey?(event) == true { return }
-        if event.keyCode == 53, isEditable { end?(); return }
+        if event.keyCode == 53 { return }
         super.keyDown(with: event)
     }
     // Popovers and menus may temporarily move focus; they must not end an editing session.

@@ -39,6 +39,25 @@ extension VaultUIIntegrationTests {
             try #require(barrier.entered)
         }
 
+        @Test func blockLinkNavigatesImmediatelyAndRestoresOutgoingDraft() async throws {
+            let (base, _, _, model, first, second) = try await fixture()
+            defer { try? FileManager.default.removeItem(at: base) }
+            let barrier = NavigationSaveBarrier(); defer { barrier.release() }
+            model.pageSavePreparation = { await barrier.wait() }
+            let block = try #require(BlockDocumentCodec.decode(second.body).blocks.first?.id)
+            let link = try #require(URL(string: "noema://page/\(second.id)?block=\(block)"))
+            model.body = "Captured through block link"
+            model.openBlockURL(link)
+            #expect(model.currentNote?.id == second.id)
+            #expect(model.selectedSemanticID == "\(second.id):\(block)")
+            try await entered(barrier)
+            model.select(first.id)
+            #expect(model.body == "Captured through block link")
+            barrier.release(); model.pageSavePreparation = nil
+            #expect(await model.flushPendingEdits())
+            #expect(await model.closeVault())
+        }
+
         @Test func busySaveAllowsImmediateNavigationAndRebasesOnlyItsOwnSuccessor() async throws {
             let (base, _, repository, model, first, second) = try await fixture()
             defer { try? FileManager.default.removeItem(at: base) }

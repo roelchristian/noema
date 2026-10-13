@@ -282,7 +282,6 @@ extension VaultUIIntegrationTests {
             model.selectedID = first.id
             model.title = first.title
             model.body = first.body
-            model.reading = true
 
             model.openSettings(category: .appearance)
             #expect(model.showSettings)
@@ -302,11 +301,9 @@ extension VaultUIIntegrationTests {
             model.select(second.id)
             #expect(model.currentNote?.id == first.id)
 
-            model.beginEditing()
-            #expect(model.reading)
+            #expect(!model.canEditPage)
 
-            model.reading = false
-            #expect(!model.canFormatDocument)
+                        #expect(!model.canFormatDocument)
             model.format("**", "**")
             #expect(BlockDocumentCodec.markdownBody(model.body) == "Original first body")
 
@@ -328,7 +325,7 @@ extension VaultUIIntegrationTests {
             model.dismissSettings()
             #expect(!model.showSettings)
             #expect(model.canInteractWithWorkspace)
-            #expect(model.canFormatDocument)
+            #expect(!model.canFormatDocument) // This fixture has no ready semantic editor.
 
             model.changeScope(.sources)
             #expect(model.scope == .sources)

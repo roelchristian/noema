@@ -345,9 +345,20 @@ Page editing-lock metadata writes reconcile canonical document and annotation ev
 without creating a new editor mutation. See the optimistic navigation and page editing
 lock workflow tests in `Tests/NoemaEditorTests`.
 
-Reading preserves native text selection and hyperlink activation. Editing begins explicitly with **Edit**, the **Edit Article** context action or Option-click. Marked-text composition reserves native candidate navigation and commitment keys before structural commands.
+Unlocked writable pages are continuously editable after their identity-matched semantic
+session establishes revision authority. `AppModel.canEditPage` admits native editing and
+formatting; unavailable vaults, lifecycle/modal restrictions, locked pages, unsupported
+documents and unready semantic sessions remain non-editable. Sources stay read-only.
+There is no Edit/Done transition or Option-click editing gesture. Ordinary clicks place
+the caret and preserve native selection; Command-click and the accessible **Open Link**
+context action follow wiki, block and external links. Internal block links use the same
+optimistic navigation capture as sidebar selection. Opening a page does not take focus
+from navigation controls. Save acknowledgements retain the active selection and undo.
+Escape dismisses transient slash/wiki suggestions without finishing editing, saving or
+clearing selection. Marked-text composition reserves native candidate navigation and
+commitment keys before structural commands. Clicking outside does not end editing.
 
-Keyboard behavior: Return splits; empty list Return exits; structural Backspace converts to paragraph before merging; Tab/Shift Tab indent/outdent; Shift Return inserts a code newline; Command A selects the current block while editing and the entire document while reading; Command Option A and **Select Entire Document** explicitly select the document. Command Option Up/Down moves a subtree among siblings. Command Shift Return toggles a task. Slash commands and context actions use the same mutations. Content-relative drag handles share the native block layout geometry. Handle interactions preserve the text caret, native drag sessions target sibling reordering, and viewport-edge scrolling and cancellation clear transient drop state. Pointer completion and layout transitions still require device acceptance; see the standing validation gaps. Indent/outdent explicitly changes parentage.
+Keyboard behavior: Return splits; empty list Return exits; structural Backspace converts to paragraph before merging; Tab/Shift Tab indent/outdent; Shift Return inserts a code newline; Command A selects the current block in editable pages and the entire document in read-only text; Command Option A and **Select Entire Document** explicitly select the document. Command Option Up/Down moves a subtree among siblings. Command Shift Return toggles a task. Slash commands and context actions use the same mutations. Content-relative drag handles share the native block layout geometry. Handle interactions preserve the text caret, native drag sessions target sibling reordering, and viewport-edge scrolling and cancellation clear transient drop state. Pointer completion and layout transitions still require device acceptance; see the standing validation gaps. Indent/outdent explicitly changes parentage.
 
 Block selection is a separate set of stable UUIDs. A handle selects a block, Shift extends across adjacent visible blocks, and Command toggles membership without replacing native character selection. Selecting a parent includes its complete subtree; selected descendants of a selected ancestor are deduplicated. Batch copy, move, duplicate, delete and transformations retain document order and use one document transaction for undo. Moves retain identities and parentage; duplication generates fresh UUIDs throughout each copied subtree. Structural kind, semantic designation and status remain separate mutations. Unknown semantic designations and extension metadata survive structural transformations.
 
@@ -406,6 +417,6 @@ without a cropped preview. The preview cannot extend into adjacent text or block
 Readable Markdown, HTML and UTF-8 sources share document roles while preserving
 heading, quote, code and link semantics. Original source bytes stay immutable;
 Quick Look retains ownership of PDF/media rendering. Preference refresh preserves
-text, complete selected ranges, caret, editing mode, native undo/redo and scroll
+text, complete selected ranges, caret, editability, native undo/redo and scroll
 where layout permits; natural reflow may change a glyph's screen position. A font
 refresh neither reloads the draft nor registers a content edit.

@@ -11,8 +11,7 @@ private final class InterchangeFixtureState {
 }
 
 extension RichArticleView {
-    init(text: Binding<String>, reading: Bool, locked: Bool, action: EditorAction?,
-         onBegin: @escaping () -> Void, onEnd: @escaping () -> Void,
+    init(text: Binding<String>, editable: Bool, locked: Bool, action: EditorAction?,
          onWikiLink: @escaping (String) -> Void, onWikiQuery: @escaping (String?) -> Void = { _ in },
          noteID: UUID? = nil, vaultID: UUID? = nil, sessionID: UUID? = nil,
          hidesAISummary: Bool = false,
@@ -30,9 +29,8 @@ extension RichArticleView {
         }, set: {
             state.document = $0; state.source = BlockDocumentCodec.encode($0)
             text.wrappedValue = state.source
-        }), reading: reading,
-            locked: locked, action: action, onBegin: onBegin, onEnd: onEnd,
-            onWikiLink: onWikiLink, onWikiQuery: onWikiQuery, noteID: noteID,
+        }), editable: editable,
+            locked: locked, action: action, onWikiLink: onWikiLink, onWikiQuery: onWikiQuery, noteID: noteID,
             vaultID: vaultID, sessionID: sessionID, hidesAISummary: hidesAISummary,
             onSemanticLoad: onSemanticLoad, annotationChoices: annotationChoices, onAnnotate: onAnnotate,
             onInspectAssociation: onInspectAssociation, onSemanticSelection: onSemanticSelection)

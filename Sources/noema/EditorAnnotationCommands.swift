@@ -21,7 +21,7 @@ extension RichArticleView.Coordinator {
     /// Presentation ranges include a paragraph terminator. Canonical block text does not.
     /// Accept exactly one native selection contained entirely in one canonical block.
     func annotationSelection() -> (UUID, NSRange)? {
-        guard let view, view.isEditable, !view.locked, !parent.reading, !parent.locked,
+        guard let view, view.isEditable, !view.locked, parent.editable, !parent.locked,
               !view.hasMarkedText(), !view.isSettingMarkedText,
               session.semanticEdit != nil, parent.noteID != nil, parent.vaultID != nil, parent.sessionID != nil,
               parent.onAnnotate != nil, parent.annotationChoices != nil,

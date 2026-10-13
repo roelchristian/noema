@@ -145,12 +145,11 @@ struct SettingsWindowStateTests {
         let note = try #require(model.notes.first { $0.id == created.id })
         model.currentNote = note
         model.selectedID = note.id
-        model.reading = false
 
         #expect(model.canOpenSettings)
         #expect(!model.showSettings)
         #expect(model.canInteractWithWorkspace)
-        #expect(model.canFormatDocument)
+        #expect(!model.canFormatDocument) // No semantic editor has established authority.
 
         model.openSettings()
         #expect(model.showSettings)
@@ -176,7 +175,7 @@ struct SettingsWindowStateTests {
         #expect(!model.showCustomTeXCommandsModal)
         #expect(!model.showAIActivityHistory)
         #expect(model.canInteractWithWorkspace)
-        #expect(model.canFormatDocument)
+        #expect(!model.canFormatDocument) // No semantic editor has established authority.
 
         // A fresh presentation defaults back to Appearance unless a specific category is requested.
         model.openSettings()

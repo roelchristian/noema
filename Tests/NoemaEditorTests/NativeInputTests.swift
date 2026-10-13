@@ -26,22 +26,36 @@ import VaultCore
     #expect(view.selectedRange() == NSRange(location: 0, length: view.string.utf16.count))
 }
 
-@Test @MainActor func nativeInputExplicitEditingPreservesPartialSelectionAndHonoursLock() {
+@Test @MainActor func nativeInputEscapeKeepsEditingAndSelection() {
     let view = nativeInputView("Selectable article")
-    view.isEditable = false
     let selection = NSRange(location: 2, length: 5)
     view.setSelectedRange(selection)
-    var starts = 0
-    view.begin = { starts += 1 }
-    view.beginEditingArticle(nil)
+    let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+        windowNumber: 0, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
+    view.keyDown(with: event)
     #expect(view.isEditable)
     #expect(view.selectedRange() == selection)
-    #expect(starts == 1)
-    view.isEditable = false
-    view.locked = true
-    view.beginEditingArticle(nil)
-    #expect(!view.isEditable)
-    #expect(starts == 1)
+}
+
+@Test @MainActor func nativeInputEscapeDismissesSlashAndPreservesBlockSelection() {
+    let (coordinator, view, window) = nativeSessionEditor("/heading")
+    defer { coordinator.invalidatePublication(); window.close() }
+    let selection = NSRange(location: 3, length: 2)
+    view.setSelectedRange(selection)
+    coordinator.slashRange = NSRange(location: 0, length: 8)
+    let id = coordinator.document.blocks[0].id
+    coordinator.selectedBlockIDs = [id]
+    view.handleKey = { coordinator.handleKey($0) }
+    let revision = coordinator.session.revision
+    let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+        windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
+    view.keyDown(with: event)
+    #expect(coordinator.dismissedSlash == 0)
+    #expect(!coordinator.suggestions.isShown)
+    #expect(view.isEditable)
+    #expect(view.selectedRange() == selection)
+    #expect(coordinator.selectedBlockIDs == [id])
+    #expect(coordinator.session.revision == revision)
 }
 
 @Test @MainActor func nativeInputMarkedTextCommitsCJKWithoutDroppingSurroundingText() {
@@ -70,8 +84,8 @@ import VaultCore
 @MainActor private func nativeSessionEditor(_ source: String) -> (RichArticleView.Coordinator, ArticleTextView, NSWindow) {
     _ = NSApplication.shared
     var body = source
-    let parent = RichArticleView(text: Binding(get: { body }, set: { body = $0 }), reading: false, locked: false, action: nil,
-        onBegin: {}, onEnd: {}, onWikiLink: { _ in })
+    let parent = RichArticleView(text: Binding(get: { body }, set: { body = $0 }), editable: true, locked: false, action: nil,
+        onWikiLink: { _ in })
     let coordinator = parent.makeCoordinator()
     let view = nativeInputView(source)
     view.allowsUndo = true; view.isRichText = true

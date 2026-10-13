@@ -7,8 +7,8 @@ import VaultCore
 @MainActor private func blockInteractionEditor(_ document: BlockDocument) -> (RichArticleView.Coordinator, ArticleTextView, NSWindow) {
     _ = NSApplication.shared
     var source = BlockDocumentCodec.encode(document)
-    let parent = RichArticleView(text: Binding(get: { source }, set: { source = $0 }), reading: false, locked: false,
-        action: nil, onBegin: {}, onEnd: {}, onWikiLink: { _ in })
+    let parent = RichArticleView(text: Binding(get: { source }, set: { source = $0 }), editable: true, locked: false,
+        action: nil, onWikiLink: { _ in })
     let coordinator = parent.makeCoordinator()
     let view = ArticleTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
     view.isEditable = true; view.isSelectable = true; view.isRichText = true; view.allowsUndo = true

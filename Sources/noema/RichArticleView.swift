@@ -10,11 +10,9 @@ struct RichArticleView: NSViewRepresentable {
     @AppStorage(EditorPreferences.fontSizeKey) var fontSize = EditorTypography.defaultSize
     var typography: EditorTypography { EditorTypography(family: fontFamily, size: fontSize) }
     @Binding var document: BlockDocument
-    var reading: Bool
+    var editable: Bool
     var locked: Bool
     var action: EditorAction?
-    var onBegin: () -> Void
-    var onEnd: () -> Void
     var onWikiLink: (String) -> Void
     var onWikiQuery: (String?) -> Void = { _ in }
     var noteID: UUID? = nil
@@ -42,7 +40,7 @@ struct RichArticleView: NSViewRepresentable {
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         view.isAutomaticQuoteSubstitutionEnabled = false; view.isAutomaticDashSubstitutionEnabled = false
         view.setAccessibilityLabel("Article block editor")
-        view.setAccessibilityHelp("Select text or activate links while reading. Press Edit or Option-click to edit. Unlock a locked article first. Slash opens block commands. Use the Block context menu for structure, tags, and status. Command Option A selects the document.")
+        view.setAccessibilityHelp("Click unlocked page text to edit. Command-click a link or use Open Link in its context menu. Unlock a locked article first. Slash opens block commands. Use the Block context menu for structure, tags, and status. Command Option A selects the document.")
         view.registerForDraggedTypes([ArticleTextView.dragType])
         view.delegate = context.coordinator; context.coordinator.view = view; scroll.documentView = view
         view.updateReadingGeometry()
@@ -60,9 +58,8 @@ struct RichArticleView: NSViewRepresentable {
         view.showSemanticHeadings = showSemanticHeadings
         view.typography = typography
         view.locked = locked || coordinator.document.unsupportedVersion || (onSemanticLoad != nil && coordinator.session.semanticEdit == nil)
-        view.isEditable = !reading && !view.locked; view.theme = theme
-        view.begin = onBegin; view.end = onEnd
-        view.lockedClick = onBegin
+        view.isEditable = editable && !view.locked; view.theme = theme
+        view.openLink = { [weak coordinator] in coordinator?.followLink($0) }
         view.handleKey = { [weak coordinator] in coordinator?.handleKey($0) ?? false }
         view.annotationAction = { [weak coordinator] in coordinator?.annotateSelection(nil) }
         view.annotationAvailable = { [weak coordinator] in coordinator?.annotationSelection() != nil }
@@ -82,6 +79,8 @@ struct RichArticleView: NSViewRepresentable {
                 coordinator.presentationRefreshPending = false
             } else { coordinator.presentationRefreshPending = true }
         }
+        view.locked = locked || coordinator.document.unsupportedVersion || (onSemanticLoad != nil && coordinator.session.semanticEdit == nil)
+        view.isEditable = editable && !view.locked
         coordinator.updateAnnotationAvailability()
         if let action, coordinator.lastAction != action.id {
             if case .block = action.operation { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
@@ -166,7 +165,7 @@ struct SummarizedArticleView: View {
                 .background(.ultraThinMaterial)
                 Divider().scaleEffect(y: 0.5).frame(height: 0.5)
             }
-            RichArticleView(document: editorDocument, reading: model.reading, locked: model.editingLocked, action: model.editorAction, onBegin: model.beginEditing, onEnd: model.finishEditing, onWikiLink: model.followWikiLink, onWikiQuery: { model.wikiQuery = $0 }, noteID: model.currentNote?.id, vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID, hidesAISummary: true, onSessionReady: { coordinator in
+            RichArticleView(document: editorDocument, editable: model.canEditPage, locked: model.editingLocked, action: model.editorAction, onWikiLink: model.followWikiLink, onWikiQuery: { model.wikiQuery = $0 }, noteID: model.currentNote?.id, vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID, hidesAISummary: true, onSessionReady: { coordinator in
                 if let coordinator {
                     model.registerEditorSession(coordinator.session)
                     model.flushEditorPublication = { [weak coordinator] in coordinator?.flushPublication() }

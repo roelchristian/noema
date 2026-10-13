@@ -20,8 +20,8 @@ import VaultCore
 
     @Test func typingFlushKeepsSummaryAndUntouchedPlainMarkdown() throws {
         var source = "Unchanged plain text"
-        var parent = RichArticleView(text: Binding(get: { source }, set: { source = $0 }), reading: false,
-            locked: false, action: nil, onBegin: {}, onEnd: {}, onWikiLink: { _ in })
+        var parent = RichArticleView(text: Binding(get: { source }, set: { source = $0 }), editable: true,
+            locked: false, action: nil, onWikiLink: { _ in })
         let (plain, _, plainWindow) = editor(parent)
         defer { plainWindow.close() }
         plain.flushPublication()
@@ -52,8 +52,8 @@ import VaultCore
     @Test func asynchronousPublicationRejectsSupersededRevisionAndNavigation() async throws {
         var source = "First"
         var writes = 0
-        let parent = RichArticleView(text: Binding(get: { source }, set: { source = $0; writes += 1 }), reading: false,
-            locked: false, action: nil, onBegin: {}, onEnd: {}, onWikiLink: { _ in }, noteID: UUID(), vaultID: UUID(), sessionID: UUID())
+        let parent = RichArticleView(text: Binding(get: { source }, set: { source = $0; writes += 1 }), editable: true,
+            locked: false, action: nil, onWikiLink: { _ in }, noteID: UUID(), vaultID: UUID(), sessionID: UUID())
         let (coordinator, _, window) = editor(parent)
         defer { window.close() }
         let id = try #require(coordinator.document.blocks.first?.id)
@@ -78,8 +78,8 @@ import VaultCore
 
     @Test func structuralUndoRedoRestoresSelectionAndStableIDs() throws {
         var source = "First second"
-        let parent = RichArticleView(text: Binding(get: { source }, set: { source = $0 }), reading: false,
-            locked: false, action: nil, onBegin: {}, onEnd: {}, onWikiLink: { _ in })
+        let parent = RichArticleView(text: Binding(get: { source }, set: { source = $0 }), editable: true,
+            locked: false, action: nil, onWikiLink: { _ in })
         let (coordinator, view, window) = editor(parent)
         defer { window.close() }
         let original = coordinator.document
@@ -116,8 +116,8 @@ import VaultCore
         try #require(model.currentNote?.id == page.id)
         let article = SummarizedArticleView(model: model)
         let binding = article.editorText
-        let parent = RichArticleView(document: article.editorDocument, reading: false, locked: false, action: nil,
-            onBegin: {}, onEnd: {}, onWikiLink: { _ in }, noteID: page.id,
+        let parent = RichArticleView(document: article.editorDocument, editable: true, locked: false, action: nil,
+            onWikiLink: { _ in }, noteID: page.id,
             vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID, onSnapshot: model.acceptEditorSnapshot)
         let (coordinator, view, window) = editor(parent)
         defer { window.close(); model.flushEditorPublication = nil }
@@ -156,9 +156,8 @@ import VaultCore
             try await Task.sleep(for: .milliseconds(10))
         }
         try #require(model.currentNote?.id == page.id)
-        model.reading = false
-        let parent = RichArticleView(document: SummarizedArticleView(model: model).editorDocument,
-            reading: false, locked: false, action: nil, onBegin: {}, onEnd: {}, onWikiLink: { _ in },
+                let parent = RichArticleView(document: SummarizedArticleView(model: model).editorDocument,
+            editable: true, locked: false, action: nil, onWikiLink: { _ in },
             noteID: page.id, vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID,
             onSnapshot: model.acceptEditorSnapshot,
             onSemanticLoad: model.configureSemanticEditor, annotationChoices: model.annotationChoices,
@@ -233,9 +232,8 @@ import VaultCore
         let model = AppModel(); model.localStorageRoot = base.appendingPathComponent("Local"); model.persistSecurityScopedBookmark = false
         await model.open(root, create: false); model.select(page.id)
         for _ in 0..<100 { if model.currentNote?.id == page.id { break }; try await Task.sleep(for: .milliseconds(10)) }
-        model.reading = false
-        let parent = RichArticleView(text: SummarizedArticleView(model: model).editorText, reading: false, locked: false, action: nil,
-            onBegin: {}, onEnd: {}, onWikiLink: { _ in }, noteID: page.id, vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID,
+                let parent = RichArticleView(text: SummarizedArticleView(model: model).editorText, editable: true, locked: false, action: nil,
+            onWikiLink: { _ in }, noteID: page.id, vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID,
             onSemanticLoad: model.configureSemanticEditor, annotationChoices: model.annotationChoices, onAnnotate: model.annotateSelection,
             onInspectAssociation: model.inspectSemanticAssociation, onSemanticSelection: model.semanticSelectionChanged)
         let (coordinator, view, window) = editor(parent)
@@ -280,7 +278,7 @@ import VaultCore
         #expect(try await store.loadSemanticPage(pageID: page.id).annotations.first { $0.annotation.id == personRow.id }?.annotation.anchorDisposition == .resolved)
         #expect(await model.navigateSemanticOccurrence(occurrence))
         #expect(model.currentNote?.id == second.id)
-        coordinator.parent.noteID = second.id; coordinator.parent.reading = true
+        coordinator.parent.noteID = second.id; coordinator.parent.editable = false
         coordinator.load(model.body)
         for _ in 0..<100 { if model.pendingSemanticOccurrence == nil { break }; try await Task.sleep(for: .milliseconds(10)) }
         let intendedBlock = try #require(occurrence.location.blockID)
@@ -316,10 +314,9 @@ import VaultCore
         let model = AppModel(); model.localStorageRoot = base.appendingPathComponent("Local")
         model.persistSecurityScopedBookmark = false
         await model.open(root, create: false)
-        model.select(first.id); model.reading = false
-        func parent() -> RichArticleView {
+        model.select(first.id);         func parent() -> RichArticleView {
             RichArticleView(document: SummarizedArticleView(model: model).editorDocument,
-                reading: false, locked: false, action: nil, onBegin: {}, onEnd: {}, onWikiLink: { _ in },
+                editable: true, locked: false, action: nil, onWikiLink: { _ in },
                 noteID: first.id, vaultID: model.sessionState.vaultID, sessionID: model.sessionState.sessionID,
                 onSnapshot: model.acceptEditorSnapshot,
                 onSemanticLoad: model.configureSemanticEditor, annotationChoices: model.annotationChoices,
@@ -349,8 +346,7 @@ import VaultCore
         }
         model.select(second.id)
         for await _ in entered.stream { break }
-        model.select(first.id); model.reading = false
-        let (resumed, _, resumedWindow) = editor(parent())
+        model.select(first.id);         let (resumed, _, resumedWindow) = editor(parent())
         defer { resumedWindow.close() }
         model.flushEditorPublication = { resumed.flushPublication() }
         #expect(resumed.session.semanticEdit?.annotations.count == 1)
