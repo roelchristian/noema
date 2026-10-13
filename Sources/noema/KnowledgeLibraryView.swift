@@ -21,10 +21,15 @@ enum KnowledgeCatalogueSelection: Identifiable {
 }
 struct KnowledgeLibraryView<Blocks: View>: View {
     @Bindable var model: AppModel
+    @Binding var query: String
+    @Binding var selection: KnowledgeCatalogueSelection?
     let blocks: Blocks
-    @State private var query = ""
-    @State private var selection: KnowledgeCatalogueSelection?
-    init(model: AppModel, @ViewBuilder blocks: () -> Blocks) { self.model = model; self.blocks = blocks() }
+    init(model: AppModel, query: Binding<String>, selection: Binding<KnowledgeCatalogueSelection?>, @ViewBuilder blocks: () -> Blocks) {
+        self.model = model
+        self._query = query
+        self._selection = selection
+        self.blocks = blocks()
+    }
     private func matches(_ text: String) -> Bool { query.split(whereSeparator: \.isWhitespace).allSatisfy { text.localizedCaseInsensitiveContains(String($0)) } }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

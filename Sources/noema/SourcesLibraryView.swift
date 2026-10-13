@@ -7,13 +7,15 @@ struct SourcesLibraryView: View {
     let model: AppModel
     let presentation: SourcesTablePresentation
     @Binding var selection: UUID?
+    var scrollPosition: Binding<ScrollPosition>? = nil
+    var listFocus: FocusState<Bool>.Binding? = nil
     let rename: (SourceRecord) -> Void
     let delete: (SourceRecord) -> Void
     @State private var statuses = SourcesStatusPresentation()
 
     var body: some View {
         SourcesNativeTable(model: model, presentation: presentation, statuses: statuses,
-                           selection: $selection, rename: rename, delete: delete)
+                           selection: $selection, scrollPosition: scrollPosition, listFocus: listFocus, rename: rename, delete: delete)
             .background {
                 SourceMetadataBridge(model: model, presentation: presentation)
                 SourceStatusBridge(model: model, presentation: statuses)
@@ -71,6 +73,8 @@ private struct SourcesNativeTable: View {
     let presentation: SourcesTablePresentation
     let statuses: SourcesStatusPresentation
     @Binding var selection: UUID?
+    var scrollPosition: Binding<ScrollPosition>? = nil
+    var listFocus: FocusState<Bool>.Binding? = nil
     let rename: (SourceRecord) -> Void
     let delete: (SourceRecord) -> Void
 
@@ -124,7 +128,16 @@ private struct SourcesNativeTable: View {
         } primaryAction: { ids in
             if let id = ids.first { model.openSource(id) }
         }
+        .modifier(OptionalScrollPositionModifier(position: scrollPosition))
+        .modifier(CollectionListFocusModifier(focus: listFocus))
         .accessibilityLabel("Sources table")
+    }
+}
+
+private struct CollectionListFocusModifier: ViewModifier {
+    let focus: FocusState<Bool>.Binding?
+    func body(content: Content) -> some View {
+        if let focus { content.focused(focus) } else { content }
     }
 }
 

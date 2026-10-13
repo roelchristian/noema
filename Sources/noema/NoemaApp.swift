@@ -51,6 +51,11 @@ import VaultCore
                 }
                 .keyboardShortcut("s", modifiers: [.command, .control])
                 .disabled(paneActions?.canToggleSidebar != true)
+                Button(paneActions?.collectionPresented == true ? "Hide Collection List" : "Show Collection List") {
+                    paneActions?.toggleCollection()
+                }
+                .keyboardShortcut("l", modifiers: [.command, .control])
+                .disabled(paneActions?.canToggleCollection != true)
                 Button(paneActions?.inspectorPresented == true ? "Hide Inspector" : "Show Inspector") {
                     paneActions?.toggleInspector()
                 }

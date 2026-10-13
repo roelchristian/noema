@@ -148,6 +148,7 @@ struct SidebarRecentItemsNavigationTests {
         await model.open(root, create: false)
         model.select(note.id, scope: .wiki)
         let page = RecentItemID.page(note.id), target = RecentItemID.semanticBlock(pageID: note.id, blockID: block.id)
+        #expect(model.selectedSidebarRecentItemID == nil)
         for id in [target, page, target, target, page] {
             model.openSidebarRecentItem(id)
             #expect(model.selectedSidebarRecentItemID == id)
@@ -164,7 +165,8 @@ struct SidebarRecentItemsNavigationTests {
         #expect(model.sidebarRecentItems.map(\.id) == visible)
         model.openSidebarRecentItem(page)
         model.select(source.id, scope: .sources)
-        await waitUntil { model.selectedSidebarRecentItemID == .source(source.id) }
+        await waitUntil { model.recentItemIDs.first == .source(source.id) }
+        #expect(model.selectedSidebarRecentItemID == nil)
         #expect(model.sidebarRecentItems.map(\.id) == visible)
         #expect(await model.closeVault())
         await model.open(root, create: false)

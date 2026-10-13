@@ -676,7 +676,6 @@ struct AISuggestion: Identifiable, Sendable {
         guard canOperateOnLoadedContent, !isLocked else { return }
         sidebarRecentHistory.record(id)
         sidebarRecentPresentation.reconcile(sidebarRecentHistory.ids)
-        selectedSidebarRecentItemID = id
         sidebarRecentCacheRevision = nil
         persistSidebarRecentHistory()
     }
@@ -695,6 +694,15 @@ struct AISuggestion: Identifiable, Sendable {
         case .page(let pageID): select(pageID, scope: .wiki)
         case .source(let sourceID): select(sourceID, scope: .sources, previewSource: true)
         case .semanticBlock(let pageID, let blockID): select(pageID, scope: .wiki, block: blockID)
+        }
+        // History recording must not steal the collection highlight. Only this explicit choice does.
+        switch id {
+        case .page(let pageID):
+            if currentNote?.id == pageID { selectedSidebarRecentItemID = id }
+        case .source(let sourceID):
+            if currentSource?.id == sourceID { selectedSidebarRecentItemID = id }
+        case .semanticBlock(let pageID, let blockID):
+            if currentNote?.id == pageID, selectedSemanticID == "\(pageID):\(blockID)" { selectedSidebarRecentItemID = id }
         }
     }
     var linkSuggestions: [NoteRecord] {
@@ -2437,6 +2445,7 @@ struct AISuggestion: Identifiable, Sendable {
     func select(_ id: UUID?, scope targetScope: LibraryScope? = nil, block blockID: UUID? = nil, previewSource: Bool = false) {
         guard canInteractWithWorkspace, canOperateOnLoadedContent else { return }
         if let id, id == currentNote?.id {
+            selectedSidebarRecentItemID = nil
             if let targetScope { scope = targetScope; searchText = "" }
             if let blockID, editorDocument.block(blockID) != nil {
                 selectedSemanticID = "\(id):\(blockID)"
@@ -3077,6 +3086,7 @@ struct AISuggestion: Identifiable, Sendable {
                 errorMessage = nil
                 notes.insert(note, at: 0); scope = .wiki
                 selectedID = note.id; currentSource = nil; apply(note)
+                selectedSidebarRecentItemID = nil
                 recordSidebarAccess(.page(note.id))
                 await refresh()
             } catch { if isCompletionValid(completionTicket, operation: "newPage.error") { errorMessage = error.localizedDescription } }
@@ -3190,6 +3200,7 @@ struct AISuggestion: Identifiable, Sendable {
                 if let originalID { pendingPageSaves.removeValue(forKey: originalID); pageSaveFailures.removeValue(forKey: originalID) }
                 applyRecoveryListing(drafts)
                 notes.insert(note, at: 0); scope = .wiki; currentSource = nil; selectedID = note.id; apply(note)
+                selectedSidebarRecentItemID = nil
                 recordSidebarAccess(.page(note.id))
                 errorMessage = nil; showRecovery = false; await refresh()
             } catch { if isCompletionValid(completionTicket, operation: "saveDraftAsNewPage.error") { errorMessage = error.localizedDescription } }
@@ -3891,6 +3902,7 @@ extension AppModel {
             aiPageDraft = nil; aiPageSubmission = nil; aiPageOperationID = nil; aiPageActivityID = nil
             errorMessage = nil; searchText = ""; scope = .wiki
             notes.insert(saved, at: 0); selectedID = saved.id; currentSource = nil; apply(saved)
+            selectedSidebarRecentItemID = nil
             recordSidebarAccess(.page(saved.id))
             await refresh()
             return true
@@ -4091,6 +4103,7 @@ extension AppModel {
             selectedID = pageID; currentSource = nil; apply(page.record)
             selectedSemanticID = "\(pageID):\(blockID)"
             editorAction = EditorAction(operation: .block(blockID))
+            selectedSidebarRecentItemID = nil
             recordSidebarAccess(.semanticBlock(pageID: pageID, blockID: blockID))
             return true
         } catch {

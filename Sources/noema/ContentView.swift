@@ -26,6 +26,13 @@ struct ContentView: View {
     @State private var pageSortOrder: PageSortOrder = .updated
     @State private var selectedSemanticStatus: String?
     @State private var selectedSemanticFilter: String?
+    @State private var pageListScroll = ScrollPosition(idType: UUID.self)
+    @State private var semanticListScroll = ScrollPosition(idType: String.self)
+    @State private var sourceListScroll = ScrollPosition(edge: .top)
+    @State private var knowledgeQuery = ""
+    @State private var knowledgeSelection: KnowledgeCatalogueSelection?
+    @FocusState private var collectionListFocused: Bool
+    @State private var pendingLibraryFocus = false
     private var sourceSelection: UUID? { model.librarySourceSelection }
     private var sourceSelectionBinding: Binding<UUID?> {
         Binding(get: { model.librarySourceSelection }, set: { model.setLibrarySourceSelection($0) })
@@ -43,26 +50,31 @@ struct ContentView: View {
         _paneState = State(initialValue: panes)
         _inspectorState = State(initialValue: InspectorState(paneState: panes))
     }
-    private var workspaceMinimum: CGFloat {
-        model.scope == .sources && model.currentNote == nil && model.currentSource == nil ? 520 : 420
-    }
+    private var contentMinimum: CGFloat { WorkspacePaneState.contentMinimum }
     private var panePresentation: WorkspacePanePresentation {
-        paneState.presentation(width: workspaceWidth, mainMinimum: workspaceMinimum, inspectorAvailable: inspectorContext.isInspectable)
+        paneState.presentation(width: workspaceWidth, mainMinimum: contentMinimum, inspectorAvailable: inspectorContext.isInspectable)
     }
     private var isInspectorPresented: Bool { model.isVaultAvailable && panePresentation.inspector }
     private var paneActions: WorkspacePaneActions {
         WorkspacePaneActions(
             toggleSidebar: toggleSidebarPane,
+            toggleCollection: toggleCollectionPane,
             toggleInspector: toggleInspectorPane,
             sidebarPresented: model.isVaultAvailable && panePresentation.sidebar,
+            collectionPresented: model.isVaultAvailable && panePresentation.collection,
             inspectorPresented: isInspectorPresented,
-            canToggleSidebar: model.canInteractWithWorkspace && model.isVaultAvailable && workspaceWidth >= workspaceMinimum + WorkspacePaneState.sidebarMinimum + 1,
-            canToggleInspector: model.canInteractWithWorkspace && model.isVaultAvailable && inspectorContext.isInspectable && workspaceWidth >= workspaceMinimum + InspectorState.minWidth + 1
+            canToggleSidebar: model.canInteractWithWorkspace && model.isVaultAvailable && workspaceWidth >= contentMinimum + WorkspacePaneState.sidebarMinimum + 1,
+            canToggleCollection: model.canInteractWithWorkspace && model.isVaultAvailable && workspaceWidth >= contentMinimum + WorkspacePaneState.collectionMinimum + 1,
+            canToggleInspector: model.canInteractWithWorkspace && model.isVaultAvailable && inspectorContext.isInspectable && workspaceWidth >= contentMinimum + InspectorState.minWidth + 1
         )
     }
     private func toggleSidebarPane() {
         guard paneActions.canToggleSidebar else { return }
         paneState.toggleSidebar(presented: panePresentation.sidebar)
+    }
+    private func toggleCollectionPane() {
+        guard paneActions.canToggleCollection else { return }
+        paneState.toggleCollection(presented: panePresentation.collection)
     }
     private func toggleInspectorPane() {
         guard paneActions.canToggleInspector else { return }
@@ -96,6 +108,12 @@ struct ContentView: View {
         sourceOriginal = false
         showAllSearchResults = false
         selectedSemanticFilter = nil; selectedSemanticStatus = nil
+        knowledgeQuery = ""
+        knowledgeSelection = nil
+        pageListScroll = ScrollPosition(idType: UUID.self)
+        semanticListScroll = ScrollPosition(idType: String.self)
+        sourceListScroll = ScrollPosition(edge: .top)
+        pendingLibraryFocus = false
     }
     private var workspacePresentation: some View {
         Group {
@@ -105,15 +123,19 @@ struct ContentView: View {
                 welcome
             } else {
                 GeometryReader { geometry in
-                    let presentation = paneState.presentation(width: geometry.size.width, mainMinimum: workspaceMinimum, inspectorAvailable: inspectorContext.isInspectable)
+                    let presentation = paneState.presentation(width: geometry.size.width, mainMinimum: contentMinimum, inspectorAvailable: inspectorContext.isInspectable)
                     HSplitView {
                         if presentation.sidebar {
                             sidebar.frame(minWidth: WorkspacePaneState.sidebarMinimum, idealWidth: paneState.sidebarWidth, maxWidth: WorkspacePaneState.sidebarMaximum, maxHeight: .infinity)
                         }
-                        mainWorkspace
-                            .frame(minWidth: workspaceMinimum, maxHeight: .infinity)
+                        if presentation.collection {
+                            collectionPane
+                                .frame(minWidth: WorkspacePaneState.collectionMinimum, idealWidth: paneState.collectionWidth, maxWidth: WorkspacePaneState.collectionMaximum, maxHeight: .infinity)
+                        }
+                        contentPane
+                            .frame(minWidth: contentMinimum, maxHeight: .infinity)
                             .transaction { $0.animation = nil }
-                            .background(WorkspaceSplitViewPersistence(state: paneState, presentation: presentation, mainMinimum: workspaceMinimum))
+                            .background(WorkspaceSplitViewPersistence(state: paneState, presentation: presentation, mainMinimum: contentMinimum))
                         if presentation.inspector {
                             InspectorContainer(
                                 model: model,
@@ -224,7 +246,7 @@ struct ContentView: View {
                  : "Move ‘\(deletingSource?.title ?? "")’ and its imported original to Trash? Restore them within 15 days.")
         }
     }
-    var body: some View {
+    private var workspaceContentObservers: some View {
         workspaceConfirmations
         .onChange(of: model.semanticInspectionOpenRequest) {
             guard case .page = inspectorContext else { return }
@@ -235,8 +257,37 @@ struct ContentView: View {
         .onChange(of: model.editorDocument) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.title) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false; showAllSearchResults = false }
-        .onChange(of: model.scope) { showAllSearchResults = false; selectedSemanticFilter = nil; selectedSemanticStatus = nil }
-        .onChange(of: model.workspaceNavigationToken) { showAllSearchResults = false }
+        .onChange(of: model.scope) {
+            showAllSearchResults = false
+            selectedSemanticFilter = nil
+            selectedSemanticStatus = nil
+            if model.scope != .sources { model.setLibrarySourceSelection(nil) }
+        }
+    }
+    private var workspaceNavigationObservers: some View {
+        workspaceContentObservers
+        .onChange(of: model.workspaceNavigationToken) {
+            showAllSearchResults = false
+            if model.currentNote == nil && model.currentSource == nil {
+                pendingLibraryFocus = false
+                revealCollectionList()
+            } else {
+                pendingLibraryFocus = true
+            }
+        }
+        .onChange(of: model.currentNote) { completeLibraryFocus() }
+        .onChange(of: model.currentSource) { completeLibraryFocus() }
+        .onChange(of: model.librarySourceSelection) { _, id in
+            guard model.scope == .sources, let id, model.currentSource?.id != id else { return }
+            model.select(id)
+        }
+        .onChange(of: model.currentSource?.id) { _, id in
+            guard model.scope == .sources, model.librarySourceSelection != id else { return }
+            model.setLibrarySourceSelection(id)
+        }
+    }
+    var body: some View {
+        workspaceNavigationObservers
         .onChange(of: model.externalChange) { dismissedExternalChange = false }
         // UI.R.REM02: Reconcile even while the inspector is hidden or unmounted.
         .onChange(of: inspectorContext.targetID, initial: true) {
@@ -252,13 +303,92 @@ struct ContentView: View {
             }
         }
     }
-    @ViewBuilder private var mainWorkspace: some View {
+    private func completeLibraryFocus() {
+        guard pendingLibraryFocus else { return }
+        pendingLibraryFocus = false
+        if model.currentNote == nil && model.currentSource == nil {
+            revealCollectionList()
+        }
+    }
+    private func revealCollectionList() {
+        paneState.revealCollection()
+        collectionListFocused = false
+        Task { @MainActor in collectionListFocused = true }
+    }
+    private var collectionTitle: String {
+        switch model.scope {
+        case .wiki, .tag: "Pages"
+        case .sources: "Sources"
+        case .semantic: "Knowledge"
+        case .trash: "Trash"
+        }
+    }
+    private var emptySelectionDescription: String {
+        switch model.scope {
+        case .sources: "Select a source to read it."
+        case .semantic: "Select a semantic block to open its page."
+        case .trash: "Restore an item from the list, or return to a collection."
+        default: "Select a page to edit it."
+        }
+    }
+    @ViewBuilder private var collectionPane: some View {
+        VStack(spacing: 0) {
+            if showsCollectionHeader { collectionHeader }
+            if model.scope == .trash {
+                trashLibrary
+            } else {
+                pageLibrary
+            }
+        }
+        .background(theme.color(for: .canvas))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(collectionTitle)
+    }
+    private var showsCollectionHeader: Bool {
+        !model.windowTitle.isCollectionScope || isPagesScope
+    }
+    private var collectionHeader: some View {
+        HStack(spacing: NoemaSpacing.sm) {
+            if !model.windowTitle.isCollectionScope {
+                Text(collectionTitle)
+                    .font(NoemaTypography.sectionHeader)
+                    .lineLimit(1)
+                    .accessibilityAddTraits(.isHeader)
+            }
+            Spacer(minLength: 0)
+            if isPagesScope { pagesSortMenu }
+        }
+        .padding(.horizontal, NoemaSpacing.md)
+        .padding(.vertical, NoemaSpacing.sm)
+    }
+    private var pagesSortMenu: some View {
+        Menu {
+            Picker("Sort", selection: $pageSortOrder) {
+                ForEach(PageSortOrder.allCases) { order in
+                    Text(order.rawValue).tag(order)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Label("Sort", systemImage: "arrow.up.arrow.down")
+        }
+        .help("Sort pages (\(pageSortOrder.rawValue))")
+        .accessibilityLabel("Sort Pages")
+        .accessibilityValue(pageSortOrder.rawValue)
+    }
+    @ViewBuilder private var contentPane: some View {
         if showAllSearchResults {
             fullSearchResults
         } else if model.currentNote != nil || model.currentSource != nil {
             detail
         } else {
-            library
+            ContentUnavailableView(
+                "No Selection",
+                systemImage: model.scope == .sources ? "tray" : "doc.text",
+                description: Text(emptySelectionDescription)
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(theme.color(for: .canvas))
         }
     }
     private var lockedVaultView: some View {
@@ -351,30 +481,15 @@ struct ContentView: View {
         if case .tag = model.scope { return true }
         return false
     }
-    private enum SidebarSelection: Hashable {
-        case destination(LibraryScope)
-        case recent(RecentItemID)
+    private var sidebarSelection: WorkspaceSidebarSelection? {
+        WorkspaceSidebarSelection.resolve(scope: model.scope, explicitRecentItem: model.selectedSidebarRecentItemID)
     }
-    private var sidebarSelection: SidebarSelection? {
-        if let id = model.selectedSidebarRecentItemID,
-           model.currentNote != nil || model.currentSource != nil {
-            return .recent(id)
-        }
-        if model.currentSource != nil { return .destination(.sources) }
-        if let note = model.currentNote { return .recent(.page(note.id)) }
-        switch model.scope {
-        case .wiki, .tag: return .destination(.wiki)
-        case .sources: return .destination(.sources)
-        case .semantic: return .destination(.semantic)
-        case .trash: return nil
-        }
-    }
-    private var sidebarSelectionBinding: Binding<SidebarSelection?> {
+    private var sidebarSelectionBinding: Binding<WorkspaceSidebarSelection?> {
         Binding(get: { sidebarSelection }, set: { selection in
             guard let selection else { return }
             showAllSearchResults = false
             switch selection {
-            case .destination(let scope):
+            case .collection(let scope):
                 model.setLibrarySourceSelection(nil)
                 switchSidebarScope(scope)
             case .recent(let id):
@@ -400,7 +515,7 @@ struct ContentView: View {
                     } else {
                         ForEach(model.sidebarRecentItems) { item in
                             sidebarRecentRow(item)
-                                .tag(SidebarSelection.recent(item.id))
+                                .tag(WorkspaceSidebarSelection.recent(item.id))
                         }
                     }
                 } header: {
@@ -542,9 +657,9 @@ struct ContentView: View {
         .help(title)
     }
     private func sidebarNavigationRow(_ title: String, symbol: String, scope: LibraryScope) -> some View {
-        let isSelected = sidebarSelection == .destination(scope)
+        let isSelected = sidebarSelection == .collection(scope)
         return NoemaSidebarRowLabel(title: title, symbol: symbol, isSelected: isSelected)
-            .tag(SidebarSelection.destination(scope))
+            .tag(WorkspaceSidebarSelection.collection(scope))
             .listRowInsets(NoemaSidebarLayout.rowInsets)
             .listRowSeparator(.hidden)
             .accessibilityLabel(title)
@@ -598,9 +713,6 @@ struct ContentView: View {
             return model.rows.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         }
     }
-    @ViewBuilder private var library: some View {
-        if model.scope == .trash { trashLibrary } else { pageLibrary }
-    }
     private var fullSearchResults: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: NoemaSpacing.md) {
@@ -628,6 +740,8 @@ struct ContentView: View {
                 model: model,
                 presentation: sourceTablePresentation,
                 selection: sourceSelectionBinding,
+                scrollPosition: $sourceListScroll,
+                listFocus: $collectionListFocused,
                 rename: { source in sourceName = source.title; renamingSource = source },
                 delete: { deletingSource = $0 }
             )
@@ -656,7 +770,7 @@ struct ContentView: View {
     private var pageLibraryContent: some View {
         VStack(spacing: 0) {
             if model.scope == .semantic {
-                KnowledgeLibraryView(model: model) { semanticBlockList }
+                KnowledgeLibraryView(model: model, query: $knowledgeQuery, selection: $knowledgeSelection) { semanticBlockList }
             } else if model.rows.isEmpty {
                 ContentUnavailableView("\(model.scopeTitle) is empty", systemImage: model.scope == .sources ? "tray" : "doc.text.magnifyingglass", description: Text(model.scope == .sources ? "Import a text file or paste a source to begin." : "Create a page to start building your wiki."))
                     .frame(maxHeight: .infinity)
@@ -726,7 +840,11 @@ struct ContentView: View {
                             }
                         }
                     }
-                }.listStyle(.plain).scrollContentBackground(.hidden)
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .scrollPosition($pageListScroll)
+                .focused($collectionListFocused)
             }
             HStack {
                 Text(libraryCount)
@@ -897,10 +1015,14 @@ struct ContentView: View {
                 ZStack(alignment: .topLeading) {
                     if let source = model.currentSource, sourceOriginal || source.metadata.storedFilename.hasSuffix(".txt") {
                         MarkdownEditor(text: .constant(model.body), action: nil, onWikiQuery: { _ in }, editable: false)
+                            .id(source.id)
                     } else if model.currentNote != nil {
                         SummarizedArticleView(model: model, showsSummary: (AISummaryPlacement(rawValue: aiSummaryPlacement) ?? .defaultValue).showsInEditor(sidebarVisible: isInspectorPresented))
                             .id(model.selectedID)
-                    } else { MarkdownPreview(blocks: model.preview, onWikiLink: model.followWikiLink) }
+                    } else {
+                        MarkdownPreview(blocks: model.preview, onWikiLink: model.followWikiLink)
+                            .id(model.currentSource?.id)
+                    }
                     if model.canEditPage, model.currentNote != nil, model.wikiQuery != nil, !model.linkSuggestions.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Link a page").font(.caption).foregroundStyle(theme.text()).padding(8)
@@ -952,7 +1074,11 @@ struct ContentView: View {
                         SemanticBlockCollectionRow(hit: hit)
                             .tag(hit.id)
                     }
-                }.listStyle(.plain).scrollContentBackground(.hidden)
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .scrollPosition($semanticListScroll)
+                .focused($collectionListFocused)
             }
         }
     }
@@ -997,6 +1123,15 @@ struct ContentView: View {
                 .accessibilityValue(panePresentation.sidebar ? "Shown" : "Hidden")
             }
             ToolbarItem(placement: .navigation) {
+                Button(action: toggleCollectionPane) {
+                    Label(panePresentation.collection ? "Hide Collection List" : "Show Collection List", systemImage: "list.bullet")
+                }
+                .disabled(!paneActions.canToggleCollection)
+                .help(panePresentation.collection ? "Hide Collection List (⌃⌘L)" : "Show Collection List (⌃⌘L)")
+                .accessibilityLabel(panePresentation.collection ? "Hide Collection List" : "Show Collection List")
+                .accessibilityValue(panePresentation.collection ? "Shown" : "Hidden")
+            }
+            ToolbarItem(placement: .navigation) {
                 Button { model.performWorkspaceCommand(.returnToLibrary) } label: {
                     Label("Return to Library", systemImage: "chevron.backward")
                 }
@@ -1007,23 +1142,6 @@ struct ContentView: View {
             ToolbarItem(id: "workspace.search", placement: .primaryAction) {
                 ToolbarSearchView(model: model, availableWidth: workspaceWidth) {
                     showAllSearchResults = true
-                }
-            }
-            if isPagesScope && model.currentNote == nil && model.currentSource == nil && !showAllSearchResults {
-                ToolbarItem(id: "pages.sort", placement: .primaryAction) {
-                    Menu {
-                        Picker("Sort", selection: $pageSortOrder) {
-                            ForEach(PageSortOrder.allCases) { order in
-                                Text(order.rawValue).tag(order)
-                            }
-                        }
-                        .pickerStyle(.inline)
-                    } label: {
-                        Label("Sort", systemImage: "arrow.up.arrow.down")
-                    }
-                    .help("Sort pages (\(pageSortOrder.rawValue))")
-                    .accessibilityLabel("Sort Pages")
-                    .accessibilityValue(pageSortOrder.rawValue)
                 }
             }
             ToolbarItem(id: "workspace.add", placement: .primaryAction) {
