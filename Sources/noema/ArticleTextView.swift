@@ -590,7 +590,15 @@ import VaultCore
             super.selectAll(sender); return
         }
         // Every rendered block has one presentation-only terminator.
-        setSelectedRange(NSRange(location: range.location, length: max(0, range.length - 1)))
+        let blockSelection = NSRange(location: range.location, length: max(0, range.length - 1))
+        let documentSelection = NSRange(location: 0, length: storage.length)
+        // Repeating Select All expands a selected block to the document, and
+        // further repetitions keep the document selected.
+        if selectedRange() == blockSelection || selectedRange() == documentSelection {
+            super.selectAll(sender)
+        } else {
+            setSelectedRange(blockSelection)
+        }
     }
     /// Keyboard/VoiceOver access uses the current text selection, without a pointer hit test.
     func accessibilityContextMenu() -> NSMenu {
