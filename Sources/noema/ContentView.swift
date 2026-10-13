@@ -11,6 +11,7 @@ struct ContentView: View {
     @Bindable var model: AppModel
     @Environment(\.noemaTheme) private var theme
     @State private var showAllSearchResults = false
+    @State private var showFavourites = false
     @State private var showTrashConfirmation = false
     @State private var hoveredSidebarPageID: UUID?
     @State private var trashPageID: UUID?
@@ -90,11 +91,13 @@ struct ContentView: View {
         InspectorContext.resolve(model: model, librarySourceSelection: sourceSelection)
     }
     private func switchSidebarScope(_ scope: LibraryScope) {
+        showFavourites = false
         showAllSearchResults = false
         SourcesPerformance.event("SidebarScopeChange")
         model.changeScope(scope)
     }
     private func resetLocalWorkspaceState() {
+        showFavourites = false
         model.setLibrarySourceSelection(nil)
         sourceTablePresentation.clear()
         inspectorState.resetForSessionChange()
@@ -356,7 +359,8 @@ struct ContentView: View {
         Task { @MainActor in collectionListFocused = true }
     }
     private var collectionTitle: String {
-        switch model.scope {
+        if showFavourites { return "Favorites" }
+        return switch model.scope {
         case .wiki, .tag: "Pages"
         case .sources: "Sources"
         case .semantic: "Knowledge"
@@ -374,7 +378,7 @@ struct ContentView: View {
     @ViewBuilder private var collectionPane: some View {
         VStack(spacing: 0) {
             if showsCollectionHeader { collectionHeader }
-            if model.scope == .trash {
+            if model.scope == .trash && !showFavourites {
                 trashLibrary
             } else {
                 pageLibrary
@@ -521,17 +525,19 @@ struct ContentView: View {
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     private var isPagesScope: Bool {
+        if showFavourites { return true }
         if case .wiki = model.scope { return true }
         if case .tag = model.scope { return true }
         return false
     }
     private var sidebarSelection: WorkspaceSidebarSelection? {
-        WorkspaceSidebarSelection.resolve(scope: model.scope, explicitRecentItem: model.selectedSidebarRecentItemID)
+        showFavourites ? nil : WorkspaceSidebarSelection.resolve(scope: model.scope, explicitRecentItem: model.selectedSidebarRecentItemID)
     }
     private var sidebarSelectionBinding: Binding<WorkspaceSidebarSelection?> {
         Binding(get: { sidebarSelection }, set: { selection in
             guard let selection else { return }
             showAllSearchResults = false
+            showFavourites = false
             switch selection {
             case .collection(let scope):
                 model.setLibrarySourceSelection(nil)
@@ -541,6 +547,11 @@ struct ContentView: View {
             }
         })
     }
+    private func openFavourites() {
+        showAllSearchResults = false
+        showFavourites = true
+        revealCollectionList()
+    }
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             List(selection: sidebarSelectionBinding) {
@@ -548,6 +559,30 @@ struct ContentView: View {
                     sidebarNavigationRow("Pages", symbol: "book.closed", scope: .wiki)
                     sidebarNavigationRow("Sources", symbol: "tray.full", scope: .sources)
                     sidebarNavigationRow("Knowledge", symbol: KnowledgeTypePresentation.knowledgeSymbol, scope: .semantic)
+                }
+                Section {
+                    ForEach(Array(model.favouriteRows.prefix(5))) { row in
+                        Button {
+                            openFavourites()
+                            model.select(row.id, scope: row.kind == .wiki ? .wiki : .sources, previewSource: row.kind != .wiki)
+                        } label: {
+                            Label(row.title, systemImage: row.kind == .wiki ? "doc.text" : "doc")
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                        .listRowInsets(NoemaSidebarLayout.rowInsets)
+                    }
+                    if model.favouriteRows.isEmpty {
+                        Text("No favorites yet").font(NoemaTypography.metadata).foregroundStyle(.secondary)
+                    }
+                    Button("Show All") { openFavourites() }
+                        .listRowInsets(NoemaSidebarLayout.rowInsets)
+                } header: {
+                    Button { openFavourites() } label: {
+                        Label("FAVORITES", systemImage: "star.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .listRowInsets(NoemaSidebarLayout.sectionHeaderInsets)
                 }
                 Section {
                     if model.sidebarRecentItems.isEmpty {
@@ -749,11 +784,12 @@ struct ContentView: View {
         !note.isEditingLocked && !model.editingLocked && !model.externalChange && !model.editingLockOperations.contains(note.id)
     }
     private var sortedPageRows: [LibraryRow] {
+        let rows = showFavourites ? model.favouriteRows : model.rows
         switch pageSortOrder {
         case .updated:
-            return model.rows.sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
+            return rows.sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
         case .title:
-            return model.rows.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            return rows.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         }
     }
     private var fullSearchResults: some View {
@@ -778,7 +814,7 @@ struct ContentView: View {
         .background(theme.color(for: .canvas))
     }
     @ViewBuilder private var pageLibrary: some View {
-        if model.scope == .sources {
+        if model.scope == .sources && !showFavourites {
             SourcesLibraryView(
                 model: model,
                 presentation: sourceTablePresentation,
@@ -812,13 +848,16 @@ struct ContentView: View {
     }
     private var pageLibraryContent: some View {
         VStack(spacing: 0) {
-            if model.scope == .semantic {
+            if model.scope == .semantic && !showFavourites {
                 KnowledgeLibraryView(model: model, query: $knowledgeQuery, selection: $knowledgeSelection) { semanticBlockList }
-            } else if model.rows.isEmpty {
-                ContentUnavailableView("\(model.scopeTitle) is empty", systemImage: model.scope == .sources ? "tray" : "doc.text.magnifyingglass", description: Text(model.scope == .sources ? "Import a text file or paste a source to begin." : "Create a page to start building your wiki."))
+            } else if sortedPageRows.isEmpty {
+                ContentUnavailableView("\(showFavourites ? "Favorites" : model.scopeTitle) is empty", systemImage: model.scope == .sources ? "tray" : "doc.text.magnifyingglass", description: Text(showFavourites ? "Use the star in the document toolbar to add favorites." : (model.scope == .sources ? "Import a text file or paste a source to begin." : "Create a page to start building your wiki.")))
                     .frame(maxHeight: .infinity)
             } else {
-                List(selection: Binding(get: { model.selectedID }, set: { model.select($0) })) {
+                List(selection: Binding(get: { model.selectedID }, set: { id in
+                    let row = sortedPageRows.first { $0.id == id }
+                    model.select(id, scope: showFavourites ? (row?.kind == .wiki ? .wiki : .sources) : nil, previewSource: showFavourites && row?.kind != .wiki)
+                })) {
                     ForEach(sortedPageRows) { row in
                         let note = row.kind == .wiki ? model.notes.first(where: { $0.id == row.id }) : nil
                         let deleteDisabled = note.map { !Self.canTrashPage($0, model: model) } ?? true
@@ -915,9 +954,9 @@ struct ContentView: View {
                         }
                     }.pickerStyle(.menu).controlSize(.small).padding(.horizontal, NoemaSpacing.md).padding(.bottom, NoemaSpacing.sm)
                 }
-            } else if (isPagesScope && !model.tags.isEmpty) || model.busy {
+            } else if (isPagesScope && !showFavourites && !model.tags.isEmpty) || model.busy {
                 HStack(spacing: NoemaSpacing.sm) {
-                    if isPagesScope && !model.tags.isEmpty {
+                    if isPagesScope && !showFavourites && !model.tags.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 6) {
                                 Button("All Pages") { model.changeScope(.wiki) }
@@ -1235,6 +1274,17 @@ struct ContentView: View {
         }
     }
     @ToolbarContentBuilder private var trailingWorkspaceToolbar: some ToolbarContent {
+        ToolbarItem(id: "document.favorite", placement: .primaryAction) {
+            if model.currentFavouriteReference != nil {
+                Button { model.toggleCurrentFavourite() } label: {
+                    Label(model.currentDocumentIsFavourite ? "Remove from Favorites" : "Add to Favorites",
+                          systemImage: model.currentDocumentIsFavourite ? "star.fill" : "star")
+                }
+                .labelStyle(.iconOnly)
+                .disabled(!model.canInteractWithWorkspace || model.favouriteMutationInProgress)
+                .help(model.currentDocumentIsFavourite ? "Remove from Favorites" : "Add to Favorites")
+            }
+        }
         ToolbarItem(id: "workspace.more", placement: .primaryAction) {
             Menu {
                 if let note = model.currentNote {

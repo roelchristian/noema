@@ -238,6 +238,57 @@ struct AISuggestion: Identifiable, Sendable {
     private var sidebarRecentCache: [SidebarRecentItem] = []
     private(set) var selectedSidebarRecentItemID: RecentItemID?
     var recentItemIDs: [RecentItemID] { isLocked ? [] : sidebarRecentHistory.ids }
+    private(set) var favouriteReferences: [OrganisationItemReference] = []
+    private(set) var favouriteMutationInProgress = false
+    var currentFavouriteReference: OrganisationItemReference? {
+        if let note = currentNote { return .init(kind: .page, itemID: note.id) }
+        if let source = currentSource { return .init(kind: .source, itemID: source.id) }
+        return nil
+    }
+    var currentDocumentIsFavourite: Bool {
+        currentFavouriteReference.map { favouriteReferences.contains($0) } ?? false
+    }
+    var favouriteRows: [LibraryRow] {
+        guard isVaultAvailable else { return [] }
+        return favouriteReferences.compactMap { reference in
+            switch reference.kind {
+            case .page: return notes.first { $0.id == reference.itemID }.map { LibraryRow(note: $0) }
+            case .source: return sources.first { $0.id == reference.itemID }.map { LibraryRow(source: $0) }
+            default: return nil
+            }
+        }
+    }
+    func reloadFavourites() async {
+        guard isVaultAvailable, let repository else { return }
+        let ticket = generation
+        do {
+            let snapshot = try await repository.sqliteBlockStore.organisationSnapshot(includingHidden: false)
+            guard generation == ticket, isVaultAvailable else { return }
+            favouriteReferences = snapshot.favourites.map(\.reference)
+        } catch {
+            if generation == ticket, isVaultAvailable { errorMessage = error.localizedDescription }
+        }
+    }
+    func toggleCurrentFavourite() {
+        guard canInteractWithWorkspace, isVaultAvailable, !favouriteMutationInProgress,
+              let repository, let reference = currentFavouriteReference else { return }
+        let ticket = generation
+        let favourite = !favouriteReferences.contains(reference)
+        favouriteMutationInProgress = true
+        Task {
+            defer { if generation == ticket { favouriteMutationInProgress = false } }
+            do {
+                let snapshot = try await repository.sqliteBlockStore.organisationSnapshot(includingHidden: false)
+                guard generation == ticket, isVaultAvailable else { return }
+                _ = try await repository.sqliteBlockStore.setFavourite(reference, favourite: favourite,
+                    expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+                guard generation == ticket, isVaultAvailable else { return }
+                await reloadFavourites()
+            } catch {
+                if generation == ticket, isVaultAvailable { errorMessage = error.localizedDescription }
+            }
+        }
+    }
     private(set) var editingLockOperations: Set<UUID> = []
     var tags: [String] = []
     var wordCount = 0
@@ -853,6 +904,7 @@ struct AISuggestion: Identifiable, Sendable {
         notes = []; sources = []; rows = []; semanticRows = []; trashedPages = []; recoveredDrafts = []; damagedRecoveryEntries = []; issues = []
         dismissedVaultNotices = []
         tags = []; backlinks = []; outgoingLinkTargets = []; preview = []; unseenRenamedPages = []
+        favouriteReferences = []; favouriteMutationInProgress = false
         sidebarRecentHistory = SidebarRecentHistory(); sidebarRecentVaultID = nil
         sidebarRecentPresentation = SidebarRecentPresentation()
         selectedSidebarRecentItemID = nil; sidebarRecentCacheRevision = nil; sidebarRecentCache = []
@@ -2140,6 +2192,9 @@ struct AISuggestion: Identifiable, Sendable {
     }
     func refresh() async {
         guard isVaultAvailable, let repository, let index else { return }
+        let favouritesGeneration = generation
+        await reloadFavourites()
+        guard generation == favouritesGeneration, isVaultAvailable else { return }
         if refreshing { pendingRefresh = true; return }
         refreshing = true
         let completionTicket = issueCompletionTicket(kind: .indexing)

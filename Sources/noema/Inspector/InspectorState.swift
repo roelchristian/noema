@@ -8,7 +8,7 @@ import VaultCore
     static let minWidth: CGFloat = 280
     static let maxWidth: CGFloat = 420
 
-    private var localVisibility: Bool = true
+    private var localVisibility: Bool = false
     private let paneState: WorkspacePaneState?
     var isVisible: Bool {
         get { paneState?.isInspectorVisible ?? localVisibility }
@@ -24,7 +24,7 @@ import VaultCore
     let linksCache = LinksPresentationCache()
 
     init(
-        isVisible: Bool = true,
+        isVisible: Bool = false,
         selectedPageTab: InspectorTab = .insights,
         selectedSourceTab: InspectorTab = .insights,
         paneState: WorkspacePaneState? = nil

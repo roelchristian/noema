@@ -40,7 +40,7 @@ import SwiftUI
         self.defaults = defaults
         isSidebarVisible = defaults.object(forKey: Self.sidebarVisibilityKey) as? Bool ?? true
         isCollectionVisible = defaults.object(forKey: Self.collectionVisibilityKey) as? Bool ?? true
-        isInspectorVisible = defaults.object(forKey: Self.inspectorVisibilityKey) as? Bool ?? true
+        isInspectorVisible = defaults.object(forKey: Self.inspectorVisibilityKey) as? Bool ?? false
         sidebarWidth = Self.validWidth(defaults.double(forKey: Self.sidebarWidthKey), minimum: Self.sidebarMinimum, maximum: Self.sidebarMaximum, fallback: Self.sidebarIdeal)
         collectionWidth = Self.validWidth(defaults.double(forKey: Self.collectionWidthKey), minimum: Self.collectionMinimum, maximum: Self.collectionMaximum, fallback: Self.collectionIdeal)
         inspectorWidth = Self.validWidth(defaults.double(forKey: Self.inspectorWidthKey), minimum: InspectorState.minWidth, maximum: InspectorState.maxWidth, fallback: InspectorState.idealWidth)
