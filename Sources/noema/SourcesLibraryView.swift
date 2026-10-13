@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import VaultCore
 
 /// Sources mounts only while its library is visible. Cached metadata and sort order live in
@@ -73,17 +74,26 @@ private struct SourcesNativeTable: View {
     let presentation: SourcesTablePresentation
     let statuses: SourcesStatusPresentation
     @Binding var selection: UUID?
+    @State private var dragSelection: Set<UUID> = []
     var scrollPosition: Binding<ScrollPosition>? = nil
     var listFocus: FocusState<Bool>.Binding? = nil
     let rename: (SourceRecord) -> Void
     let delete: (SourceRecord) -> Void
 
     var body: some View {
-        Table(presentation.rows, selection: $selection,
+        Table(presentation.rows, selection: Binding(get: { dragSelection }, set: { ids in
+            dragSelection = ids
+            if ids.count == 1, !NSEvent.modifierFlags.contains(.command), !NSEvent.modifierFlags.contains(.shift) {
+                selection = ids.first
+            } else if ids.isEmpty { selection = nil }
+        }),
               sortOrder: Binding(get: { presentation.sortOrder }, set: { presentation.setSortOrder($0) }),
               columnCustomization: Binding(get: { presentation.columnCustomization }, set: { presentation.columnCustomization = $0 })) {
             TableColumn("File Name", value: \.title) { row in
                 SourceTitleCell(row: row, status: statuses.status(for: row.id))
+                    .draggable(model.organisationDragBatch(presentation.rows.filter {
+                        dragSelection.contains(row.id) ? dragSelection.contains($0.id) : $0.id == row.id
+                    }.map { OrganisationDrag.item(.init(kind: .source, itemID: $0.id)) }))
             }.width(min: 160, ideal: 220)
                 .customizationID("title")
                 .disabledCustomizationBehavior([.reorder, .visibility])
@@ -130,6 +140,12 @@ private struct SourcesNativeTable: View {
         }
         .modifier(OptionalScrollPositionModifier(position: scrollPosition))
         .modifier(CollectionListFocusModifier(focus: listFocus))
+        .onAppear { dragSelection = Set(selection.map { [$0] } ?? []) }
+        .onChange(of: selection) {
+            if dragSelection.count <= 1 { dragSelection = Set(selection.map { [$0] } ?? []) }
+        }
+        .onChange(of: model.sessionState.sessionID) { dragSelection = [] }
+        .onChange(of: presentation.rows.map(\.id)) { dragSelection.formIntersection(Set(presentation.rows.map(\.id))) }
         .accessibilityLabel("Sources table")
     }
 }

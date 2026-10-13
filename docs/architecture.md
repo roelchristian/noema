@@ -230,7 +230,17 @@ or moved under a collection or another folder. Container menus create, rename, a
 delete containers and add or remove the current document; deleting a container removes
 its descendant containers and memberships while retaining canonical items. Stored page,
 source, and block memberships resolve from vault content independently of recent history;
-entity and semantic-object memberships use their existing catalogue detail sheets.
+entity and semantic-object memberships use their existing catalogue detail sheets. Library and inbox rows can be dragged onto a sidebar container or its open inbox.
+Library drops add membership; drops from a container move membership atomically.
+Folders can be dragged onto collections or folders, or onto the Vault Root header
+target. Item lists support Command/Shift multi-selection; Command-click selects multiple
+sidebar folders. A drag includes the selected visible rows when started on a selected
+row. Batch admission validates every payload, deduplicates repeated entries, skips
+same-destination placements and keeps selected descendants with their selected ancestor.
+Cycles and stale session payloads are rejected before dispatch. Batch edits use existing
+revision-checked store operations in order; each membership move remains atomic, while
+the batch as a whole is not a transaction. A failure stops the remaining edits and
+reports the completed count; the store retains mutation ownership.
 Selecting an inbox item retains that collection's highlight and
 opens its page, source, or knowledge block in the content pane. The native window title is the open
 document; the collection-list header shows the collection name and does not repeat

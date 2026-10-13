@@ -50,12 +50,14 @@ struct KnowledgeLibraryView<Blocks: View>: View {
                             Button { selection = .entity(value) } label: {
                                 row(value.entity.label, symbol: KnowledgeTypePresentation.symbol(for: value.entity.typeKey), subtitle: value.entity.typeKey.capitalized + " · " + value.entity.id.uuidString.prefix(8))
                             }.buttonStyle(.plain)
+                                .draggable(model.organisationDragValue(OrganisationDrag.item(.init(kind: .knowledgeEntity, itemID: value.entity.id))))
                         }
                     case .objects:
                         ForEach((model.knowledgeCatalogue?.objects ?? []).filter { matches(SemanticInspectionTarget.object($0).title + " " + ($0.object.definitionText ?? "") + " " + ($0.object.answerText ?? "")) }, id: \.object.id) { value in
                             Button { selection = .object(value) } label: {
                                 row(SemanticInspectionTarget.object(value).title, subtitle: value.object.typeKey.capitalized + " · " + value.object.id.uuidString.prefix(8))
                             }.buttonStyle(.plain)
+                                .draggable(model.organisationDragValue(OrganisationDrag.item(.init(kind: .semanticObject, itemID: value.object.id))))
                         }
                     case .annotations:
                         ForEach((model.knowledgeCatalogue?.annotations ?? []).filter { matches($0.annotation.designation + " " + $0.annotation.anchorDisposition.rawValue + " " + $0.annotation.id.uuidString) }, id: \.annotation.id) { value in

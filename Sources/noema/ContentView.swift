@@ -13,7 +13,20 @@ struct ContentView: View {
     @State private var showAllSearchResults = false
     @State private var showFavourites = false
     @State private var showRecentItems = false
+    @State private var organisationSelection: UUID?
+    @State private var organisationName = ""
+    @State private var organisationKind: OrganisationContainerKind = .collection
+    @State private var organisationParent: UUID?
+    @State private var renamingContainer: OrganisationContainer?
+    @State private var showOrganisationName = false
+    @State private var deletingContainer: OrganisationContainer?
+    @State private var showDeleteContainer = false
+    @State private var organisationKnowledgeSelection: KnowledgeCatalogueSelection?
     @State private var inboxSelection: RecentItemID?
+    @State private var inboxDragSelection: Set<OrganisationItemReference> = []
+    @State private var pageDragSelection: Set<UUID> = []
+    @State private var semanticDragSelection: Set<String> = []
+    @State private var folderDragSelection: Set<UUID> = []
     @State private var showTrashConfirmation = false
     @State private var trashPageID: UUID?
     @State private var permanentDeletion: TrashedItem?
@@ -93,14 +106,27 @@ struct ContentView: View {
     }
     private func switchSidebarScope(_ scope: LibraryScope) {
         showFavourites = false
+        organisationKnowledgeSelection = nil
+        organisationSelection = nil
         showRecentItems = false
         inboxSelection = nil
+        inboxDragSelection = []; pageDragSelection = []; semanticDragSelection = []
+        folderDragSelection = []
         showAllSearchResults = false
         SourcesPerformance.event("SidebarScopeChange")
         model.changeScope(scope)
     }
     private func resetLocalWorkspaceState() {
         showFavourites = false
+        organisationSelection = nil
+        inboxDragSelection = []; pageDragSelection = []; semanticDragSelection = []; folderDragSelection = []
+        showOrganisationName = false
+        renamingContainer = nil
+        organisationParent = nil
+        organisationName = ""
+        showDeleteContainer = false
+        deletingContainer = nil
+        organisationKnowledgeSelection = nil
         showRecentItems = false
         inboxSelection = nil
         model.setLibrarySourceSelection(nil)
@@ -265,7 +291,10 @@ struct ContentView: View {
         .onChange(of: model.searchText) { model.queryChanged() }
         .onChange(of: model.editorDocument) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
         .onChange(of: model.title) { if model.isSearching || model.searchMode == .quickOpen || model.scope == .semantic { model.queryChanged() } }
-        .onChange(of: model.selectedID) { sourceOriginal = false; dismissedExternalChange = false; showAllSearchResults = false }
+        .onChange(of: model.selectedID) {
+            sourceOriginal = false; dismissedExternalChange = false; showAllSearchResults = false
+            if pageDragSelection.count <= 1 { pageDragSelection = Set(model.selectedID.map { [$0] } ?? []) }
+        }
         .onChange(of: model.scope) {
             showAllSearchResults = false
             selectedSemanticFilter = nil
@@ -304,6 +333,26 @@ struct ContentView: View {
         }
         .onChange(of: inspectorContext.targetKind) {
             inspectorState.reconcile(with: inspectorContext)
+        }
+        .onChange(of: model.selectedSemanticID) {
+            if semanticDragSelection.count <= 1 { semanticDragSelection = Set(model.selectedSemanticID.map { [$0] } ?? []) }
+        }
+        .onChange(of: sortedPageRows.map(\.id)) { pageDragSelection.formIntersection(Set(sortedPageRows.map(\.id))) }
+        .onChange(of: model.organisationContainers) {
+            folderDragSelection.formIntersection(Set(model.organisationContainers.filter { $0.kind == .folder }.map(\.id)))
+            if let id = organisationSelection, !model.organisationContainers.contains(where: { $0.id == id }) {
+                organisationSelection = nil
+                organisationKnowledgeSelection = nil
+                inboxSelection = nil
+            }
+        }
+        .onChange(of: model.organisationMemberships) {
+            if let container = selectedOrganisation {
+                inboxDragSelection.formIntersection(Set(model.organisationMemberships.filter { $0.containerID == container.id }.map(\.reference)))
+            }
+            if selectedOrganisation != nil, let id = inboxSelection, !inboxItems.contains(where: { $0.id == id }) {
+                inboxSelection = nil
+            }
         }
         .onChange(of: model.root) { resetLocalWorkspaceState() }
         .onChange(of: model.sessionState) {
@@ -363,6 +412,7 @@ struct ContentView: View {
         Task { @MainActor in collectionListFocused = true }
     }
     private var collectionTitle: String {
+        if let container = selectedOrganisation { return container.name }
         if showFavourites { return "Favorites" }
         if showRecentItems { return "Recent Items" }
         return switch model.scope {
@@ -383,8 +433,12 @@ struct ContentView: View {
     @ViewBuilder private var collectionPane: some View {
         VStack(spacing: 0) {
             if showsCollectionHeader { collectionHeader }
-            if showFavourites || showRecentItems {
+            if selectedOrganisation != nil || showFavourites || showRecentItems {
                 sharedInbox
+                    .dropDestination(for: String.self) { values, _ in
+                        guard let container = selectedOrganisation else { return false }
+                        return model.receiveOrganisationDrop(values, into: container.id)
+                    }
             } else if model.scope == .trash {
                 trashLibrary
             } else {
@@ -399,12 +453,12 @@ struct ContentView: View {
         WorkspaceTitleOwnership.collectionChromeTitle(window: model.windowTitle, collectionName: collectionTitle)
     }
     private var showsCollectionHeader: Bool {
-        collectionChromeTitle != nil || isPagesScope
+        selectedOrganisation != nil || collectionChromeTitle != nil || isPagesScope
     }
     private var collectionHeader: some View {
         HStack(spacing: NoemaSpacing.sm) {
-            if let collectionChromeTitle {
-                Text(collectionChromeTitle)
+            if let title = selectedOrganisation?.name ?? collectionChromeTitle {
+                Text(title)
                     .font(NoemaTypography.sectionHeader)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -532,6 +586,7 @@ struct ContentView: View {
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     private var isPagesScope: Bool {
+        if selectedOrganisation != nil { return false }
         if showFavourites { return true }
         if showRecentItems { return false }
         if case .wiki = model.scope { return true }
@@ -539,6 +594,7 @@ struct ContentView: View {
         return false
     }
     private var sidebarSelection: WorkspaceSidebarSelection? {
+        if selectedOrganisation != nil { return nil }
         if showFavourites { return .favorites }
         if showRecentItems { return .recentItems }
         return WorkspaceSidebarSelection.resolve(scope: model.scope, explicitRecentItem: nil)
@@ -548,6 +604,9 @@ struct ContentView: View {
             guard let selection else { return }
             showAllSearchResults = false
             showFavourites = false
+            inboxDragSelection = []; folderDragSelection = []
+            organisationSelection = nil
+            organisationKnowledgeSelection = nil
             showRecentItems = false
             switch selection {
             case .collection(let scope):
@@ -563,10 +622,13 @@ struct ContentView: View {
         })
     }
     private func openInbox(favorites: Bool) {
+        organisationKnowledgeSelection = nil
+        organisationSelection = nil
         showAllSearchResults = false
         showFavourites = favorites
         showRecentItems = !favorites
         inboxSelection = nil
+        inboxDragSelection = []; folderDragSelection = []
         model.setLibrarySourceSelection(nil)
         revealCollectionList()
     }
@@ -594,6 +656,27 @@ struct ContentView: View {
                         .listRowInsets(NoemaSidebarLayout.rowInsets)
                         .listRowSeparator(.hidden)
                 }
+                organisationSidebarSection
+            }
+            .alert(renamingContainer == nil ? "New \(organisationKind == .folder ? "Folder" : "Collection")" : "Rename", isPresented: $showOrganisationName) {
+                TextField("Name", text: $organisationName)
+                Button("Cancel", role: .cancel) { }
+                Button("Save") {
+                    if let container = renamingContainer {
+                        model.editOrganisation(.renameContainer(container, organisationName))
+                    } else {
+                        model.editOrganisation(.create(organisationKind, organisationName, organisationParent))
+                    }
+                }.disabled(organisationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.canInteractWithWorkspace || model.organisationMutationInProgress || model.favouriteMutationInProgress)
+            }
+            .alert("Delete \(deletingContainer?.name ?? "Container")?", isPresented: $showDeleteContainer) {
+                Button("Cancel", role: .cancel) { deletingContainer = nil }
+                Button("Delete", role: .destructive) {
+                    if let container = deletingContainer { model.editOrganisation(.delete(container)) }
+                    deletingContainer = nil
+                }.disabled(!model.canInteractWithWorkspace || model.organisationMutationInProgress || model.favouriteMutationInProgress)
+            } message: {
+                Text("This removes the collection or folder, its subfolders, and their memberships. Pages, sources, and knowledge items are kept in the vault.")
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
@@ -736,7 +819,150 @@ struct ContentView: View {
             .accessibilityLabel(title)
             .help(title)
     }
+    private var organisationSidebarSection: some View {
+        Section {
+            ForEach(organisationSidebarRows) { row in
+                Button {
+                    if row.container.kind == .folder, NSEvent.modifierFlags.contains(.command) {
+                        if folderDragSelection.contains(row.container.id) { folderDragSelection.remove(row.container.id) }
+                        else { folderDragSelection.insert(row.container.id) }
+                        return
+                    }
+                    folderDragSelection = row.container.kind == .folder ? [row.container.id] : []
+                    inboxDragSelection = []
+                    organisationSelection = row.container.id
+                    organisationKnowledgeSelection = nil
+                    showFavourites = false
+                    showRecentItems = false
+                    showAllSearchResults = false
+                    inboxSelection = nil
+                    model.setLibrarySourceSelection(nil)
+                    revealCollectionList()
+                } label: {
+                    NoemaSidebarRowLabel(title: row.container.name,
+                        symbol: row.container.kind == .folder ? "folder" : "square.stack",
+                        isSelected: organisationSelection == row.container.id || folderDragSelection.contains(row.container.id))
+                        .padding(.leading, CGFloat(row.depth) * 12)
+                }
+                .buttonStyle(.plain)
+                .modifier(OrganisationDragModifier(value: row.container.kind == .folder
+                    ? model.organisationDragBatch(organisationSidebarRows.filter {
+                        folderDragSelection.contains(row.container.id) ? folderDragSelection.contains($0.container.id) : $0.container.id == row.container.id
+                    }.map { OrganisationDrag.container($0.container.id) }) : nil))
+                .dropDestination(for: String.self) { values, _ in
+                    model.receiveOrganisationDrop(values, into: row.container.id)
+                }
+                .listRowInsets(NoemaSidebarLayout.rowInsets)
+                .listRowSeparator(.hidden)
+                .listRowBackground((organisationSelection == row.container.id || folderDragSelection.contains(row.container.id)) ? theme.color(for: .selection) : Color.clear)
+                .accessibilityAddTraits((organisationSelection == row.container.id || folderDragSelection.contains(row.container.id)) ? .isSelected : [])
+                .help("Command-click folders to select several, then drag a selected folder")
+                .contextMenu {
+                    Button("Rename…") { beginOrganisationName(container: row.container) }
+                    Button("New Subfolder…") { beginOrganisationName(kind: .folder, parent: row.container.id) }
+                    if row.container.kind == .folder {
+                        Menu("Move To") {
+                            if row.container.parentID != nil {
+                                Button("Vault Root") { model.editOrganisation(.move(row.container, nil)) }
+                            }
+                            ForEach(organisationDestinations(for: row.container)) { destination in
+                                Button(destination.name) { model.editOrganisation(.move(row.container, destination.id)) }
+                            }
+                        }
+                    }
+                    if let reference = model.currentFavouriteReference {
+                        let contains = model.organisationMemberships.contains { $0.containerID == row.container.id && $0.reference == reference }
+                        Button(contains ? "Remove Current Document" : "Add Current Document") {
+                            model.editOrganisation(.membership(row.container.id, reference, !contains))
+                        }
+                    }
+                    Divider()
+                    Button("Delete…", role: .destructive) {
+                        deletingContainer = row.container
+                        showDeleteContainer = true
+                    }
+                }
+            }
+            Menu {
+                Button("New Collection…") { beginOrganisationName(kind: .collection) }
+                Button("New Folder…") { beginOrganisationName(kind: .folder) }
+            } label: { Label("New…", systemImage: "plus") }
+        } header: {
+            HStack {
+                Text("Collections & Folders")
+                Spacer()
+                Text("Vault Root")
+                    .help("Drop a folder here to move it to the vault root")
+                    .dropDestination(for: String.self) { values, _ in
+                        model.receiveOrganisationDrop(values, into: nil)
+                    }
+            }
+        }
+        .disabled(!model.canInteractWithWorkspace || model.organisationMutationInProgress || model.favouriteMutationInProgress)
+    }
+    private func organisationDestinations(for container: OrganisationContainer) -> [OrganisationContainer] {
+        model.organisationContainers.filter { destination in
+            guard destination.id != container.parentID else { return false }
+            var cursor: UUID? = destination.id
+            var visited: Set<UUID> = [container.id]
+            while let id = cursor {
+                guard visited.insert(id).inserted else { return false }
+                cursor = model.organisationContainers.first { $0.id == id }?.parentID
+            }
+            return true
+        }
+    }
+    private var selectedOrganisation: OrganisationContainer? {
+        model.organisationContainers.first { $0.id == organisationSelection }
+    }
+    private struct OrganisationSidebarRow: Identifiable {
+        let container: OrganisationContainer
+        let depth: Int
+        var id: UUID { container.id }
+    }
+    private var organisationSidebarRows: [OrganisationSidebarRow] {
+        func children(_ parent: UUID?, depth: Int) -> [OrganisationSidebarRow] {
+            guard depth <= model.organisationContainers.count else { return [] }
+            return model.organisationContainers.filter { $0.parentID == parent }.flatMap {
+                [OrganisationSidebarRow(container: $0, depth: depth)] + children($0.id, depth: depth + 1)
+            }
+        }
+        return children(nil, depth: 0)
+    }
+    private func beginOrganisationName(kind: OrganisationContainerKind = .collection, parent: UUID? = nil, container: OrganisationContainer? = nil) {
+        organisationKind = kind
+        organisationParent = parent
+        renamingContainer = container
+        organisationName = container?.name ?? ""
+        showOrganisationName = true
+    }
     private var inboxItems: [SidebarRecentItem] {
+        if let container = selectedOrganisation {
+            return model.organisationMemberships.filter { $0.containerID == container.id }.compactMap { membership in
+                let reference = membership.reference
+                switch reference.kind {
+                case .page:
+                    guard let note = model.notes.first(where: { $0.id == reference.itemID }) else { return nil }
+                    return SidebarRecentItem(id: .page(note.id), title: note.title, symbol: "doc.text", accessibilityLabel: note.title, pageID: note.id)
+                case .source:
+                    guard let source = model.sources.first(where: { $0.id == reference.itemID }) else { return nil }
+                    return SidebarRecentItem(id: .source(source.id), title: source.title, symbol: "tray", accessibilityLabel: source.title, pageID: nil)
+                case .semanticBlock:
+                    guard let pageID = reference.pageID else { return nil }
+                    guard let note = model.notes.first(where: { $0.id == pageID }) else { return nil }
+                    let content = model.currentNote?.id == pageID ? model.body : note.body
+                    guard let block = BlockDocumentCodec.decode(content).block(reference.itemID) else { return nil }
+                    let label = block.text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+                    let semantic = SemanticPresentation.find(block.metadata.semantic)
+                    return SidebarRecentItem(id: .semanticBlock(pageID: pageID, blockID: reference.itemID),
+                        title: label.isEmpty ? "Untitled block" : label, symbol: semantic?.symbol ?? "square.stack",
+                        accessibilityLabel: "\(semantic?.title ?? "Knowledge block"), \(label), in \(note.title)", pageID: pageID)
+                case .knowledgeEntity, .semanticObject:
+                    // Rendered below with their dedicated catalogue detail sheet.
+                    return nil
+                }
+            }
+        }
         if showRecentItems { return model.sidebarRecentItems }
         return sortedPageRows.map { row in
             SidebarRecentItem(
@@ -747,23 +973,76 @@ struct ContentView: View {
             )
         }
     }
+    private func organisationReference(for id: RecentItemID) -> OrganisationItemReference {
+        switch id {
+        case .page(let id): return .init(kind: .page, itemID: id)
+        case .source(let id): return .init(kind: .source, itemID: id)
+        case .semanticBlock(let pageID, let blockID): return .init(kind: .semanticBlock, itemID: blockID, pageID: pageID)
+        }
+    }
+    private func organisationItemDrag(_ reference: OrganisationItemReference) -> String {
+        let visible = inboxItems.map { organisationReference(for: $0.id) } + organisationKnowledgeMembers.map(\.reference)
+        let references = inboxDragSelection.contains(reference) ? visible.filter { inboxDragSelection.contains($0) } : [reference]
+        return model.organisationDragBatch(references.map { value in
+            selectedOrganisation.map { OrganisationDrag.movingItem(value, from: $0.id) } ?? OrganisationDrag.item(value)
+        })
+    }
+    private var organisationKnowledgeMembers: [OrganisationMembership] {
+        guard let container = selectedOrganisation else { return [] }
+        return model.organisationMemberships.filter {
+            $0.containerID == container.id && ($0.reference.kind == .knowledgeEntity || $0.reference.kind == .semanticObject)
+        }
+    }
+    private func organisationKnowledgeDetail(_ reference: OrganisationItemReference) -> KnowledgeCatalogueSelection? {
+        switch reference.kind {
+        case .knowledgeEntity:
+            return model.knowledgeCatalogue?.entities.first { $0.entity.id == reference.itemID }.map { .entity($0) }
+        case .semanticObject:
+            return model.knowledgeCatalogue?.objects.first { $0.object.id == reference.itemID }.map { .object($0) }
+        case .page, .source, .semanticBlock: return nil
+        }
+    }
+    private func organisationKnowledgeTitle(_ reference: OrganisationItemReference) -> String {
+        switch organisationKnowledgeDetail(reference) {
+        case .entity(let value): return value.entity.label
+        case .object(let value): return SemanticInspectionTarget.object(value).title
+        default: return model.knowledgeCatalogueLoading ? "Loading knowledge item…" : "Knowledge item unavailable"
+        }
+    }
+    private func openOrganisationItem(_ id: RecentItemID) {
+        switch id {
+        case .page(let pageID): model.select(pageID, scope: .wiki)
+        case .source(let sourceID): model.select(sourceID, scope: .sources)
+        case .semanticBlock(let pageID, let blockID): model.select(pageID, scope: .wiki, block: blockID)
+        }
+    }
     private var sharedInbox: some View {
         let items = inboxItems
+        let knowledgeMembers = organisationKnowledgeMembers
+        let count = items.count + knowledgeMembers.count
         return VStack(spacing: 0) {
-            if items.isEmpty {
+            if count == 0 {
                 ContentUnavailableView(
                     "\(collectionTitle) is empty",
-                    systemImage: showFavourites ? "star" : "clock",
-                    description: Text(showFavourites
+                    systemImage: selectedOrganisation.map { $0.kind == .folder ? "folder" : "square.stack" } ?? (showFavourites ? "star" : "clock"),
+                    description: Text(selectedOrganisation != nil ? "Use this collection or folder’s menu to add the current document." : showFavourites
                         ? "Use the star in the document toolbar to add favorites."
                         : "Pages, sources, and knowledge blocks you open appear here.")
                 )
                 .frame(maxHeight: .infinity)
             } else {
-                List(selection: Binding(get: { inboxSelection }, set: { id in
-                    guard let id else { return }
-                    inboxSelection = id
-                    model.openSidebarRecentItem(id)
+                List(selection: Binding(get: { inboxDragSelection }, set: { references in
+                    inboxDragSelection = references
+                    guard references.count == 1, let reference = references.first,
+                          !NSEvent.modifierFlags.contains(.command), !NSEvent.modifierFlags.contains(.shift) else { return }
+                    if let item = items.first(where: { organisationReference(for: $0.id) == reference }) {
+                        inboxSelection = item.id
+                        if selectedOrganisation != nil { openOrganisationItem(item.id) }
+                        else { model.openSidebarRecentItem(item.id) }
+                    } else {
+                        inboxSelection = nil
+                        organisationKnowledgeSelection = organisationKnowledgeDetail(reference)
+                    }
                 })) {
                     ForEach(items) { item in
                         let note = item.pageID.flatMap { id in model.notes.first { $0.id == id } }
@@ -789,9 +1068,23 @@ struct ContentView: View {
                         }
                         .padding(.horizontal, NoemaSpacing.sm)
                         .padding(.vertical, 4)
-                        .tag(item.id)
+                        .tag(organisationReference(for: item.id))
+                        .draggable(organisationItemDrag(organisationReference(for: item.id)))
                         .accessibilityLabel(item.accessibilityLabel)
                         .contextMenu {
+                            if let container = selectedOrganisation,
+                               let membership = model.organisationMemberships.first(where: { membership in
+                                   guard membership.containerID == container.id else { return false }
+                                   switch item.id {
+                                   case .page(let id): return membership.reference == .init(kind: .page, itemID: id)
+                                   case .source(let id): return membership.reference == .init(kind: .source, itemID: id)
+                                   case .semanticBlock(let pageID, let id): return membership.reference == .init(kind: .semanticBlock, itemID: id, pageID: pageID)
+                                   }
+                               }) {
+                                Button("Remove from \(container.name)") {
+                                    model.editOrganisation(.membership(container.id, membership.reference, false))
+                                }.disabled(!model.canInteractWithWorkspace || model.organisationMutationInProgress || model.favouriteMutationInProgress)
+                            }
                             if let note {
                                 AISummaryMenuCommands(model: model, target: .page(note.id))
                                 Button(note.isEditingLocked ? "Unlock Editing" : "Lock Editing") {
@@ -806,13 +1099,28 @@ struct ContentView: View {
                             }
                         }
                     }
+                    ForEach(knowledgeMembers) { membership in
+                        let reference = membership.reference
+                        Label(organisationKnowledgeTitle(reference), systemImage: reference.kind == .knowledgeEntity ? "person.text.rectangle" : "square.stack")
+                            .font(NoemaTypography.interfaceEmphasis)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 4)
+                            .tag(reference)
+                            .draggable(organisationItemDrag(reference))
+                            .accessibilityHint(organisationKnowledgeDetail(reference) == nil ? "Details unavailable. Use the context menu to remove this membership." : "Open knowledge details")
+                        .contextMenu {
+                            Button("Remove from \(collectionTitle)") {
+                                model.editOrganisation(.membership(membership.containerID, reference, false))
+                            }.disabled(!model.canInteractWithWorkspace || model.organisationMutationInProgress || model.favouriteMutationInProgress)
+                        }
+                    }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .focused($collectionListFocused)
             }
             HStack {
-                Text("\(items.count) \(items.count == 1 ? "item" : "items")")
+                Text("\(count) \(count == 1 ? "item" : "items")")
                 Spacer()
                 Text("⌘P")
             }
@@ -821,6 +1129,12 @@ struct ContentView: View {
             .padding(NoemaSpacing.md)
         }
         .background(theme.color(for: .canvas))
+        .task(id: organisationKnowledgeMembers.map(\.reference)) {
+            if !organisationKnowledgeMembers.isEmpty { await model.refreshKnowledgeCatalogue() }
+        }
+        .sheet(item: $organisationKnowledgeSelection) { selected in
+            KnowledgeCatalogueDetail(model: model, selection: selected)
+        }
     }
     private func inboxItemKind(_ id: RecentItemID) -> String {
         switch id {
@@ -903,7 +1217,10 @@ struct ContentView: View {
                 ContentUnavailableView("\(showFavourites ? "Favorites" : model.scopeTitle) is empty", systemImage: model.scope == .sources ? "tray" : "doc.text.magnifyingglass", description: Text(showFavourites ? "Use the star in the document toolbar to add favorites." : (model.scope == .sources ? "Import a text file or paste a source to begin." : "Create a page to start building your wiki.")))
                     .frame(maxHeight: .infinity)
             } else {
-                List(selection: Binding(get: { model.selectedID }, set: { id in
+                List(selection: Binding(get: { pageDragSelection }, set: { ids in
+                    pageDragSelection = ids
+                    guard ids.count == 1, let id = ids.first,
+                          !NSEvent.modifierFlags.contains(.command), !NSEvent.modifierFlags.contains(.shift) else { return }
                     let row = sortedPageRows.first { $0.id == id }
                     model.select(id, scope: showFavourites ? (row?.kind == .wiki ? .wiki : .sources) : nil, previewSource: showFavourites && row?.kind != .wiki)
                 })) {
@@ -947,6 +1264,9 @@ struct ContentView: View {
                         .padding(.horizontal, NoemaSpacing.sm)
                         .padding(.vertical, 4)
                         .tag(row.id)
+                        .draggable(model.organisationDragBatch(sortedPageRows.filter {
+                            pageDragSelection.contains(row.id) ? pageDragSelection.contains($0.id) : $0.id == row.id
+                        }.map { OrganisationDrag.item(.init(kind: $0.kind == .wiki ? .page : .source, itemID: $0.id)) }))
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             if row.kind == .wiki {
                                 Button(role: .destructive) { trashPageID = row.id; showTrashConfirmation = true } label: {
@@ -1197,7 +1517,10 @@ struct ContentView: View {
                     systemImage: "line.3.horizontal.decrease.circle", description: Text("Try clearing the semantic type filter or adjusting your search."))
                     .frame(maxHeight: .infinity)
             } else {
-                List(selection: Binding(get: { model.selectedSemanticID }, set: { id in
+                List(selection: Binding(get: { semanticDragSelection }, set: { ids in
+                    semanticDragSelection = ids
+                    guard ids.count == 1, let id = ids.first,
+                          !NSEvent.modifierFlags.contains(.command), !NSEvent.modifierFlags.contains(.shift) else { return }
                     if let hit = filteredSemanticRows.first(where: { $0.id == id }) {
                         model.select(hit.pageID, block: hit.blockID)
                     }
@@ -1205,11 +1528,16 @@ struct ContentView: View {
                     ForEach(filteredSemanticRows) { hit in
                         SemanticBlockCollectionRow(hit: hit)
                             .tag(hit.id)
+                            .draggable(model.organisationDragBatch(filteredSemanticRows.filter {
+                                semanticDragSelection.contains(hit.id) ? semanticDragSelection.contains($0.id) : $0.id == hit.id
+                            }.map { OrganisationDrag.item(.init(kind: .semanticBlock, itemID: $0.blockID, pageID: $0.pageID)) }))
                     }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .scrollPosition($semanticListScroll)
+                .onAppear { if semanticDragSelection.isEmpty { semanticDragSelection = Set(model.selectedSemanticID.map { [$0] } ?? []) } }
+                .onChange(of: filteredSemanticRows.map(\.id)) { semanticDragSelection.formIntersection(Set(filteredSemanticRows.map(\.id))) }
                 .focused($collectionListFocused)
             }
         }
@@ -1701,3 +2029,11 @@ private struct SidebarEditingLockControl: View {
     }
 }
 
+
+private struct OrganisationDragModifier: ViewModifier {
+    let value: String?
+    @ViewBuilder func body(content: Content) -> some View {
+        if let value { content.draggable(value) }
+        else { content }
+    }
+}

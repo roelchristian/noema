@@ -238,6 +238,9 @@ struct AISuggestion: Identifiable, Sendable {
     private var sidebarRecentCache: [SidebarRecentItem] = []
     private(set) var selectedSidebarRecentItemID: RecentItemID?
     var recentItemIDs: [RecentItemID] { isLocked ? [] : sidebarRecentHistory.ids }
+    private(set) var organisationContainers: [OrganisationContainer] = []
+    private(set) var organisationMemberships: [OrganisationMembership] = []
+    private(set) var organisationMutationInProgress = false
     private(set) var favouriteReferences: [OrganisationItemReference] = []
     private(set) var favouriteMutationInProgress = false
     var currentFavouriteReference: OrganisationItemReference? {
@@ -264,13 +267,15 @@ struct AISuggestion: Identifiable, Sendable {
         do {
             let snapshot = try await repository.sqliteBlockStore.organisationSnapshot(includingHidden: false)
             guard generation == ticket, isVaultAvailable else { return }
+            organisationContainers = snapshot.containers
+            organisationMemberships = snapshot.memberships
             favouriteReferences = snapshot.favourites.map(\.reference)
         } catch {
             if generation == ticket, isVaultAvailable { errorMessage = error.localizedDescription }
         }
     }
     func toggleCurrentFavourite() {
-        guard canInteractWithWorkspace, isVaultAvailable, !favouriteMutationInProgress,
+        guard canInteractWithWorkspace, isVaultAvailable, !favouriteMutationInProgress, !organisationMutationInProgress,
               let repository, let reference = currentFavouriteReference else { return }
         let ticket = generation
         let favourite = !favouriteReferences.contains(reference)
@@ -286,6 +291,173 @@ struct AISuggestion: Identifiable, Sendable {
                 await reloadFavourites()
             } catch {
                 if generation == ticket, isVaultAvailable { errorMessage = error.localizedDescription }
+            }
+        }
+    }
+    enum OrganisationEdit {
+        case create(OrganisationContainerKind, String, UUID?)
+        case renameContainer(OrganisationContainer, String)
+        case move(OrganisationContainer, UUID?)
+        case delete(OrganisationContainer)
+        case membership(UUID, OrganisationItemReference, Bool)
+        case place(OrganisationItemReference, UUID, UUID?)
+        case dropBatch([OrganisationDropEdit], UUID?)
+    }
+    enum OrganisationDropEdit {
+        case item(OrganisationItemReference, UUID?)
+        case folder(OrganisationContainer)
+    }
+    func organisationDragBatch(_ payloads: [String]) -> String {
+        organisationDragValue(payloads.joined(separator: "\n"))
+    }
+    func organisationDragValue(_ payload: String) -> String {
+        guard isVaultAvailable, let sessionID = sessionState.sessionID else { return "" }
+        return "noema-session:\(sessionID.uuidString):" + payload
+    }
+    func receiveOrganisationDrop(_ values: [String], into destination: UUID?) -> Bool {
+        guard canInteractWithWorkspace, isVaultAvailable, !organisationMutationInProgress,
+              !favouriteMutationInProgress, !values.isEmpty,
+              let sessionID = sessionState.sessionID else { return false }
+        let prefix = "noema-session:\(sessionID.uuidString):"
+        guard destination == nil || organisationContainers.contains(where: { $0.id == destination }) else { return false }
+        var payloads: [OrganisationDrag.Payload] = []
+        for value in values {
+            guard value.hasPrefix(prefix) else { return false }
+            for raw in value.dropFirst(prefix.count).split(separator: "\n", omittingEmptySubsequences: false) {
+                guard let payload = OrganisationDrag.parse(String(raw)) else { return false }
+                if !payloads.contains(payload) { payloads.append(payload) }
+            }
+        }
+        let draggedFolders = Set(payloads.compactMap { payload -> UUID? in
+            if case .container(let id) = payload { return id }
+            return nil
+        })
+        var edits: [OrganisationDropEdit] = []
+        for payload in payloads {
+            switch payload {
+            case .item(let reference, let source):
+                guard destination != nil else { return false }
+                if let source {
+                    guard organisationMemberships.contains(where: { $0.containerID == source && $0.reference == reference }) else { return false }
+                }
+                if source != destination { edits.append(.item(reference, source)) }
+            case .container(let id):
+                guard let container = organisationContainers.first(where: { $0.id == id }),
+                      container.kind == .folder else { return false }
+                var cursor = destination
+                var visited: Set<UUID> = [id]
+                while let parent = cursor {
+                    guard visited.insert(parent).inserted,
+                          let ancestor = organisationContainers.first(where: { $0.id == parent }) else { return false }
+                    cursor = ancestor.parentID
+                }
+                // A selected descendant travels with its selected ancestor.
+                cursor = container.parentID
+                visited = [id]
+                var ancestorSelected = false
+                while let parent = cursor {
+                    guard visited.insert(parent).inserted,
+                          let ancestor = organisationContainers.first(where: { $0.id == parent }) else { return false }
+                    if draggedFolders.contains(parent) { ancestorSelected = true }
+                    cursor = ancestor.parentID
+                }
+                if !ancestorSelected, container.parentID != destination { edits.append(.folder(container)) }
+            }
+        }
+        guard !edits.isEmpty else { return false }
+        editOrganisation(.dropBatch(edits, destination))
+        return true
+    }
+    func editOrganisation(_ edit: OrganisationEdit) {
+        guard canInteractWithWorkspace, isVaultAvailable, !organisationMutationInProgress, !favouriteMutationInProgress,
+              let repository else { return }
+        let ticket = generation
+        organisationMutationInProgress = true
+        Task {
+            var completedDrops = 0
+            defer { if generation == ticket { organisationMutationInProgress = false } }
+            do {
+                let snapshot = try await repository.sqliteBlockStore.organisationSnapshot(includingHidden: false)
+                guard generation == ticket, isVaultAvailable else { return }
+                switch edit {
+                case .create(let kind, let name, let parent):
+                    _ = try await repository.sqliteBlockStore.createContainer(kind: kind, name: name, parentID: parent,
+                        expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+                case .renameContainer(let container, let name):
+                    _ = try await repository.sqliteBlockStore.renameContainer(id: container.id, name: name,
+                        expected: container.revision, expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+                case .move(let container, let parent):
+                    let index = snapshot.containers.filter { $0.parentID == parent && $0.id != container.id }.count
+                    _ = try await repository.sqliteBlockStore.moveContainer(id: container.id, parentID: parent, index: index,
+                        expected: container.revision, expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+                case .delete(let container):
+                    _ = try await repository.sqliteBlockStore.deleteContainer(id: container.id, expected: container.revision,
+                        expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+                case .dropBatch(let edits, let destination):
+                    if let destination, !snapshot.containers.contains(where: { $0.id == destination }) {
+                        throw VaultError.invalid("The destination is no longer available.")
+                    }
+                    // Recheck every move against the admitted snapshot before publishing any.
+                    for pending in edits {
+                        switch pending {
+                        case .item(let reference, let source):
+                            if let source, !snapshot.memberships.contains(where: { $0.containerID == source && $0.reference == reference }) {
+                                throw VaultError.conflict("A dragged membership changed. Select the items again.")
+                            }
+                        case .folder(let container):
+                            guard snapshot.containers.contains(where: { $0.id == container.id && $0.revision == container.revision }) else {
+                                throw VaultError.conflict("A dragged folder changed. Select the folders again.")
+                            }
+                            var cursor = destination
+                            var visited: Set<UUID> = [container.id]
+                            while let id = cursor {
+                                guard visited.insert(id).inserted,
+                                      let parent = snapshot.containers.first(where: { $0.id == id }) else {
+                                    throw VaultError.invalid("The folder destination would create a cycle.")
+                                }
+                                cursor = parent.parentID
+                            }
+                        }
+                    }
+                    var vaultRevision = snapshot.vaultRevision
+                    for edit in edits {
+                        guard generation == ticket, isVaultAvailable else { return }
+                        switch edit {
+                        case .item(let reference, let source):
+                            guard let destination else { throw VaultError.invalid("Choose a collection or folder for these items.") }
+                            let result = try await repository.sqliteBlockStore.placeMembership(reference: reference,
+                                containerID: destination, removingFrom: source, expectedVaultRevision: vaultRevision, operationID: UUID())
+                            vaultRevision = result.vaultRevision
+                        case .folder(let container):
+                            let result = try await repository.sqliteBlockStore.moveContainer(id: container.id, parentID: destination,
+                                index: Int.max, expected: container.revision, expectedVaultRevision: vaultRevision, operationID: UUID())
+                            vaultRevision = result.vaultRevision
+                        }
+                        completedDrops += 1
+                    }
+                case .place(let reference, let destination, let source):
+                    _ = try await repository.sqliteBlockStore.placeMembership(reference: reference, containerID: destination,
+                        removingFrom: source, expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+                case .membership(let id, let reference, let adding):
+                    if adding {
+                        _ = try await repository.sqliteBlockStore.addMembership(containerID: id, reference: reference,
+                            expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+                    } else {
+                        _ = try await repository.sqliteBlockStore.removeMembership(containerID: id, reference: reference,
+                            expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+                    }
+                }
+                guard generation == ticket, isVaultAvailable else { return }
+                await reloadFavourites()
+            } catch {
+                if generation == ticket, isVaultAvailable {
+                    let failure: String
+                    if case .dropBatch(let edits, _) = edit {
+                        failure = "Completed \(completedDrops) of \(edits.count) dropped items. " + error.localizedDescription
+                    } else { failure = error.localizedDescription }
+                    await reloadFavourites()
+                    if generation == ticket, isVaultAvailable { errorMessage = failure }
+                }
             }
         }
     }
@@ -904,6 +1076,7 @@ struct AISuggestion: Identifiable, Sendable {
         notes = []; sources = []; rows = []; semanticRows = []; trashedPages = []; recoveredDrafts = []; damagedRecoveryEntries = []; issues = []
         dismissedVaultNotices = []
         tags = []; backlinks = []; outgoingLinkTargets = []; preview = []; unseenRenamedPages = []
+        organisationContainers = []; organisationMemberships = []; organisationMutationInProgress = false
         favouriteReferences = []; favouriteMutationInProgress = false
         sidebarRecentHistory = SidebarRecentHistory(); sidebarRecentVaultID = nil
         sidebarRecentPresentation = SidebarRecentPresentation()
