@@ -270,8 +270,11 @@ list is 260/300/360 pt, the sidebar is 190/220/320 pt, and the inspector is
 280/340/420 pt. Native dividers own dragging.
 The split probe preserves controller holding priorities and the SwiftUI delegate,
 restores widths through `setPosition` only for pane arrangement/center-minimum changes,
-computes divider positions together and applies each once without animation during
-layout, and records widths only from native resize notifications during mouse dragging.
+computes divider positions together and applies them without animation during
+layout. If AppKit's initial layout does not achieve the requested boundaries, one
+deferred retry runs after layout settles, only for the same split, presentation and
+width. Ordinary window resizing does not reapply stored widths. The probe records
+widths only from native resize notifications during mouse dragging.
 Programmatic divider restoration cannot overwrite the saved width preferences.
 Window resizing must not overwrite preferred widths or animate heavy document/Table
 layout; pane/title/toolbar evaluation must not decode source bodies or rebuild the

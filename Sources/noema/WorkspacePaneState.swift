@@ -419,6 +419,7 @@ struct WorkspaceSplitViewPersistence: NSViewRepresentable {
         private var lastMainMinimum: CGFloat?
         private var scheduled = false
         private var configuring = false
+        private var retryingRestoration = false
         override var isOpaque: Bool { false }
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); scheduleConfiguration() }
@@ -496,6 +497,28 @@ struct WorkspaceSplitViewPersistence: NSViewRepresentable {
                 context.allowsImplicitAnimation = false
                 for (index, position) in positions.reversed() {
                     split.setPosition(position, ofDividerAt: index)
+                }
+            }
+            // AppKit can ignore a divider move while constructing its initial layout.
+            // Verify the requested boundaries before trusting the cached restoration.
+            // Retry once on the next main-loop turn, without adopting a new resize policy.
+            let achieved = positions.allSatisfy { index, position in
+                abs(split.arrangedSubviews[index].frame.maxX - position) < 2
+            }
+            if !achieved, !retryingRestoration {
+                let requestedPresentation = presentation
+                let requestedMinimum = mainMinimum
+                let requestedWidth = split.bounds.width
+                DispatchQueue.main.async { [weak self, weak split] in
+                    guard let self, let split, self.splitView === split,
+                          self.presentation == requestedPresentation,
+                          self.mainMinimum == requestedMinimum,
+                          split.bounds.width == requestedWidth else { return }
+                    self.retryingRestoration = true
+                    self.lastPresentation = nil
+                    self.lastMainMinimum = nil
+                    self.configure()
+                    self.retryingRestoration = false
                 }
             }
         }
