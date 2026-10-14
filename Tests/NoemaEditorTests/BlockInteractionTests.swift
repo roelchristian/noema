@@ -162,3 +162,114 @@ import VaultCore
     view.locked = true
     #expect(coordinator.interactionContext == nil)
 }
+
+@Test @MainActor func handleMenuSplitsFormatFromSemanticAndUsesHandleModifiedTime() throws {
+    let locale = Locale(identifier: "en_US")
+    var metadata = BlockMetadata(); metadata.semantic = "idea"
+    var heading = EditorBlock(kind: .heading2, runs: [RichRun("Heading")], metadata: metadata)
+    let headingEdited = Date(timeIntervalSince1970: 1_700_000_000)
+    heading.createdAt = headingEdited; heading.modifiedAt = headingEdited
+    var body = EditorBlock(runs: [RichRun("Body")])
+    let bodyEdited = Date(timeIntervalSince1970: 1_800_000_000)
+    body.createdAt = bodyEdited; body.modifiedAt = bodyEdited
+    let (coordinator, _, window) = blockInteractionEditor(BlockDocument(blocks: [heading, body]))
+    defer { coordinator.invalidatePublication(); window.close() }
+    let loadedHeading = coordinator.document.blocks[0]
+    let loadedBody = coordinator.document.blocks[1]
+    #expect(abs(loadedHeading.modifiedAt.timeIntervalSince(headingEdited)) < 1)
+    #expect(abs(loadedBody.modifiedAt.timeIntervalSince(bodyEdited)) < 1)
+    let model = try #require(coordinator.handleMenuModel(for: loadedHeading.id, locale: locale))
+    let stamp = BlockHandleMenuModel.timestamp(loadedHeading.modifiedAt, locale: locale)
+    #expect(model.rows == [.turnInto, .semantic, .insertBelow, .delete, .timestamp(stamp)])
+    #expect(stamp != BlockHandleMenuModel.timestamp(loadedBody.modifiedAt, locale: locale))
+    #expect(model.formatChoices.allSatisfy { choice in BlockCommand.all.first { $0.id == choice.commandID }?.semantic == nil })
+    #expect(model.semanticChoices.filter(\.enabled).allSatisfy { choice in BlockCommand.all.first { $0.id == choice.commandID }?.semantic != nil })
+    #expect(model.formatChoices.first { $0.commandID == "h2" }?.mark == .on)
+    #expect(model.formatChoices.first { $0.commandID == "text" }?.mark == .off)
+    #expect(model.semanticChoices.first { $0.commandID == "idea" }?.mark == .on)
+    #expect(model.semanticChoices.first { $0.commandID == "clear-tag" }?.mark == .off)
+    #expect(model.semanticChoices.allSatisfy { $0.commandID != nil })
+
+    coordinator.selectBlock(loadedHeading.id, modifiers: [])
+    coordinator.selectBlock(loadedBody.id, modifiers: .shift)
+    let mixed = try #require(coordinator.handleMenuModel(for: loadedHeading.id, locale: locale))
+    #expect(mixed.formatChoices.first { $0.commandID == "h2" }?.mark == .mixed)
+    #expect(mixed.formatChoices.first { $0.commandID == "text" }?.mark == .mixed)
+    #expect(mixed.semanticChoices.first { $0.commandID == "idea" }?.mark == .mixed)
+    #expect(mixed.rows.last == .timestamp(stamp))
+
+    var preserved = BlockMetadata(); preserved.semantic = "future-tag"
+    let (unknownCoordinator, _, unknownWindow) = blockInteractionEditor(BlockDocument(blocks: [EditorBlock(runs: [RichRun("Future")], metadata: preserved)]))
+    defer { unknownCoordinator.invalidatePublication(); unknownWindow.close() }
+    let unknownModel = try #require(unknownCoordinator.handleMenuModel(for: unknownCoordinator.document.blocks[0].id))
+    let unknown = try #require(unknownModel.semanticChoices.first { $0.commandID == nil })
+    #expect(unknown.title == "future-tag")
+    #expect(unknown.mark == .on)
+    #expect(!unknown.enabled)
+}
+
+@Test @MainActor func handleMenuInsertBelowKeepsSubtreeAndPlacesCaret() throws {
+    let child = EditorBlock(runs: [RichRun("Child")])
+    let root = EditorBlock(runs: [RichRun("Root")], children: [child])
+    let tail = EditorBlock(runs: [RichRun("Tail")])
+    let (coordinator, view, window) = blockInteractionEditor(BlockDocument(blocks: [root, tail]))
+    defer { coordinator.invalidatePublication(); window.close() }
+    let rootID = coordinator.document.blocks[0].id
+    let tailID = coordinator.document.blocks[1].id
+    let childID = coordinator.document.blocks[0].children[0].id
+    coordinator.selectBlock(rootID, modifiers: [])
+    coordinator.selectBlock(tailID, modifiers: .shift)
+    let before = coordinator.document
+    coordinator.performHandleMenu(.insertBelow)
+    #expect(coordinator.document == before)
+    #expect(coordinator.beginHandleMenu(for: rootID) != nil)
+    coordinator.performHandleMenu(.insertBelow)
+    #expect(coordinator.document.blocks.count == 3)
+    #expect(coordinator.document.blocks[0].id == rootID)
+    #expect(coordinator.document.blocks[0].children.map(\.id) == [childID])
+    let inserted = coordinator.document.blocks[1]
+    #expect(inserted.kind == .paragraph)
+    #expect(inserted.text.isEmpty)
+    #expect(coordinator.document.blocks[2].id == tailID)
+    #expect(coordinator.selectedBlockIDs.isEmpty)
+    let range = try #require(coordinator.rangeIndex?.range(for: inserted.id))
+    #expect(view.selectedRange() == NSRange(location: range.location, length: 0))
+    view.undoManager?.undo()
+    #expect(coordinator.document.blocks.map(\.id) == [rootID, tailID])
+}
+
+@Test @MainActor func handleMenuDeleteUndoesAndStaleContextDoesNotMutate() throws {
+    let blocks = ["First", "Second"].map { EditorBlock(runs: [RichRun($0)]) }
+    let (coordinator, view, window) = blockInteractionEditor(BlockDocument(blocks: blocks))
+    defer { coordinator.invalidatePublication(); window.close() }
+    let ids = coordinator.document.blocks.map(\.id)
+    coordinator.selectBlock(ids[0], modifiers: [])
+    coordinator.selectBlock(ids[1], modifiers: .shift)
+    #expect(coordinator.beginHandleMenu(for: ids[0]) != nil)
+    coordinator.performHandleMenu(.command("quote"))
+    #expect(coordinator.document.blocks.map(\.kind) == [.quote, .quote])
+    coordinator.clearBlockSelection()
+    #expect(coordinator.beginHandleMenu(for: ids[0]) != nil)
+    coordinator.performHandleMenu(.delete)
+    #expect(coordinator.document.blocks.map(\.id) == [ids[1]])
+    let undo = try #require(view.undoManager)
+    undo.undo()
+    #expect(coordinator.document.blocks.map(\.id) == ids)
+
+    let retained = coordinator.document
+    #expect(coordinator.beginHandleMenu(for: ids[0]) != nil)
+    coordinator.mutate(.transform(.heading1), id: ids[0], name: "Heading")
+    let headed = coordinator.document
+    coordinator.performHandleMenu(.delete)
+    #expect(coordinator.document == headed)
+    #expect(coordinator.document != retained)
+
+    let (retiredCoordinator, _, retiredWindow) = blockInteractionEditor(BlockDocument(blocks: [EditorBlock(runs: [RichRun("Only")])]))
+    defer { retiredCoordinator.invalidatePublication(); retiredWindow.close() }
+    let retiredID = retiredCoordinator.document.blocks[0].id
+    let retiredBefore = retiredCoordinator.document
+    #expect(retiredCoordinator.beginHandleMenu(for: retiredID) != nil)
+    retiredCoordinator.contextualInteractionsRetired = true
+    retiredCoordinator.performHandleMenu(.insertBelow)
+    #expect(retiredCoordinator.document == retiredBefore)
+}
