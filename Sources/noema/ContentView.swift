@@ -27,6 +27,9 @@ struct ContentView: View {
     @State private var pageDragSelection: Set<UUID> = []
     @State private var semanticDragSelection: Set<String> = []
     @State private var folderDragSelection: Set<UUID> = []
+    @State private var collapsedOrganisationContainers: Set<UUID> = []
+    @State private var organisationDropTarget: UUID?
+    @State private var rootDropTarget = false
     @State private var showTrashConfirmation = false
     @State private var trashPageID: UUID?
     @State private var permanentDeletion: TrashedItem?
@@ -59,8 +62,9 @@ struct ContentView: View {
     @State private var pageName = ""
     @State private var deletingSource: SourceRecord?
     @AppStorage(EditorPreferences.aiSummaryPlacementKey) private var aiSummaryPlacement = AISummaryPlacement.defaultValue.rawValue
-    init(model: AppModel, paneState: WorkspacePaneState? = nil) {
+    init(model: AppModel, paneState: WorkspacePaneState? = nil, collapsedContainers: Set<UUID> = []) {
         self.model = model
+        _collapsedOrganisationContainers = State(initialValue: collapsedContainers)
         let panes = paneState ?? WorkspacePaneState()
         _paneState = State(initialValue: panes)
         _inspectorState = State(initialValue: InspectorState(paneState: panes))
@@ -120,6 +124,9 @@ struct ContentView: View {
         showFavourites = false
         organisationSelection = nil
         inboxDragSelection = []; pageDragSelection = []; semanticDragSelection = []; folderDragSelection = []
+        collapsedOrganisationContainers = []
+        organisationDropTarget = nil
+        rootDropTarget = false
         showOrganisationName = false
         renamingContainer = nil
         organisationParent = nil
@@ -339,6 +346,7 @@ struct ContentView: View {
         }
         .onChange(of: sortedPageRows.map(\.id)) { pageDragSelection.formIntersection(Set(sortedPageRows.map(\.id))) }
         .onChange(of: model.organisationContainers) {
+            collapsedOrganisationContainers.formIntersection(Set(model.organisationContainers.map(\.id)))
             folderDragSelection.formIntersection(Set(model.organisationContainers.filter { $0.kind == .folder }.map(\.id)))
             if let id = organisationSelection, !model.organisationContainers.contains(where: { $0.id == id }) {
                 organisationSelection = nil
@@ -822,64 +830,10 @@ struct ContentView: View {
     private var organisationSidebarSection: some View {
         Section {
             ForEach(organisationSidebarRows) { row in
-                Button {
-                    if row.container.kind == .folder, NSEvent.modifierFlags.contains(.command) {
-                        if folderDragSelection.contains(row.container.id) { folderDragSelection.remove(row.container.id) }
-                        else { folderDragSelection.insert(row.container.id) }
-                        return
-                    }
-                    folderDragSelection = row.container.kind == .folder ? [row.container.id] : []
-                    inboxDragSelection = []
-                    organisationSelection = row.container.id
-                    organisationKnowledgeSelection = nil
-                    showFavourites = false
-                    showRecentItems = false
-                    showAllSearchResults = false
-                    inboxSelection = nil
-                    model.setLibrarySourceSelection(nil)
-                    revealCollectionList()
-                } label: {
-                    NoemaSidebarRowLabel(title: row.container.name,
-                        symbol: row.container.kind == .folder ? "folder" : "square.stack",
-                        isSelected: organisationSelection == row.container.id || folderDragSelection.contains(row.container.id))
-                        .padding(.leading, CGFloat(row.depth) * 12)
-                }
-                .buttonStyle(.plain)
-                .modifier(OrganisationDragModifier(value: row.container.kind == .folder
-                    ? model.organisationDragBatch(organisationSidebarRows.filter {
-                        folderDragSelection.contains(row.container.id) ? folderDragSelection.contains($0.container.id) : $0.container.id == row.container.id
-                    }.map { OrganisationDrag.container($0.container.id) }) : nil))
-                .dropDestination(for: String.self) { values, _ in
-                    model.receiveOrganisationDrop(values, into: row.container.id)
-                }
-                .listRowInsets(NoemaSidebarLayout.rowInsets)
-                .listRowSeparator(.hidden)
-                .listRowBackground((organisationSelection == row.container.id || folderDragSelection.contains(row.container.id)) ? theme.color(for: .selection) : Color.clear)
-                .accessibilityAddTraits((organisationSelection == row.container.id || folderDragSelection.contains(row.container.id)) ? .isSelected : [])
-                .help("Command-click folders to select several, then drag a selected folder")
-                .contextMenu {
-                    Button("Rename…") { beginOrganisationName(container: row.container) }
-                    Button("New Subfolder…") { beginOrganisationName(kind: .folder, parent: row.container.id) }
-                    if row.container.kind == .folder {
-                        Menu("Move To") {
-                            if row.container.parentID != nil {
-                                Button("Vault Root") { model.editOrganisation(.move(row.container, nil)) }
-                            }
-                            ForEach(organisationDestinations(for: row.container)) { destination in
-                                Button(destination.name) { model.editOrganisation(.move(row.container, destination.id)) }
-                            }
-                        }
-                    }
-                    if let reference = model.currentFavouriteReference {
-                        let contains = model.organisationMemberships.contains { $0.containerID == row.container.id && $0.reference == reference }
-                        Button(contains ? "Remove Current Document" : "Add Current Document") {
-                            model.editOrganisation(.membership(row.container.id, reference, !contains))
-                        }
-                    }
-                    Divider()
-                    Button("Delete…", role: .destructive) {
-                        deletingContainer = row.container
-                        showDeleteContainer = true
+                organisationSidebarContainer(row)
+                if !collapsedOrganisationContainers.contains(row.container.id) {
+                    ForEach(organisationSidebarItems(in: row.container.id)) { item in
+                        organisationSidebarItem(item, container: row.container, depth: row.depth + 1)
                     }
                 }
             }
@@ -892,13 +846,108 @@ struct ContentView: View {
                 Text("Collections & Folders")
                 Spacer()
                 Text("Vault Root")
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 3)
+                    .background(rootDropTarget ? theme.color(for: .selection) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                    .overlay {
+                        if rootDropTarget { RoundedRectangle(cornerRadius: 4).stroke(Color.accentColor, lineWidth: 1.5) }
+                    }
                     .help("Drop a folder here to move it to the vault root")
                     .dropDestination(for: String.self) { values, _ in
                         model.receiveOrganisationDrop(values, into: nil)
-                    }
+                    } isTargeted: { rootDropTarget = $0 }
             }
         }
         .disabled(!model.canInteractWithWorkspace || model.organisationMutationInProgress || model.favouriteMutationInProgress)
+    }
+    private func organisationSidebarContainer(_ row: OrganisationSidebarRow) -> some View {
+        HStack(spacing: 3) {
+            Button {
+                if !collapsedOrganisationContainers.insert(row.container.id).inserted {
+                    collapsedOrganisationContainers.remove(row.container.id)
+                }
+            } label: {
+                Image(systemName: collapsedOrganisationContainers.contains(row.container.id) ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14, height: NoemaMetrics.compactRowHeight)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(collapsedOrganisationContainers.contains(row.container.id) ? "Expand" : "Collapse") \(row.container.name)")
+            .accessibilityValue(collapsedOrganisationContainers.contains(row.container.id) ? "Collapsed" : "Expanded")
+            Button {
+                if row.container.kind == .folder, NSEvent.modifierFlags.contains(.command) {
+                    if folderDragSelection.contains(row.container.id) { folderDragSelection.remove(row.container.id) }
+                    else { folderDragSelection.insert(row.container.id) }
+                    return
+                }
+                folderDragSelection = row.container.kind == .folder ? [row.container.id] : []
+                inboxDragSelection = []
+                organisationSelection = row.container.id
+                organisationKnowledgeSelection = nil
+                showFavourites = false
+                showRecentItems = false
+                showAllSearchResults = false
+                inboxSelection = nil
+                model.setLibrarySourceSelection(nil)
+                revealCollectionList()
+            } label: {
+                NoemaSidebarRowLabel(title: row.container.name,
+                    symbol: row.container.kind == .folder ? "folder" : "square.stack",
+                    isSelected: organisationSelection == row.container.id || folderDragSelection.contains(row.container.id))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.leading, CGFloat(row.depth) * 14)
+        .modifier(OrganisationDragModifier(value: row.container.kind == .folder
+            ? model.organisationDragBatch(organisationSidebarRows.filter {
+                folderDragSelection.contains(row.container.id) ? folderDragSelection.contains($0.container.id) : $0.container.id == row.container.id
+            }.map { OrganisationDrag.container($0.container.id) }) : nil))
+        .dropDestination(for: String.self) { values, _ in
+            let accepted = model.receiveOrganisationDrop(values, into: row.container.id)
+            if accepted { collapsedOrganisationContainers.remove(row.container.id) }
+            return accepted
+        } isTargeted: { targeted in
+            if targeted { organisationDropTarget = row.container.id }
+            else if organisationDropTarget == row.container.id { organisationDropTarget = nil }
+        }
+        .listRowInsets(NoemaSidebarLayout.rowInsets)
+        .listRowSeparator(.hidden)
+        .listRowBackground((organisationDropTarget == row.container.id || organisationSelection == row.container.id || folderDragSelection.contains(row.container.id)) ? theme.color(for: .selection) : Color.clear)
+        .overlay {
+            if organisationDropTarget == row.container.id {
+                RoundedRectangle(cornerRadius: 5).stroke(Color.accentColor, lineWidth: 1.5)
+                    .allowsHitTesting(false)
+            }
+        }
+        .accessibilityAddTraits((organisationSelection == row.container.id || folderDragSelection.contains(row.container.id)) ? .isSelected : [])
+        .help("Command-click folders to select several, then drag a selected folder")
+        .contextMenu {
+            Button("Rename…") { beginOrganisationName(container: row.container) }
+            Button("New Subfolder…") { beginOrganisationName(kind: .folder, parent: row.container.id) }
+            if row.container.kind == .folder {
+                Menu("Move To") {
+                    if row.container.parentID != nil {
+                        Button("Vault Root") { model.editOrganisation(.move(row.container, nil)) }
+                    }
+                    ForEach(organisationDestinations(for: row.container)) { destination in
+                        Button(destination.name) { model.editOrganisation(.move(row.container, destination.id)) }
+                    }
+                }
+            }
+            if let reference = model.currentFavouriteReference {
+                let contains = model.organisationMemberships.contains { $0.containerID == row.container.id && $0.reference == reference }
+                Button(contains ? "Remove Current Document" : "Add Current Document") {
+                    model.editOrganisation(.membership(row.container.id, reference, !contains))
+                }
+            }
+            Divider()
+            Button("Delete…", role: .destructive) {
+                deletingContainer = row.container
+                showDeleteContainer = true
+            }
+        }
     }
     private func organisationDestinations(for container: OrganisationContainer) -> [OrganisationContainer] {
         model.organisationContainers.filter { destination in
@@ -924,7 +973,8 @@ struct ContentView: View {
         func children(_ parent: UUID?, depth: Int) -> [OrganisationSidebarRow] {
             guard depth <= model.organisationContainers.count else { return [] }
             return model.organisationContainers.filter { $0.parentID == parent }.flatMap {
-                [OrganisationSidebarRow(container: $0, depth: depth)] + children($0.id, depth: depth + 1)
+                [OrganisationSidebarRow(container: $0, depth: depth)]
+                    + (collapsedOrganisationContainers.contains($0.id) ? [] : children($0.id, depth: depth + 1))
             }
         }
         return children(nil, depth: 0)
@@ -938,30 +988,7 @@ struct ContentView: View {
     }
     private var inboxItems: [SidebarRecentItem] {
         if let container = selectedOrganisation {
-            return model.organisationMemberships.filter { $0.containerID == container.id }.compactMap { membership in
-                let reference = membership.reference
-                switch reference.kind {
-                case .page:
-                    guard let note = model.notes.first(where: { $0.id == reference.itemID }) else { return nil }
-                    return SidebarRecentItem(id: .page(note.id), title: note.title, symbol: "doc.text", accessibilityLabel: note.title, pageID: note.id)
-                case .source:
-                    guard let source = model.sources.first(where: { $0.id == reference.itemID }) else { return nil }
-                    return SidebarRecentItem(id: .source(source.id), title: source.title, symbol: "tray", accessibilityLabel: source.title, pageID: nil)
-                case .semanticBlock:
-                    guard let pageID = reference.pageID else { return nil }
-                    guard let note = model.notes.first(where: { $0.id == pageID }) else { return nil }
-                    let content = model.currentNote?.id == pageID ? model.body : note.body
-                    guard let block = BlockDocumentCodec.decode(content).block(reference.itemID) else { return nil }
-                    let label = block.text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
-                    let semantic = SemanticPresentation.find(block.metadata.semantic)
-                    return SidebarRecentItem(id: .semanticBlock(pageID: pageID, blockID: reference.itemID),
-                        title: label.isEmpty ? "Untitled block" : label, symbol: semantic?.symbol ?? "square.stack",
-                        accessibilityLabel: "\(semantic?.title ?? "Knowledge block"), \(label), in \(note.title)", pageID: pageID)
-                case .knowledgeEntity, .semanticObject:
-                    // Rendered below with their dedicated catalogue detail sheet.
-                    return nil
-                }
-            }
+            return organisationSidebarItems(in: container.id)
         }
         if showRecentItems { return model.sidebarRecentItems }
         return sortedPageRows.map { row in
@@ -971,6 +998,62 @@ struct ContentView: View {
                 accessibilityLabel: "\(row.kind == .wiki ? "Page" : "Source"), \(row.title)",
                 pageID: row.kind == .wiki ? row.id : nil
             )
+        }
+    }
+    private func organisationSidebarItems(in containerID: UUID) -> [SidebarRecentItem] {
+        return model.organisationMemberships.filter { $0.containerID == containerID }.compactMap { membership in
+            let reference = membership.reference
+            switch reference.kind {
+            case .page:
+                guard let note = model.notes.first(where: { $0.id == reference.itemID }) else { return nil }
+                return SidebarRecentItem(id: .page(note.id), title: note.title, symbol: "doc.text", accessibilityLabel: note.title, pageID: note.id)
+            case .source:
+                guard let source = model.sources.first(where: { $0.id == reference.itemID }) else { return nil }
+                return SidebarRecentItem(id: .source(source.id), title: source.title, symbol: "tray", accessibilityLabel: source.title, pageID: nil)
+            case .semanticBlock:
+                guard let pageID = reference.pageID else { return nil }
+                guard let note = model.notes.first(where: { $0.id == pageID }) else { return nil }
+                let content = model.currentNote?.id == pageID ? model.body : note.body
+                guard let block = BlockDocumentCodec.decode(content).block(reference.itemID) else { return nil }
+                let label = block.text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+                let semantic = SemanticPresentation.find(block.metadata.semantic)
+                return SidebarRecentItem(id: .semanticBlock(pageID: pageID, blockID: reference.itemID),
+                    title: label.isEmpty ? "Untitled block" : label, symbol: semantic?.symbol ?? "square.stack",
+                    accessibilityLabel: "\(semantic?.title ?? "Knowledge block"), \(label), in \(note.title)", pageID: pageID)
+            case .knowledgeEntity, .semanticObject:
+                // Rendered below with their dedicated catalogue detail sheet.
+                return nil
+            }
+        }
+    }
+    private func organisationSidebarItem(_ item: SidebarRecentItem, container: OrganisationContainer, depth: Int) -> some View {
+        Button {
+            organisationSelection = container.id
+            organisationKnowledgeSelection = nil
+            showFavourites = false
+            showRecentItems = false
+            showAllSearchResults = false
+            inboxSelection = item.id
+            inboxDragSelection = [organisationReference(for: item.id)]
+            folderDragSelection = []
+            revealCollectionList()
+            openOrganisationItem(item.id)
+        } label: {
+            NoemaSidebarRowLabel(title: item.title, symbol: item.symbol, isSelected: organisationSelection == container.id && inboxSelection == item.id)
+                .padding(.leading, CGFloat(depth) * 14 + 17)
+        }
+        .buttonStyle(.plain)
+        .draggable(model.organisationDragBatch([OrganisationDrag.movingItem(organisationReference(for: item.id), from: container.id)]))
+        .listRowInsets(NoemaSidebarLayout.rowInsets)
+        .listRowSeparator(.hidden)
+        .listRowBackground((organisationSelection == container.id && inboxSelection == item.id) ? theme.color(for: .selection) : Color.clear)
+        .accessibilityLabel(item.accessibilityLabel)
+        .accessibilityAddTraits((organisationSelection == container.id && inboxSelection == item.id) ? .isSelected : [])
+        .help("Drag to another collection or folder to move this membership")
+        .contextMenu {
+            Button("Remove from \(container.name)") {
+                model.editOrganisation(.membership(container.id, organisationReference(for: item.id), false))
+            }
         }
     }
     private func organisationReference(for id: RecentItemID) -> OrganisationItemReference {

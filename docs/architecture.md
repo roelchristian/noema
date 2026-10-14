@@ -91,7 +91,12 @@ retaining the draft on failure. The native command is available after the cohere
 snapshot loads. The page Insight inspector resolves associations by canonical UUID,
 including shared entity names/descriptions/aliases and independent Question and
 Definition properties. Native context-menu inspection opens the matching entry;
-canonical target edits compare target/vault revisions, while association replacement
+the Entities section groups page-local annotations by canonical identity, with type
+filters, mention counts and exact annotation navigation. Stale mentions remain visible
+but cannot navigate; deleted anchors are excluded. Shared target editing and individual
+association changes remain in menus and sheets, while semantic objects retain their
+separate association rows. No entity mini-article or graph is introduced.
+Canonical target edits compare target/vault revisions, while association replacement
 and removal use the editor command, undo, recovery and semantic page save path.
 Canonical target edits retain the existing association IDs and refresh referent
 revision evidence for subsequent saves. Canonical entity occurrence queries include
@@ -225,7 +230,11 @@ highlight follows the active collection. Favorites and Recent Items are top-leve
 entries in a separate sidebar group, divided from Pages, Sources, and Knowledge.
 Both open the same inbox list in the collection pane; individual items do not appear
 in the sidebar. Vault-owned collections and folders appear in a separate sidebar section
-and reuse the inbox list. Collections remain at the vault root; folders can be created
+and reuse the inbox list. Each container expands or collapses independently; expanded
+containers show their page, source and semantic-block memberships as draggable sidebar rows.
+Collapsing an ancestor hides its descendants without changing their individual disclosure state.
+Drop targets highlight on hover, and an accepted drop expands its destination.
+Collections remain at the vault root; folders can be created
 or moved under a collection or another folder. Container menus create, rename, and
 delete containers and add or remove the current document; deleting a container removes
 its descendant containers and memberships while retaining canonical items. Stored page,
@@ -261,8 +270,11 @@ list is 260/300/360 pt, the sidebar is 190/220/320 pt, and the inspector is
 280/340/420 pt. Native dividers own dragging.
 The split probe preserves controller holding priorities and the SwiftUI delegate,
 restores widths through `setPosition` only for pane arrangement/center-minimum changes,
-computes divider positions together and applies each once without animation during
-layout, and records widths only from native resize notifications during mouse dragging.
+computes divider positions together and applies them without animation during
+layout. If AppKit's initial layout does not achieve the requested boundaries, one
+deferred retry runs after layout settles, only for the same split, presentation and
+width. Ordinary window resizing does not reapply stored widths. The probe records
+widths only from native resize notifications during mouse dragging.
 Programmatic divider restoration cannot overwrite the saved width preferences.
 Window resizing must not overwrite preferred widths or animate heavy document/Table
 layout; pane/title/toolbar evaluation must not decode source bodies or rebuild the

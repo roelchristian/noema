@@ -33,39 +33,165 @@ struct SemanticInspectionRecord: Identifiable, Equatable, Sendable {
     var id: UUID { annotation.id }
 }
 
+/// Group only the page's current annotations, including unsaved editor annotations.
+/// Global occurrence snapshots must not inflate a document-local mention count.
+struct SemanticEntityGroup: Identifiable, Equatable, Sendable {
+    let records: [SemanticInspectionRecord]
+    var id: UUID { records[0].annotation.referent.identity.id }
+    var target: SemanticInspectionTarget { records[0].target }
+    var mentionCount: Int { records.count }
+    var navigableRecords: [SemanticInspectionRecord] { records.filter { $0.annotation.anchorDisposition == .resolved } }
+
+    static func make(records: [SemanticInspectionRecord], pageID: UUID) -> [Self] {
+        var groups: [Self] = []
+        for record in records where record.annotation.location.pageID == pageID && record.annotation.anchorDisposition != .deleted {
+            guard !["question", "definition"].contains(record.annotation.referent.identity.kind) else { continue }
+            if let index = groups.firstIndex(where: { $0.records[0].annotation.referent.identity == record.annotation.referent.identity }) {
+                groups[index] = .init(records: groups[index].records + [record])
+            } else { groups.append(.init(records: [record])) }
+        }
+        return groups
+    }
+}
+
 struct SemanticInspectionSection: View {
     @Bindable var model: AppModel
     let pageID: UUID
+    @State private var selectedType: String = "all"
     private var records: [SemanticInspectionRecord] {
-        guard model.semanticInspectionPageID == pageID else { return [] }
-        let selected = Set(model.semanticInspectionSelectionIDs)
-        return selected.isEmpty ? model.semanticInspectionRecords : model.semanticInspectionRecords.filter { selected.contains($0.id) }
+        model.semanticInspectionPageID == pageID ? model.semanticInspectionRecords : []
+    }
+    private var groups: [SemanticEntityGroup] { SemanticEntityGroup.make(records: records, pageID: pageID) }
+    private var visibleGroups: [SemanticEntityGroup] {
+        groups.filter { selectedType == "all" || $0.target.kind == selectedType }
+    }
+    private var otherRecords: [SemanticInspectionRecord] {
+        records.filter { ["question", "definition"].contains($0.annotation.referent.identity.kind) }
     }
     var body: some View {
-        InspectorSection(title: "Associations", count: records.count) {
-            InspectionAuthorityCaption(authority: model.semanticInspectionSelectionIDs.isEmpty ? .canonicalKnowledge : .selection)
-            if let error = model.semanticInspectionError {
-                Text(error).font(NoemaTypography.metadata).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: NoemaSpacing.md) {
+            InspectorSection(title: "Entities", count: groups.count) {
+                Text("People, places, concepts and events linked to this document.")
+                    .font(NoemaTypography.metadata).foregroundStyle(.secondary)
+                InspectionAuthorityCaption(authority: .canonicalKnowledge)
+                ScrollView(.horizontal) {
+                    HStack(spacing: NoemaSpacing.xs) {
+                        typeFilter("All", key: "all")
+                        ForEach(KnowledgeEntityType.initial, id: \.key) { type in
+                            typeFilter(type.key.capitalized, key: type.key)
+                        }
+                    }
+                }.scrollIndicators(.hidden)
+                if let error = model.semanticInspectionError {
+                    Text(error).font(NoemaTypography.metadata).foregroundStyle(.secondary)
+                }
+                if visibleGroups.isEmpty {
+                    Text(model.semanticInspectionLoading ? "Loading entities…" : (groups.isEmpty ? "No entities linked to this document." : "No entities of this type."))
+                        .font(NoemaTypography.metadata).foregroundStyle(.secondary)
+                }
+                ForEach(visibleGroups) { group in
+                    SemanticEntityRow(model: model, group: group)
+                }
+                Button {
+                    model.semanticCoordinator?.annotateSelection(nil)
+                } label: {
+                    Label("Link entity to selection…", systemImage: "plus")
+                }.disabled(!model.canAnnotateSelection || !model.canEditSemanticAssociation)
+                    .help("Select text in the editor to link a canonical target.")
+            } actions: {
+                Button { model.semanticCoordinator?.annotateSelection(nil) } label: { Image(systemName: "plus") }
+                    .accessibilityLabel("Link entity to selected text")
+                    .disabled(!model.canAnnotateSelection || !model.canEditSemanticAssociation)
+                Button { Task { await model.refreshSemanticInspection(pageID: pageID) } } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Refresh canonical targets").disabled(model.semanticInspectionLoading)
             }
-            if records.isEmpty {
-                Text(model.semanticInspectionLoading ? "Loading associations…" : "No associations on this page.")
-                    .foregroundStyle(.secondary)
+            if !otherRecords.isEmpty {
+                InspectorSection(title: "Semantic objects", count: otherRecords.count) {
+                    ForEach(otherRecords) { record in SemanticInspectionRow(model: model, record: record) }
+                }
             }
-            if !model.semanticInspectionSelectionIDs.isEmpty {
-                Button("Show all page associations") { model.semanticInspectionSelectionIDs = [] }
-                    .buttonStyle(.link)
-            }
-            ForEach(records) { record in
-                SemanticInspectionRow(model: model, record: record)
-            }
-        } actions: {
-            Button { Task { await model.refreshSemanticInspection(pageID: pageID) } } label: {
-                Image(systemName: "arrow.clockwise")
-            }.help("Refresh canonical targets").disabled(model.semanticInspectionLoading)
         }
         .task(id: pageID) { await model.refreshSemanticInspection(pageID: pageID) }
+        .onChange(of: pageID) { selectedType = "all" }
+        .onChange(of: model.semanticInspectionFocusID) {
+            if let record = records.first(where: { $0.id == model.semanticInspectionFocusID }),
+               selectedType != "all", selectedType != record.target.kind { selectedType = "all" }
+        }
         .onChange(of: model.body) { Task { await model.refreshSemanticInspection(pageID: pageID) } }
         .onChange(of: model.semanticSavedRevision) { Task { await model.refreshSemanticInspection(pageID: pageID) } }
+    }
+    private func typeFilter(_ title: String, key: String) -> some View {
+        Button { selectedType = key } label: {
+            Text(title).font(NoemaTypography.metadata).padding(.horizontal, NoemaSpacing.sm).padding(.vertical, NoemaSpacing.xs)
+                .background(selectedType == key ? Color.accentColor.opacity(0.16) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        }.buttonStyle(.plain).accessibilityAddTraits(selectedType == key ? .isSelected : [])
+    }
+}
+
+struct SemanticEntityRow: View {
+    @Bindable var model: AppModel
+    let group: SemanticEntityGroup
+    @State private var editingTarget = false
+    @State private var changingAnnotation: SemanticInspectionRecord?
+    @State private var removingAnnotation: SemanticInspectionRecord?
+    private var focused: Bool { group.records.contains { $0.id == model.semanticInspectionFocusID } }
+    private var tint: Color {
+        switch group.target.kind {
+        case "person": .blue
+        case "place": .green
+        case "concept": .orange
+        case "event": .purple
+        default: .secondary
+        }
+    }
+    var body: some View {
+        HStack(spacing: NoemaSpacing.sm) {
+            Button {
+                if let record = group.navigableRecords.first { model.navigateSemanticAssociation(record.annotation) }
+            } label: {
+                HStack(spacing: NoemaSpacing.sm) {
+                    Image(systemName: KnowledgeTypePresentation.symbol(for: group.target.kind))
+                        .font(.system(size: 17)).foregroundStyle(tint).frame(width: 32, height: 32)
+                        .background(tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(group.target.title).font(NoemaTypography.interfaceEmphasis).lineLimit(2)
+                        Text(group.target.kind.capitalized).font(NoemaTypography.metadata).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 2)
+                    Text("\(group.mentionCount) \(group.mentionCount == 1 ? "mention" : "mentions")")
+                        .font(NoemaTypography.metadata).foregroundStyle(.secondary).fixedSize()
+                    Image(systemName: "chevron.right").font(NoemaTypography.metadata).foregroundStyle(.secondary)
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain).disabled(group.navigableRecords.isEmpty)
+                .help("Find this entity in the document")
+            Menu {
+                Button("Edit shared target…") { editingTarget = true }
+                    .disabled(!group.target.isEditable || !model.canEditSemanticTarget)
+                ForEach(Array(group.records.enumerated()), id: \.element.id) { index, record in
+                    Menu("Mention \(index + 1)") {
+                        Button("Find in document") { model.navigateSemanticAssociation(record.annotation) }
+                            .disabled(record.annotation.anchorDisposition != .resolved)
+                        Button("Change association…") { changingAnnotation = record }
+                            .disabled(!model.canEditSemanticAssociation)
+                        Button("Remove association…", role: .destructive) { removingAnnotation = record }
+                            .disabled(!model.canEditSemanticAssociation)
+                    }
+                }
+            } label: { Image(systemName: "ellipsis") }
+                .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("Manage \(group.target.title) associations")
+        }
+        .padding(NoemaSpacing.sm)
+        .background(focused ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        .sheet(isPresented: $editingTarget) { SemanticTargetEditor(model: model, target: group.target) }
+        .sheet(item: $changingAnnotation) { record in SemanticAssociationPicker(model: model, annotationID: record.id) }
+        .confirmationDialog("Remove this association? The shared entity will be kept.", isPresented: Binding(
+            get: { removingAnnotation != nil }, set: { if !$0 { removingAnnotation = nil } }
+        ), titleVisibility: .visible) {
+            if let record = removingAnnotation {
+                Button("Remove association", role: .destructive) { Task { _ = await model.removeInspectedAssociation(record.id) } }
+            }
+            Button("Cancel", role: .cancel) { removingAnnotation = nil }
+        }
     }
 }
 
