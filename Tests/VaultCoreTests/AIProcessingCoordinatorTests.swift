@@ -101,7 +101,7 @@ private struct LifecycleProcessor: AIWorkProcessor {
     }
 
     @Test func testRestorationReevaluatesBodyProcessor() {
-        #expect(LifecycleProcessor().isEligible(.init(vaultID: UUID(), entityKind: .page)
+        #expect(LifecycleProcessor().isEligible(.init(vaultID: UUID(), entityKind: .page,
             entityID: UUID(), revision: "restored", kind: .restored, dimensions: [.lifecycle])))
     }
 
