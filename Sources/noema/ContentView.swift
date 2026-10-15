@@ -30,6 +30,7 @@ struct ContentView: View {
     @State private var collapsedOrganisationContainers: Set<UUID> = []
     @State private var organisationDropTarget: UUID?
     @State private var rootDropTarget = false
+    @State private var organisationHeaderHovered = false
     @State private var showTrashConfirmation = false
     @State private var trashPageID: UUID?
     @State private var permanentDeletion: TrashedItem?
@@ -127,6 +128,7 @@ struct ContentView: View {
         collapsedOrganisationContainers = []
         organisationDropTarget = nil
         rootDropTarget = false
+        organisationHeaderHovered = false
         showOrganisationName = false
         renamingContainer = nil
         organisationParent = nil
@@ -831,52 +833,54 @@ struct ContentView: View {
         Section {
             ForEach(organisationSidebarRows) { row in
                 organisationSidebarContainer(row)
-                if !collapsedOrganisationContainers.contains(row.container.id) {
-                    ForEach(organisationSidebarItems(in: row.container.id)) { item in
-                        organisationSidebarItem(item, container: row.container, depth: row.depth + 1)
-                    }
-                }
             }
-            Menu {
-                Button("New Collection…") { beginOrganisationName(kind: .collection) }
-                Button("New Folder…") { beginOrganisationName(kind: .folder) }
-            } label: { Label("New…", systemImage: "plus") }
         } header: {
             HStack {
-                Text("Collections & Folders")
-                Spacer()
-                Text("Vault Root")
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 3)
-                    .background(rootDropTarget ? theme.color(for: .selection) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
-                    .overlay {
-                        if rootDropTarget { RoundedRectangle(cornerRadius: 4).stroke(Color.accentColor, lineWidth: 1.5) }
-                    }
-                    .help("Drop a folder here to move it to the vault root")
-                    .dropDestination(for: String.self) { values, _ in
-                        model.receiveOrganisationDrop(values, into: nil)
-                    } isTargeted: { rootDropTarget = $0 }
+                Text(rootDropTarget ? "Move to Vault Root" : "Collections")
+                    .lineLimit(1)
+                Spacer(minLength: NoemaSpacing.xs)
+                Menu {
+                    Button("New Collection…") { beginOrganisationName(kind: .collection) }
+                    Button("New Folder…") { beginOrganisationName(kind: .folder) }
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .opacity(organisationHeaderHovered ? 1 : 0.65)
+                .accessibilityLabel("New collection or folder")
+                .help("New collection or folder")
             }
+            .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight)
+            .contentShape(Rectangle())
+            .background(rootDropTarget ? theme.color(for: .selection) : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+            .overlay {
+                if rootDropTarget {
+                    RoundedRectangle(cornerRadius: 5).stroke(Color.accentColor, lineWidth: 1.5)
+                        .allowsHitTesting(false)
+                }
+            }
+            .onHover { organisationHeaderHovered = $0 }
+            .help("Drop folders here to move them to the vault root")
+            .dropDestination(for: String.self) { values, _ in
+                model.receiveOrganisationDrop(values, into: nil)
+            } isTargeted: { rootDropTarget = $0 }
         }
         .disabled(!model.canInteractWithWorkspace || model.organisationMutationInProgress || model.favouriteMutationInProgress)
     }
     private func organisationSidebarContainer(_ row: OrganisationSidebarRow) -> some View {
-        HStack(spacing: 3) {
-            Button {
-                if !collapsedOrganisationContainers.insert(row.container.id).inserted {
-                    collapsedOrganisationContainers.remove(row.container.id)
-                }
-            } label: {
-                Image(systemName: collapsedOrganisationContainers.contains(row.container.id) ? "chevron.right" : "chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 14, height: NoemaMetrics.compactRowHeight)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(collapsedOrganisationContainers.contains(row.container.id) ? "Expand" : "Collapse") \(row.container.name)")
-            .accessibilityValue(collapsedOrganisationContainers.contains(row.container.id) ? "Collapsed" : "Expanded")
-            Button {
+        NoemaOrganisationSidebarRow(
+            title: row.container.name,
+            symbol: row.container.kind == .folder ? "folder" : "square.stack",
+            depth: row.depth,
+            isExpanded: !collapsedOrganisationContainers.contains(row.container.id),
+            isSelected: organisationSelection == row.container.id || folderDragSelection.contains(row.container.id),
+            onExpansionChange: { expanded in
+                if expanded { collapsedOrganisationContainers.remove(row.container.id) }
+                else { collapsedOrganisationContainers.insert(row.container.id) }
+            },
+            onSelect: {
                 if row.container.kind == .folder, NSEvent.modifierFlags.contains(.command) {
                     if folderDragSelection.contains(row.container.id) { folderDragSelection.remove(row.container.id) }
                     else { folderDragSelection.insert(row.container.id) }
@@ -892,14 +896,8 @@ struct ContentView: View {
                 inboxSelection = nil
                 model.setLibrarySourceSelection(nil)
                 revealCollectionList()
-            } label: {
-                NoemaSidebarRowLabel(title: row.container.name,
-                    symbol: row.container.kind == .folder ? "folder" : "square.stack",
-                    isSelected: organisationSelection == row.container.id || folderDragSelection.contains(row.container.id))
             }
-            .buttonStyle(.plain)
-        }
-        .padding(.leading, CGFloat(row.depth) * 14)
+        )
         .modifier(OrganisationDragModifier(value: row.container.kind == .folder
             ? model.organisationDragBatch(organisationSidebarRows.filter {
                 folderDragSelection.contains(row.container.id) ? folderDragSelection.contains($0.container.id) : $0.container.id == row.container.id
@@ -914,7 +912,10 @@ struct ContentView: View {
         }
         .listRowInsets(NoemaSidebarLayout.rowInsets)
         .listRowSeparator(.hidden)
-        .listRowBackground((organisationDropTarget == row.container.id || organisationSelection == row.container.id || folderDragSelection.contains(row.container.id)) ? theme.color(for: .selection) : Color.clear)
+        .listRowBackground(
+            RoundedRectangle(cornerRadius: 5)
+                .fill((organisationDropTarget == row.container.id || organisationSelection == row.container.id || folderDragSelection.contains(row.container.id)) ? theme.color(for: .selection) : Color.clear)
+        )
         .overlay {
             if organisationDropTarget == row.container.id {
                 RoundedRectangle(cornerRadius: 5).stroke(Color.accentColor, lineWidth: 1.5)
@@ -922,8 +923,13 @@ struct ContentView: View {
             }
         }
         .accessibilityAddTraits((organisationSelection == row.container.id || folderDragSelection.contains(row.container.id)) ? .isSelected : [])
-        .help("Command-click folders to select several, then drag a selected folder")
         .contextMenu {
+            Button(collapsedOrganisationContainers.contains(row.container.id) ? "Expand" : "Collapse") {
+                if !collapsedOrganisationContainers.insert(row.container.id).inserted {
+                    collapsedOrganisationContainers.remove(row.container.id)
+                }
+            }
+            Divider()
             Button("Rename…") { beginOrganisationName(container: row.container) }
             Button("New Subfolder…") { beginOrganisationName(kind: .folder, parent: row.container.id) }
             if row.container.kind == .folder {
@@ -1023,36 +1029,6 @@ struct ContentView: View {
             case .knowledgeEntity, .semanticObject:
                 // Rendered below with their dedicated catalogue detail sheet.
                 return nil
-            }
-        }
-    }
-    private func organisationSidebarItem(_ item: SidebarRecentItem, container: OrganisationContainer, depth: Int) -> some View {
-        Button {
-            organisationSelection = container.id
-            organisationKnowledgeSelection = nil
-            showFavourites = false
-            showRecentItems = false
-            showAllSearchResults = false
-            inboxSelection = item.id
-            inboxDragSelection = [organisationReference(for: item.id)]
-            folderDragSelection = []
-            revealCollectionList()
-            openOrganisationItem(item.id)
-        } label: {
-            NoemaSidebarRowLabel(title: item.title, symbol: item.symbol, isSelected: organisationSelection == container.id && inboxSelection == item.id)
-                .padding(.leading, CGFloat(depth) * 14 + 17)
-        }
-        .buttonStyle(.plain)
-        .draggable(model.organisationDragBatch([OrganisationDrag.movingItem(organisationReference(for: item.id), from: container.id)]))
-        .listRowInsets(NoemaSidebarLayout.rowInsets)
-        .listRowSeparator(.hidden)
-        .listRowBackground((organisationSelection == container.id && inboxSelection == item.id) ? theme.color(for: .selection) : Color.clear)
-        .accessibilityLabel(item.accessibilityLabel)
-        .accessibilityAddTraits((organisationSelection == container.id && inboxSelection == item.id) ? .isSelected : [])
-        .help("Drag to another collection or folder to move this membership")
-        .contextMenu {
-            Button("Remove from \(container.name)") {
-                model.editOrganisation(.membership(container.id, organisationReference(for: item.id), false))
             }
         }
     }
