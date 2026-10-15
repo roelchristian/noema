@@ -2,18 +2,6 @@ import AppKit
 import SwiftUI
 import VaultCore
 
-/// One compact outline grid: disclosure, symbol, and text stay aligned at every depth.
-enum NoemaOrganisationSidebarLayout {
-    static let indentation: CGFloat = 14
-    static let disclosureWidth: CGFloat = 14
-    static let disclosureSpacing: CGFloat = 3
-
-    static func leadingInset(depth: Int, hasDisclosureSlot: Bool) -> CGFloat {
-        CGFloat(max(0, depth)) * indentation
-            + (hasDisclosureSlot ? 0 : disclosureWidth + disclosureSpacing)
-    }
-}
-
 struct NoemaOrganisationSidebarEntry: Identifiable {
     let container: OrganisationContainer
     let depth: Int
@@ -46,49 +34,6 @@ enum NoemaOrganisationSidebarTree {
             }
             return true
         }
-    }
-}
-
-/// The disclosure action never changes navigation or folder drag selection.
-struct NoemaOrganisationSidebarRow: View {
-    let title: String
-    let symbol: String
-    let depth: Int
-    let isSelected: Bool
-    let isExpanded: Bool
-    let hasChildren: Bool
-    let toggleExpanded: () -> Void
-    let navigate: () -> Void
-
-    var body: some View {
-        HStack(spacing: NoemaOrganisationSidebarLayout.disclosureSpacing) {
-            Group {
-                if hasChildren {
-                    Button(action: toggleExpanded) {
-                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: NoemaOrganisationSidebarLayout.disclosureWidth, height: NoemaMetrics.compactRowHeight)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("\(isExpanded ? "Collapse" : "Expand") \(title)")
-                    .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-                } else {
-                    Color.clear.frame(width: NoemaOrganisationSidebarLayout.disclosureWidth)
-                        .accessibilityHidden(true)
-                }
-            }
-            Button(action: navigate) {
-                NoemaSidebarRowLabel(title: title, symbol: symbol, isSelected: isSelected)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(title)
-            .accessibilityHint("Open contents")
-        }
-        .padding(.leading, NoemaOrganisationSidebarLayout.leadingInset(depth: depth, hasDisclosureSlot: true))
-        .frame(minHeight: NoemaMetrics.compactRowHeight)
-        .contentShape(Rectangle())
     }
 }
 
@@ -135,6 +80,7 @@ enum NoemaSidebarLayout {
         bottom: 2,
         trailing: NoemaMetrics.sidebarRowHorizontalInset
     )
+    static let organisationIndent: CGFloat = 12
     static let footerHorizontalPadding: CGFloat = NoemaMetrics.sidebarInset
     static let footerRowHorizontalPadding: CGFloat = NoemaMetrics.sidebarRowHorizontalInset + 3
 }
@@ -162,6 +108,63 @@ struct NoemaSidebarRowLabel: View {
         }
         .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight, alignment: .leading)
         .contentShape(Rectangle())
+    }
+}
+
+/// A stable icon slot discloses children independently of container selection.
+struct NoemaOrganisationSidebarRow: View {
+    let title: String
+    let symbol: String
+    let depth: Int
+    let isExpanded: Bool
+    let isSelected: Bool
+    let onExpansionChange: (Bool) -> Void
+    let onSelect: () -> Void
+    @State private var isHovered = false
+    @FocusState private var disclosureFocused: Bool
+
+    var body: some View {
+        HStack(spacing: NoemaMetrics.sidebarIconSpacing) {
+            Button {
+                onExpansionChange(!isExpanded)
+            } label: {
+                Image(systemName: isHovered || disclosureFocused
+                    ? (isExpanded ? "chevron.down" : "chevron.right") : symbol)
+                    .font(NoemaTypography.sidebarIcon)
+                    .foregroundStyle(.secondary)
+                    .frame(width: NoemaMetrics.iconWidth, height: NoemaMetrics.compactRowHeight)
+                    .contentShape(Rectangle())
+                    .accessibilityHidden(true)
+            }
+            .buttonStyle(.plain)
+            .focused($disclosureFocused)
+            .accessibilityLabel("\(isExpanded ? "Collapse" : "Expand") \(title)")
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            .help("\(isExpanded ? "Collapse" : "Expand") \(title)")
+
+            Button(action: onSelect) {
+                HStack(spacing: 0) {
+                    Text(title)
+                        .font(isSelected ? NoemaTypography.navigationEmphasis : NoemaTypography.navigation)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(title)
+        }
+        .padding(.leading, CGFloat(depth) * NoemaSidebarLayout.organisationIndent)
+        .onHover { isHovered = $0 }
+        .onMoveCommand { direction in
+            switch direction {
+            case .right: onExpansionChange(true)
+            case .left: onExpansionChange(false)
+            default: break
+            }
+        }
     }
 }
 

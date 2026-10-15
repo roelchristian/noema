@@ -238,5 +238,17 @@
     "statement": "try validate(); try FileManager.default.moveItem(at: staging, to: destination)",
     "count": 1,
     "reason": "Native archive restore owns whole-root create-only publication, immediately revalidating the destination-bound operation lease. Verified staging is never merged into or substituted for an occupied vault; failed staging remains preservation data."
+  },
+  {
+    "path": "Sources/VaultCore/AIProcessingLedger.swift",
+    "statement": "guard sqlite3_open_v2(url.path, &pointer, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let pointer else {",
+    "count": 1,
+    "reason": "SQLiteAIWorkLedger owns bounded metadata-only app-local work/checkpoint SQLite and WAL/SHM. Production target is Application Support/Noema/Processing/work.sqlite; injected URLs are isolated test seams, never canonical vault bytes. Reviewed owner and target in docs/contracts/storage-boundary.md."
+  },
+  {
+    "path": "Sources/VaultCore/AIProcessingLedger.swift",
+    "statement": "try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)",
+    "count": 1,
+    "reason": "SQLiteAIWorkLedger owns bounded metadata-only app-local work/checkpoint SQLite and WAL/SHM. Production target is Application Support/Noema/Processing/work.sqlite; injected URLs are isolated test seams, never canonical vault bytes. Reviewed owner and target in docs/contracts/storage-boundary.md."
   }
 ]

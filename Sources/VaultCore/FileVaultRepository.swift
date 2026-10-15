@@ -51,6 +51,8 @@ public actor FileVaultRepository: VaultRepository {
     public nonisolated let sessionLease: VaultSessionLease?
     public nonisolated let accessGate: VaultAccessGate?
     public nonisolated let sqliteBlockStore: SQLiteBlockStore
+    var aiVerifiedSourceFingerprints: [UUID: String] = [:]
+    var aiContentChangeHandler: (@Sendable (AIContentChange) -> Void)?
     let sourceCache = SourceSnapshotCache()
     private var cacheInvalidatorID: UUID?
     var downloadingSources: [UUID: SourceRecord] = [:]
@@ -360,7 +362,9 @@ public actor FileVaultRepository: VaultRepository {
         note.relativePath = "sqlite/" + note.id.uuidString.lowercased()
         note.inlineTags = MarkdownService.analyze(note.body).tags
         _ = try await sqliteBlockStore.savePage(record: note, document: BlockDocumentCodec.decode(note.body), condition: .createOnly)
-        return try await sqliteBlockStore.loadPage(pageID: note.id).record
+        let saved = try await sqliteBlockStore.loadPage(pageID: note.id).record
+        emitAIPageChange(saved, previous: nil, kind: .created)
+        return saved
     }
 
     public func setEditingLock(note: NoteRecord, locked: Bool) async throws -> NoteRecord {
@@ -373,6 +377,13 @@ public actor FileVaultRepository: VaultRepository {
     public func save(note: NoteRecord, title: String, body: String, tags: [String]) async throws -> NoteRecord {
         try validateAccess(operation: "save")
         return try await save(note: note, title: title, document: BlockDocumentCodec.decode(body), tags: tags, preserveUpdatedAt: false)
+    }
+
+    /// Automatic callers supply a revocable predicate checked again in the SQLite transaction.
+    public func save(note: NoteRecord, title: String, body: String, tags: [String],
+                     validating: @escaping @Sendable () throws -> Void) async throws -> NoteRecord {
+        try await save(note: note, title: title, document: note.document ?? BlockDocumentCodec.decode(body),
+                       tags: tags, preserveUpdatedAt: false, validating: validating)
     }
 
     public func save(note: NoteRecord, title: String, document: BlockDocument, tags: [String]) async throws -> NoteRecord {
@@ -451,14 +462,17 @@ public actor FileVaultRepository: VaultRepository {
         let result = try await sqliteBlockStore.saveSemanticPage(value, condition: .replace(expected: expectedPageRevision),
             expectedObjectRevisions: expectedObjectRevisions, expectedEntityRevisions: expectedEntityRevisions,
             expectedVaultRevision: expectedVaultRevision, operationID: UUID())
-        return (semanticRecord(updated, snapshot: result.value.snapshot), result.value)
+        let saved = semanticRecord(updated, snapshot: result.value.snapshot)
+        emitAIPageChange(saved, previous: current)
+        return (saved, result.value)
     }
 
     private func save(note: NoteRecord, title: String, body: String, tags: [String], preserveUpdatedAt: Bool) async throws -> NoteRecord {
         try await save(note: note, title: title, document: note.document ?? BlockDocumentCodec.decode(body), tags: tags, preserveUpdatedAt: preserveUpdatedAt)
     }
 
-    private func save(note: NoteRecord, title: String, document: BlockDocument, tags: [String], preserveUpdatedAt: Bool) async throws -> NoteRecord {
+    private func save(note: NoteRecord, title: String, document: BlockDocument, tags: [String], preserveUpdatedAt: Bool,
+                      validating: @escaping @Sendable () throws -> Void = {}) async throws -> NoteRecord {
         try validateAccess(operation: "save")
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw VaultError.invalid("A wiki page needs a title.") }
@@ -481,8 +495,10 @@ public actor FileVaultRepository: VaultRepository {
         updated.updatedAt = preserveUpdatedAt ? note.updatedAt : timestamp()
         if updated.createdAt.isEmpty { updated.createdAt = updated.updatedAt }
         if normalized(title) != normalized(note.title), !updated.aliases.contains(note.title) { updated.aliases.append(note.title) }
-        _ = try await sqliteBlockStore.savePage(record: updated, document: document, condition: .replace(expected: sqliteRevision(note)))
-        return try await sqliteBlockStore.loadPage(pageID: note.id).record
+        _ = try await sqliteBlockStore.savePage(record: updated, document: document, condition: .replace(expected: sqliteRevision(note)), validating: validating)
+        let saved = try await sqliteBlockStore.loadPage(pageID: note.id).record
+        emitAIPageChange(saved, previous: snapshot.notes.first { $0.id == note.id })
+        return saved
     }
 
     func sqliteRevision(_ note: NoteRecord) throws -> BlockStoreRevision {
@@ -508,6 +524,7 @@ public actor FileVaultRepository: VaultRepository {
     public func trash(note: NoteRecord) async throws {
         try validateAccess(operation: "trash")
         _ = try await sqliteBlockStore.setTrashed(pageID: note.id, expected: sqliteRevision(note), trashed: true)
+        emitAIPageChange(note, previous: note, kind: .removed)
     }
 
     public func trashedPages() async throws -> [TrashedPage] {
@@ -522,6 +539,9 @@ public actor FileVaultRepository: VaultRepository {
         guard !notes.contains(where: { $0.id == page.note.id }) else { throw VaultError.invalid("A page with this identity already exists.") }
         guard !titleExists(page.note.title, in: notes) else { throw VaultError.duplicateTitle(page.note.title) }
         _ = try await sqliteBlockStore.setTrashed(pageID: page.note.id, expected: sqliteRevision(page.note), trashed: false)
+        if let saved = try? await sqliteBlockStore.loadPage(pageID: page.note.id).record {
+            emitAIPageChange(saved, previous: nil, kind: .restored)
+        }
     }
 
     public func permanentlyDelete(_ page: TrashedPage) async throws {
@@ -924,6 +944,7 @@ public actor FileVaultRepository: VaultRepository {
         let current = try await canonicalSourceMetadata(id: source.id)
         guard current.metadata == source.metadata else { throw VaultError.conflict("Source changed.") }
         _ = try await sqliteBlockStore.setSourceTrashed(id: source.id, expected: current.revision, trashed: true)
+        await emitAISourceChange(id: source.id, kind: .removed, dimensions: [.lifecycle])
     }
 
     private func titleExists(_ title: String, in notes: [NoteRecord]) -> Bool {
@@ -1048,6 +1069,7 @@ extension FileVaultRepository {
             guard entry.readIssue == nil, let source = entry.source else { throw VaultError.invalid("Repair this source before restoring it.") }
             _ = try await sqliteBlockStore.setSourceTrashed(id: source.id,
                 expected: BlockStoreRevision(token: Data(base64Encoded: entry.contentHash) ?? Data()), trashed: false)
+            await emitAISourceChange(id: source.id, kind: .restored, dimensions: [.lifecycle])
         }
     }
     public func permanentlyDelete(_ item: TrashedItem) async throws {

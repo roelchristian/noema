@@ -211,7 +211,6 @@ struct SourceAdapterTests {
         let repo = try await canonicalSchema5TestRepository(root: root, create: true, contentStore: store)
         let source = try await repo.importSource(data: Data("Source content".utf8), filename: "a.txt", title: "Original", originURL: nil)
         let corrected = try await repo.updateSourceLCC(source, lcc: "Q")
-        let path = "Sources/" + source.id.uuidString.lowercased() + "/metadata.json"
         let correctedBytes = corrected.metadata
         await #expect(throws: (any Error).self) {
             try await repo.renameSource(source, title: "Delayed automatic title", summary: "Delayed summary", lcc: "QA")

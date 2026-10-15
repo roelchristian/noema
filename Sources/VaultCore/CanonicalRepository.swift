@@ -23,25 +23,33 @@ extension FileVaultRepository {
         _ = try await sqliteBlockStore.publishSourceAndPage(source: CanonicalSource(metadata: metadata),
             condition: .createOnly, operationID: operationID, expectedVaultRevision: try await sqliteBlockStore.canonicalVaultRevision(), byteReceipt: receipt,
             validating: publication)
+        await emitAISourceChange(id: metadata.id, kind: .created, origin: .import, dimensions: [.sourceContent, .title])
     }
 
-    func canonicalUpdateSource(metadata: SourceMetadata, expected: BlockStoreRevision,
+    func canonicalUpdateSource(metadata: SourceMetadata, expected: BlockStoreRevision, origin: AIChangeOrigin = .user,
                                validating publication: (@Sendable () throws -> Void)? = nil) async throws {
-        _ = try await canonicalPublishSourceAndPage(metadata: metadata, expected: expected, page: nil, validating: publication)
+        _ = try await canonicalPublishSourceAndPage(metadata: metadata, expected: expected, page: nil, origin: origin, validating: publication)
     }
 
     @discardableResult
     func canonicalPublishSourceAndPage(metadata: SourceMetadata, expected: BlockStoreRevision,
-                                      page: CanonicalPagePublication?,
+                                      page: CanonicalPagePublication?, origin: AIChangeOrigin = .aiPublication,
                                       validating publication: (@Sendable () throws -> Void)? = nil) async throws -> CanonicalPublicationOutcome {
         try validateAccess(operation: "canonicalUpdateSource")
         let operationID = UUID()
         let receipt = try metadata.isLinked
             ? contentStore.verifyCanonicalLinked(metadata: metadata, vaultID: manifest.id, operationID: operationID)
             : contentStore.verifyCanonicalOriginal(metadata: metadata, vaultID: manifest.id, operationID: operationID)
-        return try await sqliteBlockStore.publishSourceAndPage(source: CanonicalSource(metadata: metadata),
+        let previous = try await canonicalSourceMetadata(id: metadata.id).metadata
+        let outcome = try await sqliteBlockStore.publishSourceAndPage(source: CanonicalSource(metadata: metadata),
             condition: .replace(expected: expected), page: page, operationID: operationID, expectedVaultRevision: try await sqliteBlockStore.canonicalVaultRevision(), byteReceipt: receipt,
             validating: publication)
+        var dimensions: Set<AIContentDimension> = []
+        if previous != metadata { dimensions.insert(.metadata) }
+        if previous.title != metadata.title { dimensions.insert(.title) }
+        if previous.sha256 != metadata.sha256 { dimensions.insert(.sourceContent) }
+        await emitAISourceChange(id: metadata.id, origin: origin, dimensions: dimensions)
+        return outcome
     }
 
     func canonicalReplaceSource(_ source: SourceRecord, metadata: SourceMetadata) async throws -> SourceRecord {
@@ -97,6 +105,13 @@ extension FileVaultRepository {
                         batch.sourceContentRevisions[id] = revision
                         batch.sourceOriginalRevisions[id] = metadata.isLinked ? digest(bytes) : metadata.sha256
                         batch.sourceVerification[id] = metadata.isLinked ? .linkedContentRead : .verifiedThisScan
+                        let fingerprint = digest(bytes)
+                        let previousFingerprint = aiVerifiedSourceFingerprints.updateValue(fingerprint, forKey: id)
+                        if let previousFingerprint, previousFingerprint != fingerprint {
+                            aiContentChangeHandler?(.init(vaultID: manifest.id, entityKind: .source, entityID: id,
+                                revision: snapshot.revision.token.base64EncodedString() + ":" + fingerprint,
+                                origin: .externalReconciliation, dimensions: [.sourceContent]))
+                        }
                     }
                 } catch let error as VaultAccessError { throw error }
                 catch is CancellationError { throw CancellationError() }

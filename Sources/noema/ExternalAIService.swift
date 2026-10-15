@@ -15,6 +15,11 @@ final class ExternalAIService {
     private var debugRefresh = 0
 
     let credentialBroker: ExternalAICredentialBroker
+    let vaultGrants: ExternalAIVaultGrants
+    private(set) var vaultGrantApproved = false
+    private var vaultGrantLease: VaultSessionLease?
+    private var vaultGrantCredentialVersion: UUID?
+    private var grantStatusRevision = UUID()
     let sessionManager: ExternalAISessionManager
     private(set) var gateway: ExternalAIGateway
     private(set) var configuration: ExternalAIModelConfiguration
@@ -27,6 +32,7 @@ final class ExternalAIService {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let consentSession = OpenAIConsentSession()
     @ObservationIgnored private var consentObservation: UUID?
+    @ObservationIgnored private var beforeAutomaticProviderAvailability: (@MainActor () async -> Void)?
 
     init(accessGate: VaultAccessGate, defaults: UserDefaults = .standard, activityRecorder: AIActivityRecorder = .shared) {
         self.activityRecorder = activityRecorder
@@ -37,11 +43,30 @@ final class ExternalAIService {
         self.configuration = configuration
         let broker = ExternalAICredentialBroker()
         credentialBroker = broker
+        vaultGrants = ExternalAIVaultGrants(credentialBroker: broker, accessGate: accessGate)
         let sessions = ExternalAISessionManager(accessGate: accessGate, credentialBroker: broker)
         sessionManager = sessions
         gateway = ExternalAIGateway(credentialBroker: broker, sessionManager: sessions,
                                    accessGate: accessGate, configuration: configuration, activityRecorder: activityRecorder,
                                    debugDiagnostics: debugDiagnostics)
+    }
+
+    /// Internal composition seam: tests keep real policy, Settings mutation and gateway
+    /// logic while supplying isolated security stores and a deterministic suspension.
+    init(accessGate: VaultAccessGate, defaults: UserDefaults, activityRecorder: AIActivityRecorder,
+         credentialBroker: ExternalAICredentialBroker, vaultGrants: ExternalAIVaultGrants,
+         sessionManager: ExternalAISessionManager, gateway: ExternalAIGateway,
+         beforeAutomaticProviderAvailability: (@MainActor () async -> Void)? = nil) {
+        self.accessGate = accessGate
+        self.defaults = defaults
+        self.activityRecorder = activityRecorder
+        self.credentialBroker = credentialBroker
+        self.vaultGrants = vaultGrants
+        self.sessionManager = sessionManager
+        self.gateway = gateway
+        self.beforeAutomaticProviderAvailability = beforeAutomaticProviderAvailability
+        configuration = Self.loadConfiguration(from: defaults)
+        consentPolicy = OpenAIConsentPolicy.load(from: defaults)
     }
 
     deinit {
@@ -70,6 +95,117 @@ final class ExternalAIService {
 
     private func debugStateChanged() { debugRefresh += 1 }
     func clearDebugReport() { debugDiagnostics.clear(); debugStateChanged() }
+
+    private func invalidateVaultGrantStatus() {
+        grantStatusRevision = UUID()
+        vaultGrantApproved = false
+        vaultGrantLease = nil
+        vaultGrantCredentialVersion = nil
+    }
+
+    func isVaultProcessingApproved(for lease: VaultSessionLease) -> Bool {
+        vaultGrantApproved && vaultGrantLease == lease && accessGate.currentLease == lease
+            && credentialStatus?.isAvailable == true && credentialStatus?.version == vaultGrantCredentialVersion
+    }
+
+    private static func providerStatus(_ status: ExternalAICredentialStatus?) -> AIProviderStatus {
+        guard let status else { return .unavailable(.providerUnavailable) }
+        switch status.presence {
+        case .available: return .available
+        case .missing: return .unavailable(.missingCredentials)
+        case .expired, .malformed, .inaccessible: return .unavailable(.providerUnavailable)
+        }
+    }
+
+    var openAIProviderStatus: AIProviderStatus { Self.providerStatus(credentialStatus) }
+
+    var openAIReadinessDescription: String? {
+        guard let status = credentialStatus else { return "Checking OpenAI connection…" }
+        switch status.presence {
+        case .available: return nil
+        case .missing: return "Configure a key in OpenAI settings"
+        case .expired: return "The saved OpenAI credential has expired"
+        case .malformed: return "The saved OpenAI credential is invalid"
+        case .inaccessible: return "The OpenAI credential is unavailable in Keychain"
+        }
+    }
+
+    func refreshVaultGrant(for expectedLease: VaultSessionLease? = nil) async {
+        guard !Task.isCancelled else { return }
+        guard let lease = expectedLease ?? accessGate.currentLease, accessGate.currentLease == lease else { return }
+        invalidateVaultGrantStatus()
+        let revision = grantStatusRevision
+        let status = await credentialBroker.status()
+        let approved = (try? await vaultGrants.hasGrant(for: lease)) == true
+        let currentStatus = await credentialBroker.status()
+        guard !Task.isCancelled, revision == grantStatusRevision, accessGate.currentLease == lease,
+              status == currentStatus else { return }
+        credentialStatus = currentStatus
+        vaultGrantApproved = approved
+        vaultGrantLease = lease
+        vaultGrantCredentialVersion = currentStatus.version
+    }
+
+    func approveVaultProcessing(for lease: VaultSessionLease) async throws {
+        let policy = VaultAIConfigurationStore(defaults: defaults).configuration(for: lease.vaultID)
+        guard policy.enabled, policy.provider == .openAI, accessGate.currentLease == lease else {
+            throw ExternalAIError.consentRequired
+        }
+        try await vaultGrants.approve(for: lease)
+        guard accessGate.currentLease == lease else { throw ExternalAIError.staleSession }
+        await refreshVaultGrant(for: lease)
+    }
+
+    func revokeVaultProcessing(for lease: VaultSessionLease) throws {
+        guard accessGate.currentLease == lease else { throw ExternalAIError.staleSession }
+        invalidateVaultGrantStatus()
+        try vaultGrants.revoke(for: lease)
+    }
+
+    /// Future AI.LIFE caller only: prepares exact-request authority without dispatching.
+    func authorizeAutomaticSubmission(_ request: ExternalAISummaryRequest) async throws -> ExternalAIBackgroundAuthorization {
+        guard let lease = accessGate.currentLease, request.authority.matches(lease) else { throw ExternalAIError.staleSession }
+        let generation = vaultGrants.captureGeneration()
+        let policy = VaultAIConfigurationStore(defaults: defaults).configuration(for: lease.vaultID)
+        let action: AIAction
+        switch request.action {
+        case .summarizePage: action = .summarizePage
+        case .summarizeSource: action = .summarizeSource
+        case .suggestTitle: action = .suggestTitle
+        case .lccClassification: action = .classifyLCC
+        case .composePage: action = .composePage
+        }
+        let availability = await automaticProviderAvailability()
+        try vaultGrants.validateGeneration(generation)
+        guard accessGate.currentLease == lease else { throw ExternalAIError.staleSession }
+        let preflight = VaultAIPolicyResolver.resolve(configuration: policy, action: action,
+            execution: .automatic, availability: availability)
+        switch preflight {
+        case .cloudApprovalRequired: break // The security layer must validate the actual grant next.
+        case .unavailable(.missingCredentials): throw ExternalAIError.credentialMissing
+        case .unavailable: throw ExternalAIError.providerUnavailable
+        case .disallowedOperation: throw ExternalAIError.unsupportedAction
+        default: throw ExternalAIError.consentRequired
+        }
+        let authorization = try await vaultGrants.authorize(request, generation: generation)
+        try vaultGrants.validateGeneration(generation)
+        let currentAvailability = await automaticProviderAvailability()
+        try vaultGrants.validateGeneration(generation)
+        guard accessGate.currentLease == lease else { throw ExternalAIError.staleSession }
+        let current = VaultAIConfigurationStore(defaults: defaults).configuration(for: lease.vaultID)
+        guard current == policy else { throw ExternalAIError.authorizationRevoked }
+        guard VaultAIPolicyResolver.resolveAutomatic(configuration: current, request: request,
+            authorization: authorization, availability: currentAvailability) == .permitted(.openAI)
+            else { throw ExternalAIError.authorizationRevoked }
+        return authorization
+    }
+
+    private func automaticProviderAvailability() async -> AIProviderAvailability {
+        await beforeAutomaticProviderAvailability?()
+        let status = await credentialBroker.status()
+        return .init(onDevice: OnDeviceSummary.unavailabilityReason == nil ? .available : .unavailable(.localModelUnavailable),
+                     openAI: Self.providerStatus(status))
+    }
 
     func setConsentPolicy(_ policy: OpenAIConsentPolicy) {
         guard consentPolicy != policy else { return }
@@ -144,7 +280,9 @@ final class ExternalAIService {
 
     func refreshStatus() async {
         debugRefresh += 1
-        credentialStatus = await credentialBroker.status()
+        let status = await credentialBroker.status()
+        if status != credentialStatus { invalidateVaultGrantStatus() }
+        credentialStatus = status
         authorizationState = await sessionManager.state
     }
 
@@ -172,6 +310,7 @@ final class ExternalAIService {
     private func applyConfiguration(_ selected: ExternalAIModelConfiguration) {
         guard selected != configuration else { return }
         // Revoke first so requests using the old gateway cannot dispatch or publish results.
+        vaultGrants.invalidateRuntime()
         sessionManager.revoke()
         clearConsentSession()
         configuration = selected
@@ -184,17 +323,22 @@ final class ExternalAIService {
     /// Entry is transient: the view clears its masked field before invoking this operation.
     /// No entered key is retained in application state, preferences or error text.
     func saveCredential(_ enteredKey: String, thirtyDayPolicy: Bool) async throws {
+        invalidateVaultGrantStatus()
         sessionManager.revoke(reason: .credentialChanged)
         clearConsentSession()
         defer { authorizationState = .revoked }
+        // Interactive authority must be retired even when durable grant cleanup fails.
+        try vaultGrants.revoke()
         try await credentialBroker.store(enteredKey, policy: thirtyDayPolicy ? .thirtyDays : .unlimited)
         await refreshStatus()
     }
 
     func removeCredential() async throws {
+        invalidateVaultGrantStatus()
         sessionManager.revoke(reason: .credentialChanged)
         clearConsentSession()
         defer { authorizationState = .revoked }
+        try vaultGrants.revoke()
         do {
             try await credentialBroker.remove()
         } catch {
@@ -205,6 +349,7 @@ final class ExternalAIService {
     }
 
     func revokeAuthorization() {
+        vaultGrants.invalidateRuntime()
         sessionManager.revoke()
         clearConsentSession()
         authorizationState = .revoked

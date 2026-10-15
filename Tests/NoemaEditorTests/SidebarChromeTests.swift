@@ -7,16 +7,6 @@ import VaultCore
 @Suite("Sidebar typography, row geometry, and shared chrome")
 @MainActor
 struct SidebarChromeTests {
-    @Test func organisationOutlineKeepsItemsOnTheContainerIconGrid() {
-        for depth in 0...6 {
-            let containerInset = NoemaOrganisationSidebarLayout.leadingInset(depth: depth, hasDisclosureSlot: true)
-            let memberInset = NoemaOrganisationSidebarLayout.leadingInset(depth: depth, hasDisclosureSlot: false)
-            #expect(memberInset == containerInset + NoemaOrganisationSidebarLayout.disclosureWidth + NoemaOrganisationSidebarLayout.disclosureSpacing)
-            #expect(containerInset == CGFloat(depth) * NoemaOrganisationSidebarLayout.indentation)
-        }
-        #expect(NoemaOrganisationSidebarLayout.leadingInset(depth: -1, hasDisclosureSlot: true) == 0)
-    }
-
     @Test func organisationOutlineCollapseHidesDescendantsButKeepsSiblingOrder() {
         let collection = organisationContainer("Research", kind: .collection)
         let folder = organisationContainer("Reading", parent: collection.id)
@@ -48,13 +38,13 @@ struct SidebarChromeTests {
         #expect(NoemaOrganisationSidebarTree.destinations(for: collection, in: containers).isEmpty)
     }
 
-    @Test func hostedOrganisationRowsRemainCompactWithLongTitlesAndEmptyDisclosureSlots() {
+    @Test func hostedOrganisationRowsRemainCompactWithLongTitlesAndExpansionStates() {
         for dark in [false, true] {
-            for hasChildren in [false, true] {
+            for expanded in [false, true] {
                 let row = NoemaOrganisationSidebarRow(
                     title: "A collection with a long title that must truncate within the sidebar",
-                    symbol: "square.stack", depth: 2, isSelected: true,
-                    isExpanded: true, hasChildren: hasChildren, toggleExpanded: {}, navigate: {}
+                    symbol: "square.stack", depth: 2, isExpanded: expanded, isSelected: true,
+                    onExpansionChange: { _ in }, onSelect: {}
                 )
                 .frame(width: WorkspacePaneState.sidebarIdeal)
                 .environment(\.noemaTheme, NoemaTheme(dark: dark, increasedContrast: false))

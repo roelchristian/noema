@@ -19,6 +19,7 @@ struct AIEnrichmentIntegrationTests {
         model.localStorageRoot = root.appendingPathComponent("local")
         model.persistSecurityScopedBookmark = false
         await model.open(root, create: false)
+        try configureVaultAI(model)
         model.select(note.id)
         for _ in 0..<300 {
             if model.currentNote?.id == note.id { break }
@@ -75,7 +76,7 @@ struct AIEnrichmentIntegrationTests {
             for index in 0..<3 {
                 let f = try await fixture(); defer { f.cleanup() }
                 let probe = Probe(); inject(f.model, probe: probe)
-                f.model.aiProviderPreferences.setDefaultProvider(provider)
+                try configureVaultAI(f.model, provider: provider)
                 let input: AIPageInput
                 if index == 0 {
                     let source = try await f.repository.importSource(data: Data("Source evidence".utf8), filename: "evidence.txt", title: "Human Source", originURL: nil)

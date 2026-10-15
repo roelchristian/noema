@@ -237,7 +237,7 @@ extension WikiPageAdapterTests {
     @Test func editingLockMetadataPreservesContentTimestampAndRejectsStaleWrites() async throws {
         let folder = try folder(); defer { try? FileManager.default.removeItem(at: folder) }
         let repo = try await canonicalSchema5TestRepository(root: folder, create: true)
-        let original = try await repo.create(title: "Page", body: "Original #tag")
+        _ = try await repo.create(title: "Page", body: "Original #tag")
 
         let note = try #require(try await repo.scan().notes.first)
         let locked = try await repo.setEditingLock(note: note, locked: true)

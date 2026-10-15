@@ -30,6 +30,7 @@ struct ContentView: View {
     @State private var collapsedOrganisationContainers: Set<UUID> = []
     @State private var organisationDropTarget: UUID?
     @State private var rootDropTarget = false
+    @State private var organisationHeaderHovered = false
     @State private var showTrashConfirmation = false
     @State private var trashPageID: UUID?
     @State private var permanentDeletion: TrashedItem?
@@ -46,7 +47,7 @@ struct ContentView: View {
     @State private var selectedSemanticFilter: String?
     @State private var pageListScroll = ScrollPosition(idType: UUID.self)
     @State private var semanticListScroll = ScrollPosition(idType: String.self)
-    @State private var sourceListScroll = ScrollPosition(edge: .top)
+    @State private var sourceListScroll = ScrollPosition(idType: UUID.self)
     @State private var knowledgeQuery = ""
     @State private var knowledgeSelection: KnowledgeCatalogueSelection?
     @FocusState private var collectionListFocused: Bool
@@ -55,7 +56,11 @@ struct ContentView: View {
     private var sourceSelectionBinding: Binding<UUID?> {
         Binding(get: { model.librarySourceSelection }, set: { model.setLibrarySourceSelection($0) })
     }
-    @State private var sourceTablePresentation = SourcesTablePresentation()
+    @State private var sourceTablePresentation: SourcesTablePresentation = {
+        let presentation = SourcesTablePresentation()
+        presentation.setInboxSortOrder(.captured)
+        return presentation
+    }()
     @State private var renamingSource: SourceRecord?
     @State private var sourceName = ""
     @State private var renamingPageID: UUID?
@@ -128,6 +133,7 @@ struct ContentView: View {
         collapsedOrganisationContainers = []
         organisationDropTarget = nil
         rootDropTarget = false
+        organisationHeaderHovered = false
         showOrganisationName = false
         renamingContainer = nil
         organisationParent = nil
@@ -159,7 +165,7 @@ struct ContentView: View {
         knowledgeSelection = nil
         pageListScroll = ScrollPosition(idType: UUID.self)
         semanticListScroll = ScrollPosition(idType: String.self)
-        sourceListScroll = ScrollPosition(edge: .top)
+        sourceListScroll = ScrollPosition(idType: UUID.self)
         pendingLibraryFocus = false
     }
     private var workspacePresentation: some View {
@@ -462,7 +468,7 @@ struct ContentView: View {
         WorkspaceTitleOwnership.collectionChromeTitle(window: model.windowTitle, collectionName: collectionTitle)
     }
     private var showsCollectionHeader: Bool {
-        selectedOrganisation != nil || collectionChromeTitle != nil || isPagesScope
+        selectedOrganisation != nil || collectionChromeTitle != nil || isPagesScope || isSourcesScope
     }
     private var collectionHeader: some View {
         HStack(spacing: NoemaSpacing.sm) {
@@ -485,6 +491,7 @@ struct ContentView: View {
                 .help("Collection or folder options")
                 .disabled(!model.canInteractWithWorkspace || model.organisationMutationInProgress || model.favouriteMutationInProgress)
             } else if isPagesScope { pagesSortMenu }
+            else if isSourcesScope { sourcesSortMenu }
         }
         .padding(.horizontal, NoemaSpacing.md)
         .padding(.vertical, NoemaSpacing.sm)
@@ -503,6 +510,24 @@ struct ContentView: View {
         .help("Sort pages (\(pageSortOrder.rawValue))")
         .accessibilityLabel("Sort Pages")
         .accessibilityValue(pageSortOrder.rawValue)
+    }
+    private var sourcesSortMenu: some View {
+        Menu {
+            Picker("Sort", selection: Binding(
+                get: { sourceTablePresentation.inboxSortOrder },
+                set: { sourceTablePresentation.setInboxSortOrder($0) }
+            )) {
+                ForEach(SourceInboxSortOrder.allCases) { order in
+                    Text(order.rawValue).tag(order)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Label("Sort", systemImage: "arrow.up.arrow.down")
+        }
+        .help("Sort sources (\(sourceTablePresentation.inboxSortOrder.rawValue))")
+        .accessibilityLabel("Sort Sources")
+        .accessibilityValue(sourceTablePresentation.inboxSortOrder.rawValue)
     }
     @ViewBuilder private var contentPane: some View {
         if showAllSearchResults {
@@ -603,6 +628,9 @@ struct ContentView: View {
                 .frame(maxWidth: 560)
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    private var isSourcesScope: Bool {
+        selectedOrganisation == nil && !showFavourites && !showRecentItems && model.scope == .sources
     }
     private var isPagesScope: Bool {
         if selectedOrganisation != nil { return false }
@@ -842,70 +870,55 @@ struct ContentView: View {
         Section {
             ForEach(organisationSidebarRows) { row in
                 organisationSidebarContainer(row)
-                if !collapsedOrganisationContainers.contains(row.container.id) {
-                    ForEach(organisationSidebarItems(in: row.container.id)) { item in
-                        organisationSidebarItem(item, container: row.container, depth: row.depth + 1)
-                    }
-                }
             }
         } header: {
-            HStack(spacing: NoemaSpacing.xs) {
-                NoemaSidebarSectionHeader(title: "Collections & Folders")
-                Spacer(minLength: 0)
+            HStack {
+                Text(rootDropTarget ? "Move to Vault Root" : "Collections")
+                    .lineLimit(1)
+                Spacer(minLength: NoemaSpacing.xs)
                 Menu {
                     Button("New Collection…") { beginOrganisationName(kind: .collection) }
                     Button("New Folder…") { beginOrganisationName(kind: .folder) }
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(theme.text(for: .textSecondary, on: .sidebar))
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .accessibilityLabel("Create collection or folder")
+                .opacity(organisationHeaderHovered ? 1 : 0.65)
+                .accessibilityLabel("New collection or folder")
                 .help("New collection or folder")
             }
-            .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight)
             .contentShape(Rectangle())
             .background(rootDropTarget ? theme.color(for: .selection) : Color.clear, in: RoundedRectangle(cornerRadius: 5))
             .overlay {
                 if rootDropTarget {
-                    RoundedRectangle(cornerRadius: 5).stroke(theme.color(for: .focusRing), lineWidth: 1.5)
+                    RoundedRectangle(cornerRadius: 5).stroke(Color.accentColor, lineWidth: 1.5)
                         .allowsHitTesting(false)
                 }
             }
+            .onHover { organisationHeaderHovered = $0 }
             .help("Drop folders here to move them to the vault root")
             .dropDestination(for: String.self) { values, _ in
                 model.receiveOrganisationDrop(values, into: nil)
             } isTargeted: { rootDropTarget = $0 }
-            .contextMenu {
-                Button("New Collection…") { beginOrganisationName(kind: .collection) }
-                Button("New Folder…") { beginOrganisationName(kind: .folder) }
-            }
         }
         .disabled(!model.canInteractWithWorkspace || model.organisationMutationInProgress || model.favouriteMutationInProgress)
     }
     private func organisationSidebarContainer(_ row: OrganisationSidebarRow) -> some View {
-        let selected = row.container.kind == .folder ? folderDragSelection.contains(row.container.id)
-            : organisationSelection == row.container.id && inboxDragSelection.isEmpty && inboxSelection == nil && folderDragSelection.isEmpty
-        let hasChildren = model.organisationContainers.contains { $0.parentID == row.container.id }
-            || model.organisationMemberships.contains { $0.containerID == row.container.id }
+        let selected = organisationSelection == row.container.id || folderDragSelection.contains(row.container.id)
         return NoemaOrganisationSidebarRow(
             title: row.container.name,
             symbol: row.container.kind == .folder ? "folder" : "square.stack",
             depth: row.depth,
-            isSelected: selected,
             isExpanded: !collapsedOrganisationContainers.contains(row.container.id),
-            hasChildren: hasChildren,
-            toggleExpanded: {
-                if !collapsedOrganisationContainers.insert(row.container.id).inserted {
-                    collapsedOrganisationContainers.remove(row.container.id)
-                }
+            isSelected: organisationSelection == row.container.id || folderDragSelection.contains(row.container.id),
+            onExpansionChange: { expanded in
+                if expanded { collapsedOrganisationContainers.remove(row.container.id) }
+                else { collapsedOrganisationContainers.insert(row.container.id) }
             },
-            navigate: {
+            onSelect: {
                 if row.container.kind == .folder, NSEvent.modifierFlags.contains(.command) {
                     inboxDragSelection = []
                     inboxSelection = nil
@@ -933,8 +946,13 @@ struct ContentView: View {
         .listRowSeparator(.hidden)
         .noemaOrganisationSidebarRowSurface(selected: selected, targeted: organisationDropTarget == row.container.id)
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .help("Command-click folders to select several, then drag a selected folder")
         .contextMenu {
+            Button(collapsedOrganisationContainers.contains(row.container.id) ? "Expand" : "Collapse") {
+                if !collapsedOrganisationContainers.insert(row.container.id).inserted {
+                    collapsedOrganisationContainers.remove(row.container.id)
+                }
+            }
+            Divider()
             Button("Rename…") { beginOrganisationName(container: row.container) }
             Button("New Subfolder…") { beginOrganisationName(kind: .folder, parent: row.container.id) }
             if row.container.kind == .folder {
@@ -1017,35 +1035,6 @@ struct ContentView: View {
             }
         }
     }
-    private func organisationSidebarItem(_ item: SidebarRecentItem, container: OrganisationContainer, depth: Int) -> some View {
-        Button {
-            organisationSelection = container.id
-            organisationKnowledgeSelection = nil
-            showFavourites = false
-            showRecentItems = false
-            showAllSearchResults = false
-            inboxSelection = item.id
-            inboxDragSelection = [organisationReference(for: item.id)]
-            folderDragSelection = []
-            revealCollectionList()
-            openOrganisationItem(item.id)
-        } label: {
-            NoemaSidebarRowLabel(title: item.title, symbol: item.symbol, isSelected: organisationSelection == container.id && inboxSelection == item.id)
-                .padding(.leading, NoemaOrganisationSidebarLayout.leadingInset(depth: depth, hasDisclosureSlot: false))
-        }
-        .buttonStyle(.plain)
-        .draggable(model.organisationDragBatch([OrganisationDrag.movingItem(organisationReference(for: item.id), from: container.id)]))
-        .listRowInsets(NoemaSidebarLayout.rowInsets)
-        .listRowSeparator(.hidden)
-        .noemaOrganisationSidebarRowSurface(selected: organisationSelection == container.id && inboxSelection == item.id)
-        .accessibilityLabel(item.accessibilityLabel)
-        .accessibilityAddTraits((organisationSelection == container.id && inboxSelection == item.id) ? .isSelected : [])
-        .help("Drag to another collection or folder to move this membership")
-        .contextMenu {
-            organisationItemContextMenu(organisationReference(for: item.id), sourceContainerID: container.id)
-        }
-    }
-
     private func organisationReference(for id: RecentItemID) -> OrganisationItemReference {
         OrganisationContentsRowPresentation.reference(for: id)
     }
@@ -1255,15 +1244,18 @@ struct ContentView: View {
     }
     @ViewBuilder private var pageLibrary: some View {
         if model.scope == .sources && !showFavourites {
-            SourcesLibraryView(
-                model: model,
-                presentation: sourceTablePresentation,
-                selection: sourceSelectionBinding,
-                scrollPosition: $sourceListScroll,
-                listFocus: $collectionListFocused,
-                rename: { source in sourceName = source.title; renamingSource = source },
-                delete: { deletingSource = $0 }
-            )
+            VStack(spacing: 0) {
+                SourcesLibraryView(
+                    model: model,
+                    presentation: sourceTablePresentation,
+                    selection: sourceSelectionBinding,
+                    scrollPosition: $sourceListScroll,
+                    listFocus: $collectionListFocused,
+                    rename: { source in sourceName = source.title; renamingSource = source },
+                    delete: { deletingSource = $0 }
+                )
+                libraryFooter
+            }
             .background(theme.color(for: .canvas))
             .safeAreaBar(edge: .top) {
                 if model.busy || model.errorMessage != nil {
@@ -1378,18 +1370,7 @@ struct ContentView: View {
                 .scrollPosition($pageListScroll)
                 .focused($collectionListFocused)
             }
-            HStack {
-                Text(libraryCount)
-                if model.scope == .sources, !model.downloadingSources.isEmpty {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.mini)
-                        Text("Downloading from iCloud")
-                    }
-                } else if model.scope == .sources, model.sourceRenameTotal > 0 {
-                    Text("Renaming \(min(model.sourceRenameCompleted + 1, model.sourceRenameTotal)) of \(model.sourceRenameTotal) files…")
-                }
-                Spacer(); Text("⌘P")
-            }.font(NoemaTypography.metadata).foregroundStyle(.secondary).padding(NoemaSpacing.md)
+            libraryFooter
         }
         .background(theme.color(for: .canvas))
         .safeAreaBar(edge: .top) {
@@ -1621,6 +1602,24 @@ struct ContentView: View {
                 .focused($collectionListFocused)
             }
         }
+    }
+    private var libraryFooter: some View {
+        HStack {
+            Text(libraryCount)
+            if model.scope == .sources, !model.downloadingSources.isEmpty {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Downloading from iCloud")
+                }
+            } else if model.scope == .sources, model.sourceRenameTotal > 0 {
+                Text("Renaming \(min(model.sourceRenameCompleted + 1, model.sourceRenameTotal)) of \(model.sourceRenameTotal) files…")
+            }
+            Spacer()
+            Text("⌘P")
+        }
+        .font(NoemaTypography.metadata)
+        .foregroundStyle(.secondary)
+        .padding(NoemaSpacing.md)
     }
     private var libraryCount: String {
         if model.scope == .semantic {

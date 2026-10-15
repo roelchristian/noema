@@ -363,8 +363,12 @@ Keyboard behavior: Return splits; empty list Return exits; structural Backspace 
 Contextual gutter controls reuse native block geometry without changing paragraph layout.
 Plus creates a new sibling after the targeted subtree through `BlockMutation` and
 restores the native caret to its beginning; cancellation is a content no-op. The
-selection toolbar routes formatting and Annotate to the existing coordinator and
-annotation chooser. Delayed actions capture page/session identity, reload generation,
+handle opens a card for Turn into (format), Semantic, Insert below, and Delete, and
+shows that block's modified time. Insert below adds an empty paragraph sibling.
+Format, semantic designation, and delete use the batch selection when the handle
+block is selected. Text and accessibility context menus keep status, duplicate,
+move, indent, inline format, and annotate. The selection toolbar routes formatting
+and Annotate to the existing coordinator and annotation chooser. Delayed actions capture page/session identity, reload generation,
 local revision and native selection; retired, stale, locked and unready interactions
 cannot mutate. Persistence acknowledgements alone do not retire these contexts.
 

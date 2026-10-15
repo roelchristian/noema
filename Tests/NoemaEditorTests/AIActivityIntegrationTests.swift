@@ -39,6 +39,7 @@ struct AIActivityIntegrationTests {
             pageFromTopic: { _, _ in "Generated topic article" }, pageFromSource: { _ in "Generated source article" },
             researchTopic: { _ in [] })
         await model.open(root, create: false)
+        try configureVaultAI(model)
         model.select(note.id)
         try await waitUntil { model.currentNote?.id == note.id }
         return ActivityFixture(root: root, repository: repository, note: note, model: model,
@@ -263,7 +264,7 @@ struct AIActivityIntegrationTests {
             for inputIndex in 0..<3 {
                 let f = try await fixture(); defer { f.cleanup() }
                 injectComposition(f.model)
-                f.model.aiProviderPreferences.setDefaultProvider(provider)
+                try configureVaultAI(f.model, provider: provider)
                 let recorder = f.recorder
                 f.model.cloudSummaryOverride = { request, consent in
                     #expect(consent.approves(request))
@@ -305,7 +306,7 @@ struct AIActivityIntegrationTests {
     @Test @MainActor func cancelledCompositionConsentAndDismissedDraftFinalizeExistingRecords() async throws {
         let f = try await fixture(); defer { f.cleanup() }
         injectComposition(f.model)
-        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+        try configureVaultAI(f.model, provider: .openAI)
         f.model.cloudSummaryOverride = { _, _ in throw ExternalAIError.invalidResponse }
         #expect(await f.model.prepareAIPage(.topic("Fixture topic")))
         let request = try #require(f.model.aiPageSubmission?.request)
@@ -313,7 +314,7 @@ struct AIActivityIntegrationTests {
         try await waitUntil { try await f.store.query().first?.status == .cancelled }
         let cancelled = try #require(try await f.store.query().first)
         #expect(cancelled.id == request.id && cancelled.requestCount == 0)
-        f.model.aiProviderPreferences.setDefaultProvider(.onDevice)
+        try configureVaultAI(f.model, provider: .onDevice)
         #expect(await f.model.prepareAIPage(.topic("Fixture topic")))
         let suggested = try #require(try await f.store.query().first)
         f.model.cancelAIPage()
@@ -342,7 +343,7 @@ struct AIActivityIntegrationTests {
         let gate = ActivityInferenceGate()
         let f = try await fixture(beginGate: gate); defer { f.cleanup() }
         injectComposition(f.model)
-        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+        try configureVaultAI(f.model, provider: .openAI)
         f.model.cloudSummaryOverride = { _, _ in throw ExternalAIError.invalidResponse }
         let originalModel = f.model.externalAIService.configuration.model
         let worker = Task { await f.model.prepareAIPage(.topic("Fixture topic")) }
@@ -359,7 +360,7 @@ struct AIActivityIntegrationTests {
     @Test @MainActor func automaticCloudCompositionConsentStillUsesOneRequestBoundRecord() async throws {
         let f = try await fixture(); defer { f.cleanup() }
         injectComposition(f.model)
-        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+        try configureVaultAI(f.model, provider: .openAI)
         f.model.externalAIService.setConsentPolicy(.neverAsk)
         let recorder = f.recorder
         f.model.cloudSummaryOverride = { request, consent in

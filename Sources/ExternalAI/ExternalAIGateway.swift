@@ -18,6 +18,7 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
     private var consumedRequests: Set<UUID> = []
     private struct Publication: Sendable {
         let capability: ExternalAICapability
+        let sessions: ExternalAISessionManager
         let target: ExternalAISummaryTarget
         let action: ExternalAIAction
         let contentRevision: UUID
@@ -92,9 +93,9 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
                   issued.resultDigest == result.publicationDigest,
                   issued.provenance == result.provenance else { throw ExternalAIError.authorizationRevoked }
             let capability = issued.capability
-            try await sessions.validate(capability)
+            try await issued.sessions.validate(capability)
             try Task.checkCancellation()
-            try sessions.validateSynchronously(capability)
+            try issued.sessions.validateSynchronously(capability)
         } catch { throw sanitized(error) }
     }
 
@@ -103,7 +104,7 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
     public func publicationPermit(for result: ExternalAISummaryResult) async throws -> ExternalAIPublicationPermit {
         try await validatePublication(of: result)
         guard let issued = publicationCapabilities[result.requestID] else { throw ExternalAIError.authorizationRevoked }
-        return ExternalAIPublicationPermit(sessions: sessions, broker: broker, capability: issued.capability)
+        return ExternalAIPublicationPermit(sessions: issued.sessions, broker: broker, capability: issued.capability)
     }
 
     /// Fixed provider metadata request. No vault selection or content is read or submitted.
@@ -154,7 +155,17 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
         }
     }
 
-    private func perform(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent) async throws -> ExternalAISummaryResult {
+    /// Trusted automatic path uses an opaque, one-use grant authority. All existing
+    /// gateway transport, receipt, credential, cancellation and publication checks apply.
+    public func performAutomatic(_ request: ExternalAISummaryRequest,
+                                 authorization: ExternalAIBackgroundAuthorization) async throws -> ExternalAISummaryResult {
+        try authorization.consume(for: request)
+        return try await perform(request, consent: authorization.consent, background: authorization)
+    }
+
+    private func perform(_ request: ExternalAISummaryRequest, consent: ExternalAIContentConsent,
+                         background: ExternalAIBackgroundAuthorization? = nil) async throws -> ExternalAISummaryResult {
+        let sessions = background?.sessions ?? self.sessions
         let observation = ExternalAIActivityObservation()
         do {
             try Task.checkCancellation()
@@ -163,7 +174,9 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
             guard !consumedConsent.contains(consent.id), !consumedRequests.contains(request.id) else {
                 throw ExternalAIError.consentAlreadyUsed
             }
-            let capability = try await sessions.authorize(request.authority)
+            let capability: ExternalAICapability
+            if let background { capability = background.capability }
+            else { capability = try await sessions.authorize(request.authority) }
             try await sessions.validate(capability)
             try Task.checkCancellation()
             // Actor reentrancy during authorization may let another submission consume approval.
@@ -267,7 +280,7 @@ public actor ExternalAIGateway: ExternalAIActionPerforming {
             } else {
                 result = try ExternalAISummaryResult(request: request, summary: summary, provenance: provenance)
             }
-            publicationCapabilities[request.id] = Publication(capability: capability, target: result.target, action: result.action,
+            publicationCapabilities[request.id] = Publication(capability: capability, sessions: sessions, target: result.target, action: result.action,
                 contentRevision: result.contentRevision, resultDigest: result.publicationDigest,
                 provenance: provenance)
             return result

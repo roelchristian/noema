@@ -2,11 +2,59 @@
 
 Noema external AI is an opt-in application security boundary. Apple Intelligence remains independent: saving, title inference, LCC classification, page creation and source processing never silently fall back to cloud inference. D02A does not encrypt the plaintext vault or provide cryptographic vault locking.
 
+Vault-scoped configuration is nonsecret intent stored locally by admitted vault UUID.
+It defaults to disabled and supersedes legacy global provider intent for an open vault.
+Disabling AI or changing provider cancels existing automatic local title/source tasks
+and invalidates their publication predicates, including disable/enable transitions.
+Manual commands retain the existing explicit consent boundary. A configuration value,
+API key or Never ask preference cannot authorize cloud automation. Durable approval now uses `ExternalAIVaultGrants`: a separate device-only data-protection
+Keychain record binds UUID, root/directory identity, credential version, policy version and
+summary/source-summary/LCC scope. Initial structured enrichment may fill placeholder titles;
+standalone automatic title replacement and composition remain excluded. Login-Keychain
+builds fail closed for durable approval while retaining existing manual workflows.
+The trusted automatic entry point accepts only an opaque, exact-request, single-use grant
+authorization with a separate 60-second session. It retains gateway receipt consumption,
+content/revision binding, native and credential cancellation, dispatch barriers, retries and
+conditional publication. Durable grants survive relaunch; runtime authority does not.
+Disable/provider changes revoke the stored vault grant; key replacement/removal deletes
+all grants before changing the key. Pending approval/minting is epoch-checked after awaits.
+Revocation first invalidates pending/runtime authority, then persists a fresh denial-only
+generation in app-local UserDefaults before reading or mutating the Keychain grant.
+Production construction fixes that preference domain; only internal test injection can
+substitute it. Each grant must match both current vault and global generations. Failed
+Keychain reads, writes, identity lookup or deletion therefore leave old grants ineligible,
+including after service reconstruction or relaunch. Explicit approval first persists
+nonempty global and vault generations, then stamps the approved Keychain record with both.
+Missing or malformed markers, legacy empty fences and grants without a complete fence fail
+closed and require fresh explicit approval. Recreating missing markers uses fresh UUIDs;
+it cannot restore a revoked grant. Merely opening a vault or Settings never seeds markers.
+Fresh approval never clears existing denial markers or revives other grants. If persisting the denial marker itself fails,
+admission and approval remain blocked in memory until revocation is successfully retried;
+that retry persists a global generation before reopening admission. Restart durability in
+that case depends on the failed preference write reaching storage; no durable revocation
+is claimed when its persistence fails. Settings commits requested vault intent, invalidates
+local publication epochs and cancels local/cloud runtime work before attempting Keychain
+cleanup. Cleanup failure does not roll back disablement or a provider change; it is shown
+as a saved preference with pending approval cleanup, with a lease-bound retry available.
+Credential replacement/removal still requires durable grant revocation before key mutation.
+No scheduler or automatic submission caller is installed.
+
+Vault intent, operation support and provider availability share one policy resolver across
+manual and automatic paths. Automatic cloud preflight reads current credential status,
+then verifies the minted exact-request authority against current policy and availability.
+The service captures an issuer-bound revocation checkpoint before its first await and
+passes it into grant minting. Both layers revalidate it after suspensions; revocation cannot
+be hidden by disabling/re-enabling to equal configuration values or approving a new grant.
+A cached approval label is presentation only. Settings edits and approval/revocation
+commands bind to the displayed complete vault lease, and stale callbacks cannot retarget
+another vault. Approval readiness binds the same lease and credential version and ignores
+superseded refreshes. Interactive consent and short-lived authentication remain unchanged.
+
 ## Trust and module boundary
 
 `noema` owns explicit UI actions, consent, selected-item snapshots and publication through existing repositories. `ExternalAI` owns typed contracts, `ExternalAICredentialBroker`, `ExternalAISessionManager`, `ExternalAIGateway` and its restricted `OpenAITransport`. It depends on `VaultCore` for the existing D02 access gate, session lease and admission/completion boundaries, and on `NativeAuthentication` for operation-specific native authentication attempts. Credentials remain entirely inside the security module after masked entry. General app state obtains credential status and approved action results only.
 
-The trusted callers are explicit provider-routed page/source enrichment, title-suggestion and reviewed page-composition UI actions and the credential settings action. Provider defaults and action preferences never grant submission consent or session authorization. Source processing and automatic inference cannot call OpenAI. Caller-provided identity or a constructed consent receipt alone does not grant authorization. Gateway validation checks the live D02 lease, an issued authorization capability, and single-use per-submission consent. There is no generic prompt, arbitrary URL, tool execution, background cloud action or whole-vault submission API.
+The trusted callers are explicit provider-routed page/source enrichment, title-suggestion and reviewed page-composition UI actions and the credential settings action. Provider defaults and action preferences never grant submission consent or session authorization. Automatic inference can use OpenAI only through the separate grant-issued request path; ordinary provider routing cannot authorize it. Caller-provided identity or a constructed consent receipt alone does not grant authorization. Gateway validation checks the live D02 lease, an issued authorization capability, and single-use per-submission consent. There is no generic prompt, arbitrary URL, tool execution, background scheduler or whole-vault submission API.
 
 This beta implementation shares a process with UI code. Swift access control, actors, opaque capabilities and Keychain reduce accidental disclosure and ordinary caller misuse; they cannot protect secrets from arbitrary malicious code executing in that process. Debuggers, memory dumps, compromised dependencies and deliberately misused trusted callers remain risks. Do not claim otherwise.
 
@@ -27,7 +75,7 @@ Classification is null when unavailable, or exactly `code`/`level`/`rationale`. 
 
 Transmit only the selected text, a fixed provider-owned action instruction, the fixed enrichment schema when applicable, and configured model. Never transmit vault names, folder paths, UUIDs, revision IDs, file URLs, associated pages, other sources, frontmatter or unrelated metadata. Text itself may contain private information: submission confirmation follows the explicitly selected global policy; its default is Always ask. A credential connection check uses a fixed provider metadata request with no vault content; it is not a general inference path. Its dispatch is serialized with the live credential-version registry, and replacement/removal/expiry cancel its active exchange.
 
-`OpenAIConsentPolicy` is a versioned global preference independent of provider and credential settings. Always ask is the default, including malformed, unsupported-version and absent preferences. Once per session requires exact-text approval for the first explicitly initiated submission in each unlocked vault lease; later explicit actions can mint fresh bound receipts. Never ask skips routine prompts only after explicit Settings selection. Neither policy admits automatic actions or bypasses credentials, authentication, cancellation, model validation or conditional publication. Grants bind vault UUID, session UUID and generation and are synchronously cleared on lock/close/switch; relaunch has no stored grant.
+`OpenAIConsentPolicy` is a versioned global preference independent of provider and credential settings. Always ask is the default, including malformed, unsupported-version and absent preferences. Once per session requires exact-text approval for the first explicitly initiated submission in each unlocked vault lease; later explicit actions can mint fresh bound receipts. Never ask skips routine prompts only after explicit Settings selection. Neither policy admits automatic actions or bypasses credentials, authentication, cancellation, model validation or conditional publication. Grants bind vault UUID, session UUID and generation and are synchronously cleared on lock/close/switch; relaunch has no stored interactive-session grant. The separate durable vault grant never restores that interactive session.
 
 When confirmation is required, the sheet shows provider/model, selected item, exact UTF-8 byte count, external processing/cost and conditional replacement, with Cancel and Send and an exact-text preview. Unauthenticated authority uses expanded disclosure; authenticated authority may use compact disclosure. The app evaluator checks the current unlocked lease and either explicit confirmation or live policy authorization before minting the same single-use request-bound receipt. Consent presentation never replaces gateway authorization.
 
@@ -97,6 +145,49 @@ Contract tests cover exact consent snapshots, precise authority identity, UTF-8 
 
 ## D02A.7 audit evidence and release gate
 
+[Vault grant tests](../../Tests/ExternalAITests/ExternalAIVaultGrantTests.swift) use isolated
+preferences, an in-memory Keychain, injected approval authentication/clock and mock transport.
+They cover reconstructed grants, failed vault/global revocation, credential changes,
+request binding/replay, copied-root isolation, expiry, pending approval, late responses and
+canonical publication rejection, including two accepted requests from one durable approval.
+These new cases are written but unrun; they do not establish device acceptance.
+[Settings/service acceptance cases](../../Tests/NoemaEditorTests/VaultAIAcceptanceTests.swift)
+call the same lease-bound `AppModel.setVaultAIConfiguration` method used by Intelligence
+Settings and the real `ExternalAIService.authorizeAutomaticSubmission` method before mock
+gateway dispatch and canonical publication. They cover one approval across two requests,
+service reconstruction, local disablement with failed Keychain cleanup and a late local
+result, revocation during paused service preflight followed by equal-value re-enabling,
+missing global/vault markers after failed removal, and stale displayed leases. The cases
+also exercise failed credential save/removal cleanup with active interactive
+authority, Settings disable/provider changes at dispatch and publication boundaries,
+exact captured request content/revisions, and stale canonical snapshot rejection.
+Internal application/service composition seams inject only isolated security dependencies, transport
+and a deterministic preflight suspension; production constructors retain native services.
+These cases are written but unrun and do not establish native SwiftUI/device acceptance.
+
+The provider/enrichment/activity integration fixtures configure the admitted vault explicitly;
+legacy preferences remain only in regression coverage proving they cannot override vault policy.
+Production grant construction fixes native authentication and runtime notifications; the
+internal initializer alone permits deterministic authentication/clock injection.
+
 The deterministic security tests use synthetic credentials and injected authentication/transport. `OpenAITransportSecurityTests` additionally injects URLProtocol into the actual ephemeral URLSession to exercise redirect cancellation, unexpected response type/URL/status rejection, sanitized platform failures and delegate chunk limits without network. `ExternalAIAdversarialTests` covers connection-validation credential replacement/removal, synchronous credential expiry before dispatch/publication, revocation before retry, cancellation before dispatch, closed-session delayed responses, forged results and revoked publication permits. The session and broker suites cover exact generation, coalesced/pending prompts, deadlines, clock rollback, credential failures/replacement/expiry and synchronous lifecycle cancellation. Application/repository summary tests cover publication, stale content, independent summary edits and selection/session/cancellation races.
 
 Automated results and manual status are recorded in [validation](../validation.md). Hardware Touch ID, permitted password fallback, signed-app Keychain isolation, native sleep/screen-session event delivery and live-provider behavior remain manual release gates; injected doubles cannot establish these guarantees. No claim of completed device/provider validation should be inferred from deterministic test success.
+
+## Shared processing authority
+
+The shared AI processing ledger is a distinct, rebuildable scheduling store, separate
+from Activity History. A queued or recovered row grants no execution or publication
+authority. Dispatch must revalidate the admitted vault session and current AI.VAULT
+configuration; cloud processors must still obtain fresh D02A request-bound authority.
+Provider changes never imply fallback or historical regeneration. Scheduling and skipped
+work create no inference activity records. Future processors own authoritative snapshot
+loading and conditional publication, including final session and input checks.
+
+The app-local ledger retains plaintext identifiers, opaque revisions, fingerprints,
+attempts and finite reasons across locking and restart. These are sensitive metadata
+requiring a separate E-series protection decision. No prompts, excerpts, credentials,
+consent receipts or capabilities belong in its schema. Initial reconciliation establishes
+a baseline; subsequent changed revisions can recover missed post-commit notifications
+without silently enriching historical content. At-least-once replay requires idempotent,
+revision-checked processor publication.

@@ -65,7 +65,9 @@ extension FileVaultRepository {
         try validateAccess(operation: "publishArtifact.write")
         updated.inlineTags = MarkdownService.analyze(updated.body).tags
         _ = try await sqliteBlockStore.savePage(record: updated, document: document, condition: .replace(expected: sqliteRevision(snapshot.note)), validating: validate)
-        return try await sqliteBlockStore.loadPage(pageID: updated.id).record
+        let saved = try await sqliteBlockStore.loadPage(pageID: updated.id).record
+        emitAIPageChange(saved, previous: snapshot.note, origin: .aiPublication)
+        return saved
     }
 
     public func publishSourceSummary(_ snapshot: SourceSummarySnapshot, summary: String,
@@ -179,7 +181,9 @@ extension FileVaultRepository {
         } else {
             _ = try await sqliteBlockStore.savePage(record: note, document: BlockDocumentCodec.decode(note.body), condition: .createOnly, validating: validate)
         }
-        return try await sqliteBlockStore.loadPage(pageID: note.id).record
+        let saved = try await sqliteBlockStore.loadPage(pageID: note.id).record
+        emitAIPageChange(saved, previous: nil, kind: .created, origin: .aiPublication)
+        return saved
     }
 
     public func validateSourceSnapshot(_ snapshot: SourceSummarySnapshot) async throws {
@@ -320,7 +324,9 @@ extension FileVaultRepository {
         try validate()
         updated.inlineTags = MarkdownService.analyze(updated.body).tags
         _ = try await sqliteBlockStore.savePage(record: updated, document: BlockDocumentCodec.decode(updated.body), condition: .replace(expected: sqliteRevision(snapshot.note)), validating: validate)
-        return try await sqliteBlockStore.loadPage(pageID: updated.id).record
+        let saved = try await sqliteBlockStore.loadPage(pageID: updated.id).record
+        emitAIPageChange(saved, previous: snapshot.note, origin: .aiPublication)
+        return saved
     }
 
     private func publishSourceMetadata(_ snapshot: SourceSummarySnapshot, metadata: SourceMetadata,
@@ -330,7 +336,7 @@ extension FileVaultRepository {
         try Task.checkCancellation()
         try await validateSourceSnapshot(snapshot)
         guard let revision = snapshot.canonicalRevision else { throw VaultError.invalid("Missing canonical source revision.") }
-        try await canonicalUpdateSource(metadata: metadata, expected: revision, validating: validate)
+        try await canonicalUpdateSource(metadata: metadata, expected: revision, origin: .aiPublication, validating: validate)
         return SourceRecord(metadata: metadata, body: snapshot.source.body,
             availabilityIssue: snapshot.source.availabilityIssue, contentState: snapshot.source.contentState)
     }

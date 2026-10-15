@@ -38,7 +38,7 @@ The contextual right inspector (`UI.R1–UI.R7`) lives in `Sources/noema/Inspect
 
 `VaultContentStore` defines a lower-level vault-owned byte boundary. `PlaintextVaultContentStore` scopes root access per synchronous operation, validates relative paths and rejects symlink ancestry again inside NSFileCoordinator access, and atomically writes unchanged plaintext. Writes require create-only or expected-byte replacement; moves/deletes require a current file or flat source-directory snapshot and reject unresolved cloud versions. Preconditions and mutations share one coordination window; separate calls are not a transaction, and arbitrary uncoordinated filesystem writers remain outside that guarantee. Missing cloud bytes request hydration and report unavailable. Typed errors leave recovery/conflict preservation policy with the repository. Wiki creation, scan cache misses, saves, trashed-page reads, and preserved conflict copies use this adapter. Source original/metadata reads, metadata updates, staged publication, and source trash/restore/deletion also use it. Source staging directories use coordinated create-only directory creation; publication requires the exact expected original/metadata snapshot. Imported reader and availability reads use the same byte seam, while external linked files retain separate bookmark-scoped coordinated reads. Directory snapshots refuse conflicted children, and source mutations recheck expected bytes inside coordination. The repository retains NoteCodec, identity/alias validation, content hashes, scan caching, and cloud-version preservation policy; expected-byte replacement catches changes between the initial read and coordinated write. Manifest reads/create-only writes, structural directory creation, page trash/restore/permanent deletion, legacy trash migration, and retention ledger reads/expected-byte writes also use the adapter. A competing retention ledger write aborts expiration before any deletion. New-vault staging initializes canonical contents through the same repository/adapter; its parent-folder staging creation, publication move, and failed-staging cleanup remain separate because they are outside the eventual vault root. Discovery/enumeration, resource probes, provider hydration, and OS-owned conflict-version reads/resolution remain repository responsibilities. RecoveryStore and SQLiteSearchIndex remain separate app-local stores. RecoveryStore atomically journals unsaved JSON and removes decoded drafts only through explicit lifecycle actions. Listing isolates per-entry read, decode and identity errors, returning valid drafts alongside damaged-entry filenames and errors without modifying their original bytes. AppModel keeps damaged entries visible in recovery controls across open/unlock, while locked sessions clear their presentation and reject journal access. A new save targeting an existing damaged draft first renames that file to a unique preservation entry; removal of a damaged file through the decoded-draft API is refused. SQLiteSearchIndex owns its connection and WAL/SHM lifecycle inside its actor; its database is derived and rebuildable. Neither store belongs in the canonical content adapter. The format 1 adapter, external linked-file access, recovery journal and derived index keep their existing boundaries; format 2 page database ownership is described above.
 
-Linked sources use optional `linkedBookmark` data in source metadata (source layout remains unchanged). The bookmark is generated with `securityScopeAllowOnlyReadAccess`; repository scanning resolves it and reads the external original under coordinated access, releasing the security scope afterward. These records have metadata only, with no in-vault original; the checksum records capture-time bytes, while subsequent linked reads accept external changes. Existing imported records retain checksum enforcement. File imports enforce a 2,000,000-byte maximum in the repository as well as the picker. UTF-8 text/Markdown/HTML provide searchable bodies; binary originals have empty derived text and retain byte checksums. Older app versions cannot read binary sources. Folder additions are rejected; the picker accepts at most five files per batch and rejects an excessive selection before creating records. Existing records from past folder additions remain readable. Before publication, repository additions inspect existing metadata under coordinated reads and reject matching original checksums across source modes or the same resolved linked file path. AppModel catches each selected file independently and accumulates named failures while continuing the batch. No filename-only match or persisted schema change is introduced. External files are never written by this path. Bookmarks are machine/app-specific; earlier app versions report linked records as unavailable rather than modifying them. Valid linked metadata remains visible with an empty derived body and transient availability issue when its original cannot be read. On-demand availability checks use coordinated reads and security scopes off the main actor, verify imported checksums, and never write source metadata. AppModel owns a serial queue and session-only results, cleared on vault switching. Refresh reloads linked content; the vault watcher does not watch external paths. Sources uses a navigation sidebar and table, with the contextual inspector beside the content pane. Selecting a row opens that source in the content pane; double-click and Open Preview retain the separate native reader window. `SourceReader` owns native read-only NSTextView or QLPreviewView windows, retains security scope for their lifetime, and releases it when closed. Reader loading verifies in-vault checksums and uses coordinated reads off the main actor.
+Linked sources use optional `linkedBookmark` data in source metadata (source layout remains unchanged). The bookmark is generated with `securityScopeAllowOnlyReadAccess`; repository scanning resolves it and reads the external original under coordinated access, releasing the security scope afterward. These records have metadata only, with no in-vault original; the checksum records capture-time bytes, while subsequent linked reads accept external changes. Existing imported records retain checksum enforcement. File imports enforce a 2,000,000-byte maximum in the repository as well as the picker. UTF-8 text/Markdown/HTML provide searchable bodies; binary originals have empty derived text and retain byte checksums. Older app versions cannot read binary sources. Folder additions are rejected; the picker accepts at most five files per batch and rejects an excessive selection before creating records. Existing records from past folder additions remain readable. Before publication, repository additions inspect existing metadata under coordinated reads and reject matching original checksums across source modes or the same resolved linked file path. AppModel catches each selected file independently and accumulates named failures while continuing the batch. No filename-only match or persisted schema change is introduced. External files are never written by this path. Bookmarks are machine/app-specific; earlier app versions report linked records as unavailable rather than modifying them. Valid linked metadata remains visible with an empty derived body and transient availability issue when its original cannot be read. On-demand availability checks use coordinated reads and security scopes off the main actor, verify imported checksums, and never write source metadata. AppModel owns a serial queue and session-only results, cleared on vault switching. Refresh reloads linked content; the vault watcher does not watch external paths. Sources uses a navigation sidebar and compact inbox list, with captured-date/title sorting, metadata-only rows, independently observed processing status, and the contextual inspector beside the content pane. Selecting a row opens that source in the content pane; double-click and Open Preview retain the separate native reader window. `SourceReader` owns native read-only NSTextView or QLPreviewView windows, retains security scope for their lifetime, and releases it when closed. Reader loading verifies in-vault checksums and uses coordinated reads off the main actor.
 
 Source metadata optionally records `aiSummary` and `fileSize`, derived from canonical bytes during scanning for older records. `AppModel` owns a single serial source-title queue, exposes pending row IDs and completed/total progress, and clears pending work on vault changes. Files are published in the table before inference. Text/HTML/Markdown and PDFKit-extracted PDF text feed the existing on-device topic-title generator. Source inference uses the exact article `pageTitle` method and the same block-document normalization; HTML markup is stripped before normalization. For each queued file, separate on-device sessions generate the article-rule topic title and a concise summary concurrently from the same extracted content (at most the first 6,000 characters). Both results persist in one coordinated metadata write; empty summaries and stale prior summaries reject the write. Manual renames preserve the existing summary. No summary is rendered in the table; legacy metadata without `aiSummary` remains readable. The context menu and metadata inspector share provider-selected Summarize/Regenerate actions. Explicit on-device summaries extract text off the main actor from an exact repository source snapshot and publish through the same conditional publication API as cloud summaries; independent metadata/summary/original changes reject publication. Explicit enrichment generates the summary and validated classification together and publishes them in one conditional metadata write. Per-source progress disables duplicate requests, vault generation tokens discard earlier-vault results, and coordinated metadata writes preserve the display title and reject stale summaries/renames/deletions. Existing summaries remain visible until replacement succeeds. Context-menu rename changes only metadata and suppresses the queued AI result. Source deletion coordinates the UUID directory, rejects stale metadata, mutated imported bytes, symlinked directories/metadata, and unresolved conflicts. Linked deletions remove only vault records; imported deletions move the stored original and metadata to recoverable trash after explicit confirmation. Neither path recreates a deleted record. Repository title updates coordinate metadata writes, reject stale identity/title/checksum/bookmark/path values, and preserve original names and bytes. Queue errors retain original titles and surface a notice. Search is reconciled after successful renames. The local source-title queue stays on-device; no physical original-file rename is introduced.
 
@@ -48,7 +48,58 @@ Page provenance is an ordered `sources` UUID sequence in format 1 frontmatter or
 
 ## AI provider preferences and explicit actions
 
-`AIProviderPreferences` stores versioned global provider intent and overrides for Content enrichment, Title suggestions and Page creation. Page/source summaries share one preference. Legacy page-summary overrides win, followed by source-summary and retired LCC overrides; migration removes the independent classification setting without changing stored artifacts. Missing, malformed and future versions fail closed to on-device intent. Automatic source processing stays local regardless of preferences; a provider choice grants no submission or authentication authority.
+`VaultAIConfigurationStore` stores version-1 nonsecret preferences by admitted vault UUID
+in application-local UserDefaults. Missing, malformed or unsupported values disable
+automatic intelligence without rewriting saved bytes. The manifest remains untouched:
+this first configuration slice avoids adding a conditional manifest mutation and therefore
+has no portability to another Mac. It is not a second content authority. Intelligence
+settings expose the active vault's master toggle and provider. That provider takes
+precedence over legacy global defaults/overrides for explicit commands; the master
+toggle governs automatic work, preserving the explicit consent path for manual commands.
+Existing automatic page-title and source processing require an enabled On-device policy.
+Policy changes cancel those tasks and invalidate synchronous publication epochs; checks
+also retain the exact live session lease and run inside existing SQLite publication
+predicates. Enabling settings never starts processing or historical backfill.
+The shared `VaultAIPolicyResolver.resolve` evaluates interactive actions, automatic local
+admission and grant-bound cloud requests. Cloud preflight uses live credential status,
+then rechecks availability and exact-request authority after asynchronous minting; cached
+Settings approval cannot authorize a request. Legacy provider resolution remains only
+for compatibility tests; active vault actions do not call the legacy resolver.
+Settings captures the complete displayed lease, vault name and configuration together.
+Edits re-read that lease's current policy and reject switched, locked or superseded
+sessions before revocation/persistence. Approval and revocation use the same displayed
+lease. Readiness distinguishes disabled automation, unavailable local models, checking,
+missing/expired/invalid/inaccessible credentials, unsupported approval storage, pending
+approval and approved processing. Cached approval binds lease and credential version;
+refresh revisions reject stale asynchronous results.
+Vault policy changes revoke local publication epochs and cancel runtime work before
+fallible Keychain cleanup. Cleanup errors leave the requested policy saved and expose a
+lease-bound cleanup retry. Automatic request preparation captures an issuer-bound grant
+revocation checkpoint before provider preflight and validates that same checkpoint through
+minting and final readiness checks, including equal-value disable/re-enable transitions.
+
+`ExternalAIVaultGrants` persists explicit informed approval in a separate, nonsynchronizing,
+WhenUnlockedThisDeviceOnly data-protection Keychain record. It binds the admitted UUID,
+normalized root and directory inode/device identity, credential version, policy version and
+exact operation allowlist. Login-Keychain/ad-hoc builds cannot approve durable processing;
+manual commands remain available. Configuration and grants remain separate.
+A future trusted coordinator obtains an opaque single-use exact-request authorization,
+then calls `ExternalAIGateway.performAutomatic`. Each request has its own 60-second
+session with native/gate/credential cancellation and its own hash/revision-bound receipt.
+Publication retains that issuing session. Policy/credential revocation invalidates pending
+minting and active requests. Independently persisted vault/global denial generations in
+UserDefaults prevent saved grants from being reused after Keychain removal fails, including
+after relaunch. Approval stamps a replacement grant with current generations without
+clearing the denial markers. Every new grant requires nonempty global/vault generations;
+missing markers and legacy empty fences fail closed until fresh explicit approval persists
+new marker UUIDs. A failed marker write blocks admission and approval in memory
+until a revocation retry persists a global generation; persistence failure cannot establish
+restart durability. No scheduling, triggers or background dispatch are introduced.
+Runtime and signed-device acceptance remain unverified; the full AI.VAULT acceptance gate
+requires the focused security/integration checks.
+
+
+`AIProviderPreferences` stores versioned global provider intent and overrides for Content enrichment, Title suggestions and Page creation. Page/source summaries share one preference. Legacy page-summary overrides win, followed by source-summary and retired LCC overrides; migration removes the independent classification setting without changing stored artifacts. Missing, malformed and future versions fail closed to on-device intent. Automatic source processing requires the active vault’s enabled On-device configuration; a provider choice grants no submission or authentication authority.
 
 `AppModel` captures the selected provider/client before asynchronous work. Explicit enrichment generates summary and classification together, filling only unset initial titles; regeneration preserves title/body. Both providers compose source/topic/URL drafts for review. Standalone title suggestions retain reviewed, conditional acceptance. The shared summary controls explain coupled classification; the Properties inspector exposes read-only classification metadata. See the unified contract below for publication, consent and acquisition boundaries.
 
@@ -230,10 +281,14 @@ highlight follows the active collection. Favorites and Recent Items are top-leve
 entries in a separate sidebar group, divided from Pages, Sources, and Knowledge.
 Both open the same inbox list in the collection pane; individual items do not appear
 in the sidebar. Vault-owned collections and folders appear in a separate sidebar section
-and reuse the inbox list. Each container expands or collapses independently; expanded
-containers show their page, source and semantic-block memberships as draggable sidebar rows.
+and reuse the inbox list. The Collections section shows containers only; selecting one
+browses its memberships in the collection pane. Each container expands or collapses
+its child containers independently. A fixed leading icon slot reveals the disclosure
+chevron on hover or keyboard focus; the title selects the container. Expansion is also
+available through the context menu and Left/Right arrow keys on a focused row.
+The header plus menu creates collections and folders.
 Collapsing an ancestor hides its descendants without changing their individual disclosure state.
-Rows share compact geometry, reserved disclosure space and hover/selection treatment.
+Rows share compact geometry, a fixed icon/disclosure slot and hover/selection treatment.
 Disclosure changes expansion separately from navigation. Drop targets highlight on hover,
 and an accepted drop expands its destination. Contextual creation is available from the
 section header and container menus without a permanent creation row.
@@ -248,9 +303,9 @@ selection and mixed item/folder counts. All membership kinds share a compact two
 label; block subtitles retain their parent page. Library and inbox rows can be dragged
 onto a sidebar container or its open inbox.
 Library drops add membership; drops from a container move membership atomically.
-Folders can be dragged onto collections or folders, or onto the quiet section-header
-root target. Item lists support Command/Shift multi-selection; Command-click selects multiple
-sidebar folders. A drag includes the selected visible rows when started on a selected
+Folders can be dragged onto collections or folders, or onto the Collections header,
+which highlights as “Move to Vault Root” while targeted. Item lists support
+Command/Shift multi-selection; Command-click selects multiple sidebar folders. A drag includes the selected visible rows when started on a selected
 row. Batch admission validates every payload, deduplicates repeated entries, skips
 same-destination placements and keeps selected descendants with their selected ancestor.
 Cycles and stale session payloads are rejected before dispatch. Batch edits use existing
@@ -325,3 +380,35 @@ Admission checks and canonical writes are separate synchronous steps. A write al
 `AIActivityRecorder` shares one lazy application-level `SQLiteAIActivityStore` across local callers and the OpenAI gateway. The database is independent of vault search indexes. A caller allocates one logical ID, begins immediately before local inference or when capturing a cloud submission, and finalizes after publication or proposal generation. Unified enrichment and reviewed page composition each retain one record. Helper inference calls share that ID; proposal acceptance/dismissal updates its outcome without creating another inference record. Gateway observations carry only bounded dispatch counts and validated optional token usage. Dispatch is observed at actual transport resume; asynchronous persistence runs outside authorization locks and is followed by the existing authority/cancellation checks. Connection validation has its own targetless record.
 
 Schema v2 preserves v1 history and retention settings while adding page composition. The store owns versioned schema initialization, interrupted-operation reconciliation, idempotent finalization, indexed bounded queries and retention. Settings history uses latest-request snapshot ownership to reject delayed reads after clearing, pruning or a newer refresh, and explicit refresh with 50-row pages, with provider/action/status/outcome/date/current-vault filters. Current titles are resolved only from the accessible vault's loaded metadata; stale and inaccessible targets cannot navigate. Metadata export is bounded to 1,000 records. Cost calculation uses an injected versioned catalogue keyed by model and effective dates, including cached input rates; the default unpriced catalogue displays unknown cost rather than inventing charges. See the [activity contract](contracts/external-ai.md#activity-history) and [storage ownership](contracts/storage-boundary.md).
+
+## Shared AI processing lifecycle
+
+`AIProcessingCoordinator` is a VaultCore actor bound to one admitted session. Typed
+post-commit events identify page/source revisions, origins and changed dimensions;
+processors declare input dependencies and prepare authoritative snapshots at dispatch.
+The coordinator coalesces by vault, target and processor, applies independent debounce
+and bounded provider concurrency/retry, and rejects stale session/revision completions.
+Processors retain responsibility for conditional canonical publication and request-bound
+external-AI authorization. No production enrichment processor is registered in AI.LIFE;
+existing source/title queues remain in place until AI.ENR.
+
+`SQLiteAIWorkLedger` is a separate schema-1 app-local metadata ledger under
+`Noema/Processing/work.sqlite` in Application Support. It persists no content or
+authority. Scheduled/running entries recover as pending with attempt counts retained.
+Revision checkpoints establish an initial baseline without historical backfill;
+subsequent reconciliation detects commits missed between canonical persistence and
+ledger writes. Jobs must be durably written before advancing that checkpoint. Admission buffers
+post-commit events and consumes them in order after binding. Session retirement is
+serialized before replacement, with binding identities rejecting late continuations.
+Recovery
+is at least once, with fresh snapshots and authorization, never exactly once.
+Recovery retains future retry deadlines and remaining attempt budgets; lock cancellation
+suspends interrupted jobs instead of disposing of their recovery eligibility.
+Startup inventory selects identity/revision/Trash columns only and does not reconstruct
+page bodies or read source originals. Verified source scans emit content changes only
+when a previously observed byte fingerprint differs. Cloud snapshot adapters obtain
+fresh exact-request authority through `ExternalAIService`; future processors must submit
+through the existing gateway, which consumes and revalidates that capability. Completion
+tickets and policy epochs reject stale publication across lock and configuration changes.
+The read-only status projection and injected clock/policy/ledger support deterministic
+inspection without generating inference activity records for scheduling.

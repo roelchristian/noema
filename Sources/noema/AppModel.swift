@@ -625,6 +625,7 @@ struct AISuggestion: Identifiable, Sendable {
     private let storageProvider: VaultStorageProvider
     let activityRecorder: AIActivityRecorder
     let externalAIService: ExternalAIService
+    let vaultAIConfigurationStore: VaultAIConfigurationStore
     let aiProviderPreferences: AIProviderPreferences
     @ObservationIgnored private let aiPreferenceDefaults: UserDefaults
     let sessionManager: VaultSessionManager
@@ -644,6 +645,11 @@ struct AISuggestion: Identifiable, Sendable {
     private var sourceCommandPanel: NSOpenPanel?
     var isLifecycleActionInProgress: Bool { lifecycleAction != nil }
     @ObservationIgnored private nonisolated(unsafe) var sessionObservationTask: Task<Void, Never>?
+    @ObservationIgnored var aiProcessingCoordinator: AIProcessingCoordinator?
+    @ObservationIgnored var aiProcessingBindingID = UUID()
+    @ObservationIgnored var aiProcessingEventTask: Task<Void, Never>?
+    @ObservationIgnored var aiProcessingRetirementTask: Task<Void, Never>?
+    var aiProcessingFailure: AIWorkFailure?
     private var activeSession: VaultSession?
     private var activeLease: VaultSessionLease?
     private(set) var lockedVaultURL: URL?
@@ -696,15 +702,18 @@ struct AISuggestion: Identifiable, Sendable {
         storageProvider: VaultStorageProvider = .plaintext,
         sessionManager: VaultSessionManager = VaultSessionManager(),
         aiDefaults: UserDefaults = .standard,
-        activityRecorder: AIActivityRecorder = .shared
+        activityRecorder: AIActivityRecorder = .shared,
+        externalAIServiceFactory: ((VaultAccessGate, UserDefaults, AIActivityRecorder) -> ExternalAIService)? = nil
     ) {
         self.activityRecorder = activityRecorder
         self.storageProvider = storageProvider
         self.sidebarRecentDefaults = aiDefaults
         self.aiPreferenceDefaults = aiDefaults
+        self.vaultAIConfigurationStore = VaultAIConfigurationStore(defaults: aiDefaults)
         self.aiProviderPreferences = AIProviderPreferences(defaults: aiDefaults)
         self.sessionManager = sessionManager
-        self.externalAIService = ExternalAIService(accessGate: sessionManager.accessGate, defaults: aiDefaults, activityRecorder: activityRecorder)
+        self.externalAIService = externalAIServiceFactory?(sessionManager.accessGate, aiDefaults, activityRecorder)
+            ?? ExternalAIService(accessGate: sessionManager.accessGate, defaults: aiDefaults, activityRecorder: activityRecorder)
         self.repository = repository
         self.recovery = recovery
         self.activeLease = repository?.sessionLease
@@ -765,6 +774,7 @@ struct AISuggestion: Identifiable, Sendable {
         }
         let previousPhase = sessionState.phase
         sessionState = nextState
+        if nextState.phase != .open { suspendAIProcessing() }
         vaultAccessAuthenticationRequired = nextState.vaultID.map { sessionManager.accessAuthenticationRequired(for: $0) } ?? false
         switch nextState {
         case .closed:
@@ -1052,6 +1062,7 @@ struct AISuggestion: Identifiable, Sendable {
     }
 
     private func releaseActiveVaultResources() {
+        suspendAIProcessing()
         vaultCommandPanel?.cancel(nil)
         sourceCommandPanel?.cancel(nil)
         vaultCommandPanel = nil; sourceCommandPanel = nil
@@ -1128,23 +1139,76 @@ struct AISuggestion: Identifiable, Sendable {
     private var explicitTitleTask: Task<Void, Never>?
     var generatingPageTitle = false
 
+    var vaultAISettingsContext: VaultAISettingsContext? {
+        guard isVaultAvailable, let lease = sessionManager.accessGate.currentLease else { return nil }
+        return .init(lease: lease, vaultName: vaultName,
+                     configuration: vaultAIConfigurationStore.configuration(for: lease.vaultID))
+    }
+
+    var activeVaultAIConfiguration: VaultAIConfiguration? { vaultAISettingsContext?.configuration }
+
+    func vaultAIConfiguration(for lease: VaultSessionLease) -> VaultAIConfiguration? {
+        guard let context = vaultAISettingsContext, context.lease == lease else { return nil }
+        return context.configuration
+    }
+
+    func setVaultAIConfiguration(_ configuration: VaultAIConfiguration, for lease: VaultSessionLease) throws {
+        guard vaultAIConfiguration(for: lease) != nil else { throw ExternalAIError.staleSession }
+        // Commit local intent and revoke all runtime work before fallible Keychain I/O.
+        try vaultAIConfigurationStore.set(configuration, lease: lease, gate: sessionManager.accessGate)
+        suspendAIProcessing()
+        if let repository {
+            Task { await bindAIProcessing(repository: repository, lease: lease) }
+        }
+        sourceNamingTask?.cancel()
+        sourceNamingQueue.removeAll()
+        for task in titleTasks.values { task.cancel() }
+        externalAIService.revokeAuthorization()
+        if !configuration.enabled || configuration.provider != .openAI {
+            do { try externalAIService.revokeVaultProcessing(for: lease) }
+            catch { throw VaultAIConfigurationChangeError.cloudGrantCleanupFailed }
+        }
+    }
+
+    private func providerAvailability(for action: AIAction, execution: AIProviderExecution = .userInvoked,
+                                      openAIConfigured: Bool? = nil) -> AIProviderAvailability {
+        var local: AIProviderStatus = aiClient.unavailabilityReason() == nil ? .available : .unavailable(.localModelUnavailable)
+        if execution == .userInvoked, action == .summarizePage,
+           !aiPreferenceDefaults.bool(forKey: EditorPreferences.aiSummariesKey) {
+            local = .unavailable(.localDisabled)
+        }
+        let cloud: AIProviderStatus
+        if let configured = openAIConfigured { cloud = configured ? .available : .unavailable(.missingCredentials) }
+        else if cloudSummaryOverride != nil { cloud = .available }
+        else { cloud = externalAIService.openAIProviderStatus }
+        return .init(onDevice: local, openAI: cloud)
+    }
+
+    private func automaticLocalAIValidation(for action: AIAction) -> (@Sendable () throws -> Void)? {
+        guard let context = vaultAISettingsContext,
+              VaultAIPolicyResolver.resolve(configuration: context.configuration, action: action,
+                  execution: .automatic, availability: providerAvailability(for: action, execution: .automatic)) == .permitted(.onDevice)
+        else { return nil }
+        return try? vaultAIConfigurationStore.localPublicationValidation(lease: context.lease, gate: sessionManager.accessGate)
+    }
+
     func preferredAIProvider(for action: AIAction, temporaryOverride: AIProvider? = nil) -> AIProvider {
-        temporaryOverride ?? aiProviderPreferences.settings.preferredProvider(for: action)
+        activeVaultAIConfiguration?.provider ?? temporaryOverride ?? aiProviderPreferences.settings.preferredProvider(for: action)
     }
 
     private func resolveAIAction(_ action: AIAction, provider: AIProvider? = nil, openAIConfigured: Bool? = nil) -> AIProviderResolution {
-        var local: AIProviderStatus = aiClient.unavailabilityReason() == nil ? .available : .unavailable(.localModelUnavailable)
-        if action == .summarizePage && !aiPreferenceDefaults.bool(forKey: EditorPreferences.aiSummariesKey) {
-            local = .unavailable(.localDisabled)
-        }
-        let configured = openAIConfigured ?? (externalAIService.credentialStatus?.isAvailable == true || cloudSummaryOverride != nil)
-        let cloud: AIProviderStatus = configured ? .available : .unavailable(.missingCredentials)
-        let availability = AIProviderAvailability(onDevice: local, openAI: cloud)
-        let resolution = AIProviderResolver.resolve(action: action, settings: aiProviderPreferences.settings,
-            temporaryOverride: provider, execution: .userInvoked, availability: availability)
+        let policy = activeVaultAIConfiguration ?? VaultAIConfiguration(
+            provider: temporaryProviderForUnadmittedContent(action, override: provider))
+        let decision = VaultAIPolicyResolver.resolve(configuration: policy, action: action,
+            execution: .userInvoked, availability: providerAvailability(for: action, openAIConfigured: openAIConfigured))
+        let resolution = decision.providerResolution(for: policy.provider)
         if !resolution.isEligible { aiProviderNotice = resolution.errorMessage }
         else { aiProviderNotice = nil }
         return resolution
+    }
+
+    private func temporaryProviderForUnadmittedContent(_ action: AIAction, override: AIProvider?) -> AIProvider {
+        override ?? aiProviderPreferences.settings.preferredProvider(for: action)
     }
 
     private func admitsNativeAction(_ action: AIAction, provider: AIProvider? = nil) -> Bool {
@@ -1197,7 +1261,8 @@ struct AISuggestion: Identifiable, Sendable {
                   lease == sessionManager.accessGate.currentLease, selectedID == selection,
                   revision == cloudEditorRevision else { return }
             providerPreflightTarget = nil; providerPreflightTask = nil
-            guard resolveAIAction(action, provider: .openAI, openAIConfigured: configured).isEligible else { return }
+            let resolution = resolveAIAction(action, provider: .openAI, openAIConfigured: configured)
+            guard resolution.isEligible, resolution.provider == .openAI else { return }
             prepareCloudSummary(target: target, action: action == .suggestTitle ? .suggestTitle : action == .classifyLCC ? .lccClassification : nil)
         }
     }
@@ -1208,6 +1273,7 @@ struct AISuggestion: Identifiable, Sendable {
 
     var nativePageSummaryTaskForTesting: Task<Void, Never>? { aiSummaryTask }
     func nativeSourceSummaryTaskForTesting(id: UUID) -> Task<Void, Never>? { sourceSummaryTasks[id] }
+    var automaticSourceNamingTaskForTesting: Task<Void, Never>? { sourceNamingTask }
 
     func activeSummaryProvider(for target: ExternalAISummaryTarget) -> AIProvider? {
         if providerPreflightTarget == target || cloudSummaryTarget == target || cloudSummaryConfirmation?.request.target == target { return .openAI }
@@ -2094,6 +2160,8 @@ struct AISuggestion: Identifiable, Sendable {
             sessionState = .open(session)
             lockedVaultURL = nil
             repository = repo; index = searchIndex; recovery = journal
+            await bindAIProcessing(repository: repo, lease: lease)
+            try requireLifecycleState(.open, action: "AI processing admission", session: session)
             unseenRenamedPages.removeAll()
             restoreSidebarRecentHistory(vaultID: vaultID)
             root = url; vaultName = url.lastPathComponent; scope = .wiki; resetSearch()
@@ -2283,6 +2351,8 @@ struct AISuggestion: Identifiable, Sendable {
             sessionState = .open(session)
             lockedVaultURL = nil
             repository = repo; index = searchIndex; recovery = journal
+            await bindAIProcessing(repository: repo, lease: lease)
+            try requireLifecycleState(.open, action: "AI processing admission", session: session)
             unseenRenamedPages.removeAll()
             restoreSidebarRecentHistory(vaultID: vaultID)
             root = candidateURL; vaultName = candidateURL.lastPathComponent; scope = .wiki; resetSearch()
@@ -3210,7 +3280,8 @@ struct AISuggestion: Identifiable, Sendable {
         semanticCoordinator?.refreshSemanticRanges()
     }
     private func startTitleGeneration(for candidate: NoteRecord? = nil) {
-        guard canOperateOnLoadedContent, let note = candidate ?? currentNote, let repository,
+        guard canOperateOnLoadedContent, let validateAI = automaticLocalAIValidation(for: .suggestTitle),
+              let note = candidate ?? currentNote, let repository,
               untitledPages[note.id] == note.title,
               titleTasks[note.id] == nil, !note.isEditingLocked,
               (currentNote?.id != note.id || (!editingLocked && !externalChange)),
@@ -3223,6 +3294,7 @@ struct AISuggestion: Identifiable, Sendable {
             await withLocalAIActivity(target: .page(note.id), action: .suggestTitle, executionMode: .automatic) { activity in
                 defer { if generation == completionTicket.token { titleTasks.removeValue(forKey: note.id) } }
                 do {
+                    try validateAI()
                     try await activity.start(contentSizeBytes: content.utf8.count)
                     async let generatedTitle = client.pageTitle(content)
                     async let generatedLCC = client.inferLCC(content)
@@ -3237,7 +3309,7 @@ struct AISuggestion: Identifiable, Sendable {
                     var updatedNote = note
                     if note.lcc == nil, let lcc, !lcc.isEmpty { updatedNote.lcc = lcc }
                     let editorSnapshot = semanticCoordinator?.session.identity.pageID == note.id ? semanticCoordinator?.session.snapshot() : nil
-                    let saved = try await repository.save(note: updatedNote, title: generated, body: note.body, tags: note.tags)
+                    let saved = try await repository.save(note: updatedNote, title: generated, body: note.body, tags: note.tags, validating: validateAI)
                     let semantic = try await repository.sqliteBlockStore.loadSemanticPage(pageID: note.id)
                     activity.complete()
                     guard isCompletionValid(completionTicket, operation: "startTitleGeneration.save") else { return }
@@ -3791,7 +3863,7 @@ struct AISuggestion: Identifiable, Sendable {
         }
     }
     func enqueueSourceTitle(_ source: SourceRecord) {
-        guard canOperateOnLoadedContent else { return }
+        guard canOperateOnLoadedContent, let validateAI = automaticLocalAIValidation(for: .processSource) else { return }
         if sourceNamingTask == nil { sourceRenameCompleted = 0; sourceRenameTotal = 0 }
         sourceNamingQueue.append(source); generatingSourceTitles.insert(source.id); sourceRenameTotal += 1
         guard sourceNamingTask == nil, let repository, let root else { return }
@@ -3803,7 +3875,8 @@ struct AISuggestion: Identifiable, Sendable {
                 if generation == ticket { sourceNamingTask = nil; sourceNamingQueue = []; generatingSourceTitles = []; sourceRenameCompleted = 0; sourceRenameTotal = 0 }
             }
             while !sourceNamingQueue.isEmpty {
-                guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.loop") else { return }
+                guard (try? validateAI()) != nil,
+                      isCompletionValid(completionTicket, operation: "enqueueSourceTitle.loop") else { return }
                 let source = sourceNamingQueue.removeFirst()
                 if sourceNamingOverrides.contains(source.id) {
                     generatingSourceTitles.remove(source.id); sourceRenameCompleted += 1; continue
@@ -3817,6 +3890,7 @@ struct AISuggestion: Identifiable, Sendable {
                         guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.read") else { return }
                         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw VaultError.unavailable("No readable text for automatic naming and summary. Original file name retained.") }
                         let excerpt = String(text.prefix(6000))
+                        try validateAI()
                         try await activity.start(contentSizeBytes: text.utf8.count)
                         async let generatedTitle = client.pageTitle(text)
                         async let generatedSummary = client.summarize(excerpt)
@@ -3832,7 +3906,7 @@ struct AISuggestion: Identifiable, Sendable {
                         }
                         let renamed = try await repository.publishSourceProcessing(snapshot, title: title, summary: summary,
                             lcc: lcc, provenance: SummaryProvenance(provider: "On-device", model: "Apple Intelligence", generatedAt: Date()),
-                            validate: { try Task.checkCancellation() })
+                            validate: validateAI)
                         activity.complete()
                         guard isCompletionValid(completionTicket, operation: "enqueueSourceTitle.rename") else { return }
                         if let position = sources.firstIndex(where: { $0.id == source.id }) { sources[position] = renamed }
@@ -4003,7 +4077,8 @@ extension AppModel {
                 try Task.checkCancellation()
                 guard aiPageOperationID == identity else { throw ExternalAIError.cancelled }
                 try validateAIPageContext(context)
-                guard resolveAIAction(.composePage, provider: .openAI).isEligible else { return false }
+                let resolution = resolveAIAction(.composePage, provider: .openAI)
+                guard resolution.isEligible, resolution.provider == .openAI else { return false }
                 let request = try ExternalAISummaryRequest(authority: context.authority, target: .page(context.id),
                     contentRevision: UUID(), content: text, action: .composePage, mode: .compose)
                 let configuration = externalAIService.configuration

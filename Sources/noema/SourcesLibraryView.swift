@@ -15,8 +15,8 @@ struct SourcesLibraryView: View {
     @State private var statuses = SourcesStatusPresentation()
 
     var body: some View {
-        SourcesNativeTable(model: model, presentation: presentation, statuses: statuses,
-                           selection: $selection, scrollPosition: scrollPosition, listFocus: listFocus, rename: rename, delete: delete)
+        SourcesInboxList(model: model, presentation: presentation, statuses: statuses,
+                         selection: $selection, scrollPosition: scrollPosition, listFocus: listFocus, rename: rename, delete: delete)
             .background {
                 SourceMetadataBridge(model: model, presentation: presentation)
                 SourceStatusBridge(model: model, presentation: statuses)
@@ -43,7 +43,7 @@ private struct SourceMetadataBridge: View {
 }
 
 /// Only this bridge reads whole status collections. It updates observable cells for changed IDs;
-/// neither the table nor unrelated cells subscribe to those collections.
+/// neither the list nor unrelated cells subscribe to those collections.
 private struct SourceStatusBridge: View {
     let model: AppModel
     let presentation: SourcesStatusPresentation
@@ -67,9 +67,9 @@ private struct SourceStatusBridge: View {
     }
 }
 
-/// AppModel is an action target here. Table evaluation reads only cached metadata; processing
-/// properties are observed by the two individual cell components below.
-private struct SourcesNativeTable: View {
+/// AppModel is an action target here. List evaluation reads only cached metadata; processing
+/// properties are observed by the independent status component below.
+private struct SourcesInboxList: View {
     let model: AppModel
     let presentation: SourcesTablePresentation
     let statuses: SourcesStatusPresentation
@@ -81,72 +81,47 @@ private struct SourcesNativeTable: View {
     let delete: (SourceRecord) -> Void
 
     var body: some View {
-        Table(presentation.rows, selection: Binding(get: { dragSelection }, set: { ids in
+        List(selection: Binding(get: { dragSelection }, set: { ids in
             dragSelection = ids
             if ids.count == 1, !NSEvent.modifierFlags.contains(.command), !NSEvent.modifierFlags.contains(.shift) {
                 selection = ids.first
             } else if ids.isEmpty { selection = nil }
-        }),
-              sortOrder: Binding(get: { presentation.sortOrder }, set: { presentation.setSortOrder($0) }),
-              columnCustomization: Binding(get: { presentation.columnCustomization }, set: { presentation.columnCustomization = $0 })) {
-            TableColumn("File Name", value: \.title) { row in
-                SourceTitleCell(row: row, status: statuses.status(for: row.id))
+        })) {
+            ForEach(presentation.rows) { row in
+                SourceInboxRow(row: row, status: statuses.status(for: row.id))
+                    .tag(row.id)
                     .draggable(model.organisationDragBatch(presentation.rows.filter {
                         dragSelection.contains(row.id) ? dragSelection.contains($0.id) : $0.id == row.id
                     }.map { OrganisationDrag.item(.init(kind: .source, itemID: $0.id)) }))
-            }.width(min: 160, ideal: 220)
-                .customizationID("title")
-                .disabledCustomizationBehavior([.reorder, .visibility])
-            TableColumn("Original File Name", value: \.originalFilename) { row in
-                Text(row.originalFilename).lineLimit(1).help(row.originalFilename)
-            }.width(min: 100, ideal: 150)
-                .customizationID("originalFilename")
-                .disabledCustomizationBehavior([.reorder, .visibility])
-            TableColumn("Location", value: \.sourceLocation) { row in
-                Label(row.sourceLocation, systemImage: row.sourceLocation == "Linked" ? "link" : "tray.full")
-                    .help(row.sourceLocation == "Linked" ? "Read-only linked original" : "Original stored in vault")
-            }.width(min: 85, ideal: 95)
-                .customizationID("location")
-                .disabledCustomizationBehavior([.reorder, .visibility])
-            TableColumn("Availability") { row in
-                SourceAvailabilityCell(status: statuses.status(for: row.id))
-            }.width(min: 150, ideal: 180)
-                .customizationID("availability")
-                .disabledCustomizationBehavior([.reorder, .visibility])
-            TableColumn("Kind", value: \.fileKind)
-                .width(min: 80, ideal: 90)
-                .customizationID("kind")
-                .disabledCustomizationBehavior([.reorder, .visibility])
-            TableColumn("Size", value: \.fileSize) { row in
-                Text(row.formattedFileSize)
-            }.width(min: 70, ideal: 90)
-                .customizationID("size")
-                .disabledCustomizationBehavior([.reorder, .visibility])
-            TableColumn("Captured", value: \.captureSortDate) { row in
-                if let date = row.updatedAt {
-                    Text(date, format: .dateTime.month(.abbreviated).day().year())
-                        .lineLimit(1).help(row.captureHelp)
-                } else { Text("—") }
-            }.width(min: 100, ideal: 120)
-                .customizationID("captured")
-                .disabledCustomizationBehavior([.reorder, .visibility])
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .overlay {
+            if presentation.rows.isEmpty {
+                ContentUnavailableView("Sources is empty", systemImage: "tray",
+                                       description: Text("Import a file or paste a source to begin."))
+                    .allowsHitTesting(false)
+            }
         }
         .contextMenu(forSelectionType: UUID.self) { ids in
             if ids.count == 1, let id = ids.first {
                 SourceTableContextMenu(model: model, sourceID: id, rename: rename, delete: delete)
             }
         } primaryAction: { ids in
-            if let id = ids.first { model.openSource(id) }
+            if ids.count == 1, let id = ids.first { model.openSource(id) }
         }
         .modifier(OptionalScrollPositionModifier(position: scrollPosition))
         .modifier(CollectionListFocusModifier(focus: listFocus))
         .onAppear { dragSelection = Set(selection.map { [$0] } ?? []) }
         .onChange(of: selection) {
-            if dragSelection.count <= 1 { dragSelection = Set(selection.map { [$0] } ?? []) }
+            if let selection, !dragSelection.contains(selection) {
+                dragSelection = [selection]
+            } else if selection == nil { dragSelection = [] }
         }
         .onChange(of: model.sessionState.sessionID) { dragSelection = [] }
         .onChange(of: presentation.rows.map(\.id)) { dragSelection.formIntersection(Set(presentation.rows.map(\.id))) }
-        .accessibilityLabel("Sources table")
+        .accessibilityLabel("Sources list")
     }
 }
 
@@ -157,31 +132,61 @@ private struct CollectionListFocusModifier: ViewModifier {
     }
 }
 
-private struct SourceTitleCell: View {
+/// Metadata stays visible during processing; only this row's status label observes status changes.
+private struct SourceInboxRow: View {
     let row: SourceTableRow
     let status: SourceRowStatus
     var body: some View {
-        switch status.titleState {
-        case .downloading:
-            SourceProgressLabel(title: "Downloading from iCloud")
-        case .generating:
-            SourceProgressLabel(title: "Generating title")
-        case .ready:
-            Label(row.title, systemImage: "doc.text").lineLimit(1).help(row.title)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(row.title)
+                    .font(NoemaTypography.interfaceEmphasis)
+                    .lineLimit(1)
+                    .help(row.title)
+                    .layoutPriority(1)
+                Spacer(minLength: 8)
+                if let date = row.updatedAt {
+                    Text(date, format: Calendar.current.isDateInToday(date)
+                         ? .dateTime.hour().minute() : .dateTime.month(.abbreviated).day())
+                        .font(NoemaTypography.metadata)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .help(row.captureHelp)
+                        .accessibilityLabel("Captured \(row.captureHelp)")
+                }
+            }
+            Text("\(row.compactFileKind) · \(row.sourceLocation) · \(row.formattedFileSize)")
+                .font(NoemaTypography.metadata)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .help("\(row.originalFilename) · \(row.fileKind) · \(row.sourceLocation) · \(row.formattedFileSize)")
+            SourceInboxStatus(status: status)
+                .font(NoemaTypography.metadata)
         }
+        .padding(.horizontal, NoemaSpacing.sm)
+        .padding(.vertical, 4)
     }
 }
 
-private struct SourceAvailabilityCell: View {
+private struct SourceInboxStatus: View {
     let status: SourceRowStatus
     var body: some View {
-        switch status.availabilityState {
-        case .downloading:
+        if status.titleState == .downloading {
             SourceProgressLabel(title: "Downloading from iCloud")
-        case .checking:
-            SourceProgressLabel(title: "Checking availability…")
-        case .available(let label):
-            Text(label).lineLimit(1).help(label)
+        } else if status.titleState == .generating {
+            SourceProgressLabel(title: "Generating title")
+        } else {
+            switch status.availabilityState {
+            case .downloading:
+                SourceProgressLabel(title: "Downloading from iCloud")
+            case .checking:
+                SourceProgressLabel(title: "Checking availability…")
+            case .available(let label):
+                if label != "Available" {
+                    Text(label).foregroundStyle(.secondary).lineLimit(1).help(label)
+                }
+            }
         }
     }
 }
@@ -197,7 +202,7 @@ private struct SourceProgressLabel: View {
 }
 
 /// Resolve the current record when presenting the menu, preserving existing action gates and
-/// avoiding retained source bodies in table presentation state.
+/// avoiding retained source bodies in list presentation state.
 struct SourceTableContextMenu: View {
     let model: AppModel
     let sourceID: UUID
