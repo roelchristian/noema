@@ -9,6 +9,7 @@ import VaultCore
 final class ExternalAIService {
     static let modelPreferenceKey = "externalAIModel"
     static let reasoningPreferenceKey = "externalAIReasoningEffort"
+    static let embeddingPreferenceKey = "externalAIEmbeddingConfiguration"
 
     private let debugDiagnostics = ExternalAIDebugDiagnostics()
     @ObservationIgnored private var debugObservation: UUID?
@@ -23,6 +24,7 @@ final class ExternalAIService {
     let sessionManager: ExternalAISessionManager
     private(set) var gateway: ExternalAIGateway
     private(set) var configuration: ExternalAIModelConfiguration
+    private(set) var embeddingConfiguration: OpenAIEmbeddingConfiguration
     private(set) var credentialStatus: ExternalAICredentialStatus?
     private(set) var authorizationState: ExternalAISessionState = .unauthorized
     private(set) var consentPolicy: OpenAIConsentPolicy
@@ -41,6 +43,7 @@ final class ExternalAIService {
         consentPolicy = OpenAIConsentPolicy.load(from: defaults)
         let configuration = Self.loadConfiguration(from: defaults)
         self.configuration = configuration
+        embeddingConfiguration = Self.loadEmbeddingConfiguration(from: defaults)
         let broker = ExternalAICredentialBroker()
         credentialBroker = broker
         vaultGrants = ExternalAIVaultGrants(credentialBroker: broker, accessGate: accessGate)
@@ -66,6 +69,7 @@ final class ExternalAIService {
         self.gateway = gateway
         self.beforeAutomaticProviderAvailability = beforeAutomaticProviderAvailability
         configuration = Self.loadConfiguration(from: defaults)
+        embeddingConfiguration = Self.loadEmbeddingConfiguration(from: defaults)
         consentPolicy = OpenAIConsentPolicy.load(from: defaults)
     }
 
@@ -276,6 +280,23 @@ final class ExternalAIService {
         let effort = defaults.string(forKey: reasoningPreferenceKey)
             .flatMap(ExternalAIReasoningEffort.init(rawValue:)) ?? .low
         return (try? ExternalAIModelConfiguration(model: model, reasoningEffort: effort)) ?? .default
+    }
+
+    static func loadEmbeddingConfiguration(from defaults: UserDefaults) -> OpenAIEmbeddingConfiguration {
+        guard let data = defaults.data(forKey: embeddingPreferenceKey),
+              let selected = try? JSONDecoder().decode(OpenAIEmbeddingConfiguration.self, from: data)
+        else { return .default }
+        return selected
+    }
+
+    /// Observable selection lets future index owners detect configuration changes. It does
+    /// not dispatch requests, alter generative authority, or admit historical work.
+    func setEmbeddingModel(_ modelIdentifier: String) throws {
+        let selected = try OpenAIEmbeddingConfiguration(modelIdentifier: modelIdentifier)
+        guard selected != embeddingConfiguration else { return }
+        let encoded = try JSONEncoder().encode(selected)
+        defaults.set(encoded, forKey: Self.embeddingPreferenceKey)
+        embeddingConfiguration = selected
     }
 
     func refreshStatus() async {

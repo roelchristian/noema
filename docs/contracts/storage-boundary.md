@@ -404,6 +404,25 @@ remain open under [validation](../validation.md).
 | Native preview and observation | SourceReader gives Quick Look a disposable app-local snapshot of adapter/checksum-validated imported bytes. It never gives Quick Look an imported canonical URL; linked previews retain external URLs. Reader close, errors and vault switching request snapshot removal. SourcePreviewDirectory confines copies to an application-owned temporary root; a versioned marker and kernel reader lease establish cleanup eligibility. Launch examines at most 128 immediate children and removes only owned, unlocked direct files, without recursive deletion. Filesystem failure or interrupted cleanup can leave copies for later launch attempts; this is not secure deletion. Finder reveal passes URLs to NSWorkspace. These platform services remain outside the adapter. |
 | Network and fixtures | HTTP source capture/research uses existing fetchers; publication uses the adapter. Tests use disposable vaults and deliberate direct writes to simulate external edits. Development scripts, build outputs and generated brand exports are outside runtime canonical storage. |
 
+### Derived semantic index ownership
+
+`SQLiteEmbeddingIndex` owns only `KnowledgeVault/<vault UUID>/semantic.sqlite`
+under an application-support root. Its constructor requires the admitted lease and
+gate, resolves symlinks and rejects canonical-root overlap before directory creation
+or SQLite open. Its private connection owns all SQL and WAL/SHM lifetime; its schema
+is independent of canonical storage. No input text or execution grants are persisted.
+Document replacement and generation cleanup use rollback transactions, exact generation
+metadata and caller publication predicates plus live lease checks before COMMIT.
+AppModel open/unlock supplies the existing application-support base and admitted
+lease/gate; constructor failure is isolated from canonical opening and FTS. Close/lock
+retires the actor reference. Retrieval/embedding processor callers must still provide
+current revision/provider validation before automated publication is installed. Reads return revision-bearing records for canonical freshness filtering.
+Corrupt or foreign databases fail closed without deletion; lexical fallback and derived
+rebuild remain application integration work. No cleanup of canonical or recovery data
+is permitted. Author and independent reviewer traced the new two exceptional calls
+to this owner; focused rollback, lease, reopen and generation tests provide code
+evidence, while production routing and crash-durability acceptance remain outstanding.
+
 ## Enforcement and review
 
 `python3 scripts/check-storage-boundary.py --selftest` checks every Swift file under Sources for known Foundation byte reads/writes, filesystem mutations, stream/handle creation, SQLite opens, generic coordinatedRead calls and URL-based PDF/Quick Look access. It also reviews initializer references, handle byte methods/references, additional Foundation content/replacement/link and file-attribute mutations, qualified Darwin/Glibc byte and mutation APIs, and recognizable unqualified POSIX calls. Foundation directory creation is identified by its `withIntermediateDirectories` argument so protocol directory operations remain permitted. Runtime plaintext adapter references (including type aliases and metatypes) are confined to its implementation and `VaultStorageProvider`. Test and build wrappers run the guard before Swift compilation. `scripts/storage-io-exceptions.json` records exact normalized statements, occurrence counts and ownership reasons; new or removed exceptional calls fail. Only the plaintext adapter is exempt from the byte-I/O scan. There is no automatic baseline update command.

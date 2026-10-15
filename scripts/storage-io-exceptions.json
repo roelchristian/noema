@@ -250,5 +250,17 @@
     "statement": "try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)",
     "count": 1,
     "reason": "SQLiteAIWorkLedger owns bounded metadata-only app-local work/checkpoint SQLite and WAL/SHM. Production target is Application Support/Noema/Processing/work.sqlite; injected URLs are isolated test seams, never canonical vault bytes. Reviewed owner and target in docs/contracts/storage-boundary.md."
+  },
+  {
+    "path": "Sources/VaultCore/SQLiteEmbeddingIndex.swift",
+    "statement": "guard sqlite3_open_v2(url.path, &handle, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let handle else {",
+    "count": 1,
+    "reason": "SQLiteEmbeddingIndex owns only derived app-local KnowledgeVault/<vault UUID>/semantic.sqlite; normalized path rejects canonical overlap, lease validated before open and publication."
+  },
+  {
+    "path": "Sources/VaultCore/SQLiteEmbeddingIndex.swift",
+    "statement": "try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)",
+    "count": 1,
+    "reason": "SQLiteEmbeddingIndex creates only its derived application-local vault UUID directory after normalized canonical-overlap rejection and session admission."
   }
 ]

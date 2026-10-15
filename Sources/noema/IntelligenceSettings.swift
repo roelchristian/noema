@@ -55,6 +55,10 @@ struct IntelligenceSettings: View {
                 Text("The toggle controls automatic intelligence. Manual AI commands remain available through their existing consent path. Preferences are saved for this vault on this Mac. Enabling AI does not start a backfill or submit content.")
                     .font(.caption).foregroundStyle(.secondary)
                 if configuration.provider == .openAI {
+                    LabeledContent("Embedding model", value: appModel.externalAIService.embeddingConfiguration.modelIdentifier)
+                    LabeledContent("Embedding dimensions", value: String(appModel.externalAIService.embeddingConfiguration.dimensions))
+                    LabeledContent("Semantic index", value: appModel.semanticIndexCompatibility.label)
+                    if let issue = appModel.semanticIndexIssue { Text(issue).font(.caption).foregroundStyle(.secondary) }
                     LabeledContent("Vault processing approval", value: appModel.externalAIService.isVaultProcessingApproved(for: lease)
                         ? "Approved on this Mac" : "Approval required")
                     if !appModel.externalAIService.vaultGrants.supportsDurableGrants {
@@ -96,6 +100,7 @@ struct IntelligenceSettings: View {
             await appModel?.externalAIService.refreshStatus()
             guard !Task.isCancelled, appModel?.vaultAISettingsContext?.lease == lease else { return }
             await appModel?.externalAIService.refreshVaultGrant(for: lease)
+            if let lease { await appModel?.refreshSemanticIndexCompatibility(for: lease) }
         }
         .confirmationDialog("Allow automatic OpenAI processing for \(approvalVaultName)?",
                             isPresented: $showingCloudApproval, titleVisibility: .visible) {
@@ -147,7 +152,7 @@ struct IntelligenceSettings: View {
 
     private var refreshIdentity: String {
         guard let appModel, let context = appModel.vaultAISettingsContext else { return "unavailable" }
-        return "\(context.lease.sessionID)-\(context.lease.generation)-\(appModel.vaultAIConfigurationStore.revision)-\(String(describing: appModel.externalAIService.credentialStatus))"
+        return "\(context.lease.sessionID)-\(context.lease.generation)-\(appModel.vaultAIConfigurationStore.revision)-\(String(describing: appModel.externalAIService.credentialStatus))-\(appModel.externalAIService.embeddingConfiguration.modelIdentifier)"
     }
 
     private func updateVaultAI(_ model: AppModel, lease: VaultSessionLease,

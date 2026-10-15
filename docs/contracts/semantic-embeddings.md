@@ -1,0 +1,141 @@
+# Semantic embedding infrastructure — SEM.EMB
+
+## Contract checkpoint and ownership
+
+VaultCore provides validated provider-neutral model/vector/chunk/generation contracts,
+deterministic chunking, portable Float32/cosine primitives and actor-owned SQLite
+persistence/retrieval. OpenAI preferences are independent of generative settings;
+Current Vault reports exact descriptor/chunker compatibility from persisted generations.
+AppModel constructs the semantic projection beside FTS during admitted open/unlock;
+semantic failures leave canonical editing and lexical search available.
+
+Both native sentence embeddings and a restricted OpenAI request adapter implement the
+common provider interface. No embedding processor, historical admission, queue UI or
+integrated semantic search is registered yet. Selection alone never starts inference.
+AI.ENR is not a dependency.
+
+`blocks.sqlite` remains the sole canonical Page and Source authority. Embeddings
+are disposable, device-local projections. The `SQLiteEmbeddingIndex` actor
+owns its SQL connection and atomic document replacement in `semantic.sqlite`, beside
+`search.sqlite` under the existing Application Support `KnowledgeVault/<vault UUID>`
+root. Construction must use the app's admitted local-storage composition; neither a
+portable vault path nor a caller-selected canonical database is an embedding path.
+FTS5 remains available if the semantic projection is absent, damaged or incompatible.
+The two derived-directory/SQLite-open exceptions are owned and reviewed under the
+[storage boundary](storage-boundary.md#derived-semantic-index-ownership). No second
+canonical writer is introduced.
+
+VaultCore owns typed model, vector, entity, chunk, generation and provider contracts,
+chunking, derived storage and retrieval. ExternalAI owns cloud credential access,
+request capabilities, endpoint allowlists and transport. The application owns vault
+provider selection, consent, snapshots, settings, status and hybrid search composition.
+AppleSentenceEmbeddingProvider uses Natural Language sentence embeddings behind the
+provider abstraction. Foundation Models is not an embedding API.
+
+## Identity and compatibility
+
+A model descriptor identifies provider, model, actual revision, dimensions and bounded
+input/batch limits. Vectors must have the declared dimension, finite Float32 values
+and a nonzero norm. `EmbeddingVectorMath.swift` encodes exactly four little-endian
+bytes per component and rejects malformed BLOB lengths or invalid decoded vectors.
+Cosine accumulation uses Double to retain finite extreme/subnormal Float32 inputs. Generation compatibility requires the full descriptor and chunker
+version to match. Query and document vectors must belong to that same vector space;
+equal dimensions alone are insufficient. OpenAI configuration `matchesSelection(of:)`
+rejects a different provider, model ID or dimension; a match is only a necessary
+selection check and cannot establish revision, chunker or vault compatibility. Each generation belongs to one vault UUID.
+A record binds that generation to a Page or Source UUID, opaque canonical revision,
+stable structural chunk identity, ordinal and input fingerprint. Fingerprints and
+revisions are technical metadata, never copies of document text.
+
+`EmbeddingChunker` accepts caller-supplied committed block/extracted-source text.
+Page chunks use block UUID/segment identities and exclude complete subtrees marked
+`aiGenerated`. Source chunks follow paragraph boundaries, normalize CRLF as a single
+line ending and use positional paragraph/segment identities. Both preserve graphemes,
+apply the descriptor UTF-8 byte bound with modest overlap, and reject an oversized
+individual grapheme rather than dropping text. Providers must additionally enforce
+model tokenizer limits. Retain unchanged chunks only when fingerprints and generation
+match; source paragraph identities are not stable across unrelated paragraph insertion. Do not persist full source text solely
+for vector storage. Atomic replacement and deletion must validate the live lease,
+provider epoch, current entity revision and generation at publication. Interruption
+must leave either the prior valid revision or an explicitly partial generation.
+Generations may coexist for rebuilds but must never mix in one similarity ranking.
+
+## Authority and lifecycle
+
+Embedding document changes, historical backfill and query submission have distinct
+scopes. Scope declarations and policy resolvers are contracts, not mintable external
+request permission. Existing summary/enrichment grants confer no embedding authority.
+ExternalAI must extend D02A with issuer-bound embedding capabilities before any cloud
+provider is installed. They must bind the live vault/session lease, provider/model
+configuration epoch, exact input, operation scope and, for history, durable batch ID.
+Recheck authority before dispatch and after suspension, and before vector publication.
+Revocation, locking, switching, cancellation and model changes reject stale work.
+No fallback to a different provider is allowed.
+
+The existing `AIProcessingCoordinator` and `SQLiteAIWorkLedger` remain the only work
+scheduler and durable retry ledger. A future embedding processor must register before
+binding, consume post-commit events, exclude AI publications and preserve the first
+inventory baseline rule. Saving canonical content must succeed independently of
+embedding work. When indexes are integrated, a preference change must invalidate compatibility;
+it must never admit old content. Historical indexing requires explicit Pages/Sources selection, a durable batch
+identity and fresh cloud authority. Pause retains resumable work; cancellation cannot
+claim an already transmitted request was unbilled.
+
+Semantic query retrieval must use compatible generations, current live revisions and
+search scope, deduplicate chunks by document and merge lexical results deterministically
+with reciprocal rank fusion while preserving strong title/alias matches. Cloud queries
+require separate query authority, debounce and cancellation. Quick Open remains lexical.
+
+## Privacy and implementation gates
+
+The future semantic database is plaintext application-local derived data; session
+locking is access control, not encryption. Cloud embedding submits original text and
+may incur usage charges. Model selection alone is neither consent nor a cost estimate.
+No embedding operation may publish titles, summaries, classifications or page bodies.
+
+Before SEM.EMB02, apply the author and independent reviewer procedure in
+[storage-boundary.md](storage-boundary.md), including all constructor/caller routing,
+lease validation and pre-publication checks; scanner success alone is insufficient.
+Embedding-specific D02A scopes are implemented and adversarially tested independently
+of enrichment grants.
+SEM.EMB04–08 require real provider/storage integration, persisted backfill/queue state,
+search regression, native regression and measured large-vault performance acceptance.
+Standing device, accessibility and crash-durability gaps remain unchanged.
+
+## Provider behavior and remaining integration gates
+
+`AppleSentenceEmbeddingProvider` confines its Natural Language model to an actor,
+records actual language/model revision/dimension, and rejects unavailable language,
+invalid vectors, revoked authority and cancellation. Its conservative input-v1 policy
+bounds inputs to 1,024 UTF-8 bytes, 128 NLTokenizer words and 16 items per batch. The
+incremental chunk admission adapter must honor both word and byte limits. Actual
+system-model availability and retrieval quality remain device acceptance work.
+
+`ExternalAIEmbeddingAuthorizer` mints opaque issuer/epoch/exact-request capabilities
+only after explicit document, query or historical-batch consent and existing native
+session authentication. Tokens bind ordered input digest, full model, entity revision,
+batch identity and complete vault lease. Replay, scope substitution, credential change,
+session revocation and issuer invalidation reject. `OpenAIEmbeddingProvider` uses only
+POST `https://api.openai.com/v1/embeddings`, existing credential broker and bounded
+nonredirecting transport. Dispatch serializes gate/session/issuer/credential validation;
+responses validate model, count, indices, dimensions and finite nonzero vectors. One
+bounded transient retry remains inside the same exact request. Publication requires a
+completed response and live authority; text, consent and tokens are never persisted.
+The request schema follows the [official embeddings API](https://developers.openai.com/api/reference/resources/embeddings/methods/create).
+
+OpenAI inputs are conservatively capped at one item and 8,000 UTF-8 bytes. The recorded
+revision identifies the API/input contract; provider aliases do not expose immutable
+weight revisions. Numeric usage is exposed separately from vector validation; activity
+history integration is pending, and requestCount represents logical attempts rather
+than a provider billing guarantee. No live API-key test or cost estimate is claimed.
+
+SEM.EMB04 must close the canonical/derived publication race before installing a
+processor: an asynchronous post-commit event or revision read followed by a separate
+SQLite COMMIT is insufficient. Canonical-owned revision permits must synchronize with
+canonical COMMIT and span the derived COMMIT; their constructor/helper routing needs
+independent storage review. Linked source bytes also need current snapshot validation.
+Deletion cleanup must run explicitly across generations, since the coordinator cancels
+removed jobs without executing a processor. Startup reconciliation must remove stale
+projection entries without admitting historical cloud work. SEM.EMB05–08 remain gated
+on that lifecycle implementation, durable consented backfill, queue controls, hybrid
+search, large-vault measurements and standing native/device acceptance.
