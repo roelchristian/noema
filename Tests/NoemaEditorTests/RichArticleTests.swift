@@ -250,9 +250,9 @@ import VaultCore
     let palette = BlockPalette(); palette.update(BlockCommand.matching(""))
     #expect(palette.preferredContentSize.width == 240)
     #expect(palette.preferredContentSize.height == 405)
-    #expect(palette.stack.arrangedSubviews.compactMap { $0 as? NSBox }.count == 1)
+    #expect(palette.stack.arrangedSubviews.compactMap { $0 as? NSBox }.count == 2)
     let headings = palette.stack.arrangedSubviews.compactMap { ($0 as? NSTextField)?.stringValue }
-    #expect(headings == ["Basic blocks", "Semantic blocks"])
+    #expect(headings == ["Basic blocks", "Lists and structure", "Semantic blocks"])
     let buttons = palette.stack.arrangedSubviews.compactMap { $0 as? NSButton }
     #expect(buttons.count == BlockCommand.all.count)
     #expect(palette.stack.spacing == 0)

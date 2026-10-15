@@ -47,6 +47,7 @@ extension VaultUIIntegrationTests {
             model.aiClient = .init(unavailabilityReason: { nil }, summarize: { _ in "Summary" },
                 inferLCC: { _ in "QA291" }, lccCode: { _ in "QA291" }, pageTitle: { _ in "Generated title" },
                 pageFromTopic: { _, _ in "" }, pageFromSource: { _ in "" }, researchTopic: { _ in [] })
+            try configureVaultAI(model)
             model.prepareUntitledPageForNaming()
             #expect(await model.finishCurrentPage(waitForTitles: true))
             #expect(model.currentNote?.title == "Generated title")

@@ -31,10 +31,10 @@ struct SidebarChromeTests {
     }
 
     @Test func sidebarTypographyUsesExpectedStylesAndWeights() {
-        #expect(NoemaTypography.navigation == .callout)
-        #expect(NoemaTypography.navigationEmphasis == .callout.weight(.medium))
+        #expect(NoemaTypography.navigation == .body)
+        #expect(NoemaTypography.navigationEmphasis == .body.weight(.medium))
         #expect(NoemaTypography.sidebarSection == .subheadline.weight(.medium))
-        #expect(NoemaTypography.sidebarIcon == .system(size: 14, weight: .regular))
+        #expect(NoemaTypography.sidebarIcon == .body)
     }
 
     @Test func hostedSidebarPrimitivesFitWithinDefaultSidebarWidth() {
