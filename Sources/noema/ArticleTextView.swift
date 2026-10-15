@@ -53,6 +53,7 @@ import VaultCore
     var annotationAction: (() -> Void)?
     var annotationAvailable: (() -> Bool)?
     var blockMenu: (() -> NSMenu)?
+    var presentHandleMenu: ((UUID) -> Void)?
     var insertBlockMenu: ((UUID) -> NSMenu)?
     private lazy var contextualBlockControls = EditorBlockControls(editor: self)
     var activateBlock: ((UUID, BlockMutation) -> Void)?
@@ -131,12 +132,21 @@ import VaultCore
         contextualBlockControls.show(blockID: id, handleRect: gutterRect(for: range))
     }
 
+    func handleMenuAnchor(for blockID: UUID) -> NSRect {
+        if contextualBlockControls.superview === self, contextualBlockControls.blockID == blockID, !contextualBlockControls.isHidden {
+            return contextualBlockControls.frame
+        }
+        if let storage = textStorage, let range = blockRange(for: blockID, storage: storage) {
+            return gutterRect(for: range)
+        }
+        return rect(for: selectedRange())
+    }
+
     func showFocusedBlockMenu() {
         guard isEditable, !locked, let id = contextualBlockControls.blockID else { return }
         if !selectedBlockIDs.contains(id) { selectBlock?(id, []) }
-        guard let menu = blockMenu?() else { return }
         contextualInteractionDismiss?()
-        menu.popUp(positioning: nil, at: NSPoint(x: contextualBlockControls.frame.maxX, y: contextualBlockControls.frame.maxY), in: self)
+        presentHandleMenu?(id)
     }
 
     private var focusedBlockID: UUID? {

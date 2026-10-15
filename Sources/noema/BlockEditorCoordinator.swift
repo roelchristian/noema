@@ -27,6 +27,11 @@ extension RichArticleView {
         var contextualIdentitySuspended = false
         var activeBlockMenuContext: EditorInteractionContext?
         var activeInsertionMenu: NSMenu?
+        let handleMenu = BlockHandleMenuController()
+        var handleMenuContext: EditorInteractionContext?
+        var handleMenuBlockID: UUID?
+        var presentingHandleMenu = false
+        var dismissingHandleMenu = false
         var changing = false
         var presentationRefreshPending = false
         lazy var inlineControls = EditorInlineControls(coordinator: self)
@@ -74,6 +79,8 @@ extension RichArticleView {
             self.parent = parent
             hostedIdentity = .init(pageID: parent.noteID, vaultID: parent.vaultID, sessionID: parent.sessionID)
             super.init()
+            handleMenu.onAction = { [weak self] in self?.performHandleMenu($0) }
+            handleMenu.onDismiss = { [weak self] in self?.dismissHandleMenu() }
             suggestions.dismiss = { [weak self] in self?.dismissPalette() }
             palette.choose = { [weak self] in self?.apply($0, removingQuery: true) }
         }
@@ -83,11 +90,13 @@ extension RichArticleView {
         }
         @objc private func scrollBoundsChanged(_ notification: Notification) {
             guard let clip = notification.object as? NSClipView else { return }
+            dismissHandleMenu()
             inlineControls.update()
             let offset = clip.bounds.minY
             Task { @MainActor [weak self] in self?.parent.onScrollOffset(offset) }
         }
         func load(_ value: BlockDocument) {
+            dismissHandleMenu()
             inlineControls.close()
             publicationTask?.cancel()
             pendingSingleBlock = nil; deferredComposition = false
@@ -434,6 +443,7 @@ extension RichArticleView {
             }
         }
         func handleKey(_ event: NSEvent) -> Bool {
+            if handleMenu.isShown { return handleMenu.handleKey(event) }
             inlineControls.close()
             guard let view, view.isEditable, !view.locked, let (block, range) = current() else { return false }
             if suggestions.isShown {
@@ -695,9 +705,8 @@ extension RichArticleView {
             }
         }
         func showBlockMenu() {
-            guard let view, let (_, range) = current() else { return }
-            let rect = view.rect(for: range)
-            contextMenu().popUp(positioning: nil, at: NSPoint(x: view.textContainerOrigin.x, y: rect.minY + 20), in: view)
+            guard let (block, _) = current() else { return }
+            presentHandleMenu(for: block.id)
         }
         func contextMenu() -> NSMenu {
             activeBlockMenuContext = interactionContext

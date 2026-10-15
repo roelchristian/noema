@@ -41,7 +41,7 @@ struct RichArticleView: NSViewRepresentable {
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         view.isAutomaticQuoteSubstitutionEnabled = false; view.isAutomaticDashSubstitutionEnabled = false
         view.setAccessibilityLabel("Article block editor")
-        view.setAccessibilityHelp("Click unlocked page text to edit. Command-click a link or use Open Link in its context menu. Unlock a locked article first. Slash opens block commands. Use the Block context menu for structure, tags, and status. Command Option A selects the document.")
+        view.setAccessibilityHelp("Click unlocked page text to edit. Command-click a link or use Open Link in its context menu. Unlock a locked article first. Slash opens block commands. The block handle changes format and semantic designation, inserts below, and deletes. The Block context menu keeps status, move, and formatting. Command Option A selects the document.")
         view.registerForDraggedTypes([ArticleTextView.dragType])
         view.delegate = context.coordinator; context.coordinator.view = view; scroll.documentView = view
         view.updateReadingGeometry()
@@ -59,6 +59,7 @@ struct RichArticleView: NSViewRepresentable {
         guard onSemanticLoad == nil || coordinator.hostedIdentity == identity else {
             coordinator.contextualIdentitySuspended = true
             coordinator.inlineControls.close()
+            coordinator.dismissHandleMenu()
             coordinator.activeInsertionMenu?.cancelTracking()
             coordinator.activeInsertionMenu = nil
             coordinator.activeBlockMenuContext = nil
@@ -81,6 +82,7 @@ struct RichArticleView: NSViewRepresentable {
         view.contextualInteractionDismiss = { [weak coordinator] in coordinator?.inlineControls.close() }
         view.insertBlockMenu = { [weak coordinator] in coordinator?.insertionMenu(after: $0) ?? NSMenu() }
         view.blockMenu = { [weak coordinator] in coordinator?.contextMenu() ?? NSMenu() }
+        view.presentHandleMenu = { [weak coordinator] in coordinator?.presentHandleMenu(for: $0) }
         view.activateBlock = { [weak coordinator] id, command in coordinator?.mutate(command, id: id, name: "Change block") }
         view.selectBlock = { [weak coordinator] in coordinator?.selectBlock($0, modifiers: $1) }
         view.selectedBlockIDs = coordinator.selectedBlockIDs
@@ -98,7 +100,10 @@ struct RichArticleView: NSViewRepresentable {
         }
         view.locked = locked || coordinator.document.unsupportedVersion || (onSemanticLoad != nil && coordinator.session.semanticEdit == nil)
         view.isEditable = editable && !view.locked
-        if !view.isEditable { coordinator.inlineControls.close() }
+        if !view.isEditable {
+            coordinator.inlineControls.close()
+            coordinator.dismissHandleMenu()
+        }
         coordinator.updateAnnotationAvailability()
         if let action, coordinator.lastAction != action.id {
             if case .block = action.operation { coordinator.lastAction = action.id; coordinator.perform(action.operation) }
@@ -110,6 +115,7 @@ struct RichArticleView: NSViewRepresentable {
         coordinator.activeInsertionMenu?.cancelTracking()
         coordinator.activeInsertionMenu = nil
         coordinator.activeBlockMenuContext = nil
+        coordinator.dismissHandleMenu()
         coordinator.flushPublication()
         coordinator.parent.onSessionEnded?(coordinator)
         NotificationCenter.default.removeObserver(coordinator, name: NSView.boundsDidChangeNotification, object: scroll.contentView)
