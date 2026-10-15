@@ -273,3 +273,35 @@ import VaultCore
     retiredCoordinator.performHandleMenu(.insertBelow)
     #expect(retiredCoordinator.document == retiredBefore)
 }
+
+@Test @MainActor func handleMenuNativeItemsPreserveStatesIconsAndDispatch() throws {
+    _ = NSApplication.shared
+    let controller = BlockHandleMenuController()
+    let model = BlockHandleMenuModel(
+        rows: [.turnInto, .semantic, .insertBelow, .delete, .timestamp("Edited today")],
+        formatChoices: [
+            .init(title: "Text", symbol: "text.alignleft", commandID: "text", mark: .mixed, enabled: true),
+            .init(title: "Heading", symbol: "textformat", commandID: "h2", mark: .off, enabled: true)
+        ],
+        semanticChoices: [
+            .init(title: "Idea", symbol: "lightbulb", commandID: "idea", mark: .on, enabled: true),
+            .init(title: "future-tag", symbol: "tag", commandID: nil, mark: .on, enabled: false)
+        ])
+    let menu = controller.makeMenu(model: model)
+    let format = try #require(menu.items[0].submenu)
+    let semantic = try #require(menu.items[1].submenu)
+    #expect(!menu.autoenablesItems && !format.autoenablesItems && !semantic.autoenablesItems)
+    #expect(format.items.map(\.state) == [.mixed, .off])
+    #expect(semantic.items.map(\.state) == [.on, .on])
+    #expect(!semantic.items[1].isEnabled)
+    #expect((menu.items + format.items + semantic.items).filter { !$0.isSeparatorItem && $0.title != "Edited today" }.allSatisfy { $0.image != nil })
+    #expect(menu.items.last?.title == "Edited today")
+    #expect(menu.items.last?.isEnabled == false)
+    var actions: [BlockHandleMenuAction] = []
+    controller.onAction = { actions.append($0) }
+    format.performActionForItem(at: 0)
+    semantic.performActionForItem(at: 0)
+    menu.performActionForItem(at: 2)
+    menu.performActionForItem(at: 4)
+    #expect(actions == [.command("text"), .command("idea"), .insertBelow, .delete])
+}

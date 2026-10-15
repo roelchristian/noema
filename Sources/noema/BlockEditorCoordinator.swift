@@ -443,7 +443,6 @@ extension RichArticleView {
             }
         }
         func handleKey(_ event: NSEvent) -> Bool {
-            if handleMenu.isShown { return handleMenu.handleKey(event) }
             inlineControls.close()
             guard let view, view.isEditable, !view.locked, let (block, range) = current() else { return false }
             if suggestions.isShown {
