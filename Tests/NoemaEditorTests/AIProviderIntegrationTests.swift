@@ -29,6 +29,7 @@ struct AIProviderIntegrationTests {
         model.localStorageRoot = root.appendingPathComponent("local")
         model.persistSecurityScopedBookmark = false
         await model.open(root, create: false)
+        try configureVaultAI(model)
         model.select(note.id)
         try await waitUntil { model.currentNote?.id == note.id }
         return ProviderFixture(root: root, model: model, note: note, repository: repository, defaults: defaults, domain: domain)
@@ -71,7 +72,7 @@ struct AIProviderIntegrationTests {
     @Test @MainActor func preferredCloudSummaryRequiresExplicitSingleUseApproval() async throws {
         let f = try await fixture(); defer { f.cleanup() }
         let probe = ProviderProbe(); mock(f.model, probe: probe)
-        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+        try configureVaultAI(f.model, provider: .openAI)
         f.model.requestPageSummary(id: f.note.id)
         try await waitUntil { f.model.cloudSummaryConfirmation != nil || f.model.aiProviderNotice != nil }
         let confirmation = try #require(f.model.cloudSummaryConfirmation)
@@ -92,28 +93,27 @@ struct AIProviderIntegrationTests {
         #expect(BlockDocumentCodec.decode(stored.body).aiSummary?.metadata.extra["aiProvider"] == "OpenAI")
     }
 
-    @Test @MainActor func sourceOverrideAndTemporaryCloudChoiceNeverChangeSavedIntent() async throws {
+    @Test @MainActor func vaultProviderWinsOverLegacyAndTemporaryOverrides() async throws {
         let f = try await fixture(); defer { f.cleanup() }
         let selected = try await source(f)
         let probe = ProviderProbe(); mock(f.model, probe: probe)
+        try configureVaultAI(f.model, provider: .onDevice, enabled: false)
         f.model.aiProviderPreferences.setDefaultProvider(.openAI)
-        f.model.aiProviderPreferences.setOverride(.specific(.onDevice), for: .summarizeSource)
-        let saved = f.defaults.data(forKey: AIProviderPreferences.preferenceKey)
-        f.model.requestSourceSummary(selected)
+        f.model.aiProviderPreferences.setOverride(.specific(.openAI), for: .summarizeSource)
+        let policy = f.model.activeVaultAIConfiguration
+        f.model.requestSourceSummary(selected, provider: .openAI)
         let native = try #require(f.model.nativeSourceSummaryTaskForTesting(id: selected.id))
         await native.value
         #expect(await probe.count("summarize") == 1)
         #expect(await probe.count("cloud") == 0)
-        #expect(try await f.repository.loadSource(id: selected.id).metadata.aiSummaryProvenance?.provider == "On-device")
-        f.model.requestSourceSummary(selected, provider: .openAI)
-        try await waitUntil { f.model.cloudSummaryConfirmation != nil }
-        #expect(f.model.cloudSummaryConfirmation?.request.target == .source(selected.id))
-        #expect(await probe.count("cloud") == 0)
-        f.model.cancelSummary(target: .source(selected.id))
-        f.model.confirmCloudSummary()
-        #expect(await probe.count("cloud") == 0)
-        #expect(f.defaults.data(forKey: AIProviderPreferences.preferenceKey) == saved)
+        #expect(f.model.cloudSummaryConfirmation == nil)
+        #expect(f.model.activeVaultAIConfiguration == policy)
         #expect(f.model.preferredAIProvider(for: .summarizeSource) == .onDevice)
+        try configureVaultAI(f.model, provider: .openAI)
+        f.model.requestSourceSummary(selected, provider: .onDevice)
+        try await waitUntil { f.model.cloudSummaryConfirmation != nil }
+        f.model.cancelSummary(target: .source(selected.id))
+        #expect(await probe.count("cloud") == 0)
     }
 
     @Test @MainActor func sourceDraftingOpensScopedWorkflowBeforeAnyProviderExecutes() async throws {
@@ -133,15 +133,15 @@ struct AIProviderIntegrationTests {
     @Test @MainActor func unavailableNativeChoiceNeverFallsBackToCloudOrChangesPreferences() async throws {
         let f = try await fixture(); defer { f.cleanup() }
         let probe = ProviderProbe(); mock(f.model, probe: probe)
-        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
-        let saved = f.defaults.data(forKey: AIProviderPreferences.preferenceKey)
+        try configureVaultAI(f.model, provider: .onDevice)
+        let saved = f.model.activeVaultAIConfiguration
         f.model.aiClient.unavailabilityReason = { "Unavailable native model" }
         f.model.requestPageSummary(id: f.note.id, provider: .onDevice)
         #expect(f.model.aiProviderNotice == AIProviderUnavailableReason.localModelUnavailable.errorMessage)
         #expect(!f.model.isSummarizing(target: .page(f.note.id)))
         #expect(f.model.cloudSummaryConfirmation == nil)
         #expect(await probe.total == 0)
-        #expect(f.defaults.data(forKey: AIProviderPreferences.preferenceKey) == saved)
+        #expect(f.model.activeVaultAIConfiguration == saved)
         #expect(BlockDocumentCodec.decode(f.model.body).aiSummary?.text == "Prior summary")
     }
 
@@ -150,25 +150,25 @@ struct AIProviderIntegrationTests {
         let probe = ProviderProbe(); mock(f.model, probe: probe)
         f.model.cloudSummaryOverride = nil
         f.model.cloudCredentialAvailabilityOverride = { false }
-        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
-        let saved = f.defaults.data(forKey: AIProviderPreferences.preferenceKey)
+        try configureVaultAI(f.model, provider: .openAI)
+        let saved = f.model.activeVaultAIConfiguration
         f.model.requestPageSummary(id: f.note.id)
         try await waitUntil { !f.model.isSummarizing(target: .page(f.note.id)) }
         #expect(f.model.aiProviderNotice == "Configure an OpenAI API key in Intelligence settings, then try again.")
         #expect(f.model.cloudSummaryConfirmation == nil)
         #expect(f.model.cloudSummaryTaskForTesting == nil)
         #expect(await probe.total == 0)
-        #expect(f.defaults.data(forKey: AIProviderPreferences.preferenceKey) == saved)
+        #expect(f.model.activeVaultAIConfiguration == saved)
         #expect(f.model.preferredAIProvider(for: .summarizePage) == .openAI)
         #expect(BlockDocumentCodec.decode(f.model.body).aiSummary?.text == "Prior summary")
     }
 
-    @Test @MainActor func explicitNativeOverridesExecuteTitleClassificationAndSourcePage() async throws {
+    @Test @MainActor func vaultNativeProviderExecutesReviewedTitleClassificationAndSourcePage() async throws {
         let f = try await fixture(); defer { f.cleanup() }
         let selected = try await source(f)
         let probe = ProviderProbe(); mock(f.model, probe: probe)
-        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
-        let saved = f.defaults.data(forKey: AIProviderPreferences.preferenceKey)
+        try configureVaultAI(f.model, provider: .onDevice)
+        let saved = f.model.activeVaultAIConfiguration
         f.model.suggestPageTitle(provider: .onDevice)
         try await waitUntil { !f.model.generatingPageTitle }
         #expect(f.model.title == "Fixture")
@@ -205,7 +205,7 @@ struct AIProviderIntegrationTests {
         #expect(await probe.count("enrich") == 1)
         #expect(await probe.count("lccCode") == 2)
         #expect(await probe.count("cloud") == 0)
-        #expect(f.defaults.data(forKey: AIProviderPreferences.preferenceKey) == saved)
+        #expect(f.model.activeVaultAIConfiguration == saved)
     }
 
     @Test @MainActor func cloudMetadataSuggestionsRequireReviewAndPreserveUnrelatedArtifactsOnReopen() async throws {
@@ -216,7 +216,7 @@ struct AIProviderIntegrationTests {
         try await waitUntil { (try? await f.repository.scan().notes.first { $0.id == f.note.id }?.lcc) == "DG299" }
         await f.model.refresh()
         let probe = ProviderProbe(); mock(f.model, probe: probe)
-        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+        try configureVaultAI(f.model, provider: .openAI)
         for target in [ExternalAISummaryTarget.page(f.note.id), .source(selected.id)] {
             for action in [AIAction.suggestTitle, .classifyLCC] {
                 if action == .suggestTitle {
@@ -247,8 +247,7 @@ struct AIProviderIntegrationTests {
                 #expect(f.model.aiProviderNotice == nil)
             }
         }
-        f.model.aiProviderPreferences.setDefaultProvider(.onDevice)
-        f.model.aiProviderPreferences.setOverride(.specific(.openAI), for: .suggestTitle)
+        try configureVaultAI(f.model, provider: .onDevice)
         await f.model.open(f.root, create: false)
         let stored = try #require(try await f.repository.scan().notes.first { $0.id == f.note.id })
         #expect(stored.title == "Cloud Fixture Title")
@@ -273,13 +272,13 @@ struct AIProviderIntegrationTests {
             return try ExternalAISummaryResult(request: request, summary: "Cloud Fixture Title",
                 provenance: ExternalAIProvenance(model: "gpt-4.1-mini"))
         }
-        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+        try configureVaultAI(f.model, provider: .openAI)
         f.model.suggestPageTitle()
         try await waitUntil { f.model.cloudSummaryConfirmation != nil }
         f.model.confirmCloudSummary()
         let worker = try #require(f.model.cloudSummaryTaskForTesting)
         try await waitUntil { await probe.count("summarize") == 1 }
-        f.model.aiProviderPreferences.setDefaultProvider(.onDevice)
+        try configureVaultAI(f.model, provider: .onDevice)
         try await probe.releaseSummary()
         await worker.value
         #expect(f.model.pendingAISuggestion?.provider == .openAI)
@@ -297,7 +296,7 @@ struct AIProviderIntegrationTests {
         for provider in AIProvider.allCases {
             let f = try await fixture(); defer { f.cleanup() }
             let probe = ProviderProbe(); mock(f.model, probe: probe)
-            f.model.aiProviderPreferences.setDefaultProvider(provider)
+            try configureVaultAI(f.model, provider: provider)
             f.model.setPageLCC("DG299")
             f.model.suggestPageTitle()
             if provider == .openAI {
@@ -338,7 +337,7 @@ struct AIProviderIntegrationTests {
             let f = try await fixture(); defer { f.cleanup() }
             let probe = ProviderProbe(); mock(f.model, probe: probe)
             f.model.cloudSummaryOverride = { _, _ in throw ExternalAIError.providerUnavailable }
-            f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+            try configureVaultAI(f.model, provider: .openAI)
             if action == .suggestTitle { f.model.suggestPageTitle() } else { f.model.refreshPageLCC() }
             try await waitUntil { f.model.cloudSummaryConfirmation != nil }
             f.model.confirmCloudSummary()
@@ -372,11 +371,25 @@ struct AIProviderIntegrationTests {
         #expect(await probe.count("lccCode") == 0)
     }
 
-    @Test @MainActor func automaticPageAndSourceNamingRemainNativeWithCloudDefault() async throws {
+    @Test(arguments: [AIProvider.onDevice, .openAI])
+    @MainActor func disabledVaultImportsSourceWithoutAutomaticInference(provider: AIProvider) async throws {
+        let f = try await fixture(); defer { f.cleanup() }
+        try configureVaultAI(f.model, provider: provider, enabled: false)
+        let probe = ProviderProbe(); mock(f.model, probe: probe)
+        let imported = try await source(f)
+        f.model.enqueueSourceTitle(imported)
+        #expect(f.model.generatingSourceTitles.isEmpty)
+        #expect(await probe.total == 0)
+        #expect(try await f.repository.loadSource(id: imported.id).metadata == imported.metadata)
+        #expect(try FileVaultRepository.readSourceOriginal(imported, root: f.root,
+            contentStore: f.repository.contentStore) == Data("Selected source content".utf8))
+    }
+
+    @Test @MainActor func enabledLocalVaultNamesPageAndSourceAndPreservesArtifactsOnProviderChange() async throws {
         let f = try await fixture(); defer { f.cleanup() }
         let selected = try await source(f)
         let probe = ProviderProbe(); mock(f.model, probe: probe)
-        f.model.aiProviderPreferences.setDefaultProvider(.openAI)
+        try configureVaultAI(f.model, provider: .onDevice)
         f.model.enqueueSourceTitle(selected)
         try await waitUntil { !f.model.generatingSourceTitles.contains(selected.id) }
         let stored = try await f.repository.loadSource(id: selected.id)
@@ -396,10 +409,9 @@ struct AIProviderIntegrationTests {
         #expect(f.model.title == "Native Fixture Title")
         #expect(await probe.count("pageTitle") == 2)
         #expect(await probe.count("cloud") == 0)
-        #expect(f.model.aiProviderPreferences.settings.defaultProvider == .openAI)
+        #expect(f.model.activeVaultAIConfiguration?.provider == .onDevice)
         let calls = await probe.total
-        f.model.aiProviderPreferences.setDefaultProvider(.onDevice)
-        f.model.aiProviderPreferences.setOverride(.specific(.openAI), for: .suggestTitle)
+        try configureVaultAI(f.model, provider: .openAI)
         #expect(try await f.repository.loadSource(id: stored.id).metadata == stored.metadata)
         #expect(await f.model.closeVault())
         await f.model.open(f.root, create: false)

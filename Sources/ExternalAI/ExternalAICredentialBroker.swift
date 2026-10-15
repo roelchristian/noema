@@ -124,10 +124,16 @@ private struct SystemExternalAIKeychainOperations: ExternalAIKeychainOperations 
 struct SystemExternalAIKeychain: ExternalAIKeychain {
     private let backend: ExternalAIKeychainBackend?
     private let operations: any ExternalAIKeychainOperations
+    private let service: String
+    private let account: String
 
     init(backend: ExternalAIKeychainBackend? = ExternalAIKeychainBackend.currentProcess(),
-         operations: any ExternalAIKeychainOperations = SystemExternalAIKeychainOperations()) {
-        self.backend = backend
+         operations: any ExternalAIKeychainOperations = SystemExternalAIKeychainOperations(),
+         service: String = "com.noema.external-ai.openai", account: String = "primary",
+         requiresDeviceOnly: Bool = false) {
+        self.service = service
+        self.account = account
+        self.backend = requiresDeviceOnly && backend != .dataProtection ? nil : backend
         self.operations = operations
     }
 
@@ -136,8 +142,8 @@ struct SystemExternalAIKeychain: ExternalAIKeychain {
     // No access group or sharing entitlement is added to either implementation.
     private var identity: [String: Any] {
         var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "com.noema.external-ai.openai",
-         kSecAttrAccount as String: "primary",
+         kSecAttrService as String: service,
+         kSecAttrAccount as String: account,
          kSecUseDataProtectionKeychain as String: backend == .dataProtection]
         if backend == .dataProtection { query[kSecAttrSynchronizable as String] = false }
         return query

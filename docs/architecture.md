@@ -48,7 +48,58 @@ Page provenance is an ordered `sources` UUID sequence in format 1 frontmatter or
 
 ## AI provider preferences and explicit actions
 
-`AIProviderPreferences` stores versioned global provider intent and overrides for Content enrichment, Title suggestions and Page creation. Page/source summaries share one preference. Legacy page-summary overrides win, followed by source-summary and retired LCC overrides; migration removes the independent classification setting without changing stored artifacts. Missing, malformed and future versions fail closed to on-device intent. Automatic source processing stays local regardless of preferences; a provider choice grants no submission or authentication authority.
+`VaultAIConfigurationStore` stores version-1 nonsecret preferences by admitted vault UUID
+in application-local UserDefaults. Missing, malformed or unsupported values disable
+automatic intelligence without rewriting saved bytes. The manifest remains untouched:
+this first configuration slice avoids adding a conditional manifest mutation and therefore
+has no portability to another Mac. It is not a second content authority. Intelligence
+settings expose the active vault's master toggle and provider. That provider takes
+precedence over legacy global defaults/overrides for explicit commands; the master
+toggle governs automatic work, preserving the explicit consent path for manual commands.
+Existing automatic page-title and source processing require an enabled On-device policy.
+Policy changes cancel those tasks and invalidate synchronous publication epochs; checks
+also retain the exact live session lease and run inside existing SQLite publication
+predicates. Enabling settings never starts processing or historical backfill.
+The shared `VaultAIPolicyResolver.resolve` evaluates interactive actions, automatic local
+admission and grant-bound cloud requests. Cloud preflight uses live credential status,
+then rechecks availability and exact-request authority after asynchronous minting; cached
+Settings approval cannot authorize a request. Legacy provider resolution remains only
+for compatibility tests; active vault actions do not call the legacy resolver.
+Settings captures the complete displayed lease, vault name and configuration together.
+Edits re-read that lease's current policy and reject switched, locked or superseded
+sessions before revocation/persistence. Approval and revocation use the same displayed
+lease. Readiness distinguishes disabled automation, unavailable local models, checking,
+missing/expired/invalid/inaccessible credentials, unsupported approval storage, pending
+approval and approved processing. Cached approval binds lease and credential version;
+refresh revisions reject stale asynchronous results.
+Vault policy changes revoke local publication epochs and cancel runtime work before
+fallible Keychain cleanup. Cleanup errors leave the requested policy saved and expose a
+lease-bound cleanup retry. Automatic request preparation captures an issuer-bound grant
+revocation checkpoint before provider preflight and validates that same checkpoint through
+minting and final readiness checks, including equal-value disable/re-enable transitions.
+
+`ExternalAIVaultGrants` persists explicit informed approval in a separate, nonsynchronizing,
+WhenUnlockedThisDeviceOnly data-protection Keychain record. It binds the admitted UUID,
+normalized root and directory inode/device identity, credential version, policy version and
+exact operation allowlist. Login-Keychain/ad-hoc builds cannot approve durable processing;
+manual commands remain available. Configuration and grants remain separate.
+A future trusted coordinator obtains an opaque single-use exact-request authorization,
+then calls `ExternalAIGateway.performAutomatic`. Each request has its own 60-second
+session with native/gate/credential cancellation and its own hash/revision-bound receipt.
+Publication retains that issuing session. Policy/credential revocation invalidates pending
+minting and active requests. Independently persisted vault/global denial generations in
+UserDefaults prevent saved grants from being reused after Keychain removal fails, including
+after relaunch. Approval stamps a replacement grant with current generations without
+clearing the denial markers. Every new grant requires nonempty global/vault generations;
+missing markers and legacy empty fences fail closed until fresh explicit approval persists
+new marker UUIDs. A failed marker write blocks admission and approval in memory
+until a revocation retry persists a global generation; persistence failure cannot establish
+restart durability. No scheduling, triggers or background dispatch are introduced.
+Runtime and signed-device acceptance remain unverified; the full AI.VAULT acceptance gate
+requires the focused security/integration checks.
+
+
+`AIProviderPreferences` stores versioned global provider intent and overrides for Content enrichment, Title suggestions and Page creation. Page/source summaries share one preference. Legacy page-summary overrides win, followed by source-summary and retired LCC overrides; migration removes the independent classification setting without changing stored artifacts. Missing, malformed and future versions fail closed to on-device intent. Automatic source processing requires the active vault’s enabled On-device configuration; a provider choice grants no submission or authentication authority.
 
 `AppModel` captures the selected provider/client before asynchronous work. Explicit enrichment generates summary and classification together, filling only unset initial titles; regeneration preserves title/body. Both providers compose source/topic/URL drafts for review. Standalone title suggestions retain reviewed, conditional acceptance. The shared summary controls explain coupled classification; the Properties inspector exposes read-only classification metadata. See the unified contract below for publication, consent and acquisition boundaries.
 

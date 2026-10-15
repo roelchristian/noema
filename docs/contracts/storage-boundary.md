@@ -508,3 +508,32 @@ opt-in migration and device acceptance remain future work, not D04 implementatio
 - Cloud output/provenance enters the existing block/source persistence. Canonical artifact provenance contains provider, model, generation time, independent common artifact generation UUID and optional local source-content revision; request IDs, session IDs, capabilities, consent receipts, consent digests and HTTP bodies are not persisted with artifacts. The separate AI activity history adds a logical operation UUID (the request UUID for cloud operations) for diagnostic correlation, as specified in the [activity contract](external-ai.md#activity-history); it grants no authority and retains no session/capability/consent/HTTP data. The plaintext summary itself can contain private information. Existing local summary generation clears stale cloud provenance when replacing a summary.
 - API keys are confined to the ExternalAI Keychain record and transient request Authorization headers. The transport uses ephemeral sessions with no cache, cookie or URL credential store, and finite sanitized errors. External AI connection preferences persist only a validated model identifier and the finite reasoning effort selection. The separate versioned AI provider settings contain only a finite default provider and per-action overrides, never content or authority. No credential/vault-content diagnostic logging was introduced.
 - Reviewed the new runtime paths and existing exception ledger. D02A requires no new canonical byte I/O exception or plaintext adapter construction. The standing regex guard detects known APIs, not malicious indirect code or every operating-system behavior; semantic review remains necessary.
+
+Vault AI configuration uses the existing OS-managed UserDefaults preference boundary,
+keyed by admitted vault UUID, with versioned nonsecret enabled/provider intent only.
+It does not mutate the manifest or schema-6 declaration and is not portable to another
+Mac. No content, cloud grant, credential, receipt or session capability is stored there.
+The automatic page-title caller supplies a revocable predicate through the repository
+save overload to the existing SQLite transaction; source processing uses its existing
+conditional publication predicate. No canonical I/O exception or adapter constructor
+is added. Author inspection covers those callers, predicate routing and preservation
+of existing content; independent reviewer inspection and storage-boundary checks remain
+required before acceptance.
+
+Durable AI approval is owned by `ExternalAIVaultGrants` in the separate
+`com.noema.external-ai.vault-grants` data-protection Keychain service, never the manifest
+or UserDefaults. Root inode/device attribute inspection binds approval to the admitted
+local directory; it reads no canonical content bytes and constructs no adapter. Grant
+records contain identity/version/scope only, never text, API keys or runtime receipts.
+`externalAI.vaultGrantRevocation.v1.all` and vault-UUID-suffixed keys in the existing
+UserDefaults boundary hold denial-only UUID generations, never grants. Revocation flushes
+and verifies the denial marker before attempting Keychain mutation; old grant records must
+match both nonempty generations. Explicit approval initializes missing markers with fresh
+UUIDs and flushes/verifies them before creating a new Keychain grant. Missing markers or
+legacy empty fences never authorize a request. Markers survive Keychain failure and are
+not cleared by approval. Vault configuration and runtime revocation take effect before
+Keychain cleanup; cleanup failure leaves the requested local policy in force.
+No new canonical content I/O or authority store is introduced by these denial markers.
+Only device-only Keychain builds support these records. Author static review covers
+that metadata target and the existing gateway/SQLite publication routing; independent
+review, scanner selftests and signed-device checks remain unperformed in this change.

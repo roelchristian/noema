@@ -375,6 +375,13 @@ public actor FileVaultRepository: VaultRepository {
         return try await save(note: note, title: title, document: BlockDocumentCodec.decode(body), tags: tags, preserveUpdatedAt: false)
     }
 
+    /// Automatic callers supply a revocable predicate checked again in the SQLite transaction.
+    public func save(note: NoteRecord, title: String, body: String, tags: [String],
+                     validating: @escaping @Sendable () throws -> Void) async throws -> NoteRecord {
+        try await save(note: note, title: title, document: note.document ?? BlockDocumentCodec.decode(body),
+                       tags: tags, preserveUpdatedAt: false, validating: validating)
+    }
+
     public func save(note: NoteRecord, title: String, document: BlockDocument, tags: [String]) async throws -> NoteRecord {
         try await save(note: note, title: title, document: document, tags: tags, preserveUpdatedAt: false)
     }
@@ -458,7 +465,8 @@ public actor FileVaultRepository: VaultRepository {
         try await save(note: note, title: title, document: note.document ?? BlockDocumentCodec.decode(body), tags: tags, preserveUpdatedAt: preserveUpdatedAt)
     }
 
-    private func save(note: NoteRecord, title: String, document: BlockDocument, tags: [String], preserveUpdatedAt: Bool) async throws -> NoteRecord {
+    private func save(note: NoteRecord, title: String, document: BlockDocument, tags: [String], preserveUpdatedAt: Bool,
+                      validating: @escaping @Sendable () throws -> Void = {}) async throws -> NoteRecord {
         try validateAccess(operation: "save")
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw VaultError.invalid("A wiki page needs a title.") }
@@ -481,7 +489,7 @@ public actor FileVaultRepository: VaultRepository {
         updated.updatedAt = preserveUpdatedAt ? note.updatedAt : timestamp()
         if updated.createdAt.isEmpty { updated.createdAt = updated.updatedAt }
         if normalized(title) != normalized(note.title), !updated.aliases.contains(note.title) { updated.aliases.append(note.title) }
-        _ = try await sqliteBlockStore.savePage(record: updated, document: document, condition: .replace(expected: sqliteRevision(note)))
+        _ = try await sqliteBlockStore.savePage(record: updated, document: document, condition: .replace(expected: sqliteRevision(note)), validating: validating)
         return try await sqliteBlockStore.loadPage(pageID: note.id).record
     }
 

@@ -23,6 +23,7 @@ public actor ExternalAISessionManager {
     private var credentialObservation: Task<UUID, Never>?
     private var gateObservation: UUID?
     private var expiryTask: Task<Void, Never>?
+    private var grantedCredentialCancellation: UUID?
 
     /// Production callers cannot substitute authentication, freeze deadlines or disable
     /// native revocation notifications. Those controls belong to internal test injection.
@@ -57,6 +58,7 @@ public actor ExternalAISessionManager {
             let broker = broker
             Task { await broker.removeChangeHandler(await credentialObservation.value) }
         }
+        if let grantedCredentialCancellation { broker.unregisterCredentialCancellation(grantedCredentialCancellation) }
         registry.revoke()
     }
 
@@ -122,6 +124,21 @@ public actor ExternalAISessionManager {
             if error is CancellationError || Task.isCancelled { throw ExternalAIError.cancelled }
             throw (error as? ExternalAIError) ?? ExternalAIError.authenticationFailed
         }
+    }
+
+    /// Module-only: a validated durable grant issues one bounded request session.
+    /// This never makes the ordinary interactive authorize path skip authentication.
+    func authorizeGrantedRequest(_ request: ExternalAISummaryRequest, version: UUID) async throws -> ExternalAICapability {
+        let lease = try registry.lease(for: request.authority)
+        let epoch = try registry.beginGranted(lease: lease)
+        gateObservation = gate.registerSessionInvalidator(lease: lease) { [registry] in registry.revoke() }
+        grantedCredentialCancellation = try broker.registerCredentialCancellation(version: version) { [registry] in registry.revoke() }
+        let observed = try await broker.credentialVersion()
+        guard observed == version else { registry.revoke(); throw ExternalAIError.authorizationRevoked }
+        try Task.checkCancellation()
+        let capability = try registry.commit(epoch: epoch, authority: request.authority, version: version)
+        startExpiryObservation()
+        return capability
     }
 
     /// Gateway calls this around every broker suspension and before returning a result.
@@ -230,6 +247,14 @@ final class ExternalAIAuthorizationRegistry: Sendable {
             guard let record = $0.record, record.capability.authority == authority,
                   record.capability.credentialVersion == version else { return nil }
             return record.capability
+        }
+    }
+
+    func beginGranted(lease: VaultSessionLease) throws -> UInt64 {
+        try storage.withLock {
+            guard $0.phase == .unauthorized, $0.epoch == 0 else { throw ExternalAIError.authorizationRevoked }
+            $0.epoch &+= 1; $0.phase = .authorising; $0.lease = lease
+            return $0.epoch
         }
     }
 
