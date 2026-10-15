@@ -173,3 +173,21 @@ internal initializer alone permits deterministic authentication/clock injection.
 The deterministic security tests use synthetic credentials and injected authentication/transport. `OpenAITransportSecurityTests` additionally injects URLProtocol into the actual ephemeral URLSession to exercise redirect cancellation, unexpected response type/URL/status rejection, sanitized platform failures and delegate chunk limits without network. `ExternalAIAdversarialTests` covers connection-validation credential replacement/removal, synchronous credential expiry before dispatch/publication, revocation before retry, cancellation before dispatch, closed-session delayed responses, forged results and revoked publication permits. The session and broker suites cover exact generation, coalesced/pending prompts, deadlines, clock rollback, credential failures/replacement/expiry and synchronous lifecycle cancellation. Application/repository summary tests cover publication, stale content, independent summary edits and selection/session/cancellation races.
 
 Automated results and manual status are recorded in [validation](../validation.md). Hardware Touch ID, permitted password fallback, signed-app Keychain isolation, native sleep/screen-session event delivery and live-provider behavior remain manual release gates; injected doubles cannot establish these guarantees. No claim of completed device/provider validation should be inferred from deterministic test success.
+
+## Shared processing authority
+
+The shared AI processing ledger is a distinct, rebuildable scheduling store, separate
+from Activity History. A queued or recovered row grants no execution or publication
+authority. Dispatch must revalidate the admitted vault session and current AI.VAULT
+configuration; cloud processors must still obtain fresh D02A request-bound authority.
+Provider changes never imply fallback or historical regeneration. Scheduling and skipped
+work create no inference activity records. Future processors own authoritative snapshot
+loading and conditional publication, including final session and input checks.
+
+The app-local ledger retains plaintext identifiers, opaque revisions, fingerprints,
+attempts and finite reasons across locking and restart. These are sensitive metadata
+requiring a separate E-series protection decision. No prompts, excerpts, credentials,
+consent receipts or capabilities belong in its schema. Initial reconciliation establishes
+a baseline; subsequent changed revisions can recover missed post-commit notifications
+without silently enriching historical content. At-least-once replay requires idempotent,
+revision-checked processor publication.

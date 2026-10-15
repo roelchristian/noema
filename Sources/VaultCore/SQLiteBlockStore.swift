@@ -472,6 +472,31 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
         }
         return (record, snapshot)
     }
+    /// Reads identity/revision/lifecycle columns only, without reconstructing protected content.
+    public func aiProcessingRevisionInventory(vaultID: UUID) throws -> [AIContentChange] {
+        try readTransaction {
+            try validate("blockStore.aiProcessingInventory")
+            if let canonicalVaultID, canonicalVaultID != vaultID { throw AIWorkFailure.authority }
+            var result: [AIContentChange] = []
+            for (table, kind) in [("pages", AIEntityKind.page), ("sources", AIEntityKind.source)] {
+                let query = try statement("SELECT id,revision,trashed FROM " + table + " ORDER BY id")
+                defer { sqlite3_finalize(query) }
+                while true {
+                    let status = sqlite3_step(query)
+                    if status == SQLITE_DONE { break }
+                    guard status == SQLITE_ROW, let id = UUID(uuidString: text(query, 0)) else { throw failure() }
+                    result.append(.init(vaultID: vaultID, entityKind: kind, entityID: id,
+                        revision: blob(query, 1).base64EncodedString(),
+                        kind: sqlite3_column_int(query, 2) == 0 ? .updated : .removed,
+                        origin: .externalReconciliation,
+                        dimensions: kind == .page ? [.body, .title, .metadata, .lifecycle] : [.sourceContent, .title, .metadata, .lifecycle]))
+                }
+            }
+            try validate("blockStore.aiProcessingInventory.complete")
+            return result
+        }
+    }
+
     public func allPages(includeTrashed: Bool = false) throws -> [NoteRecord] {
         try readTransaction { try allPagesInTransaction(includeTrashed: includeTrashed) }
     }

@@ -125,12 +125,14 @@ struct InspectorRedesignTests {
         #expect(state.activeTab(for: pageContext) == .insights)
 
         // Visibility toggle and session reset
-        #expect(state.shouldPresent(for: pageContext))
-        state.toggleVisibility()
         #expect(!state.isVisible)
         #expect(!state.shouldPresent(for: pageContext))
         state.toggleVisibility()
         #expect(state.isVisible)
+        #expect(state.shouldPresent(for: pageContext))
+        state.toggleVisibility()
+        #expect(!state.isVisible)
+        #expect(!state.shouldPresent(for: pageContext))
 
         // Section expansion preferences persist across tab switches and reset on session change
         #expect(state.isSectionExpanded("Timestamps"))

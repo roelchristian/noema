@@ -641,6 +641,11 @@ struct AISuggestion: Identifiable, Sendable {
     private var sourceCommandPanel: NSOpenPanel?
     var isLifecycleActionInProgress: Bool { lifecycleAction != nil }
     @ObservationIgnored private nonisolated(unsafe) var sessionObservationTask: Task<Void, Never>?
+    @ObservationIgnored var aiProcessingCoordinator: AIProcessingCoordinator?
+    @ObservationIgnored var aiProcessingBindingID = UUID()
+    @ObservationIgnored var aiProcessingEventTask: Task<Void, Never>?
+    @ObservationIgnored var aiProcessingRetirementTask: Task<Void, Never>?
+    var aiProcessingFailure: AIWorkFailure?
     private var activeSession: VaultSession?
     private var activeLease: VaultSessionLease?
     private(set) var lockedVaultURL: URL?
@@ -765,6 +770,7 @@ struct AISuggestion: Identifiable, Sendable {
         }
         let previousPhase = sessionState.phase
         sessionState = nextState
+        if nextState.phase != .open { suspendAIProcessing() }
         vaultAccessAuthenticationRequired = nextState.vaultID.map { sessionManager.accessAuthenticationRequired(for: $0) } ?? false
         switch nextState {
         case .closed:
@@ -1052,6 +1058,7 @@ struct AISuggestion: Identifiable, Sendable {
     }
 
     private func releaseActiveVaultResources() {
+        suspendAIProcessing()
         vaultCommandPanel?.cancel(nil)
         sourceCommandPanel?.cancel(nil)
         vaultCommandPanel = nil; sourceCommandPanel = nil
@@ -1145,6 +1152,10 @@ struct AISuggestion: Identifiable, Sendable {
         guard vaultAIConfiguration(for: lease) != nil else { throw ExternalAIError.staleSession }
         // Commit local intent and revoke all runtime work before fallible Keychain I/O.
         try vaultAIConfigurationStore.set(configuration, lease: lease, gate: sessionManager.accessGate)
+        suspendAIProcessing()
+        if let repository {
+            Task { await bindAIProcessing(repository: repository, lease: lease) }
+        }
         sourceNamingTask?.cancel()
         sourceNamingQueue.removeAll()
         for task in titleTasks.values { task.cancel() }
@@ -2145,6 +2156,8 @@ struct AISuggestion: Identifiable, Sendable {
             sessionState = .open(session)
             lockedVaultURL = nil
             repository = repo; index = searchIndex; recovery = journal
+            await bindAIProcessing(repository: repo, lease: lease)
+            try requireLifecycleState(.open, action: "AI processing admission", session: session)
             unseenRenamedPages.removeAll()
             restoreSidebarRecentHistory(vaultID: vaultID)
             root = url; vaultName = url.lastPathComponent; scope = .wiki; resetSearch()
@@ -2334,6 +2347,8 @@ struct AISuggestion: Identifiable, Sendable {
             sessionState = .open(session)
             lockedVaultURL = nil
             repository = repo; index = searchIndex; recovery = journal
+            await bindAIProcessing(repository: repo, lease: lease)
+            try requireLifecycleState(.open, action: "AI processing admission", session: session)
             unseenRenamedPages.removeAll()
             restoreSidebarRecentHistory(vaultID: vaultID)
             root = candidateURL; vaultName = candidateURL.lastPathComponent; scope = .wiki; resetSearch()
