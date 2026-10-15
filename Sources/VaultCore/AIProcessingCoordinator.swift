@@ -1,0 +1,339 @@
+import Foundation
+
+/// Disposable scheduling metadata, scoped to one admitted session. No production processors
+/// are registered by default. Processors retain responsibility for conditional publication.
+public actor AIProcessingCoordinator {
+    private struct Target: Hashable { let kind: AIEntityKind; let id: UUID }
+    private let ledger: any AIWorkLedger
+    private let gate: VaultAccessGate
+    private let policy: any AIProcessingPolicyResolver
+    private let clock: AIProcessingClock
+    private let configuration: AIProcessingConfiguration
+    private var lifecycleID = UUID()
+    private var activeAdmissions = 0
+    private var lease: VaultSessionLease?
+    private var processors: [String: any AIWorkProcessor] = [:]
+    private var items: [AIWorkKey: AIWorkItem] = [:]
+    private var inventory: [Target: AIContentChange] = [:]
+    private var tasks: [UUID: Task<Void, Never>] = [:]
+    private var invalidators: [UUID: UUID] = [:]
+    private var busy: [AIWorkKey: UUID] = [:]
+    private var providerUse: [AIProcessingProvider: Int] = [:]
+    private var reason: AIWorkFailure?
+    private var completedCount = 0
+    private var failedCount = 0
+    private var lastSuccessfulAt: Date?
+
+    public init(ledger: any AIWorkLedger, gate: VaultAccessGate,
+                policy: any AIProcessingPolicyResolver, clock: AIProcessingClock = .continuous,
+                configuration: AIProcessingConfiguration = .init()) {
+        self.ledger = ledger; self.gate = gate; self.policy = policy
+        self.clock = clock; self.configuration = configuration
+    }
+
+    public func register(_ processor: any AIWorkProcessor) {
+        processors[processor.descriptor.identifier] = processor
+    }
+
+    public func bind(lease next: VaultSessionLease, inventory current: [AIContentChange]) async throws {
+        let bindingID = UUID()
+        try await retire(reason: .authority, identity: bindingID)
+        guard lifecycleID == bindingID else { throw CancellationError() }
+        try validate(next)
+        lease = next; reason = nil; completedCount = 0; failedCount = 0; lastSuccessfulAt = nil
+        items = [:]; inventory = [:]
+        let recovered = try await ledger.load(vaultID: next.vaultID)
+        try validateActive(next, identity: bindingID)
+        let previous = try await ledger.checkpoint(vaultID: next.vaultID)
+        try validateActive(next, identity: bindingID)
+        let actual = current.filter { $0.vaultID == next.vaultID }
+        inventory = Dictionary(actual.map { (Target(kind: $0.entityKind, id: $0.entityID), $0) }, uniquingKeysWith: { _, last in last })
+        for var item in recovered {
+            guard let change = inventory[Target(kind: item.key.entityKind, id: item.key.entityID)],
+                  change.kind != .removed,
+                  let processor = processors[item.key.processorID] else { continue }
+            if processor.descriptor.version != item.processorVersion {
+                // Only ledger-known targets are invalidated; never enrich a historical baseline.
+                item = AIWorkItem(key: item.key, revision: change.revision,
+                    processorVersion: processor.descriptor.version,
+                    eligibleAt: clock.now().addingTimeInterval(configuration.recoveryDelay),
+                    updatedAt: clock.now())
+            } else if change.revision != item.revision { continue }
+            if [.running, .scheduled, .pending, .retryable, .suspended].contains(item.state) {
+                item.id = UUID()
+                item.state = .pending
+                item.eligibleAt = max(item.eligibleAt, clock.now().addingTimeInterval(configuration.recoveryDelay))
+                items[item.key] = item
+                try await persist(item); try validateActive(next, identity: bindingID)
+                arm(item, lease: next)
+            } else { items[item.key] = item }
+        }
+        // The first inventory is a baseline, not an instruction to enrich historical content.
+        if let previous {
+            let before = Dictionary(previous.map { (Target(kind: $0.entityKind, id: $0.entityID), $0.revision) }, uniquingKeysWith: { _, last in last })
+            for change in actual where before[Target(kind: change.entityKind, id: change.entityID)] != change.revision {
+                try await receive(change)
+                try validateActive(next, identity: bindingID)
+            }
+            for old in previous where inventory[Target(kind: old.entityKind, id: old.entityID)] == nil {
+                try await receive(AIContentChange(vaultID: old.vaultID, entityKind: old.entityKind,
+                    entityID: old.entityID, revision: old.revision, kind: .removed,
+                    origin: .externalReconciliation, dimensions: [.lifecycle]))
+            }
+        }
+        try await ledger.saveCheckpoint(vaultID: next.vaultID, changes: Array(inventory.values))
+        try validateActive(next, identity: bindingID)
+    }
+
+    public func receive(_ change: AIContentChange) async throws {
+        guard let active = lease, active.vaultID == change.vaultID else { return }
+        let admissionID = lifecycleID
+        activeAdmissions += 1
+        defer { activeAdmissions -= 1 }
+        try validateActive(active, identity: admissionID)
+        let target = Target(kind: change.entityKind, id: change.entityID)
+        inventory[target] = change
+        let previousItems = items
+        let unfinished = Set(previousItems.values.filter {
+            $0.key.entityKind == change.entityKind && $0.key.entityID == change.entityID
+                && [.pending, .scheduled, .running, .retryable].contains($0.state)
+        }.map { $0.key.processorID })
+        // Every committed revision invalidates in-flight candidates, including uninterested changes.
+        for old in Array(items.values) where old.key.entityKind == change.entityKind && old.key.entityID == change.entityID {
+            if old.revision != change.revision || change.kind == .removed {
+                tasks[old.id]?.cancel()
+                if old.state != .completed { try await transition(old, to: .superseded) }
+                try validateActive(active, identity: admissionID)
+            }
+        }
+        if change.kind != .removed {
+            for processor in Array(processors.values) where processor.isEligible(change) || unfinished.contains(processor.descriptor.identifier) {
+                let descriptor = processor.descriptor
+                let key = AIWorkKey(vaultID: change.vaultID, entityKind: change.entityKind,
+                                    entityID: change.entityID, processorID: descriptor.identifier)
+                let old = previousItems[key]
+                if old?.revision == change.revision && old?.processorVersion == descriptor.version && change.kind != .reprocess { continue }
+                tasks[old?.id ?? UUID()]?.cancel()
+                let item = AIWorkItem(key: key, revision: change.revision, processorVersion: descriptor.version,
+                    attemptCount: processor.isEligible(change) ? 0 : old?.attemptCount ?? 0,
+                    eligibleAt: processor.isEligible(change) ? clock.now().addingTimeInterval(delay(change))
+                        : max(old?.eligibleAt ?? clock.now(), clock.now().addingTimeInterval(delay(change))),
+                    inputFingerprint: change.kind != .reprocess && old?.processorVersion == descriptor.version ? old?.inputFingerprint : nil,
+                    updatedAt: clock.now())
+                guard inventory[target]?.revision == change.revision else { continue }
+                items[key] = item
+                try await persist(item); try validateActive(active, identity: admissionID)
+                // Concurrent commits may have overtaken this ledger write.
+                guard inventory[target]?.revision == change.revision, items[key]?.id == item.id else { continue }
+                arm(item, lease: active)
+            }
+        }
+        // A checkpoint may include another commit only after all admitted jobs
+        // for that commit have been persisted. Earlier checkpoints are safe to replay.
+        if activeAdmissions == 1 {
+            try await ledger.saveCheckpoint(vaultID: active.vaultID, changes: Array(inventory.values))
+        }
+    }
+
+    public func suspend(reason suspension: AIWorkFailure = .authority) async throws {
+        try await retire(reason: suspension, identity: UUID())
+    }
+    private func retire(reason suspension: AIWorkFailure, identity: UUID) async throws {
+        lifecycleID = identity
+        lease = nil; reason = suspension
+        inventory.removeAll()
+        for task in tasks.values { task.cancel() }
+        for item in Array(items.values) where [.pending, .scheduled, .running, .retryable].contains(item.state) {
+            try await transition(item, to: .suspended, failure: suspension)
+        }
+    }
+
+    /// Only reschedules already eligible jobs; provider availability never creates candidates.
+    public func authorityChanged() async throws {
+        guard let active = lease else { return }
+        let authorityID = lifecycleID
+        try validateActive(active, identity: authorityID)
+        for task in tasks.values { task.cancel() }
+        for old in Array(items.values) where [.blocked, .suspended, .pending, .scheduled, .running, .retryable].contains(old.state) {
+            var item = old
+            item.id = UUID(); item.state = .pending; item.failure = nil
+            item.eligibleAt = clock.now(); item.updatedAt = clock.now()
+            items[item.key] = item
+            try await persist(item); try validateActive(active, identity: authorityID)
+            guard items[item.key]?.id == item.id else { continue }
+            arm(item, lease: active)
+        }
+        reason = nil
+    }
+
+    public func status() -> AIProcessingStatus {
+        let visible = lease != nil && gate.currentLease == lease
+        let activeWork = busy.filter { items[$0.key]?.id == $0.value }.map { $0.key }
+        return AIProcessingStatus(pendingCount: visible ? items.values.filter { [.pending, .scheduled, .retryable].contains($0.state) }.count : 0,
+            runningCount: visible ? busy.count : 0, completedCount: completedCount, failedCount: failedCount,
+            activeWork: visible ? activeWork : [], reason: visible ? reason : .authority,
+            lastSuccessfulAt: lastSuccessfulAt)
+    }
+    public func workItems() -> [AIWorkItem] { Array(items.values) }
+
+    private func validate(_ active: VaultSessionLease) throws {
+        try gate.validate(lease: active, targetRoot: active.root, targetVaultID: active.vaultID, operation: "AIProcessing")
+    }
+    private func validateActive(_ active: VaultSessionLease, identity: UUID? = nil) throws {
+        guard identity == nil || identity == lifecycleID else { throw CancellationError() }
+        guard lease == active else { throw CancellationError() }
+        try validate(active)
+    }
+    private func delay(_ change: AIContentChange) -> TimeInterval {
+        if change.kind == .reprocess { return 0 }
+        if change.entityKind == .page { return change.kind == .created ? configuration.newPageDelay : configuration.updatedPageDelay }
+        return change.kind == .created ? configuration.newSourceDelay : configuration.updatedSourceDelay
+    }
+    private func arm(_ item: AIWorkItem, lease active: VaultSessionLease) {
+        let clock = self.clock
+        let task = Task { [weak self] in
+            do {
+                try await clock.sleep(max(0, item.eligibleAt.timeIntervalSince(clock.now())))
+                try Task.checkCancellation()
+                await self?.run(item, lease: active)
+            } catch { await self?.discardTask(item.id) }
+        }
+        tasks[item.id] = task
+        if let old = invalidators.removeValue(forKey: item.id) { gate.removeSessionInvalidator(old) }
+        invalidators[item.id] = gate.registerSessionInvalidator(lease: active, invalidate: { task.cancel() })
+    }
+    private func discardTask(_ id: UUID) {
+        tasks.removeValue(forKey: id)
+        if let token = invalidators.removeValue(forKey: id) { gate.removeSessionInvalidator(token) }
+    }
+    private func persist(_ candidate: AIWorkItem) async throws {
+        var value = candidate
+        while true {
+            try await ledger.save(value)
+            // An injected ledger may suspend and let newer state overtake this write.
+            guard let latest = items[candidate.key], latest != value else { return }
+            value = latest
+        }
+    }
+    private func transition(_ candidate: AIWorkItem, to state: AIWorkState, failure: AIWorkFailure? = nil) async throws {
+        guard var item = items[candidate.key], item.id == candidate.id, item.state.permits(state) else { return }
+        item.state = state; item.failure = failure; item.updatedAt = clock.now()
+        items[item.key] = item
+        try await persist(item)
+    }
+
+    private func run(_ candidate: AIWorkItem, lease active: VaultSessionLease) async {
+        guard lease == active, items[candidate.key]?.id == candidate.id,
+              let processor = processors[candidate.key.processorID] else { discardTask(candidate.id); return }
+        let completionTicket = gate.issueCompletionTicket(kind: .aiProcessing, lease: active,
+            token: candidate.id, targetID: candidate.key.entityID)
+        let provider = processor.descriptor.provider
+        guard busy[candidate.key] == nil, providerUse[provider, default: 0] < 1 else {
+            var waiting = candidate; waiting.eligibleAt = clock.now().addingTimeInterval(1)
+            arm(waiting, lease: active); return
+        }
+        busy[candidate.key] = candidate.id; providerUse[provider, default: 0] += 1
+        defer {
+            busy.removeValue(forKey: candidate.key); providerUse[provider, default: 0] -= 1
+            discardTask(candidate.id)
+        }
+        do {
+            try validateActive(active); try Task.checkCancellation()
+            try await transition(candidate, to: .scheduled)
+            try validateCandidate(candidate, lease: active)
+            guard var attempt = items[candidate.key], attempt.attemptCount < configuration.maximumAttempts else {
+                failedCount += 1
+                try await transition(candidate, to: .failed, failure: .attemptsExhausted); return
+            }
+            attempt.attemptCount += 1; items[attempt.key] = attempt
+            try await persist(attempt)
+            try validateCandidate(candidate, lease: active)
+            let snapshot = try await processor.prepare(candidate, lease: active)
+            try validateCandidate(candidate, lease: active)
+            guard snapshot.revision == candidate.revision,
+                  try await processor.isCurrent(candidate, snapshot: snapshot, lease: active) else {
+                try await transition(candidate, to: .superseded); return
+            }
+            try validateCandidate(candidate, lease: active)
+            switch await policy.authorize(processor.descriptor, snapshot: snapshot, lease: active) {
+            case .blocked(let failure):
+                reason = failure; try await transition(candidate, to: .blocked, failure: failure); return
+            case .allowed: break
+            }
+            try validateCandidate(candidate, lease: active)
+            try policy.validateExecution(lease: active)
+            var running = items[candidate.key]!
+            running.state = .running
+            // A previous successful fingerprint is preserved across revision changes.
+            let alreadyProcessed = candidate.inputFingerprint == snapshot.inputFingerprint
+            // Persist only previously successful fingerprints; interrupted/failed attempts
+            // must not be mistaken for deduplication evidence after a restart.
+            running.updatedAt = clock.now(); items[running.key] = running
+            try await persist(running)
+            try validateCandidate(candidate, lease: active)
+            let gate = self.gate; let policy = self.policy
+            let context = AIProcessingExecutionContext(lease: active, validate: {
+                _ = try gate.validateCompletion(completionTicket, expectedToken: candidate.id,
+                    expectedTargetID: candidate.key.entityID, checkTargetID: true,
+                    operation: "AIProcessing.publish").get()
+                try Task.checkCancellation()
+                try gate.validate(lease: active, targetRoot: active.root, targetVaultID: active.vaultID, operation: "AIProcessing.publish")
+                try policy.validateExecution(lease: active)
+            })
+            try context.validate()
+            let outcome: AIWorkOutcome = alreadyProcessed ? .skipped : try await processor.execute(snapshot, context: context)
+            try validateCandidate(candidate, lease: active)
+            try context.validate()
+            guard try await processor.isCurrent(candidate, snapshot: snapshot, lease: active) else {
+                try await transition(candidate, to: .superseded); return
+            }
+            try validateCandidate(candidate, lease: active)
+            switch outcome {
+            case .completed, .skipped:
+                if var item = items[candidate.key], item.id == candidate.id {
+                    item.inputFingerprint = snapshot.inputFingerprint; items[item.key] = item
+                }
+                try await transition(candidate, to: .completed)
+                try validateCandidate(candidate, lease: active)
+                completedCount += 1; lastSuccessfulAt = clock.now(); reason = nil
+            case .retryable(let failure): try await retry(candidate, failure: failure, lease: active)
+            case .blocked(let failure): reason = failure; try await transition(candidate, to: .blocked, failure: failure)
+            case .failed(let failure): failedCount += 1; try await transition(candidate, to: .failed, failure: failure)
+            }
+        } catch is CancellationError {
+            let retired = lease != active || gate.currentLease != active
+            try? await transition(candidate, to: retired ? .suspended : .cancelled)
+        } catch {
+            guard lease == active, items[candidate.key]?.id == candidate.id else { return }
+            // Unknown errors are terminal, never interpreted as permission to incur another request.
+            let failure = (error as? AIWorkFailure) ?? .validation
+            if failure == .transient { try? await retry(candidate, failure: failure, lease: active) }
+            else { failedCount += 1; try? await transition(candidate, to: .failed, failure: failure) }
+        }
+    }
+    private func validateCandidate(_ item: AIWorkItem, lease active: VaultSessionLease) throws {
+        try Task.checkCancellation(); try validateActive(active)
+        guard items[item.key]?.id == item.id,
+              processors[item.key.processorID]?.descriptor.version == item.processorVersion,
+              inventory[Target(kind: item.key.entityKind, id: item.key.entityID)]?.revision == item.revision,
+              inventory[Target(kind: item.key.entityKind, id: item.key.entityID)]?.kind != .removed else { throw CancellationError() }
+    }
+    private func retry(_ candidate: AIWorkItem, failure: AIWorkFailure, lease active: VaultSessionLease) async throws {
+        try validateCandidate(candidate, lease: active)
+        guard failure == .transient, var item = items[candidate.key] else {
+            try await transition(candidate, to: .blocked, failure: failure); return
+        }
+        guard item.attemptCount < configuration.maximumAttempts else {
+            failedCount += 1; try await transition(candidate, to: .failed, failure: .attemptsExhausted); return
+        }
+        item.id = UUID()
+        item.state = .retryable; item.failure = failure
+        item.eligibleAt = clock.now().addingTimeInterval(min(configuration.maximumRetryDelay,
+            configuration.initialRetryDelay * pow(2, Double(max(0, item.attemptCount - 1)))))
+        // Failed inputs must never satisfy successful-input deduplication on retry.
+        item.inputFingerprint = nil; item.updatedAt = clock.now(); items[item.key] = item
+        try await persist(item); try validateCandidate(item, lease: active)
+        // The fresh identity keeps the completing task from retiring the retry timer.
+        arm(item, lease: active)
+    }
+}

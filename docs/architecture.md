@@ -366,3 +366,35 @@ Admission checks and canonical writes are separate synchronous steps. A write al
 `AIActivityRecorder` shares one lazy application-level `SQLiteAIActivityStore` across local callers and the OpenAI gateway. The database is independent of vault search indexes. A caller allocates one logical ID, begins immediately before local inference or when capturing a cloud submission, and finalizes after publication or proposal generation. Unified enrichment and reviewed page composition each retain one record. Helper inference calls share that ID; proposal acceptance/dismissal updates its outcome without creating another inference record. Gateway observations carry only bounded dispatch counts and validated optional token usage. Dispatch is observed at actual transport resume; asynchronous persistence runs outside authorization locks and is followed by the existing authority/cancellation checks. Connection validation has its own targetless record.
 
 Schema v2 preserves v1 history and retention settings while adding page composition. The store owns versioned schema initialization, interrupted-operation reconciliation, idempotent finalization, indexed bounded queries and retention. Settings history uses latest-request snapshot ownership to reject delayed reads after clearing, pruning or a newer refresh, and explicit refresh with 50-row pages, with provider/action/status/outcome/date/current-vault filters. Current titles are resolved only from the accessible vault's loaded metadata; stale and inaccessible targets cannot navigate. Metadata export is bounded to 1,000 records. Cost calculation uses an injected versioned catalogue keyed by model and effective dates, including cached input rates; the default unpriced catalogue displays unknown cost rather than inventing charges. See the [activity contract](contracts/external-ai.md#activity-history) and [storage ownership](contracts/storage-boundary.md).
+
+## Shared AI processing lifecycle
+
+`AIProcessingCoordinator` is a VaultCore actor bound to one admitted session. Typed
+post-commit events identify page/source revisions, origins and changed dimensions;
+processors declare input dependencies and prepare authoritative snapshots at dispatch.
+The coordinator coalesces by vault, target and processor, applies independent debounce
+and bounded provider concurrency/retry, and rejects stale session/revision completions.
+Processors retain responsibility for conditional canonical publication and request-bound
+external-AI authorization. No production enrichment processor is registered in AI.LIFE;
+existing source/title queues remain in place until AI.ENR.
+
+`SQLiteAIWorkLedger` is a separate schema-1 app-local metadata ledger under
+`Noema/Processing/work.sqlite` in Application Support. It persists no content or
+authority. Scheduled/running entries recover as pending with attempt counts retained.
+Revision checkpoints establish an initial baseline without historical backfill;
+subsequent reconciliation detects commits missed between canonical persistence and
+ledger writes. Jobs must be durably written before advancing that checkpoint. Admission buffers
+post-commit events and consumes them in order after binding. Session retirement is
+serialized before replacement, with binding identities rejecting late continuations.
+Recovery
+is at least once, with fresh snapshots and authorization, never exactly once.
+Recovery retains future retry deadlines and remaining attempt budgets; lock cancellation
+suspends interrupted jobs instead of disposing of their recovery eligibility.
+Startup inventory selects identity/revision/Trash columns only and does not reconstruct
+page bodies or read source originals. Verified source scans emit content changes only
+when a previously observed byte fingerprint differs. Cloud snapshot adapters obtain
+fresh exact-request authority through `ExternalAIService`; future processors must submit
+through the existing gateway, which consumes and revalidates that capability. Completion
+tickets and policy epochs reject stale publication across lock and configuration changes.
+The read-only status projection and injected clock/policy/ledger support deterministic
+inspection without generating inference activity records for scheduling.

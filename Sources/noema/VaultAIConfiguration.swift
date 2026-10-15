@@ -135,6 +135,20 @@ final class VaultAIPolicyEpochs: Sendable {
         revision += 1
     }
 
+    /// Captures policy epoch only; cloud request authority is minted separately for
+    /// each exact snapshot by ExternalAIService and enforced again at its gateway.
+    func processingPolicyValidation(lease: VaultSessionLease, gate: VaultAccessGate) throws -> @Sendable () throws -> Void {
+        guard configuration(for: lease.vaultID).enabled else { throw VaultAILocalAuthorityError.revoked }
+        let epochs = epochs
+        let epoch = try gate.withOpenSession(lease: lease, operation: "aiProcessingPolicy") { epochs.current(for: lease.vaultID) }
+        return {
+            try Task.checkCancellation()
+            try gate.withOpenSession(lease: lease, operation: "aiProcessingPolicy.validate") {
+                try epochs.validate(epoch, vaultID: lease.vaultID)
+            }
+        }
+    }
+
     /// Local-only request admission. No public preference can mint cloud authority.
     func localPublicationValidation(lease: VaultSessionLease, gate: VaultAccessGate) throws -> @Sendable () throws -> Void {
         let policy = configuration(for: lease.vaultID)
