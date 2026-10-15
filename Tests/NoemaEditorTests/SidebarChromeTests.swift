@@ -7,6 +7,62 @@ import VaultCore
 @Suite("Sidebar typography, row geometry, and shared chrome")
 @MainActor
 struct SidebarChromeTests {
+    @Test func organisationOutlineCollapseHidesDescendantsButKeepsSiblingOrder() {
+        let collection = organisationContainer("Research", kind: .collection)
+        let folder = organisationContainer("Reading", parent: collection.id)
+        let nested = organisationContainer("Papers", parent: folder.id)
+        let sibling = organisationContainer("Ideas", parent: collection.id)
+        let rootFolder = organisationContainer("Personal")
+        let containers = [collection, folder, nested, sibling, rootFolder]
+        let expanded = NoemaOrganisationSidebarTree.rows(containers, collapsed: [])
+        #expect(expanded.map(\.id) == containers.map(\.id))
+        #expect(expanded.map(\.depth) == [0, 1, 2, 1, 0])
+        let collapsedFolder = NoemaOrganisationSidebarTree.rows(containers, collapsed: [folder.id])
+        #expect(collapsedFolder.map(\.id) == [collection.id, folder.id, sibling.id, rootFolder.id])
+        let collapsedCollection = NoemaOrganisationSidebarTree.rows(containers, collapsed: [collection.id])
+        #expect(collapsedCollection.map(\.id) == [collection.id, rootFolder.id])
+    }
+
+    @Test func organisationMoveMenuRejectsSelfDescendantsCurrentParentAndCorruptCycles() {
+        let collection = organisationContainer("Collection", kind: .collection)
+        let folder = organisationContainer("Folder", parent: collection.id)
+        let child = organisationContainer("Child", parent: folder.id)
+        let grandchild = organisationContainer("Grandchild", parent: child.id)
+        let other = organisationContainer("Other", kind: .collection)
+        let rootFolder = organisationContainer("Root folder")
+        var cycleA = organisationContainer("Cycle A")
+        let cycleB = organisationContainer("Cycle B", parent: cycleA.id)
+        cycleA.parentID = cycleB.id
+        let containers = [collection, folder, child, grandchild, other, rootFolder, cycleA, cycleB]
+        #expect(NoemaOrganisationSidebarTree.destinations(for: folder, in: containers).map(\.id) == [other.id, rootFolder.id])
+        #expect(NoemaOrganisationSidebarTree.destinations(for: collection, in: containers).isEmpty)
+    }
+
+    @Test func hostedOrganisationRowsRemainCompactWithLongTitlesAndExpansionStates() {
+        for dark in [false, true] {
+            for expanded in [false, true] {
+                let row = NoemaOrganisationSidebarRow(
+                    title: "A collection with a long title that must truncate within the sidebar",
+                    symbol: "square.stack", depth: 2, isExpanded: expanded, isSelected: true,
+                    onExpansionChange: { _ in }, onSelect: {}
+                )
+                .frame(width: WorkspacePaneState.sidebarIdeal)
+                .environment(\.noemaTheme, NoemaTheme(dark: dark, increasedContrast: false))
+                let hosting = NSHostingView(rootView: row)
+                hosting.frame = NSRect(x: 0, y: 0, width: WorkspacePaneState.sidebarIdeal, height: NoemaMetrics.compactRowHeight)
+                hosting.layoutSubtreeIfNeeded()
+                #expect(hosting.fittingSize.width <= WorkspacePaneState.sidebarIdeal + 1)
+                #expect(abs(hosting.fittingSize.height - NoemaMetrics.compactRowHeight) <= 1)
+            }
+        }
+    }
+
+    private func organisationContainer(_ name: String, kind: OrganisationContainerKind = .folder, parent: UUID? = nil) -> OrganisationContainer {
+        OrganisationContainer(id: UUID(), kind: kind, name: name, parentID: parent,
+            sortOrder: 0, revision: BlockStoreRevision(token: Data()),
+            createdAt: .distantPast, modifiedAt: .distantPast)
+    }
+
     @Test func sidebarMetricsMatchRefinedMacOSSpecification() {
         #expect((28.0...30.0).contains(NoemaMetrics.compactRowHeight))
         #expect((28.0...30.0).contains(NoemaMetrics.comfortableRowHeight))

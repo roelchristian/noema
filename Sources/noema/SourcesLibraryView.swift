@@ -203,13 +203,17 @@ private struct SourceProgressLabel: View {
 
 /// Resolve the current record when presenting the menu, preserving existing action gates and
 /// avoiding retained source bodies in list presentation state.
-private struct SourceTableContextMenu: View {
+struct SourceTableContextMenu: View {
     let model: AppModel
     let sourceID: UUID
+    var sourceContainerID: UUID? = nil
     let rename: (SourceRecord) -> Void
     let delete: (SourceRecord) -> Void
     var body: some View {
         if let source = model.sources.first(where: { $0.id == sourceID }) {
+            DocumentOrganisationMenuCommands(model: model, reference: .init(kind: .source, itemID: sourceID), sourceContainerID: sourceContainerID)
+            DocumentFavouriteMenuCommand(model: model, reference: .init(kind: .source, itemID: sourceID))
+            Divider()
             AISummaryMenuCommands(model: model, target: .source(sourceID))
             Button("Open Preview") { model.openSource(sourceID) }
                 .disabled(model.downloadingSources.contains(sourceID))

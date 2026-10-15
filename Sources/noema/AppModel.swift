@@ -275,8 +275,12 @@ struct AISuggestion: Identifiable, Sendable {
         }
     }
     func toggleCurrentFavourite() {
+        guard let reference = currentFavouriteReference else { return }
+        toggleFavourite(reference)
+    }
+    func toggleFavourite(_ reference: OrganisationItemReference) {
         guard canInteractWithWorkspace, isVaultAvailable, !favouriteMutationInProgress, !organisationMutationInProgress,
-              let repository, let reference = currentFavouriteReference else { return }
+              let repository, isOrganisableDocument(reference) else { return }
         let ticket = generation
         let favourite = !favouriteReferences.contains(reference)
         favouriteMutationInProgress = true

@@ -17,12 +17,14 @@ struct OrganisationNativeCaptureTests {
         defer { try? FileManager.default.removeItem(at: base) }
         let repository = try await openCanonicalAppFixture(root: root, create: true)
         let page = try await repository.create(title: "Research notes", body: "A personal atlas of thought.\n\nCollections gather related material. Folders organize it within a collection.")
+        let source = try await repository.importSource(data: Data("Reading material for the collection.".utf8), filename: "reading.txt", title: "Reading material", originURL: nil)
         let store = repository.sqliteBlockStore
         let collection = try await store.createContainer(kind: .collection, name: "Research", parentID: nil, expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID()).value
         let folder = try await store.createContainer(kind: .folder, name: "Reading", parentID: collection.id, expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID()).value
         _ = try await store.createContainer(kind: .folder, name: "References", parentID: folder.id, expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID())
-        _ = try await store.createContainer(kind: .collection, name: "Projects", parentID: nil, expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID())
+        let projects = try await store.createContainer(kind: .collection, name: "Projects", parentID: nil, expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID()).value
         _ = try await store.addMembership(containerID: folder.id, reference: .init(kind: .page, itemID: page.id), expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID())
+        _ = try await store.addMembership(containerID: folder.id, reference: .init(kind: .source, itemID: source.id), expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID())
         let model = AppModel()
         model.localStorageRoot = base.appendingPathComponent("Local")
         model.persistSecurityScopedBookmark = false
@@ -41,12 +43,18 @@ struct OrganisationNativeCaptureTests {
         panes.isCollectionVisible = false
         try await capture(ContentView(model: model, paneState: panes), to: directory.appendingPathComponent("sidebar-expanded.png"))
         try await capture(ContentView(model: model, paneState: panes, collapsedContainers: [collection.id]), to: directory.appendingPathComponent("sidebar-collapsed.png"))
+        panes.isCollectionVisible = true
+        panes.revealCollection()
+        panes.isInspectorVisible = true
+        try await capture(ContentView(model: model, paneState: panes, organisationSelection: folder.id), to: directory.appendingPathComponent("folder-contents-inspector.png"), size: NSSize(width: 1460, height: 740))
+        try await capture(ContentView(model: model, paneState: panes, organisationSelection: folder.id), to: directory.appendingPathComponent("folder-compact-inspector.png"), size: NSSize(width: 1000, height: 740))
+        panes.isInspectorVisible = false
+        try await capture(ContentView(model: model, paneState: panes, organisationSelection: projects.id), to: directory.appendingPathComponent("collection-empty.png"), size: NSSize(width: 1100, height: 740))
         try #require(await model.closeVault())
     }
 
-    private func capture<V: View>(_ view: V, to url: URL) async throws {
+    private func capture<V: View>(_ view: V, to url: URL, size: NSSize = NSSize(width: 1100, height: 740)) async throws {
         _ = NSApplication.shared
-        let size = NSSize(width: 1100, height: 740)
         let root = view.environment(\.colorScheme, .dark)
             .environment(\.noemaTheme, NoemaTheme(dark: true, increasedContrast: false))
             .environment(\.appearsActive, true)

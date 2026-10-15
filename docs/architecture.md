@@ -288,13 +288,20 @@ chevron on hover or keyboard focus; the title selects the container. Expansion i
 available through the context menu and Left/Right arrow keys on a focused row.
 The header plus menu creates collections and folders.
 Collapsing an ancestor hides its descendants without changing their individual disclosure state.
-Drop targets highlight on hover, and an accepted drop expands its destination.
+Rows share compact geometry, a fixed icon/disclosure slot and hover/selection treatment.
+Disclosure changes expansion separately from navigation. Drop targets highlight on hover,
+and an accepted drop expands its destination. Contextual creation is available from the
+section header and container menus without a permanent creation row.
 Collections remain at the vault root; folders can be created
 or moved under a collection or another folder. Container menus create, rename, and
 delete containers and add or remove the current document; deleting a container removes
 its descendant containers and memberships while retaining canonical items. Stored page,
 source, and block memberships resolve from vault content independently of recent history;
-entity and semantic-object memberships use their existing catalogue detail sheets. Library and inbox rows can be dragged onto a sidebar container or its open inbox.
+entity and semantic-object memberships use their existing catalogue detail sheets.
+The contents pane also shows child folders as navigation rows, with separate item
+selection and mixed item/folder counts. All membership kinds share a compact two-line
+label; block subtitles retain their parent page. Library and inbox rows can be dragged
+onto a sidebar container or its open inbox.
 Library drops add membership; drops from a container move membership atomically.
 Folders can be dragged onto collections or folders, or onto the Collections header,
 which highlights as “Move to Vault Root” while targeted. Item lists support
@@ -305,7 +312,14 @@ Cycles and stale session payloads are rejected before dispatch. Batch edits use 
 revision-checked store operations in order; each membership move remains atomic, while
 the batch as a whole is not a transaction. A failure stops the remaining edits and
 reports the completed count; the store retains mutation ownership.
-Selecting an inbox item retains that collection's highlight and
+Page and source context menus and document toolbar overflow reuse
+`DocumentOrganisationMenuCommands`: Add to… checkmarks current memberships and
+allows removal; Move to… replaces only a verified source membership. Outside a
+container context, a From submenu explicitly chooses the source. Unrelated memberships
+and independent favourites remain intact; removal never deletes the document.
+`SourceTableContextMenu` retains source actions in both the table and organisation
+rows. Typed block/knowledge rows expose membership removal without page/source deletion.
+Selecting an inbox item retains its parent organisation context and
 opens its page, source, or knowledge block in the content pane. The native window title is the open
 document; the collection-list header shows the collection name and does not repeat
 that title. `WorkspacePaneState` persists sidebar, collection-list, and inspector

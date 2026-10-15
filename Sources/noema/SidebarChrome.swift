@@ -1,5 +1,70 @@
 import AppKit
 import SwiftUI
+import VaultCore
+
+struct NoemaOrganisationSidebarEntry: Identifiable {
+    let container: OrganisationContainer
+    let depth: Int
+    var id: UUID { container.id }
+}
+
+/// Presentation-only traversal. The organisation store owns hierarchy validation.
+enum NoemaOrganisationSidebarTree {
+    static func rows(_ containers: [OrganisationContainer], collapsed: Set<UUID>) -> [NoemaOrganisationSidebarEntry] {
+        var visited: Set<UUID> = []
+        func children(_ parent: UUID?, depth: Int) -> [NoemaOrganisationSidebarEntry] {
+            containers.filter { $0.parentID == parent }.flatMap { container -> [NoemaOrganisationSidebarEntry] in
+                guard visited.insert(container.id).inserted else { return [] }
+                return [NoemaOrganisationSidebarEntry(container: container, depth: depth)]
+                    + (collapsed.contains(container.id) ? [] : children(container.id, depth: depth + 1))
+            }
+        }
+        return children(nil, depth: 0)
+    }
+
+    static func destinations(for container: OrganisationContainer, in containers: [OrganisationContainer]) -> [OrganisationContainer] {
+        guard container.kind == .folder else { return [] }
+        return containers.filter { destination in
+            guard destination.id != container.parentID else { return false }
+            var cursor: UUID? = destination.id
+            var visited: Set<UUID> = [container.id]
+            while let id = cursor {
+                guard visited.insert(id).inserted else { return false }
+                cursor = containers.first { $0.id == id }?.parentID
+            }
+            return true
+        }
+    }
+}
+
+private struct NoemaOrganisationSidebarRowSurface: ViewModifier {
+    let selected: Bool
+    let targeted: Bool
+    @State private var hovered = false
+    @Environment(\.noemaTheme) private var theme
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { hovered = $0 }
+            .listRowBackground(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(selected || targeted ? theme.color(for: .selection) : hovered ? theme.color(for: .hover) : Color.clear)
+            )
+            .overlay {
+                if targeted {
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(theme.color(for: .focusRing), lineWidth: 1.5)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+}
+
+extension View {
+    func noemaOrganisationSidebarRowSurface(selected: Bool, targeted: Bool = false) -> some View {
+        modifier(NoemaOrganisationSidebarRowSurface(selected: selected, targeted: targeted))
+    }
+}
 
 /// Shared layout geometry for sidebar rows, section headers, and footer chrome.
 enum NoemaSidebarLayout {

@@ -130,7 +130,12 @@ The standard unified window toolbar (`.unified`, Finder-sized icons) presents th
 (`Pages`, `Sources`, `Knowledge`, `Trash`) or opened document title once, alongside
 navigation, document editing and lock controls, and global commands without a second
 competing title bar below it. Page sorting stays with the collection list. Its contextual actions
-menu provides Rename, summary actions and Delete. `⌃⌘S` toggles sidebar, `⌃⌘L` toggles the collection list, `⌥⌘I` toggles
+menu provides Add to…, Move to…, Rename, summary actions and Delete. Add to…
+checkmarks current collection/folder memberships and supports removal. Move to…
+changes only the current container membership; elsewhere, choose the source from
+the From submenu. Favourites remain independent, and membership removal keeps the
+underlying page/source. Container contents show child folders for browsing and
+consistent page/source/knowledge rows; use the header menu for contextual folder creation. `⌃⌘S` toggles sidebar, `⌃⌘L` toggles the collection list, `⌥⌘I` toggles
 contextual inspector, and
 `⇧⌘F` expands and focuses toolbar vault search; `⌘P` opens title-oriented Quick Open
 in the same control. Search retains the current document, query and library scope;
