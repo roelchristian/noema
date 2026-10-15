@@ -47,7 +47,7 @@ struct ContentView: View {
     @State private var selectedSemanticFilter: String?
     @State private var pageListScroll = ScrollPosition(idType: UUID.self)
     @State private var semanticListScroll = ScrollPosition(idType: String.self)
-    @State private var sourceListScroll = ScrollPosition(edge: .top)
+    @State private var sourceListScroll = ScrollPosition(idType: UUID.self)
     @State private var knowledgeQuery = ""
     @State private var knowledgeSelection: KnowledgeCatalogueSelection?
     @FocusState private var collectionListFocused: Bool
@@ -56,7 +56,11 @@ struct ContentView: View {
     private var sourceSelectionBinding: Binding<UUID?> {
         Binding(get: { model.librarySourceSelection }, set: { model.setLibrarySourceSelection($0) })
     }
-    @State private var sourceTablePresentation = SourcesTablePresentation()
+    @State private var sourceTablePresentation: SourcesTablePresentation = {
+        let presentation = SourcesTablePresentation()
+        presentation.setInboxSortOrder(.captured)
+        return presentation
+    }()
     @State private var renamingSource: SourceRecord?
     @State private var sourceName = ""
     @State private var renamingPageID: UUID?
@@ -160,7 +164,7 @@ struct ContentView: View {
         knowledgeSelection = nil
         pageListScroll = ScrollPosition(idType: UUID.self)
         semanticListScroll = ScrollPosition(idType: String.self)
-        sourceListScroll = ScrollPosition(edge: .top)
+        sourceListScroll = ScrollPosition(idType: UUID.self)
         pendingLibraryFocus = false
     }
     private var workspacePresentation: some View {
@@ -463,7 +467,7 @@ struct ContentView: View {
         WorkspaceTitleOwnership.collectionChromeTitle(window: model.windowTitle, collectionName: collectionTitle)
     }
     private var showsCollectionHeader: Bool {
-        selectedOrganisation != nil || collectionChromeTitle != nil || isPagesScope
+        selectedOrganisation != nil || collectionChromeTitle != nil || isPagesScope || isSourcesScope
     }
     private var collectionHeader: some View {
         HStack(spacing: NoemaSpacing.sm) {
@@ -476,6 +480,7 @@ struct ContentView: View {
             }
             Spacer(minLength: 0)
             if isPagesScope { pagesSortMenu }
+            else if isSourcesScope { sourcesSortMenu }
         }
         .padding(.horizontal, NoemaSpacing.md)
         .padding(.vertical, NoemaSpacing.sm)
@@ -494,6 +499,24 @@ struct ContentView: View {
         .help("Sort pages (\(pageSortOrder.rawValue))")
         .accessibilityLabel("Sort Pages")
         .accessibilityValue(pageSortOrder.rawValue)
+    }
+    private var sourcesSortMenu: some View {
+        Menu {
+            Picker("Sort", selection: Binding(
+                get: { sourceTablePresentation.inboxSortOrder },
+                set: { sourceTablePresentation.setInboxSortOrder($0) }
+            )) {
+                ForEach(SourceInboxSortOrder.allCases) { order in
+                    Text(order.rawValue).tag(order)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Label("Sort", systemImage: "arrow.up.arrow.down")
+        }
+        .help("Sort sources (\(sourceTablePresentation.inboxSortOrder.rawValue))")
+        .accessibilityLabel("Sort Sources")
+        .accessibilityValue(sourceTablePresentation.inboxSortOrder.rawValue)
     }
     @ViewBuilder private var contentPane: some View {
         if showAllSearchResults {
@@ -594,6 +617,9 @@ struct ContentView: View {
                 .frame(maxWidth: 560)
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    private var isSourcesScope: Bool {
+        selectedOrganisation == nil && !showFavourites && !showRecentItems && model.scope == .sources
     }
     private var isPagesScope: Bool {
         if selectedOrganisation != nil { return false }
@@ -1237,15 +1263,18 @@ struct ContentView: View {
     }
     @ViewBuilder private var pageLibrary: some View {
         if model.scope == .sources && !showFavourites {
-            SourcesLibraryView(
-                model: model,
-                presentation: sourceTablePresentation,
-                selection: sourceSelectionBinding,
-                scrollPosition: $sourceListScroll,
-                listFocus: $collectionListFocused,
-                rename: { source in sourceName = source.title; renamingSource = source },
-                delete: { deletingSource = $0 }
-            )
+            VStack(spacing: 0) {
+                SourcesLibraryView(
+                    model: model,
+                    presentation: sourceTablePresentation,
+                    selection: sourceSelectionBinding,
+                    scrollPosition: $sourceListScroll,
+                    listFocus: $collectionListFocused,
+                    rename: { source in sourceName = source.title; renamingSource = source },
+                    delete: { deletingSource = $0 }
+                )
+                libraryFooter
+            }
             .background(theme.color(for: .canvas))
             .safeAreaBar(edge: .top) {
                 if model.busy || model.errorMessage != nil {
@@ -1357,18 +1386,7 @@ struct ContentView: View {
                 .scrollPosition($pageListScroll)
                 .focused($collectionListFocused)
             }
-            HStack {
-                Text(libraryCount)
-                if model.scope == .sources, !model.downloadingSources.isEmpty {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.mini)
-                        Text("Downloading from iCloud")
-                    }
-                } else if model.scope == .sources, model.sourceRenameTotal > 0 {
-                    Text("Renaming \(min(model.sourceRenameCompleted + 1, model.sourceRenameTotal)) of \(model.sourceRenameTotal) files…")
-                }
-                Spacer(); Text("⌘P")
-            }.font(NoemaTypography.metadata).foregroundStyle(.secondary).padding(NoemaSpacing.md)
+            libraryFooter
         }
         .background(theme.color(for: .canvas))
         .safeAreaBar(edge: .top) {
@@ -1600,6 +1618,24 @@ struct ContentView: View {
                 .focused($collectionListFocused)
             }
         }
+    }
+    private var libraryFooter: some View {
+        HStack {
+            Text(libraryCount)
+            if model.scope == .sources, !model.downloadingSources.isEmpty {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Downloading from iCloud")
+                }
+            } else if model.scope == .sources, model.sourceRenameTotal > 0 {
+                Text("Renaming \(min(model.sourceRenameCompleted + 1, model.sourceRenameTotal)) of \(model.sourceRenameTotal) files…")
+            }
+            Spacer()
+            Text("⌘P")
+        }
+        .font(NoemaTypography.metadata)
+        .foregroundStyle(.secondary)
+        .padding(NoemaSpacing.md)
     }
     private var libraryCount: String {
         if model.scope == .semantic {
