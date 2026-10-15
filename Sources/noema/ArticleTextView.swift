@@ -6,6 +6,8 @@ import VaultCore
         super.setFrameSize(newSize)
         updateReadingGeometry()
         updateContextualBlockControls()
+        refreshDisplayMathPresentation()
+        inlineMathProjection?.refresh()
     }
 
     func updateReadingGeometry() {
@@ -17,9 +19,26 @@ import VaultCore
         textContainer?.lineFragmentPadding = 0
     }
 
+    var inlineMathProjection: MathLayoutProjection?
+    private lazy var displayMathPresentation = DisplayMathPresentation(view: self)
+    func refreshDisplayMathPresentation() { displayMathPresentation.refresh() }
+    func invalidateDisplayMathPresentation() { displayMathPresentation.invalidate() }
+
     var openLink: ((URL) -> Void)?
     let semanticRangeIndex = BlockTextStorage.SemanticRangeIndex()
-    var locked = false
+    var locked = false {
+        didSet {
+            guard locked != oldValue else { return }
+            if locked {
+                inlineMathProjection?.invalidate()
+                invalidateDisplayMathPresentation()
+                MathTypesetter.shared.removeAllCachedResults()
+            } else {
+                refreshDisplayMathPresentation()
+                inlineMathProjection?.refresh()
+            }
+        }
+    }
     var theme = NoemaTheme()
     var typography = EditorTypography() { didSet { if typography != oldValue { updateReadingGeometry() } } }
     var showSemanticHeadings = false
@@ -209,6 +228,7 @@ import VaultCore
         return (storage.attribute(.blockID, at: index, effectiveRange: nil) as? String).flatMap(UUID.init(uuidString:))
     }
     func rect(for requestedRange: NSRange) -> NSRect {
+        if let readingRect = displayMathPresentation.readingRect(for: requestedRange) { return readingRect }
         guard let layoutManager, let storage = textStorage, requestedRange.length > 0,
               requestedRange.location >= 0, requestedRange.location < storage.length else { return .zero }
         // AppKit can update focus during storage replacement before the UUID range
@@ -268,6 +288,9 @@ import VaultCore
     }
     /// Both drawn markers and their hit targets use the content's first baseline.
     func firstBaseline(for range: NSRange) -> CGFloat {
+        if let frame = displayMathPresentation.readingRect(for: range) {
+            return frame.midY + typography.font(for: .math).ascender / 2
+        }
         guard let layoutManager, let storage = textStorage, range.length > 0 else { return 0 }
         let glyph = layoutManager.glyphIndexForCharacter(at: range.location)
         let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
@@ -297,8 +320,8 @@ import VaultCore
         return rect
     }
 
-    /// A preview occupies only unused horizontal space on a single raw-source line.
-    /// At narrow widths, or for wrapped source, the source remains the sole display.
+    /// Legacy side-preview geometry for existing internal callers. The article
+    /// now draws typeset mathematics through DisplayMathPresentation.
     func mathPreviewRect(for range: NSRange, rendered expression: String? = nil) -> NSRect? {
         guard let layoutManager, let storage = textStorage, range.length > 0 else { return nil }
         let raw = (storage.string as NSString).substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -368,7 +391,7 @@ import VaultCore
                     width: max(22, bounds.width - textContainerOrigin.x - gutterRect(for: range).minX),
                     height: rect.height + 6), xRadius: 4, yRadius: 4).fill()
             }
-            if kind == .code || kind == .callout || kind == .math {
+            if kind == .code || kind == .callout {
                 theme.native(.accentPrimary).withAlphaComponent(theme.dark ? 0.08 : 0.04).setFill()
                 NSBezierPath(roundedRect: NSRect(x: textContainerOrigin.x - 8 + CGFloat(depth * 24), y: decorationRect.minY - 6, width: max(20, bounds.width - textContainerOrigin.x * 2 - CGFloat(depth * 24) + 16), height: decorationRect.height + 12), xRadius: 5, yRadius: 5).fill()
             }
@@ -407,15 +430,6 @@ import VaultCore
                 }
             } else if kind == .code, let language = metadata.language {
                 (language as NSString).draw(in: NSRect(x: 30, y: firstBaseline(for: range) - NSFont.systemFont(ofSize: 10).ascender, width: max(0, textContainerOrigin.x - 38), height: 34), withAttributes: [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor])
-            } else if kind == .math {
-                if let icon = semanticSymbolRect(for: range, depth: depth, heading: nil) {
-                    drawSymbol("function", at: icon, color: .secondaryLabelColor)
-                }
-                let rawBlock = (storage.string as NSString).substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
-                let rendered = BlockTextStorage.renderedMath(rawBlock, display: true)
-                if let previewRect = mathPreviewRect(for: range, rendered: rendered) {
-                    (rendered as NSString).draw(in: previewRect, withAttributes: mathPreviewAttributes)
-                }
             }
             if id == dropID {
                 theme.native(.accentPrimary).setFill()
@@ -423,6 +437,8 @@ import VaultCore
             }
         }
         super.draw(dirtyRect)
+        displayMathPresentation.draw()
+        inlineMathProjection?.draw(in: self)
         updateContextualBlockControls()
     }
     private func drawSymbol(_ name: String, at rect: NSRect, color: NSColor) {
@@ -451,6 +467,12 @@ import VaultCore
             openLink?(url); return
         }
         guard isEditable, !locked else { super.mouseDown(with: event); return }
+        if displayMathPresentation.activate(at: point) {
+            contextualInteractionDismiss?()
+            contextualSelectionCompleted?()
+            return
+        }
+        if inlineMathProjection?.activate(at: point) == true { return }
         if !locked, let id = blockAt(point), let storage = textStorage,
            let range = blockRange(for: id, storage: storage) {
             if gutterRect(for: range).contains(point) {
@@ -673,7 +695,19 @@ import VaultCore
         super.keyDown(with: event)
     }
     // Popovers and menus may temporarily move focus; they must not end an editing session.
-    override func resignFirstResponder() -> Bool { super.resignFirstResponder() }
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned {
+            // AppKit updates firstResponder after returning from this method.
+            DispatchQueue.main.async { [weak self] in self?.refreshDisplayMathPresentation() }
+        }
+        return resigned
+    }
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { DispatchQueue.main.async { [weak self] in self?.refreshDisplayMathPresentation() } }
+        return became
+    }
 }
 
 private final class BlockAccessibilityElement: NSAccessibilityElement {

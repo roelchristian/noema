@@ -1,0 +1,4 @@
+KaTeX 0.19.0, from the official npm package (https://registry.npmjs.org/katex/-/katex-0.19.0.tgz).
+Integrity: sha512-v6Tznz3zJ7u3niRCoDTsumM2+HA2XXcCu+WAacCeHD2z3p9A9Ks987o5FzfTGBN0e8A0vjEgIDvLbICrXpdw/Q==
+JavaScript and WOFF2 fonts are unmodified. CSS font sources retain only the bundled WOFF2 format.
+See LICENSE for the MIT license.

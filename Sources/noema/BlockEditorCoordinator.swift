@@ -92,10 +92,60 @@ extension RichArticleView {
             guard let clip = notification.object as? NSClipView else { return }
             dismissHandleMenu()
             inlineControls.update()
+            refreshMathPresentation()
             let offset = clip.bounds.minY
             Task { @MainActor [weak self] in self?.parent.onScrollOffset(offset) }
         }
+        func refreshMathPresentation() {
+            guard let view else { return }
+            if view.inlineMathProjection == nil {
+                let projection = MathLayoutProjection(view: view)
+                projection.makeCommitValidator = { [weak self] in
+                    guard let self else { return { false } }
+                    let identity = self.session.identity
+                    let generation = self.session.generation
+                    let revision = self.session.revision
+                    return { [weak self] in
+                        guard let self else { return false }
+                        return !self.contextualIdentitySuspended && !self.contextualInteractionsRetired
+                            && self.session.identity == identity && self.session.generation == generation
+                            && self.session.revision == revision && self.view?.locked == false
+                    }
+                }
+                projection.commit = { [weak self] range, original, source in
+                    guard let self, let storage = self.view?.textStorage,
+                          NSMaxRange(range) <= storage.length,
+                          let (id, blockRange) = self.rangeIndex?.block(at: range.location),
+                          let block = self.document.block(id) else { return }
+                    var offset = 0
+                    guard let index = block.runs.indices.first(where: { index in
+                        defer { offset += block.runs[index].text.utf16.count }
+                        return blockRange.location + offset == range.location
+                            && block.runs[index].style.math
+                            && (block.runs[index].style.rawMath ?? block.runs[index].text) == original
+                    }) else { return }
+                    self.transaction("Edit inline equation") {
+                        self.document.update(id) { block in
+                            block.runs[index].style.rawMath = source
+                            let fallback = BlockTextStorage.renderedMath(source, display: false)
+                            block.runs[index].text = fallback.isEmpty ? source : fallback
+                        }
+                        return nil
+                    }
+                }
+                view.inlineMathProjection = projection
+            }
+            let wasChanging = changing
+            changing = true
+            view.refreshDisplayMathPresentation()
+            view.inlineMathProjection?.refresh()
+            changing = wasChanging
+        }
         func load(_ value: BlockDocument) {
+            view?.invalidateDisplayMathPresentation()
+            view?.inlineMathProjection?.invalidate()
+            MathTypesetter.shared.removeAllCachedResults()
+
             dismissHandleMenu()
             inlineControls.close()
             publicationTask?.cancel()
@@ -130,6 +180,7 @@ extension RichArticleView {
             let limit = selection.length == 0 ? max(0, count - 1) : count
             let location = min(selection.location, limit)
             view.setSelectedRange(NSRange(location: location, length: min(selection.length, max(0, count - location))))
+            refreshMathPresentation()
             refreshSemanticRanges()
             session.selection = view.selectedRange(); lastTheme = parent.theme; lastTypography = parent.typography; changing = false; updateTypingAttributes()
         }
@@ -154,8 +205,7 @@ extension RichArticleView {
                 }
                 storage.endEditing()
             } else {
-                // TeX macro changes can alter displayed characters. Preserve
-                // legal ranges while allowing that existing content refresh.
+                // A model refresh may change content; retain legal selections.
                 storage.setAttributedString(rendered)
             }
             rangeIndex?.rebuild(storage)
@@ -169,6 +219,7 @@ extension RichArticleView {
                 let location = min(range.location, count)
                 return NSValue(range: NSRange(location: location, length: min(range.length, count - location)))
             }, affinity: affinity, stillSelecting: false)
+            refreshMathPresentation()
             if let container = view.textContainer { view.layoutManager?.ensureLayout(for: container) }
             if let clip, let scrollOrigin {
                 clip.scroll(to: scrollOrigin)
@@ -307,6 +358,7 @@ extension RichArticleView {
             if view.undoManager?.isUndoing == true || view.undoManager?.isRedoing == true {
                 refreshActiveBlockPresentation()
             }
+            refreshMathPresentation()
             if presentationRefreshPending {
                 presentationRefreshPending = false
                 refreshPresentation(); lastMacros = parent.texMacros
@@ -339,6 +391,7 @@ extension RichArticleView {
             if view.selectedRange().length == 0, view.string.hasSuffix("\n"), view.selectedRange().location == view.string.utf16.count {
                 changing = true; view.setSelectedRange(NSRange(location: max(0, view.string.utf16.count - 1), length: 0)); changing = false
             }
+            refreshMathPresentation()
             clearBlockSelection()
             session.selection = view.selectedRange()
             updateAnnotationAvailability()
@@ -370,6 +423,13 @@ extension RichArticleView {
                     attrs = prevAttrs
                 }
             }
+            let displayMarker = NSAttributedString.Key("noema.displayMathOriginalPresentation")
+            if let original = attrs[displayMarker] as? [NSAttributedString.Key: Any] {
+                attrs.merge(original) { _, saved in saved }
+            }
+            attrs.removeValue(forKey: .originalRichRun)
+            attrs.removeValue(forKey: .renderedMath)
+            attrs.removeValue(forKey: NSAttributedString.Key("noema.displayMathOriginalPresentation"))
             view.typingAttributes = attrs
         }
         func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {

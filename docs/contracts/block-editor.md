@@ -397,7 +397,7 @@ supported medium/semibold faces before the nearest available family member.
 | Supporting prose | 0.88 | Selected family, regular |
 | Code and raw TeX | 0.88 | Native monospace |
 | Semantic labels | 0.88 | Native interface, semibold |
-| Rendered math | 1.00 | System serif, italic |
+| Rendered math | 1.00 | Bundled KaTeX mathematical faces; native serif fallback |
 
 Source H4–H6 decrease monotonically from H3 toward emphasized body. Inline bold,
 italic, underline, strike, highlight, code and link semantics survive restyling;
@@ -420,11 +420,35 @@ with compact nonnegative gutters at narrow widths. This approximates a 65–80
 character prose target; language, glyphs and enlarged fonts can vary. Page titles,
 summary prose, native editors and readable source windows share this measure.
 
-Math previews occupy unused space beside a single unwrapped raw-source line.
-Measure the actual rendered expression using the same font and paragraph style as
-drawing. Show it only when its full width and height fit within the reserved box;
-expanded macros, rendered line breaks and oversized expressions retain raw source
-without a cropped preview. The preview cannot extend into adjacent text or blocks.
+Mathematics is rendered locally by bundled KaTeX in a nonpersistent WebKit
+presentation layer. `MathTypesetter` returns transparent vector-backed images,
+with bounded requests, expansion and caching. All bundled mathematical font faces
+load before capture, including first-use large operators and scalable delimiters.
+Its cache identity includes source,
+custom macros, display mode, size, colour and available width. Runtime rendering
+has no network access; unsupported or failed expressions retain a legible source
+or native fallback. This replaces the Unicode approximation for successful editor
+presentation; existing domain text and raw TeX remain authoritative.
+
+Display equations use the reading measure without persistent coloured panels or
+function gutter labels; the block handle remains available on hover or focus.
+Clicking a rendered equation in an editable article reveals native LaTeX source,
+with command/delimiter highlighting and a typeset preview below. Leaving the block
+restores its reading presentation. Presentation attributes reserve image height
+without replacing text or changing UTF-16 source offsets.
+
+Inline mathematics uses a glyph projection in the sentence with the renderer's
+baseline metrics and no automatic background highlight. Clicking an expression in
+an editable article opens its source in a compact popover. Return commits, Shift
+Return inserts a newline, and Escape cancels; focus loss commits an edited source.
+An explicit source edit uses the existing editor transaction and undo mechanism.
+Untouched mathematical rich runs retain their exact text, raw source and extension
+fields. Rendering completions cannot publish document edits. Locking, document
+replacement and teardown invalidate source editors and pending presentation work.
+Locked editors retain a read-only source fallback until unlocked. Runtime coverage
+lives in [typesetter tests](../../Tests/NoemaEditorTests/MathTypesetterRuntimeTests.swift),
+[display tests](../../Tests/NoemaEditorTests/DisplayMathRuntimeTests.swift) and
+[inline tests](../../Tests/NoemaEditorTests/InlineMathRuntimeTests.swift).
 
 Readable Markdown, HTML and UTF-8 sources share document roles while preserving
 heading, quote, code and link semantics. Original source bytes stay immutable;

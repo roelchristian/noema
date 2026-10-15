@@ -57,6 +57,11 @@ struct RichArticleView: NSViewRepresentable {
         // replacement. That view must retain its original page and callbacks.
         let identity = EditorSession.Identity(pageID: noteID, vaultID: vaultID, sessionID: sessionID)
         guard onSemanticLoad == nil || coordinator.hostedIdentity == identity else {
+            if !coordinator.contextualIdentitySuspended {
+                coordinator.view?.invalidateDisplayMathPresentation()
+                coordinator.view?.inlineMathProjection?.invalidate()
+                MathTypesetter.shared.removeAllCachedResults()
+            }
             coordinator.contextualIdentitySuspended = true
             coordinator.inlineControls.close()
             coordinator.dismissHandleMenu()
@@ -101,6 +106,7 @@ struct RichArticleView: NSViewRepresentable {
         view.locked = locked || coordinator.document.unsupportedVersion || (onSemanticLoad != nil && coordinator.session.semanticEdit == nil)
         view.isEditable = editable && !view.locked
         if !view.isEditable {
+            view.inlineMathProjection?.dismissSource()
             coordinator.inlineControls.close()
             coordinator.dismissHandleMenu()
         }
@@ -111,6 +117,9 @@ struct RichArticleView: NSViewRepresentable {
         }
     }
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        coordinator.view?.invalidateDisplayMathPresentation()
+        coordinator.view?.inlineMathProjection?.invalidate()
+        MathTypesetter.shared.removeAllCachedResults()
         coordinator.contextualInteractionsRetired = true
         coordinator.activeInsertionMenu?.cancelTracking()
         coordinator.activeInsertionMenu = nil

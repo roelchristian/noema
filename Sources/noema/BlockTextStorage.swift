@@ -11,6 +11,7 @@ extension NSAttributedString.Key {
     static let semanticTag = Self("noema.semanticTag")
     static let wikiTarget = Self("noema.wikiTarget")
     static let renderedMath = Self("noema.renderedMath")
+    static let originalRichRun = Self("noema.originalRichRun")
 }
 
 @MainActor enum BlockTextStorage {
@@ -179,7 +180,7 @@ extension NSAttributedString.Key {
         attrs[.inlineStyle] = encodedStyle(style)
         if style.underline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
         if style.strike { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
-        if style.highlight || style.code || style.math { attrs[.backgroundColor] = theme.native(.graphHighlight).withAlphaComponent(theme.dark ? 0.22 : 0.10) }
+        if style.highlight || style.code { attrs[.backgroundColor] = theme.native(.graphHighlight).withAlphaComponent(theme.dark ? 0.22 : 0.10) }
         if let target = style.wikiTarget {
             attrs[.wikiTarget] = target
             var url = URLComponents(); url.scheme = "noema"; url.host = "wiki"; url.queryItems = [.init(name: "title", value: target)]
@@ -202,13 +203,14 @@ extension NSAttributedString.Key {
             let block = value.block
             for run in block.runs {
                 var attrs = attributes(run.style, block: block, depth: value.depth, theme: theme, typography: typography)
-                let displayString: String
-                if run.style.math, let raw = run.style.rawMath {
-                    let rendered = renderedMath(raw, display: false)
-                    displayString = rendered.isEmpty ? run.text : rendered
+                // Keep model characters stable. Mathematical images only affect
+                // TextKit glyph layout, never selection or block offsets.
+                let displayString = run.text
+                if run.style.math {
                     attrs[.renderedMath] = displayString
-                } else {
-                    displayString = run.text
+                    if let data = try? JSONEncoder().encode(run) {
+                        attrs[.originalRichRun] = ["data": data, "id": UUID().uuidString] as [String: Any]
+                    }
                 }
                 result.append(NSAttributedString(string: displayString, attributes: attrs))
             }
@@ -360,7 +362,7 @@ extension NSAttributedString.Key {
         }
         style.underline = (attrs[.underlineStyle] as? Int ?? 0) != 0
         style.strike = (attrs[.strikethroughStyle] as? Int ?? 0) != 0
-        style.highlight = attrs[.backgroundColor] != nil && !style.code && !style.math
+        if !style.math { style.highlight = attrs[.backgroundColor] != nil && !style.code }
         style.wikiTarget = attrs[.wikiTarget] as? String ?? style.wikiTarget
         // The rendered wiki URL is navigation metadata, not an external link.
         // Retain explicitly serialized links instead of normalizing their bytes.
@@ -371,14 +373,24 @@ extension NSAttributedString.Key {
     }
     static func runs(_ storage: NSAttributedString, range: NSRange) -> [RichRun] {
         var result: [RichRun] = []
-        storage.enumerateAttributes(in: range) { attrs, range, _ in
-            let text = (storage.string as NSString).substring(with: range)
-            var value = style(attrs)
-            if value.math, let rendered = attrs[.renderedMath] as? String, text != rendered {
-                value.rawMath = text
+        storage.enumerateAttribute(.originalRichRun, in: range) { original, part, _ in
+            let text = (storage.string as NSString).substring(with: part)
+            if let marker = original as? [String: Any], let data = marker["data"] as? Data,
+               let run = try? JSONDecoder().decode(RichRun.self, from: data),
+               run.text == text,
+               style(storage.attributes(at: part.location, effectiveRange: nil)) == run.style {
+                result.append(run)
+                return
             }
-            if result.last?.style == value { result[result.count - 1].text += text }
-            else { result.append(RichRun(text, style: value)) }
+            storage.enumerateAttributes(in: part) { attrs, segment, _ in
+                let text = (storage.string as NSString).substring(with: segment)
+                var value = style(attrs)
+                if value.math, let rendered = attrs[.renderedMath] as? String, text != rendered {
+                    value.rawMath = text
+                }
+                if result.last?.style == value { result[result.count - 1].text += text }
+                else { result.append(RichRun(text, style: value)) }
+            }
         }
         return result
     }

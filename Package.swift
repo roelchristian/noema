@@ -50,7 +50,7 @@ let coreTargets: [Target] = [
     .target(name: "ExternalAI", dependencies: ["VaultCore", "NativeAuthentication"])
 ]
 let applicationTargets: [Target] = needsApplication
-    ? [.executableTarget(name: "noema", dependencies: ["VaultCore", "NoemaBrand", "ExternalAI"])] : []
+    ? [.executableTarget(name: "noema", dependencies: ["VaultCore", "NoemaBrand", "ExternalAI"], resources: [.copy("MathResources")])] : []
 let validationTargets: [Target] = selectedTests.map { name in
     Target.testTarget(name: name, dependencies: testDependencies[name]!)
 }
