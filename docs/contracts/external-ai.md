@@ -50,6 +50,19 @@ commands bind to the displayed complete vault lease, and stale callbacks cannot 
 another vault. Approval readiness binds the same lease and credential version and ignores
 superseded refreshes. Interactive consent and short-lived authentication remain unchanged.
 
+## Embedding configuration boundary
+
+The independent versioned OpenAI embedding preference defaults to
+`text-embedding-3-small` (1,536 dimensions), with `text-embedding-3-large`
+(3,072 dimensions) as the other allowed selection. It is nonsecret local intent,
+separate from the generative model and reasoning effort. Changing it never submits
+content or authorizes historical indexing. Existing summary and enrichment approval
+does not cover document embeddings, historical batches or query embeddings. Those
+use separate exact-request capabilities minted by `ExternalAIEmbeddingAuthorizer`
+after explicit scope-specific consent and existing native authentication. The restricted
+embedding adapter uses only POST `/v1/embeddings`; no embedding command or automatic
+processor is installed in the app. See the [semantic embedding contract](semantic-embeddings.md).
+
 ## Trust and module boundary
 
 `noema` owns explicit UI actions, consent, selected-item snapshots and publication through existing repositories. `ExternalAI` owns typed contracts, `ExternalAICredentialBroker`, `ExternalAISessionManager`, `ExternalAIGateway` and its restricted `OpenAITransport`. It depends on `VaultCore` for the existing D02 access gate, session lease and admission/completion boundaries, and on `NativeAuthentication` for operation-specific native authentication attempts. Credentials remain entirely inside the security module after masked entry. General app state obtains credential status and approved action results only.

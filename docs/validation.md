@@ -141,6 +141,17 @@ All items are **pending**; this checklist is a device/provider release gate, not
 4. With a disposable provider key and nonsensitive content, exercise Always ask, once per unlocked vault session (including lock/switch/relaunch reset), and Never ask without bypassing authentication. Confirm page/source enrichment, source/topic/URL draft review and connection validation work, provider/model labels and generation metadata persist after reopening, local Apple Intelligence title/LCC/source processing still works independently, and provider failures leave canonical content intact. Change/delete content or its prior summary, switch selection and cancel while a response is delayed; verify stale results do not publish.
 5. Review provider account expiry/spending limits and data-retention policy. Verify the disclosure communicates outbound text, possible billing/retry transmission, and the inability to recall already-sent text. Keep the in-process and plaintext-vault limitations visible.
 
+### Semantic embedding provider acceptance
+
+Native sentence-model availability, supported-language retrieval quality and full-input
+behavior remain device acceptance gaps; injected backends do not establish them. OpenAI
+transport is tested with synthetic credentials/responses, not a live provider account.
+Its model revision identifies the API/input contract because aliases do not expose an
+immutable weight revision. Usage receipts are available; activity integration, actual
+charges, large-vault memory/latency/cancellation measurements and crash durability are
+unverified. Automatic lifecycle, historical backfill, queue and hybrid-search acceptance
+remain pending under the [embedding contract](contracts/semantic-embeddings.md).
+
 ### Two-Mac acceptance procedure
 
 1. Open the same iCloud vault on two Macs signed into the same account; download files.

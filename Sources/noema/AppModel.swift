@@ -655,6 +655,9 @@ struct AISuggestion: Identifiable, Sendable {
     private(set) var lockedVaultURL: URL?
     private var repository: FileVaultRepository?
     var index: (any SearchIndex)?
+    @ObservationIgnored var semanticIndex: SQLiteEmbeddingIndex?
+    var semanticIndexIssue: String?
+    var semanticIndexCompatibility: SemanticIndexCompatibility = .unavailable
     private var recovery: RecoveryStore?
     private var scopeURL: URL?
     private var autosaveTask: Task<Void, Never>?
@@ -685,6 +688,9 @@ struct AISuggestion: Identifiable, Sendable {
     }
     var searchIndexFactory: @Sendable (URL, VaultSessionLease?, VaultAccessGate?) throws -> any SearchIndex = { url, lease, gate in
         try SQLiteSearchIndex(url: url, sessionLease: lease, accessGate: gate)
+    }
+    var semanticIndexFactory: @Sendable (URL, VaultSessionLease, VaultAccessGate) throws -> SQLiteEmbeddingIndex = { root, lease, gate in
+        try SQLiteEmbeddingIndex(applicationSupportRoot: root, lease: lease, accessGate: gate)
     }
     var sourceAvailabilityChecker: (@Sendable (SourceRecord, URL, any VaultContentStore) async -> String)?
     var localStorageRoot: URL?
@@ -1075,6 +1081,9 @@ struct AISuggestion: Identifiable, Sendable {
         activeLease = nil
         repository = nil
         index = nil
+        semanticIndex = nil
+        semanticIndexIssue = nil
+        semanticIndexCompatibility = .unavailable
         recovery = nil
         root = nil
     }
@@ -2140,7 +2149,8 @@ struct AISuggestion: Identifiable, Sendable {
             let localBase = baseDir.appendingPathComponent("KnowledgeVault/\(vaultID.uuidString)")
             let gate = sessionManager.accessGate
             let factory = searchIndexFactory
-            let (searchIndex, journal, cached, drafts) = try await Task.detached {
+            let embeddingFactory = semanticIndexFactory
+            let (searchIndex, journal, cached, drafts, semantic, semanticIssue) = try await Task.detached {
                 let idx = try factory(localBase.appendingPathComponent("search.sqlite"), lease, gate)
                 let recoveryStore = try RecoveryStore(
                     directory: localBase.appendingPathComponent("Drafts"),
@@ -2149,7 +2159,11 @@ struct AISuggestion: Identifiable, Sendable {
                 )
                 let cachedEntries = try await idx.cachedEntries()
                 let recovered = try await recoveryStore.listing()
-                return (idx, recoveryStore, cachedEntries, recovered)
+                let semantic: SQLiteEmbeddingIndex?
+                let semanticIssue: String?
+                do { semantic = try embeddingFactory(baseDir, lease, gate); semanticIssue = nil }
+                catch { semantic = nil; semanticIssue = "Semantic index unavailable. Lexical search remains available." }
+                return (idx, recoveryStore, cachedEntries, recovered, semantic, semanticIssue)
             }.value
             try requireLifecycleState(.open, action: "open", session: session)
             self.scopeURL = (hasScope || self.scopeURL == url) ? url : nil
@@ -2160,6 +2174,8 @@ struct AISuggestion: Identifiable, Sendable {
             sessionState = .open(session)
             lockedVaultURL = nil
             repository = repo; index = searchIndex; recovery = journal
+            semanticIndex = semantic
+            semanticIndexIssue = semanticIssue
             await bindAIProcessing(repository: repo, lease: lease)
             try requireLifecycleState(.open, action: "AI processing admission", session: session)
             unseenRenamedPages.removeAll()
@@ -2325,7 +2341,8 @@ struct AISuggestion: Identifiable, Sendable {
             let localBase = baseDir.appendingPathComponent("KnowledgeVault/\(vaultID.uuidString)")
             let gate = sessionManager.accessGate
             let factory = searchIndexFactory
-            let (searchIndex, journal, cached, drafts) = try await Task.detached {
+            let embeddingFactory = semanticIndexFactory
+            let (searchIndex, journal, cached, drafts, semantic, semanticIssue) = try await Task.detached {
                 let idx = try factory(localBase.appendingPathComponent("search.sqlite"), lease, gate)
                 let recoveryStore = try RecoveryStore(
                     directory: localBase.appendingPathComponent("Drafts"),
@@ -2334,7 +2351,11 @@ struct AISuggestion: Identifiable, Sendable {
                 )
                 let cached = try await idx.cachedEntries()
                 let drafts = try await recoveryStore.listing()
-                return (idx, recoveryStore, cached, drafts)
+                let semantic: SQLiteEmbeddingIndex?
+                let semanticIssue: String?
+                do { semantic = try embeddingFactory(baseDir, lease, gate); semanticIssue = nil }
+                catch { semantic = nil; semanticIssue = "Semantic index unavailable. Lexical search remains available." }
+                return (idx, recoveryStore, cached, drafts, semantic, semanticIssue)
             }.value
             try requireLifecycleState(.open, action: "unlock", session: session)
             if persistSecurityScopedBookmark, (resolvedStaleBookmark || overrideURL != nil) {
@@ -2351,6 +2372,8 @@ struct AISuggestion: Identifiable, Sendable {
             sessionState = .open(session)
             lockedVaultURL = nil
             repository = repo; index = searchIndex; recovery = journal
+            semanticIndex = semantic
+            semanticIndexIssue = semanticIssue
             await bindAIProcessing(repository: repo, lease: lease)
             try requireLifecycleState(.open, action: "AI processing admission", session: session)
             unseenRenamedPages.removeAll()

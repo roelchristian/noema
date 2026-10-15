@@ -215,6 +215,18 @@ struct ExternalAICredential: Sendable, CustomStringConvertible, CustomDebugStrin
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
     }
 
+    /// Embedding-only endpoint admission. Existing Responses authority is unchanged.
+    func authorizeEmbedding(_ request: inout URLRequest) throws {
+        guard let url = request.url, url.scheme == "https", url.host == "api.openai.com",
+              url.port == nil || url.port == 443, url.path == "/v1/embeddings",
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              request.httpMethod == "POST", request.httpBodyStream == nil,
+              let key = String(data: bytes, encoding: .utf8) else {
+            throw ExternalAIError.invalidConfiguration
+        }
+        request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+    }
+
     /// Metadata-only validation. This path cannot submit vault content or choose an arbitrary URL.
     func authorizeConnectionValidation(_ request: inout URLRequest) throws {
         guard let url = request.url, url.scheme == "https", url.host == "api.openai.com",

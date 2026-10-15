@@ -28,6 +28,49 @@ struct ExternalAISettingsTests {
     }
 
     @Test @MainActor
+    func embeddingPreferenceSurvivesRestartAndIsIndependentOfGenerativeConfiguration() throws {
+        let domain = "noema-embedding-settings-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let service = ExternalAIService(accessGate: VaultAccessGate(), defaults: defaults)
+        #expect(service.embeddingConfiguration == .default)
+        let originalGateway = service.gateway
+        let originalAuthorization = service.authorizationState
+        try service.setEmbeddingModel("text-embedding-3-large")
+        #expect(service.gateway === originalGateway)
+        #expect(service.authorizationState == originalAuthorization)
+        #expect(service.configuration == .default)
+        #expect(service.embeddingConfiguration.dimensions == 3_072)
+        #expect(Set((defaults.persistentDomain(forName: domain) ?? [:]).keys)
+                == [ExternalAIService.embeddingPreferenceKey])
+        try service.setModel("gpt-6-luna")
+        service.setReasoningEffort(.medium)
+        let restarted = ExternalAIService(accessGate: VaultAccessGate(), defaults: defaults)
+        #expect(restarted.embeddingConfiguration == service.embeddingConfiguration)
+        #expect(restarted.configuration == service.configuration)
+        try restarted.setEmbeddingModel("text-embedding-3-small")
+        #expect(restarted.configuration.model == "gpt-6-luna")
+        #expect(restarted.configuration.reasoningEffort == .medium)
+        #expect(ExternalAIService.loadEmbeddingConfiguration(from: defaults) == .default)
+    }
+
+    @Test @MainActor
+    func invalidEmbeddingPreferenceIsRejectedAndCorruptPersistenceFallsBack() throws {
+        let domain = "noema-embedding-invalid-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let service = ExternalAIService(accessGate: VaultAccessGate(), defaults: defaults)
+        #expect(throws: ExternalAIError.invalidConfiguration) { try service.setEmbeddingModel("gpt-4.1") }
+        #expect(service.embeddingConfiguration == .default)
+        #expect(defaults.object(forKey: ExternalAIService.embeddingPreferenceKey) == nil)
+        for json in ["broken", "{\"version\":99,\"model\":\"text-embedding-3-large\"}",
+                     "{\"version\":1,\"model\":\"unsupported\"}"] {
+            defaults.set(Data(json.utf8), forKey: ExternalAIService.embeddingPreferenceKey)
+            #expect(ExternalAIService.loadEmbeddingConfiguration(from: defaults) == .default)
+        }
+    }
+
+    @Test @MainActor
     func malformedModelCannotReplaceGatewayOrPersistConfiguration() throws {
         let domain = "noema-external-ai-invalid-model-\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: domain))

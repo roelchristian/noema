@@ -72,6 +72,26 @@ struct ExternalAISettings: View {
                  ? "Low is the default. Changes save automatically and revoke session access."
                  : "Reasoning effort selection is available for gpt-6-luna and retained across model switches.")
                 .font(.caption).foregroundStyle(.secondary)
+            Picker("Embedding model", selection: Binding(
+                get: { service.embeddingConfiguration.model },
+                set: { model in
+                    do {
+                        try service.setEmbeddingModel(model.rawValue)
+                        feedback = "Embedding model saved. Existing content requires reindexing."
+                        failed = false
+                    } catch {
+                        feedback = ExternalAIError.invalidConfiguration.errorDescription
+                        failed = true
+                    }
+                })) {
+                ForEach(OpenAIEmbeddingModel.allCases, id: \.self) { model in
+                    Text(model.displayName).tag(model)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(isBusy)
+            Text("Used for semantic indexing and similarity search. This is independent of the model used for summaries and other AI features. Changing the embedding model requires reindexing existing content.")
+                .font(.caption).foregroundStyle(.secondary)
             LabeledContent("Session authorization", value: authorizationDescription)
             HStack {
                 Button("Validate Connection") {
