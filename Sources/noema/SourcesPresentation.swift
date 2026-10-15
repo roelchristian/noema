@@ -4,7 +4,23 @@ import SwiftUI
 import UniformTypeIdentifiers
 import VaultCore
 
-/// The metadata that affects table display. No source content, summaries, or bookmark data is retained.
+enum SourceInboxSortOrder: String, CaseIterable, Identifiable {
+    case captured = "Recently Captured"
+    case title = "Title"
+    var id: String { rawValue }
+
+    var comparators: [KeyPathComparator<SourceTableRow>] {
+        switch self {
+        case .captured:
+            [KeyPathComparator(\SourceTableRow.captureSortDate, order: .reverse),
+             KeyPathComparator(\SourceTableRow.title, comparator: .localizedStandard)]
+        case .title:
+            [KeyPathComparator(\SourceTableRow.title, comparator: .localizedStandard)]
+        }
+    }
+}
+
+/// The metadata that affects list display. No source content, summaries, or bookmark data is retained.
 struct SourceTableInput: Identifiable, Equatable {
     let id: UUID
     let title: String
@@ -29,13 +45,14 @@ struct SourceTableInput: Identifiable, Equatable {
     }
 }
 
-/// Ready-to-display table values. Equality never compares source bodies or excerpts.
+/// Ready-to-display list values. Equality never compares source bodies or excerpts.
 struct SourceTableRow: Identifiable, Equatable {
     let id: UUID
     let title: String
     let originalFilename: String
     let sourceLocation: String
     let fileKind: String
+    let compactFileKind: String
     let fileSize: Int
     let formattedFileSize: String
     let updatedAt: Date?
@@ -47,7 +64,14 @@ struct SourceTableRow: Identifiable, Equatable {
         title = input.title
         originalFilename = input.originalFilename
         sourceLocation = input.isLinked ? "Linked" : "In vault"
-        fileKind = UTType(filenameExtension: URL(fileURLWithPath: input.originalFilename).pathExtension)?.localizedDescription ?? "File"
+        let fileExtension = URL(fileURLWithPath: input.originalFilename).pathExtension.lowercased()
+        fileKind = UTType(filenameExtension: fileExtension)?.localizedDescription ?? "File"
+        switch fileExtension {
+        case "txt": compactFileKind = "Text"
+        case "md", "markdown": compactFileKind = "Markdown"
+        case "": compactFileKind = "File"
+        default: compactFileKind = fileExtension.uppercased()
+        }
         fileSize = input.fileSize
         formattedFileSize = ByteCountFormatter.string(fromByteCount: Int64(input.fileSize), countStyle: .file)
         updatedAt = LibraryRow.date(input.capturedAt)
@@ -60,6 +84,7 @@ struct SourceTableRow: Identifiable, Equatable {
 @MainActor @Observable final class SourcesTablePresentation {
     private(set) var rows: [SourceTableRow] = []
     private(set) var sortOrder = [KeyPathComparator(\SourceTableRow.title)]
+    private(set) var inboxSortOrder: SourceInboxSortOrder = .title
     var columnCustomization = TableColumnCustomization<SourceTableRow>()
     @ObservationIgnored private var inputs: [SourceTableInput] = []
     @ObservationIgnored private let rowBuilder: (SourceTableInput) -> SourceTableRow
@@ -89,6 +114,11 @@ struct SourceTableRow: Identifiable, Equatable {
         return true
     }
 
+    func setInboxSortOrder(_ order: SourceInboxSortOrder) {
+        inboxSortOrder = order
+        setSortOrder(order.comparators)
+    }
+
     @discardableResult
     func setSortOrder(_ newOrder: [KeyPathComparator<SourceTableRow>]) -> Bool {
         guard sortOrder != newOrder else { return false }
@@ -98,7 +128,7 @@ struct SourceTableRow: Identifiable, Equatable {
     }
 
     /// Drop all sensitive metadata when the owning workspace is locked, closed, or replaced.
-    /// Sorting and column sizing preferences contain no vault data and can survive sessions.
+    /// Sorting and legacy column preferences contain no vault data and can survive sessions.
     func clear() {
         inputs = []
         if !rows.isEmpty { rows = [] }

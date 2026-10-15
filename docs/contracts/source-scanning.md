@@ -4,7 +4,7 @@
 
 Repository scans distinguish metadata from original content, cache only verified eligible originals, and reconcile changed linked text even when its metadata is unchanged.
 
-The Sources table, inspector metadata, sorting, LCC edits and context menus need metadata. Search indexing, AI summaries/naming/classification/page generation, and the selected textual preview need extracted content. `SourceReader` and explicit availability checks need original bytes and continue using the existing authorized original reader. PDF AI extraction still verifies and reads the PDF original.
+The Sources list, inspector metadata, sorting, LCC edits and context menus need metadata. Search indexing, AI summaries/naming/classification/page generation, and the selected textual preview need extracted content. `SourceReader` and explicit availability checks need original bytes and continue using the existing authorized original reader. PDF AI extraction still verifies and reads the PDF original.
 
 ## Identity, eligibility and invalidation
 
