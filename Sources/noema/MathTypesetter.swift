@@ -49,6 +49,28 @@ final class MathTypesetter: NSObject, WKNavigationDelegate {
         let cost: Int
     }
 
+    private let resourceBundle: Bundle?
+
+    init(resourceBundle: Bundle? = nil) {
+        self.resourceBundle = resourceBundle
+        super.init()
+    }
+
+    /// Resolve both packaged apps and SwiftPM executables without invoking the
+    /// generated Bundle.module accessor, which traps if its build path is absent.
+    static func bundledResourceURL(in bundle: Bundle) -> URL? {
+        let name = "noema_noema.bundle"
+        var roots = [bundle.bundleURL, bundle.bundleURL.deletingLastPathComponent()]
+        if let resources = bundle.resourceURL { roots.insert(resources, at: 0) }
+        if let executable = bundle.executableURL { roots.append(executable.deletingLastPathComponent()) }
+        for root in roots {
+            guard let resources = Bundle(url: root.appendingPathComponent(name)),
+                  let url = resources.url(forResource: "render", withExtension: "html", subdirectory: "MathResources") else { continue }
+            return url
+        }
+        return nil
+    }
+
     private let maximumEntries = 256
     private let maximumBytes = 32 * 1024 * 1024
     private let maximumJobs = 128
@@ -160,7 +182,14 @@ final class MathTypesetter: NSObject, WKNavigationDelegate {
     }
 
     private func loadRenderer(_ job: Job) {
-        guard let url = Bundle.module.url(forResource: "render", withExtension: "html", subdirectory: "MathResources") else {
+        let url: URL?
+        if let resourceBundle {
+            url = Self.bundledResourceURL(in: resourceBundle)
+        } else {
+            url = Self.bundledResourceURL(in: .main)
+                ?? Self.bundledResourceURL(in: Bundle(for: MathTypesetter.self))
+        }
+        guard let url else {
             finish(job, .failure(RenderError.unavailable))
             return
         }

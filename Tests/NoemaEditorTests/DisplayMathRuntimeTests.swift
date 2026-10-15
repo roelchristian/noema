@@ -9,11 +9,15 @@ import VaultCore
     private let projectionAttribute = NSAttributedString.Key("noema.displayMathOriginalPresentation")
 
     private func editor(_ source: String) -> (RichArticleView.Coordinator, ArticleTextView, NSWindow) {
-        _ = NSApplication.shared
         let document = BlockDocument(blocks: [
             EditorBlock(kind: .math, runs: [RichRun(source)]),
             EditorBlock(runs: [RichRun("Following prose")])
         ])
+        return editor(document)
+    }
+
+    private func editor(_ document: BlockDocument) -> (RichArticleView.Coordinator, ArticleTextView, NSWindow) {
+        _ = NSApplication.shared
         let parent = RichArticleView(document: .constant(document), editable: true,
             locked: false, action: nil, onWikiLink: { _ in })
         let coordinator = parent.makeCoordinator()
@@ -38,12 +42,15 @@ import VaultCore
         return (coordinator, view, window)
     }
 
-    private func waitForReading(_ view: ArticleTextView) async throws {
+    private func waitForReading(_ view: ArticleTextView, locations: [Int] = [0]) async throws {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(20))
         while clock.now < deadline {
-            if let font = view.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont,
-               font.pointSize < 1 { return }
+            if locations.allSatisfy({ location in
+                guard let storage = view.textStorage, location < storage.length,
+                      let font = storage.attribute(.font, at: location, effectiveRange: nil) as? NSFont else { return false }
+                return font.pointSize < 1
+            }) { return }
             try await Task.sleep(for: .milliseconds(20))
         }
         Issue.record("The local typesetter did not produce a display-math reading projection within 20 seconds")
@@ -180,6 +187,80 @@ import VaultCore
             #expect(abs(projected.paragraphSpacing - initial.paragraphSpacing) < 3)
             #expect(coordinator.document.blocks[0].text == replacement)
         }
+    }
+
+    @Test func groupTheoryArticleRendersBothExactEquationsAndPreservesSourceAcrossFocus() async throws {
+        let objects = [#"\operatorname{Ob}(\mathbf{Grp})"#,
+            #"=\{G\mid G\text{ is a group}\}."#].joined(separator: "\n")
+        let morphisms = [#"\operatorname{Hom}_{\mathbf{Grp}}(G,H)"#,
+            "=", #"\{f:G\to H\mid f(xy)=f(x)f(y)"#,
+            #"\ \forall x,y\in G\}."#].joined(separator: "\n")
+        let document = BlockDocument(blocks: [
+            EditorBlock(runs: [RichRun("We define Grp as follows.")]),
+            EditorBlock(runs: [RichRun("Objects. The objects are all groups. Thus,")]),
+            EditorBlock(kind: .math, runs: [RichRun(objects)]),
+            EditorBlock(runs: [RichRun("Morphisms. Given any two groups G and H, the morphisms from G to H are precisely the group homomorphisms:")]),
+            EditorBlock(kind: .math, runs: [RichRun(morphisms)])
+        ])
+        let (coordinator, view, window) = editor(document)
+        defer {
+            view.invalidateDisplayMathPresentation(); view.inlineMathProjection?.invalidate()
+            MathTypesetter.shared.removeAllCachedResults(); window.close()
+        }
+        let storage = try #require(view.textStorage)
+        let ranges = BlockTextStorage.ranges(storage)
+        #expect(ranges.count == document.blocks.count)
+        let firstMath = try #require(ranges.first(where: { $0.0 == document.blocks[2].id })?.1)
+        let secondMath = try #require(ranges.first(where: { $0.0 == document.blocks[4].id })?.1)
+        let mathLocations = [firstMath.location, secondMath.location]
+        let rawStorage = document.blocks.map(\.text).joined(separator: "\n") + "\n"
+        try await waitForReading(view, locations: mathLocations)
+        for location in mathLocations {
+            let font = try #require(storage.attribute(.font, at: location, effectiveRange: nil) as? NSFont)
+            #expect(font.pointSize < 1)
+            #expect(storage.attribute(projectionAttribute, at: location, effectiveRange: nil) != nil)
+        }
+        view.layoutManager?.ensureLayout(for: view.textContainer!)
+        let rectangles = ranges.map { view.rect(for: $0.1) }
+        for index in rectangles.indices.dropFirst() {
+            #expect(rectangles[index].minY >= rectangles[index - 1].maxY)
+        }
+        for range in [firstMath, secondMath] {
+            let frame = view.rect(for: range)
+            #expect(frame.width > 10 && frame.height > 10)
+            #expect(frame.minX >= view.textContainerOrigin.x)
+            #expect(frame.maxX <= view.bounds.width - view.textContainerOrigin.x)
+            #expect(frame.maxY <= view.visibleRect.maxY)
+        }
+        #expect(view.string == rawStorage)
+        #expect(coordinator.document == document)
+        #expect(BlockTextStorage.capture(storage, previous: document) == document)
+        #expect(view.undoManager?.canUndo == false)
+        try capture(view, name: "group-theory-article")
+
+        window.makeFirstResponder(view)
+        view.setSelectedRange(NSRange(location: firstMath.location, length: objects.utf16.count))
+        coordinator.refreshMathPresentation()
+        let firstSourceFont = try #require(storage.attribute(.font, at: firstMath.location, effectiveRange: nil) as? NSFont)
+        let secondReadingFont = try #require(storage.attribute(.font, at: secondMath.location, effectiveRange: nil) as? NSFont)
+        #expect(firstSourceFont.pointSize > 1)
+        #expect(secondReadingFont.pointSize < 1)
+        #expect(view.selectedRange() == NSRange(location: firstMath.location, length: objects.utf16.count))
+        view.layoutManager?.ensureLayout(for: view.textContainer!)
+        #expect(view.rect(for: ranges[3].1).minY >= view.rect(for: firstMath).maxY + rectangles[2].height)
+        view.setSelectedRange(NSRange(location: secondMath.location, length: 0))
+        coordinator.refreshMathPresentation()
+        let firstReadingFont = try #require(storage.attribute(.font, at: firstMath.location, effectiveRange: nil) as? NSFont)
+        let secondSourceFont = try #require(storage.attribute(.font, at: secondMath.location, effectiveRange: nil) as? NSFont)
+        #expect(firstReadingFont.pointSize < 1)
+        #expect(secondSourceFont.pointSize > 1)
+        window.makeFirstResponder(nil)
+        coordinator.refreshMathPresentation()
+        try await waitForReading(view, locations: mathLocations)
+        #expect(view.string == rawStorage)
+        #expect(coordinator.document == document)
+        #expect(BlockTextStorage.capture(storage, previous: document) == document)
+        #expect(view.undoManager?.canUndo == false)
     }
 
 }

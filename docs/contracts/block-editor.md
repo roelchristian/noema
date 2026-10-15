@@ -424,10 +424,13 @@ Mathematics is rendered locally by bundled KaTeX in a nonpersistent WebKit
 presentation layer. `MathTypesetter` returns transparent vector-backed images,
 with bounded requests, expansion and caching. All bundled mathematical font faces
 load before capture, including first-use large operators and scalable delimiters.
-Its cache identity includes source,
-custom macros, display mode, size, colour and available width. Runtime rendering
-has no network access; unsupported or failed expressions retain a legible source
-or native fallback. This replaces the Unicode approximation for successful editor
+Its cache identity includes source, custom macros, display mode, size, colour and
+available width. Packaged applications resolve the math bundle from
+`Contents/Resources`;
+resource discovery must return a recoverable failure when assets are absent,
+without invoking the generated SwiftPM accessor that traps on missing bundles.
+Runtime rendering has no network access; unsupported or failed expressions retain
+a legible source or native fallback. This replaces the Unicode approximation for successful editor
 presentation; existing domain text and raw TeX remain authoritative.
 
 Display equations use the reading measure without persistent coloured panels or

@@ -53,6 +53,66 @@ struct MathTypesetterRuntimeTests {
         try onWhite.write(to: folder.appendingPathComponent(name + "-on-white.png"))
     }
 
+    private func relocatedAppBundle(at root: URL) throws -> Bundle {
+        let app = root.appendingPathComponent("Relocated Noema.app", isDirectory: true)
+        let contents = app.appendingPathComponent("Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: contents.appendingPathComponent("MacOS"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: contents.appendingPathComponent("Resources"), withIntermediateDirectories: true)
+        let info: [String: String] = [
+            "CFBundleIdentifier": "dev.noema.math-resource-fixture." + UUID().uuidString,
+            "CFBundleName": "Relocated Noema",
+            "CFBundlePackageType": "APPL",
+            "CFBundleExecutable": "noema-fixture",
+            "CFBundleVersion": "1"
+        ]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            .write(to: contents.appendingPathComponent("Info.plist"))
+        try Data().write(to: contents.appendingPathComponent("MacOS/noema-fixture"))
+        return try #require(Bundle(url: app))
+    }
+
+    @Test func relocatedApplicationResourcesRenderInRealWebKit() async throws {
+        let fixture = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaRelocatedMath-" + UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let original = try #require(MathTypesetter.bundledResourceURL(in: .main)
+            ?? MathTypesetter.bundledResourceURL(in: Bundle(for: MathTypesetter.self)))
+        let relocated = try relocatedAppBundle(at: fixture)
+        let package = try #require(relocated.resourceURL).appendingPathComponent("noema_noema.bundle", isDirectory: true)
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        let mathResources = package.appendingPathComponent("MathResources", isDirectory: true)
+        try FileManager.default.copyItem(at: original.deletingLastPathComponent(), to: mathResources)
+        let resolved = try #require(MathTypesetter.bundledResourceURL(in: relocated))
+        #expect(resolved.resolvingSymlinksInPath() == mathResources.appendingPathComponent("render.html").resolvingSymlinksInPath())
+        let renderer = MathTypesetter(resourceBundle: relocated)
+        defer { renderer.removeAllCachedResults() }
+        let rendered = try await render(#"\sum_{n=1}^{N}\frac{1}{n^2}"#, using: renderer, display: true).get()
+        let pixels = try bitmap(rendered)
+        var ink = 0
+        for y in 0..<pixels.pixelsHigh {
+            for x in 0..<pixels.pixelsWide where (pixels.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1 { ink += 1 }
+        }
+        #expect(ink > 100)
+        try capture(rendered, named: "relocated-app-resources")
+    }
+
+    @Test func missingApplicationResourcesFailGracefullyWithoutGlobalFallback() async throws {
+        let fixture = FileManager.default.temporaryDirectory.appendingPathComponent("NoemaMissingMath-" + UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let empty = try relocatedAppBundle(at: fixture)
+        #expect(MathTypesetter.bundledResourceURL(in: empty) == nil)
+        let renderer = MathTypesetter(resourceBundle: empty)
+        defer { renderer.removeAllCachedResults() }
+        for _ in 0..<2 {
+            let result = await render(#"\frac{1}{2}"#, using: renderer)
+            if case .success = result { Issue.record("A missing app resource bundle must fail without falling back to development resources") }
+        }
+        // Failure is a recoverable presentation result; it must not crash the
+        // process or poison a subsequent renderer with accessible resources.
+        let recovery = MathTypesetter()
+        defer { recovery.removeAllCachedResults() }
+        #expect(try await render("x+y", using: recovery).get().size.width > 10)
+    }
+
     @Test func realFractionHasStackedGeometryInkTransparencyAndBaseline() async throws {
         let renderer = MathTypesetter()
         defer { renderer.removeAllCachedResults() }
