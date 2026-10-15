@@ -1,5 +1,5 @@
 import Foundation
-import XCTest
+import Testing
 @testable import VaultCore
 
 private actor LifecycleMemoryLedger: AIWorkLedger {
@@ -31,11 +31,11 @@ private struct LifecycleProcessor: AIWorkProcessor {
     func isCurrent(_ item: AIWorkItem, snapshot: any AIWorkSnapshot, lease: VaultSessionLease) async throws -> Bool { true }
 }
 
-final class AIProcessingCoordinatorTests: XCTestCase {
+@Suite struct AIProcessingCoordinatorTests {
     // A frozen clock prevents dispatch without wall-clock sleeps or external calls.
     private let clock = AIProcessingClock(now: { Date(timeIntervalSince1970: 100) }, sleep: { _ in throw CancellationError() })
 
-    func testBaselineCoalescingAndIdempotency() async throws {
+    @Test func testBaselineCoalescingAndIdempotency() async throws {
         let session = VaultSession(vaultID: UUID(), root: URL(fileURLWithPath: "/tmp/noema-ai-fixture"), generation: 1)
         let gate = VaultAccessGate(initialState: .open(session))
         let ledger = LifecycleMemoryLedger()
@@ -45,19 +45,19 @@ final class AIProcessingCoordinatorTests: XCTestCase {
         func change(_ revision: String) -> AIContentChange { .init(vaultID: session.vaultID, entityKind: .page, entityID: id, revision: revision) }
         try await coordinator.bind(lease: session.lease, inventory: [change("baseline")])
         let initial = await coordinator.workItems()
-        XCTAssertTrue(initial.isEmpty)
+        #expect(initial.isEmpty)
         try await coordinator.receive(change("first"))
         try await coordinator.receive(change("latest"))
         let pending = await coordinator.workItems()
-        XCTAssertEqual(pending.count, 1)
-        XCTAssertEqual(pending.first?.revision, "latest")
+        #expect(pending.count == 1)
+        #expect(pending.first?.revision == "latest")
         try await coordinator.receive(change("latest"))
         let repeated = await coordinator.workItems()
-        XCTAssertEqual(repeated.first?.id, pending.first?.id)
+        #expect(repeated.first?.id == pending.first?.id)
         try await coordinator.suspend()
     }
 
-    func testVersionChangeResetsOnlyKnownWork() async throws {
+    @Test func testVersionChangeResetsOnlyKnownWork() async throws {
         let session = VaultSession(vaultID: UUID(), root: URL(fileURLWithPath: "/tmp/noema-ai-version"), generation: 1)
         let ledger = LifecycleMemoryLedger()
         let id = UUID()
@@ -68,22 +68,22 @@ final class AIProcessingCoordinatorTests: XCTestCase {
         await coordinator.register(LifecycleProcessor(version: "2"))
         try await coordinator.bind(lease: session.lease, inventory: [change])
         let work = await coordinator.workItems()
-        XCTAssertEqual(work.count, 1)
-        XCTAssertEqual(work.first?.processorVersion, "2")
-        XCTAssertEqual(work.first?.revision, "current")
-        XCTAssertEqual(work.first?.attemptCount, 0)
-        XCTAssertNil(work.first?.inputFingerprint)
+        #expect(work.count == 1)
+        #expect(work.first?.processorVersion == "2")
+        #expect(work.first?.revision == "current")
+        #expect(work.first?.attemptCount == 0)
+        #expect(work.first?.inputFingerprint == nil)
         try await coordinator.suspend()
     }
 
-    func testMetadataAndAIPublicationDoNotTriggerBodyProcessor() {
+    @Test func testMetadataAndAIPublicationDoNotTriggerBodyProcessor() {
         let processor = LifecycleProcessor()
         let vault = UUID(), id = UUID()
-        XCTAssertFalse(processor.isEligible(.init(vaultID: vault, entityKind: .page, entityID: id, revision: "1", dimensions: [.metadata])))
-        XCTAssertFalse(processor.isEligible(.init(vaultID: vault, entityKind: .page, entityID: id, revision: "2", origin: .aiPublication)))
-        XCTAssertTrue(processor.isEligible(.init(vaultID: vault, entityKind: .page, entityID: id, revision: "3")))
+        #expect(!(processor.isEligible(.init(vaultID: vault, entityKind: .page, entityID: id, revision: "1", dimensions: [.metadata]))))
+        #expect(!(processor.isEligible(.init(vaultID: vault, entityKind: .page, entityID: id, revision: "2", origin: .aiPublication))))
+        #expect(processor.isEligible(.init(vaultID: vault, entityKind: .page, entityID: id, revision: "3")))
     }
-    func testUnrelatedMetadataCommitPreservesPendingBodyWork() async throws {
+    @Test func testUnrelatedMetadataCommitPreservesPendingBodyWork() async throws {
         let session = VaultSession(vaultID: UUID(), root: URL(fileURLWithPath: "/tmp/noema-ai-metadata"), generation: 1)
         let coordinator = AIProcessingCoordinator(ledger: LifecycleMemoryLedger(),
             gate: VaultAccessGate(initialState: .open(session)), policy: LifecyclePolicy(), clock: clock)
@@ -94,14 +94,14 @@ final class AIProcessingCoordinatorTests: XCTestCase {
         try await coordinator.receive(.init(vaultID: session.vaultID, entityKind: .page, entityID: id,
             revision: "metadata", dimensions: [.metadata]))
         let work = await coordinator.workItems()
-        XCTAssertEqual(work.count, 1)
-        XCTAssertEqual(work.first?.revision, "metadata")
-        XCTAssertEqual(work.first?.state, .pending)
+        #expect(work.count == 1)
+        #expect(work.first?.revision == "metadata")
+        #expect(work.first?.state == .pending)
         try await coordinator.suspend()
     }
 
-    func testRestorationReevaluatesBodyProcessor() {
-        XCTAssertTrue(LifecycleProcessor().isEligible(.init(vaultID: UUID(), entityKind: .page,
+    @Test func testRestorationReevaluatesBodyProcessor() {
+        #expect(LifecycleProcessor().isEligible(.init(vaultID: UUID(), entityKind: .page)
             entityID: UUID(), revision: "restored", kind: .restored, dimensions: [.lifecycle])))
     }
 
