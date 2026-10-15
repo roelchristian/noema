@@ -15,6 +15,7 @@ enum NoemaSidebarLayout {
         bottom: 2,
         trailing: NoemaMetrics.sidebarRowHorizontalInset
     )
+    static let organisationIndent: CGFloat = 12
     static let footerHorizontalPadding: CGFloat = NoemaMetrics.sidebarInset
     static let footerRowHorizontalPadding: CGFloat = NoemaMetrics.sidebarRowHorizontalInset + 3
 }
@@ -42,6 +43,63 @@ struct NoemaSidebarRowLabel: View {
         }
         .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight, alignment: .leading)
         .contentShape(Rectangle())
+    }
+}
+
+/// A stable icon slot discloses children independently of container selection.
+struct NoemaOrganisationSidebarRow: View {
+    let title: String
+    let symbol: String
+    let depth: Int
+    let isExpanded: Bool
+    let isSelected: Bool
+    let onExpansionChange: (Bool) -> Void
+    let onSelect: () -> Void
+    @State private var isHovered = false
+    @FocusState private var disclosureFocused: Bool
+
+    var body: some View {
+        HStack(spacing: NoemaMetrics.sidebarIconSpacing) {
+            Button {
+                onExpansionChange(!isExpanded)
+            } label: {
+                Image(systemName: isHovered || disclosureFocused
+                    ? (isExpanded ? "chevron.down" : "chevron.right") : symbol)
+                    .font(NoemaTypography.sidebarIcon)
+                    .foregroundStyle(.secondary)
+                    .frame(width: NoemaMetrics.iconWidth, height: NoemaMetrics.compactRowHeight)
+                    .contentShape(Rectangle())
+                    .accessibilityHidden(true)
+            }
+            .buttonStyle(.plain)
+            .focused($disclosureFocused)
+            .accessibilityLabel("\(isExpanded ? "Collapse" : "Expand") \(title)")
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            .help("\(isExpanded ? "Collapse" : "Expand") \(title)")
+
+            Button(action: onSelect) {
+                HStack(spacing: 0) {
+                    Text(title)
+                        .font(isSelected ? NoemaTypography.navigationEmphasis : NoemaTypography.navigation)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, minHeight: NoemaMetrics.compactRowHeight, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(title)
+        }
+        .padding(.leading, CGFloat(depth) * NoemaSidebarLayout.organisationIndent)
+        .onHover { isHovered = $0 }
+        .onMoveCommand { direction in
+            switch direction {
+            case .right: onExpansionChange(true)
+            case .left: onExpansionChange(false)
+            default: break
+            }
+        }
     }
 }
 

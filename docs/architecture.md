@@ -281,8 +281,12 @@ highlight follows the active collection. Favorites and Recent Items are top-leve
 entries in a separate sidebar group, divided from Pages, Sources, and Knowledge.
 Both open the same inbox list in the collection pane; individual items do not appear
 in the sidebar. Vault-owned collections and folders appear in a separate sidebar section
-and reuse the inbox list. Each container expands or collapses independently; expanded
-containers show their page, source and semantic-block memberships as draggable sidebar rows.
+and reuse the inbox list. The Collections section shows containers only; selecting one
+browses its memberships in the collection pane. Each container expands or collapses
+its child containers independently. A fixed leading icon slot reveals the disclosure
+chevron on hover or keyboard focus; the title selects the container. Expansion is also
+available through the context menu and Left/Right arrow keys on a focused row.
+The header plus menu creates collections and folders.
 Collapsing an ancestor hides its descendants without changing their individual disclosure state.
 Drop targets highlight on hover, and an accepted drop expands its destination.
 Collections remain at the vault root; folders can be created
@@ -292,9 +296,9 @@ its descendant containers and memberships while retaining canonical items. Store
 source, and block memberships resolve from vault content independently of recent history;
 entity and semantic-object memberships use their existing catalogue detail sheets. Library and inbox rows can be dragged onto a sidebar container or its open inbox.
 Library drops add membership; drops from a container move membership atomically.
-Folders can be dragged onto collections or folders, or onto the Vault Root header
-target. Item lists support Command/Shift multi-selection; Command-click selects multiple
-sidebar folders. A drag includes the selected visible rows when started on a selected
+Folders can be dragged onto collections or folders, or onto the Collections header,
+which highlights as “Move to Vault Root” while targeted. Item lists support
+Command/Shift multi-selection; Command-click selects multiple sidebar folders. A drag includes the selected visible rows when started on a selected
 row. Batch admission validates every payload, deduplicates repeated entries, skips
 same-destination placements and keeps selected descendants with their selected ancestor.
 Cycles and stale session payloads are rejected before dispatch. Batch edits use existing
