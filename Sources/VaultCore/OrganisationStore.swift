@@ -305,7 +305,7 @@ extension SQLiteBlockStore {
         let query = try statement("PRAGMA user_version")
         defer { sqlite3_finalize(query) }
         guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
-        return sqlite3_column_int(query, 0) == Int32(Self.organisationSchemaVersion)
+        return [Int32(Self.organisationSchemaVersion), Int32(Self.propertySchemaVersion), Int32(Self.relationshipSchemaVersion)].contains(sqlite3_column_int(query, 0))
     }
 
     private func loadOrganisationContainers() throws -> [OrganisationContainer] {

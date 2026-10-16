@@ -233,6 +233,146 @@ public actor FileVaultRepository: VaultRepository {
         )
     }
 
+    /// Explicit manual schema-6 transition. Call only after save/recovery quiescence
+    /// and retire the old repository before reopening. SQLite commits first; a failed
+    /// conditional manifest publication leaves a safe mismatch requiring explicit resume.
+    public static func upgradeEntityProperties(
+        root: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate,
+        expectedVaultRevision: BlockStoreRevision,
+        contentStore: (any VaultContentStore)? = nil,
+        storageProvider: VaultStorageProvider = .plaintext
+    ) async throws -> VaultManifest {
+        try await publishEntityPropertyUpgrade(root: root, sessionLease: sessionLease, accessGate: accessGate,
+            expectedVaultRevision: expectedVaultRevision, contentStore: contentStore, storageProvider: storageProvider)
+    }
+
+    /// Retry only the manifest publication after SQLite committed schema 7. This
+    /// never infers an upgrade on ordinary vault open and never recreates the database.
+    public static func resumeEntityPropertiesUpgrade(
+        root: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate,
+        contentStore: (any VaultContentStore)? = nil,
+        storageProvider: VaultStorageProvider = .plaintext
+    ) async throws -> VaultManifest {
+        try await publishEntityPropertyUpgrade(root: root, sessionLease: sessionLease, accessGate: accessGate,
+            expectedVaultRevision: nil, contentStore: contentStore, storageProvider: storageProvider)
+    }
+
+    private static func publishEntityPropertyUpgrade(
+        root: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate,
+        expectedVaultRevision: BlockStoreRevision?, contentStore: (any VaultContentStore)?,
+        storageProvider: VaultStorageProvider
+    ) async throws -> VaultManifest {
+        try accessGate.validate(lease: sessionLease, targetRoot: root, targetVaultID: sessionLease.vaultID, operation: "entityProperties.upgrade")
+        try SQLiteVaultLocality.requireLocalRoot(root)
+        let rawStore = try contentStore ?? storageProvider.makeStore(root: root)
+        let store = GatedVaultContentStore(base: rawStore, root: root, vaultID: sessionLease.vaultID, gate: accessGate, lease: sessionLease)
+        let original = try store.read(at: "vault.json")
+        var manifest = try JSONDecoder().decode(VaultManifest.self, from: original)
+        guard manifest.isSupported, manifest.id == sessionLease.vaultID,
+              manifest.storage?.schemaVersion == SQLiteBlockStore.organisationSchemaVersion else {
+            throw VaultError.invalid("Explicit entity-property upgrade requires a supported schema-6 manifest.")
+        }
+        let databaseURL = root.appendingPathComponent(VaultManifest.sqliteDatabasePath)
+        guard databaseURL.standardizedFileURL.resolvingSymlinksInPath() == databaseURL.standardizedFileURL,
+              FileManager.default.fileExists(atPath: databaseURL.path) else {
+            throw VaultError.invalid("The canonical SQLite database is missing or unsafe.")
+        }
+        let database: SQLiteBlockStore
+        if expectedVaultRevision != nil {
+            database = try storageProvider.makeBlockStore(url: databaseURL, sessionLease: sessionLease, accessGate: accessGate, manifest: manifest)
+        } else {
+            var upgraded = manifest
+            upgraded.storage?.schemaVersion = SQLiteBlockStore.propertySchemaVersion
+            upgraded.storage?.requiredCapabilities = SQLiteBlockStore.propertyRequiredCapabilities
+            database = try storageProvider.makeBlockStore(url: databaseURL, sessionLease: sessionLease, accessGate: accessGate, manifest: upgraded)
+        }
+        do {
+            try await database.validateCanonicalLogicalIntegrity()
+            if let expectedVaultRevision { _ = try await database.upgradeEntityPropertySchema(expectedVaultRevision: expectedVaultRevision) }
+            try await database.validateCanonicalLogicalIntegrity()
+            try await database.checkpoint()
+            manifest.storage?.schemaVersion = SQLiteBlockStore.propertySchemaVersion
+            manifest.storage?.requiredCapabilities = SQLiteBlockStore.propertyRequiredCapabilities
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try store.write(encoder.encode(manifest), at: "vault.json", condition: .replace(expected: original))
+            try await database.close()
+            return manifest
+        } catch {
+            try? await database.close()
+            throw error
+        }
+    }
+
+    /// Explicit manual schema-7 transition. Call only after save/recovery quiescence
+    /// and retire the old repository before reopening. SQLite commits first; a failed
+    /// conditional manifest publication leaves a safe mismatch requiring explicit resume.
+    public static func upgradeEntityRelationships(
+        root: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate,
+        expectedVaultRevision: BlockStoreRevision,
+        contentStore: (any VaultContentStore)? = nil,
+        storageProvider: VaultStorageProvider = .plaintext
+    ) async throws -> VaultManifest {
+        try await publishEntityRelationshipUpgrade(root: root, sessionLease: sessionLease, accessGate: accessGate,
+            expectedVaultRevision: expectedVaultRevision, contentStore: contentStore, storageProvider: storageProvider)
+    }
+
+    /// Retry only the manifest publication after SQLite committed schema 8. This
+    /// never infers an upgrade on ordinary vault open and never recreates the database.
+    public static func resumeEntityRelationshipsUpgrade(
+        root: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate,
+        contentStore: (any VaultContentStore)? = nil,
+        storageProvider: VaultStorageProvider = .plaintext
+    ) async throws -> VaultManifest {
+        try await publishEntityRelationshipUpgrade(root: root, sessionLease: sessionLease, accessGate: accessGate,
+            expectedVaultRevision: nil, contentStore: contentStore, storageProvider: storageProvider)
+    }
+
+    private static func publishEntityRelationshipUpgrade(
+        root: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate,
+        expectedVaultRevision: BlockStoreRevision?, contentStore: (any VaultContentStore)?,
+        storageProvider: VaultStorageProvider
+    ) async throws -> VaultManifest {
+        try accessGate.validate(lease: sessionLease, targetRoot: root, targetVaultID: sessionLease.vaultID, operation: "entityRelationships.upgrade")
+        try SQLiteVaultLocality.requireLocalRoot(root)
+        let rawStore = try contentStore ?? storageProvider.makeStore(root: root)
+        let store = GatedVaultContentStore(base: rawStore, root: root, vaultID: sessionLease.vaultID, gate: accessGate, lease: sessionLease)
+        let original = try store.read(at: "vault.json")
+        var manifest = try JSONDecoder().decode(VaultManifest.self, from: original)
+        guard manifest.isSupported, manifest.id == sessionLease.vaultID,
+              manifest.storage?.schemaVersion == SQLiteBlockStore.propertySchemaVersion else {
+            throw VaultError.invalid("Explicit entity-relationship upgrade requires a supported schema-7 manifest.")
+        }
+        let databaseURL = root.appendingPathComponent(VaultManifest.sqliteDatabasePath)
+        guard databaseURL.standardizedFileURL.resolvingSymlinksInPath() == databaseURL.standardizedFileURL,
+              FileManager.default.fileExists(atPath: databaseURL.path) else {
+            throw VaultError.invalid("The canonical SQLite database is missing or unsafe.")
+        }
+        let database: SQLiteBlockStore
+        if expectedVaultRevision != nil {
+            database = try storageProvider.makeBlockStore(url: databaseURL, sessionLease: sessionLease, accessGate: accessGate, manifest: manifest)
+        } else {
+            var upgraded = manifest
+            upgraded.storage?.schemaVersion = SQLiteBlockStore.relationshipSchemaVersion
+            upgraded.storage?.requiredCapabilities = SQLiteBlockStore.relationshipRequiredCapabilities
+            database = try storageProvider.makeBlockStore(url: databaseURL, sessionLease: sessionLease, accessGate: accessGate, manifest: upgraded)
+        }
+        do {
+            try await database.validateCanonicalLogicalIntegrity()
+            if let expectedVaultRevision { _ = try await database.upgradeEntityRelationshipSchema(expectedVaultRevision: expectedVaultRevision) }
+            try await database.validateCanonicalLogicalIntegrity()
+            try await database.checkpoint()
+            manifest.storage?.schemaVersion = SQLiteBlockStore.relationshipSchemaVersion
+            manifest.storage?.requiredCapabilities = SQLiteBlockStore.relationshipRequiredCapabilities
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try store.write(encoder.encode(manifest), at: "vault.json", condition: .replace(expected: original))
+            try await database.close()
+            return manifest
+        } catch {
+            try? await database.close()
+            throw error
+        }
+    }
+
     /// Run after save/recovery quiescence, while the session still has authority.
     public func checkpointPageStorage() async throws {
         try await sqliteBlockStore.checkpoint()

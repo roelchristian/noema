@@ -135,3 +135,18 @@ private func knowledgeSQL(_ url: URL, _ sql: String) throws {
     _ = try await store.createEntity(.init(typeKey: "event", label: "Retry"), expectedVaultRevision: revision, operationID: UUID())
     try await store.close()
 }
+
+@Test func knowledgeCreativeWorkRegistryAndIdentitySurviveReopen() async throws {
+    let root = try knowledgeRoot(); defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("blocks.sqlite"), vaultID = UUID()
+    let store = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: vaultID)
+    try knowledgeSQL(url, "DELETE FROM knowledge_entity_types WHERE key='creativeWork'")
+    let entity = KnowledgeEntity(typeKey: "creativeWork", label: "A work")
+    let created = try await store.createEntity(entity, expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID()).value
+    try await store.close()
+    let reopened = try VaultStorageProvider.plaintext.makeSemanticStagingStore(url: url, vaultID: vaultID, createIfMissing: false)
+    #expect(try await reopened.loadEntity(id: entity.id) == created)
+    #expect(try JSONDecoder().decode(KnowledgeEntity.self, from: JSONEncoder().encode(entity)) == entity)
+    #expect(KnowledgeEntityType.initial.map(\.key) == ["person", "place", "concept", "event", "creativeWork"])
+    try await reopened.close()
+}

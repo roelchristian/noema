@@ -36,7 +36,7 @@ alone does not authorize writing an unknown required type implementation.
 
 | Family | Initially supported types | Canonical fields and meaning |
 | --- | --- | --- |
-| Knowledge entity | `person`, `place`, `concept`, `event` | UUID, type key, canonical label, optional description, aliases, typed properties, store revision, created/modified timestamps, lifecycle. A person is a particular person; a place is a geographical/historically identifiable place; a concept is an idea, term, theory, subject or abstraction; an event is a particular occurrence or happening, without scheduling or timeline semantics. |
+| Knowledge entity | `person`, `place`, `concept`, `event`, `creativeWork` | UUID, type key, canonical label, optional description, aliases, typed properties, store revision, created/modified timestamps, lifecycle. A person is a particular person; a place is a geographical/historically identifiable place; a concept is an idea, term, theory, subject or abstraction; an event is a particular occurrence or happening, without scheduling or timeline semantics. |
 | Semantic object | `question`, `definition` | Independent UUID, type key, store revision, typed properties, lifecycle and timestamps. A question has optional answer text and status `unanswered` or `answered`; `answered` requires nonempty answer text. A definition has nonempty definitional text and optional term string. Both may have explicit related entity references; a definition may have one subject entity reference. |
 | Annotation | Independent record | UUID, location, typed referent, designation, revision, payload, timestamps, anchor disposition and referent disposition. A location may be whole block, inline range, entity or semantic object. An annotation links a location to a referent; it owns neither. |
 | Knowledge relation | Directed typed edge | UUID, registered predicate, source/target entity UUIDs, store revision, lifecycle, timestamps and optional provenance payload. Initial predicate `relatedTo` is manual/programmatic and directed; it makes no inferred factual claim. |
@@ -207,7 +207,7 @@ KNOW02 creates schema 4 requiring deterministic set
 The nested manifest `storage.schemaVersion`, `PRAGMA user_version`, vault UUID and
 database required-capability set must agree before writable admission. Unknown or
 missing required capabilities and unsupported payload versions deny writes before
-schema changes or publication. Only schema 6 is admitted in production. Schema 6 keeps the schema-5 semantic tables and adds vault-owned organisation tables under `organisationV1`. Schema 5 is not upgraded on open. Historical schemas reject without mutation.
+schema changes or publication. Schemas 6, 7 and 8 are admitted in production; schema 7 adds `entityPropertiesV1` and schema 8 adds `entityRelationshipsV1`. Schema 6 keeps the schema-5 semantic tables and adds vault-owned organisation tables under `organisationV1`. Schema 5 is not upgraded on open. Historical schemas reject without mutation.
 
 Schema 3's singular `vault_state.capability = canonicalMetadataV1` retains its
 meaning. Schema 4 adds an explicitly versioned `required_capabilities` set and
@@ -217,7 +217,7 @@ Capability presence denotes actually implemented preservation/writes, not a prom
 No schema-4 semantic tables or semantic feature activation is assumed by KNOW02;
 KNOW03's new relational authority therefore requires schema 5.
 
-Production initializes fresh schema 6 directly. Historical schema 1–5 upgrade routes
+Production initializes fresh schema 8 directly. Schema 6 remains readable/writable through its existing APIs; typed properties require the explicit revision-checked 6→7 upgrade. Opening never upgrades authority. Historical schema 1–5 upgrade routes
 are retired by STOR02B–STOR03; no automatic or explicit historical migration is
 supported. Internal fresh constructors provide test isolation only. Opening never
 reinterprets old Wiki/source files as canonical authority.
@@ -263,3 +263,67 @@ above. Production migration/admission, native integration, real device/accessibi
 linked-source availability, process/power-loss and complete-archive acceptance
 remain separate gates. No AI extraction, inference, answer generation, embeddings,
 graph UI, tagging UI or additional concrete types is authorized.
+
+## Typed entity properties (ENT.01)
+
+`EntityPropertyDefinition` is a reusable vault-owned UUID with a normalized unique
+label key, preserved display spelling, scalar kind, one/many cardinality, order,
+timestamps and retirement state. `SQLiteBlockStore` owns definitions and assignments;
+Pages and Sources retain their existing identities, tables and lifecycle.
+`creativeWork` (Creative Work) is the sole added version-1 entity registry key.
+
+`savePropertyDefinition` compares definition and vault revisions. Populated kinds
+and cardinality cannot change implicitly. Retiring hides a definition from normal
+reuse while preserving its values; existing values may remain or be removed.
+There is no hard-delete API for definitions. `savePropertyValues` atomically replaces
+one entity's ordered assignments, retains supplied assignment UUIDs, and compares
+entity and vault revisions. Omitted assignments become unset; no placeholder row is
+stored. Tombstoned entities retain facts and reject mutations. Definition UUIDs and
+entity FKs are vault-local; SQL shape and cardinality constraints supplement typed
+persistence validation. Operation IDs and owner revisions publish in one transaction.
+
+Scalar kinds are text (including empty text), finite number, boolean, absolute
+HTTP(S) URL with host, and Gregorian date. Dates preserve year/month/day granularity
+as separate nullable integer components without an implicit timezone or invented day.
+Model `validate` methods must also run after Codable decoding at persistence boundaries.
+See [property tests](../../Tests/VaultCoreTests/EntityPropertySQLiteTests.swift).
+
+`FileVaultRepository.upgradeEntityProperties` is explicit and local. Quiesce and
+retire the existing repository before invoking it with the current session lease
+and expected vault revision, then reopen using the returned manifest. SQLite DDL,
+capabilities, schema version and vault revision commit atomically. The selected
+`VaultContentStore` conditionally publishes the manifest afterward. These two
+resources are not a global transaction: interrupted manifest publication leaves a
+preserved DB7/manifest6 mismatch that ordinary opening rejects.
+`resumeEntityPropertiesUpgrade` validates the same vault's schema-7 database and
+logical integrity before retrying manifest publication. It does not recreate data.
+Schemas 1–5 remain unsupported and have no upgrade route; no cloud action occurs.
+
+## Directed entity properties (ENT.02)
+
+Schema 8 adds `entityReference` to reusable property definitions and stores each
+assertion once in `entity_property_relationships`. Stable edge UUIDs identify
+(definition, source entity, target entity); uniqueness rejects duplicate facts.
+Forward and inverse queries return the same canonical snapshot. Incoming editing
+resolves the source/target direction inside the mutation API, never by writing a
+reciprocal row. Labels use the definition's display label and an incoming
+presentation label; custom inverse labels and advisory type restrictions are deferred.
+
+`createPropertyRelationship` checks the definition, both endpoint revisions, vault
+revision and operation UUID in the canonical actor transaction. One/many cardinality
+limits outgoing targets per source; incoming fan-in is unrestricted. Self-links are
+permitted. SQL triggers enforce kind, live endpoints, retirement and cardinality;
+both traversal directions are indexed and ordered deterministically. Removal uses
+the canonical edge ID and expected edge, endpoint and vault revisions from either
+view. Tombstoning retains facts; no endpoint or definition purge can orphan an edge.
+Renaming definitions changes presentation without changing edge identity.
+
+The explicit `upgradeEntityRelationshipSchema` / `upgradeEntityRelationships` path
+upgrades supported schema 7 to 8. A schema-6 vault first uses the existing 6→7 path.
+The schema-8 transaction rebuilds only property tables to expand their kind
+constraint, preserves scalar assignment/definition UUIDs and order (including facts
+on tombstoned entities), installs relationship constraints, then publishes the new
+capabilities and revision. Foreign keys remain enabled. Conditional manifest
+publication and explicit `resumeEntityRelationshipsUpgrade` follow the same
+preserved-mismatch protocol as ENT.01. Ordinary open never migrates. Schemas 1–5
+remain unsupported. Page mentions and semantic annotations are not asserted edges.

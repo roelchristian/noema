@@ -109,6 +109,9 @@ extension AppModel {
     }
 
     func suspendAIProcessing() {
+        semanticPublicationAuthority?.invalidate()
+        semanticPublicationAuthority = nil
+        externalAIService.invalidateEmbeddingRequests()
         aiProcessingBindingID = UUID()
         aiProcessingEventTask?.cancel()
         aiProcessingEventTask = nil

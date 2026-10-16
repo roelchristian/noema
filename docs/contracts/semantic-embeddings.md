@@ -129,7 +129,29 @@ weight revisions. Numeric usage is exposed separately from vector validation; ac
 history integration is pending, and requestCount represents logical attempts rather
 than a provider billing guarantee. No live API-key test or cost estimate is claimed.
 
-SEM.EMB04 must close the canonical/derived publication race before installing a
+SEM.EMB04A provides a canonical-owned in-process publication barrier, without installing
+an embedding processor. Every `SQLiteBlockStore` constructor resolves a shared database
+domain; write transactions invalidate its opaque permits before mutation and hold that
+domain through COMMIT/rollback. Issuance verifies Page/Source revision and live lifecycle
+under the same domain. Failed writes and connection retirement conservatively invalidate
+permits too. `EmbeddingPublicationAuthority` binds an exact generation and admitted lease;
+synchronous session invalidation retires it. The permit-bearing index replacement holds
+canonical-domain then authority locks through derived COMMIT. Neither lock spans an await
+or invokes the access gate. Gate invalidation can wait for that short synchronous commit.
+Provider/model/credential/consent changes synchronously retire that same authority through
+`ExternalAIService` mutation paths and application policy retirement. Stale vault callbacks
+reject before touching the active vault's authority. `EmbeddingRequestExecutor` requires an
+embedding-specific exact-request approval callback and exposes completed request evidence,
+without a vectors-only provider conformance. Evidence retains issuer/session cancellation
+registrations through the final index actor hop; session credential retirement propagates to
+the same storage barrier even after network completion. Each input request consumes fresh
+consent and a fresh capability, including each selected historical chunk. This adapter never
+creates document, historical or query approval, and is not yet registered as a processor. The older predicate-only index primitive is
+insufficient for processor publication. Arbitrary external SQLite writers are outside
+this in-process protocol. Linked-original revalidation detects observed file changes,
+but cannot make an externally mutable file atomic with SQLite publication.
+
+The remaining SEM.EMB04 integration must use this barrier before installing a
 processor: an asynchronous post-commit event or revision read followed by a separate
 SQLite COMMIT is insufficient. Canonical-owned revision permits must synchronize with
 canonical COMMIT and span the derived COMMIT; their constructor/helper routing needs

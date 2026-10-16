@@ -63,7 +63,7 @@ struct NativeArchiveTests {
         #expect(try await NativeVaultArchive.restore(from: archive, parent: parent, name: "Restored", sessionLease: session.lease, accessGate: gate).path == destination.path)
         let restoredManager = VaultSessionManager()
         let (_, _, restored) = try await restoredManager.openRepository(root: destination)
-        #expect(restored.manifest.storage?.schemaVersion == 6)
+        #expect(restored.manifest.storage?.schemaVersion == 8)
         #expect(try await restored.sqliteBlockStore.organisationSnapshot(includingHidden: true) == organisationBefore)
         #expect(try await restored.scan().notes.contains { $0.id == page.id && $0.body.contains("Committed body") })
         let sourcePath = "Sources/\(source.id.uuidString.lowercased())/\(source.metadata.storedFilename)"

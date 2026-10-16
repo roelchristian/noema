@@ -99,10 +99,31 @@ public actor SQLiteEmbeddingIndex: EmbeddingIndexStorage {
         return identities
     }
 
+    /// Production publication: the store-issued permit and live generation authority span COMMIT.
+    /// The supplied validator runs before acquiring publication locks and must revalidate linked
+    /// originals and completed provider capabilities. It must not be mistaken for the permit.
+    public func replaceDocument(identity: EmbeddingEntityIdentity, generation: EmbeddingIndexGeneration,
+                                records: [EmbeddingRecord], permit: EmbeddingPublicationPermit,
+                                authority: EmbeddingPublicationAuthority,
+                                validatePublication: @Sendable () throws -> Void) throws {
+        guard permit.matches(identity), authority.lease == lease,
+              authority.generation == generation else { throw EmbeddingContractError.authorityDenied }
+        try replaceDocument(identity: identity, generation: generation, records: records,
+                            validatePublication: validatePublication, protection: (permit, authority))
+    }
+
+    /// Infrastructure primitive retained for existing provider/index tests. Application processors
+    /// must use the permit-bearing overload; revision validation alone does not serialize COMMIT.
     public func replaceDocument(identity: EmbeddingEntityIdentity, generation: EmbeddingIndexGeneration, records: [EmbeddingRecord], validatePublication: @Sendable () throws -> Void) throws {
+        try replaceDocument(identity: identity, generation: generation, records: records,
+                            validatePublication: validatePublication, protection: nil)
+    }
+    private func replaceDocument(identity: EmbeddingEntityIdentity, generation: EmbeddingIndexGeneration,
+                                 records: [EmbeddingRecord], validatePublication: @Sendable () throws -> Void,
+                                 protection: (EmbeddingPublicationPermit, EmbeddingPublicationAuthority)?) throws {
         try validate(generation); try validatePublication()
         guard identity.vaultID == lease.vaultID, records.allSatisfy({ $0.generation == generation && $0.chunk.identity == identity }), Set(records.map(\.chunk.chunkID)).count == records.count, Set(records.map(\.chunk.ordinal)).count == records.count else { throw EmbeddingIndexError.invalidMetadata }
-        try transaction(validatePublication) {
+        try transaction(validatePublication, protection: protection) {
             try ensure(generation, create: true)
             try delete(identity, generation)
             for record in records {
@@ -157,9 +178,18 @@ public actor SQLiteEmbeddingIndex: EmbeddingIndexStorage {
         try validateLease()
     }
     private func validateLease() throws { try gate.validate(lease: lease, targetRoot: lease.root, targetVaultID: lease.vaultID, operation: "embedding.index") }
-    private func transaction(_ publication: @Sendable () throws -> Void, _ body: () throws -> Void) throws {
+    private func transaction(_ publication: @Sendable () throws -> Void,
+                             protection: (EmbeddingPublicationPermit, EmbeddingPublicationAuthority)? = nil,
+                             _ body: () throws -> Void) throws {
         try validateLease(); try Self.execute(db, "BEGIN IMMEDIATE")
-        do { try body(); try Task.checkCancellation(); try validateLease(); try publication(); try Self.execute(db, "COMMIT") }
+        do {
+            try body(); try Task.checkCancellation(); try validateLease(); try publication()
+            if let (permit, authority) = protection {
+                // Gate validation is deliberately outside these locks: its invalidator acquires
+                // authority and publication must never reverse that order by reentering the gate.
+                try permit.withPublication(authority: authority) { try Self.execute(db, "COMMIT") }
+            } else { try Self.execute(db, "COMMIT") }
+        }
         catch { try? Self.execute(db, "ROLLBACK"); throw error }
         try validateLease()
     }

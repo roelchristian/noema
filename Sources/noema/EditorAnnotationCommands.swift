@@ -22,7 +22,7 @@ enum EditorAnnotationChoice {
         switch self {
         case .entity(let value): return "\(value.entity.label) · \(value.entity.typeKey) · \(value.entity.id.uuidString.prefix(8))"
         case .object(let value): return "\(value.object.term ?? value.object.definitionText ?? value.object.typeKey.capitalized) · \(value.object.id.uuidString.prefix(8))"
-        case .newEntity(let type, _), .newObject(let type, _): return "Create new \(type)…"
+        case .newEntity(let type, _), .newObject(let type, _): return "Create new \(KnowledgeTypePresentation.label(for: type).lowercased())…"
         }
     }
 }

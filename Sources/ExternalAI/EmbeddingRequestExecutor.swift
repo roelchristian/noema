@@ -1,0 +1,64 @@
+import Foundation
+import VaultCore
+
+/// Completed exact-request evidence, retained only for the owning indexing operation.
+/// Validate after the final await and before entering the canonical publication barrier.
+/// The same publication authority supplied to the executor must span semantic COMMIT.
+public final class CompletedEmbeddingRequest: Sendable {
+    public let result: OpenAIEmbeddingResult
+    private let provider: OpenAIEmbeddingProvider
+    private let publicationLifetime: EmbeddingPublicationLifetime
+
+    fileprivate init(result: OpenAIEmbeddingResult, provider: OpenAIEmbeddingProvider,
+                     publicationLifetime: EmbeddingPublicationLifetime) {
+        self.result = result
+        self.provider = provider
+        self.publicationLifetime = publicationLifetime
+    }
+
+    public func validatePublication() throws { try provider.validatePublication() }
+}
+
+/// Embedding-only dispatch adapter. Every call obtains explicit exact-request consent and
+/// a fresh one-use capability; a context or a persisted work/batch row is never permission.
+/// Approval may suspend for UI, but must fail closed when that scope has no current approval.
+/// In particular this adapter never creates historical, document or query consent itself.
+public final class EmbeddingRequestExecutor: Sendable {
+    public typealias ApproveRequest = @Sendable (ExternalAIEmbeddingRequest) async throws -> ExternalAIEmbeddingConsent
+
+    public let descriptor: EmbeddingModelDescriptor
+    private let authorizer: ExternalAIEmbeddingAuthorizer
+    public let publicationAuthority: EmbeddingPublicationAuthority
+    private let approveRequest: ApproveRequest
+
+    public init(authorizer: ExternalAIEmbeddingAuthorizer,
+                publicationAuthority: EmbeddingPublicationAuthority,
+                approveRequest: @escaping ApproveRequest) {
+        self.authorizer = authorizer
+        self.publicationAuthority = publicationAuthority
+        self.approveRequest = approveRequest
+        descriptor = authorizer.descriptor
+    }
+
+    /// Invoke synchronously before replacing configuration/credentials/consent/session.
+    /// Retire the storage barrier first so returning from invalidation also establishes
+    /// that any already admitted semantic COMMIT has finished. Never call under that barrier.
+    public func invalidate() {
+        publicationAuthority.invalidate()
+        authorizer.invalidate()
+    }
+
+    public func embedWithEvidence(_ inputs: [String], scope: EmbeddingProcessingScope,
+                                  context: EmbeddingExecutionContext) async throws -> CompletedEmbeddingRequest {
+        try context.validate(scope: scope, model: descriptor)
+        let request = try ExternalAIEmbeddingRequest(inputs: inputs, scope: scope, model: descriptor,
+            authority: ExternalAIVaultAuthority(lease: context.lease))
+        let consent = try await approveRequest(request)
+        try context.validate(scope: scope, model: descriptor)
+        let capability = try await authorizer.authorize(request, consent: consent, context: context)
+        let provider = OpenAIEmbeddingProvider(authorizer: authorizer, authorization: capability)
+        let result = try await provider.embedWithUsage(inputs, scope: scope, context: context)
+        let lifetime = try authorizer.retainPublicationAuthority(for: capability, authority: publicationAuthority)
+        return CompletedEmbeddingRequest(result: result, provider: provider, publicationLifetime: lifetime)
+    }
+}

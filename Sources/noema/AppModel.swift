@@ -645,6 +645,7 @@ struct AISuggestion: Identifiable, Sendable {
     private var sourceCommandPanel: NSOpenPanel?
     var isLifecycleActionInProgress: Bool { lifecycleAction != nil }
     @ObservationIgnored private nonisolated(unsafe) var sessionObservationTask: Task<Void, Never>?
+    @ObservationIgnored var semanticPublicationAuthority: EmbeddingPublicationAuthority?
     @ObservationIgnored var aiProcessingCoordinator: AIProcessingCoordinator?
     @ObservationIgnored var aiProcessingBindingID = UUID()
     @ObservationIgnored var aiProcessingEventTask: Task<Void, Never>?
@@ -1164,6 +1165,8 @@ struct AISuggestion: Identifiable, Sendable {
     func setVaultAIConfiguration(_ configuration: VaultAIConfiguration, for lease: VaultSessionLease) throws {
         guard vaultAIConfiguration(for: lease) != nil else { throw ExternalAIError.staleSession }
         // Commit local intent and revoke all runtime work before fallible Keychain I/O.
+        semanticPublicationAuthority?.invalidate()
+        externalAIService.invalidateEmbeddingRequests()
         try vaultAIConfigurationStore.set(configuration, lease: lease, gate: sessionManager.accessGate)
         suspendAIProcessing()
         if let repository {

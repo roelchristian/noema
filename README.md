@@ -18,7 +18,7 @@ open "dist/noema.app"
 ./scripts/test.sh extended
 ```
 
-Choose **Create a vault** and select an independently local parent folder. New vaults use format 2 and schema-6 SQLite; favourites, collections and folders are rows in that vault database. Imported originals retain their bytes and linked originals remain read-only. Historical Markdown and schema-1–5 vaults are intentionally unsupported and rejected without modification. Markdown remains explicit import/export interchange. See [development](docs/development.md#local-sqlite-vault-format).
+Choose **Create a vault** and select an independently local parent folder. New vaults use format 2 and schema-8 SQLite; favourites, collections and folders are rows in that vault database. Imported originals retain their bytes and linked originals remain read-only. Historical Markdown and schema-1–5 vaults are intentionally unsupported and rejected without modification. Markdown remains explicit import/export interchange. See [development](docs/development.md#local-sqlite-vault-format).
 
 Vault locking revokes access inside Noema. You can require native macOS authentication when opening or unlocking a vault, including after reopening or restarting Noema, through the creation dialog or **Settings → Vault access on this Mac**. This opt-in preference applies on this Mac and protects against casual access through Noema. Canonical files, indexes, drafts, previews and linked originals remain plaintext. Encrypted creation is disabled pending cryptographic storage. **Saved locally** confirms this Mac's save; two-Mac iCloud transport acceptance remains pending.
 

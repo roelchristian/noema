@@ -78,7 +78,7 @@ struct SemanticInspectionSection: View {
                     HStack(spacing: NoemaSpacing.xs) {
                         typeFilter("All", key: "all")
                         ForEach(KnowledgeEntityType.initial, id: \.key) { type in
-                            typeFilter(type.key.capitalized, key: type.key)
+                            typeFilter(KnowledgeTypePresentation.label(for: type.key), key: type.key)
                         }
                     }
                 }.scrollIndicators(.hidden)
@@ -155,7 +155,7 @@ struct SemanticEntityRow: View {
                         .background(tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(group.target.title).font(NoemaTypography.interfaceEmphasis).lineLimit(2)
-                        Text(group.target.kind.capitalized).font(NoemaTypography.metadata).foregroundStyle(.secondary)
+                        Text(KnowledgeTypePresentation.label(for: group.target.kind)).font(NoemaTypography.metadata).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 2)
                     Text("\(group.mentionCount) \(group.mentionCount == 1 ? "mention" : "mentions")")
@@ -247,7 +247,7 @@ struct SemanticInspectionRow: View {
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(record.target.title).font(NoemaTypography.interfaceEmphasis).lineLimit(2)
-                Label(record.target.kind.capitalized, systemImage: KnowledgeTypePresentation.symbol(for: record.target.kind)).font(NoemaTypography.metadata).foregroundStyle(.secondary)
+                Label(KnowledgeTypePresentation.label(for: record.target.kind), systemImage: KnowledgeTypePresentation.symbol(for: record.target.kind)).font(NoemaTypography.metadata).foregroundStyle(.secondary)
             }
         }
         .onAppear { expanded = model.semanticInspectionFocusID == record.id }
@@ -304,7 +304,7 @@ struct SemanticTargetEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: NoemaSpacing.md) {
-            Text("Edit \(target.kind.capitalized)").font(.headline)
+            Text("Edit \(KnowledgeTypePresentation.label(for: target.kind))").font(.headline)
             Text("Changes apply to this shared target wherever it appears.").font(.caption).foregroundStyle(.secondary)
             TextField(target.kind == "question" ? "Question text" : (target.kind == "definition" ? "Defined term" : "Canonical name"), text: $name)
             if target.kind == "question" {
