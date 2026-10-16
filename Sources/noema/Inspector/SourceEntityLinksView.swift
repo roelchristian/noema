@@ -22,7 +22,7 @@ struct SourceEntityLinksView: View {
     @State private var pendingUnlink: SourceEntityAssociationSnapshot?
     @State private var relatedEntityID: UUID?
     @State private var inspectedAssociationID: UUID?
-    private enum FocusTarget: Hashable { case refresh, role, search, entityPicker, add, entity(UUID), unlink(UUID) }
+    private enum FocusTarget: Hashable { case refresh, role, search, entityPicker, add, entity(UUID), associationRemoval(UUID) }
     @FocusState private var focusedControl: FocusTarget?
     @AccessibilityFocusState private var accessibleControl: FocusTarget?
 
@@ -95,12 +95,12 @@ struct SourceEntityLinksView: View {
         .confirmationDialog("Unlink this entity from the Source?", isPresented: Binding(get: { pendingUnlink != nil }, set: { if !$0 { pendingUnlink = nil } }), titleVisibility: .visible) {
             Button("Unlink", role: .destructive) {
                 if let association = pendingUnlink, let snapshot = displayed {
-                    Task { await removeAssociation(association, snapshot: snapshot) }
+                    scheduleRemoval(association, snapshot: snapshot)
                 }
                 pendingUnlink = nil
             }
             Button("Cancel", role: .cancel) {
-                if let edge = pendingUnlink { restoreFocus(.unlink(edge.association.id), token: request) }
+                if let edge = pendingUnlink { restoreFocus(.associationRemoval(edge.association.id), token: request) }
                 pendingUnlink = nil
             }
         } message: { Text("The Source, its original file and the knowledge entity are preserved.") }
@@ -129,8 +129,8 @@ struct SourceEntityLinksView: View {
             Button { pendingUnlink = snapshot } label: { Image(systemName: "minus.circle") }
                 .accessibilityLabel("Unlink \(entity?.entity.label ?? "entity") · \(SourceEntityLinksPresentation.roleLabel(snapshot.association.role))")
                 .help("Unlink entity").disabled(!editable)
-                .focused($focusedControl, equals: .unlink(snapshot.association.id))
-                .accessibilityFocused($accessibleControl, equals: .unlink(snapshot.association.id))
+                .focused($focusedControl, equals: .associationRemoval(snapshot.association.id))
+                .accessibilityFocused($accessibleControl, equals: .associationRemoval(snapshot.association.id))
         }
     }
 
@@ -162,7 +162,7 @@ struct SourceEntityLinksView: View {
             .accessibilityHint("Choose a search result, then activate Add link to save the association.")
             .focused($focusedControl, equals: .entityPicker)
             .accessibilityFocused($accessibleControl, equals: .entityPicker)
-            Button("Add link") { Task { await link() } }
+            Button("Add link") { scheduleLink() }
                 .accessibilityLabel("Add explicit Source entity link")
                 .focused($focusedControl, equals: .add)
                 .accessibilityFocused($accessibleControl, equals: .add)
@@ -188,7 +188,7 @@ struct SourceEntityLinksView: View {
             await Task.yield()
             guard current(token, source: source, session: session), !busy else { return }
             switch target {
-            case .unlink(let id), .entity(let id):
+            case .associationRemoval(let id), .entity(let id):
                 guard displayed?.associations.contains(where: { $0.association.id == id }) == true else { return }
             default: break
             }
@@ -240,11 +240,21 @@ struct SourceEntityLinksView: View {
         }
     }
 
-    private func link() async {
+    /// Capture the asserted endpoints and role in the native button event, before
+    /// a queued task can encounter another selection, draft or vault session.
+    private func scheduleLink() {
         guard editable, !sourceTrashed, let snapshot = displayed,
               let entity = selectable.first(where: { $0.entity.id == selectedEntityID }) else { return }
-        let token = request, source = sourceID, session = model.sessionState.sessionID
+        let token = request, source = sourceID, session = model.sessionState.sessionID, selectedRole = role
         busy = true; error = nil
+        Task { await link(source: source, entity: entity, role: selectedRole, snapshot: snapshot, token: token, session: session) }
+    }
+
+    private func link(source: UUID, entity: KnowledgeEntitySnapshot, role: SourceEntityAssociationRole,
+                      snapshot: SourceEntityLinksSnapshot, token: UUID, session: UUID?) async {
+        guard current(token, source: source, session: session), snapshot.sessionID == session,
+              snapshot.sources.contains(where: { $0.source.id == source && !$0.trashed }) else { return }
+        guard model.canEditSemanticTarget else { busy = false; return }
         do {
             try await model.linkSourceEntity(sourceID: source, entity: entity, role: role, snapshot: snapshot,
                 isCurrent: { current(token, source: source, session: session) })
@@ -257,10 +267,19 @@ struct SourceEntityLinksView: View {
         }
     }
 
-    private func removeAssociation(_ association: SourceEntityAssociationSnapshot, snapshot: SourceEntityLinksSnapshot) async {
-        guard editable, association.association.sourceID == sourceID, displayed?.sessionID == snapshot.sessionID else { return }
+    private func scheduleRemoval(_ association: SourceEntityAssociationSnapshot, snapshot: SourceEntityLinksSnapshot) {
+        guard editable, association.association.sourceID == sourceID,
+              displayed?.sessionID == snapshot.sessionID else { return }
         let token = request, source = sourceID, session = model.sessionState.sessionID
         busy = true; error = nil
+        Task { await removeAssociation(association, snapshot: snapshot, token: token, source: source, session: session) }
+    }
+
+    private func removeAssociation(_ association: SourceEntityAssociationSnapshot, snapshot: SourceEntityLinksSnapshot,
+                                   token: UUID, source: UUID, session: UUID?) async {
+        guard current(token, source: source, session: session), snapshot.sessionID == session,
+              association.association.sourceID == source else { return }
+        guard model.canEditSemanticTarget else { busy = false; return }
         do {
             try await model.unlinkSourceEntity(association, snapshot: snapshot,
                 isCurrent: { current(token, source: source, session: session) })

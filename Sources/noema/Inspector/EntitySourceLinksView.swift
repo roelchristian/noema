@@ -14,7 +14,7 @@ struct EntitySourceLinksView: View {
     @State private var busy = false
     @State private var error: String?
     @State private var pendingUnlink: SourceEntityAssociationSnapshot?
-    private enum FocusTarget: Hashable { case refresh, source(UUID), unlink(UUID) }
+    private enum FocusTarget: Hashable { case refresh, source(UUID), associationRemoval(UUID) }
     @FocusState private var focusedControl: FocusTarget?
     @AccessibilityFocusState private var accessibleControl: FocusTarget?
 
@@ -79,13 +79,12 @@ struct EntitySourceLinksView: View {
             get: { pendingUnlink != nil }, set: { if !$0 { pendingUnlink = nil } }), titleVisibility: .visible) {
             Button("Unlink Source", role: .destructive) {
                 if let edge = pendingUnlink, let snapshot {
-                    let token = request
-                    Task { await removeAssociation(edge, snapshot: snapshot, token: token) }
+                    scheduleRemoval(edge, snapshot: snapshot)
                 }
                 pendingUnlink = nil
             }
             Button("Cancel", role: .cancel) {
-                if let edge = pendingUnlink { restoreFocus(.unlink(edge.association.id), token: request) }
+                if let edge = pendingUnlink { restoreFocus(.associationRemoval(edge.association.id), token: request) }
                 pendingUnlink = nil
             }
         } message: {
@@ -122,8 +121,8 @@ struct EntitySourceLinksView: View {
             }
             Button("Unlink") { pendingUnlink = edge }
                 .accessibilityLabel("Unlink \(title), \(SourceEntityLinksPresentation.roleLabel(edge.association.role))")
-                .focused($focusedControl, equals: .unlink(edge.association.id))
-                .accessibilityFocused($accessibleControl, equals: .unlink(edge.association.id))
+                .focused($focusedControl, equals: .associationRemoval(edge.association.id))
+                .accessibilityFocused($accessibleControl, equals: .associationRemoval(edge.association.id))
                 .disabled(!editable || source == nil || !snapshot.entities.contains { $0.entity.id == entityID })
         }
     }
@@ -143,7 +142,7 @@ struct EntitySourceLinksView: View {
         Task { @MainActor in
             await Task.yield()
             guard current(token), !busy else { return }
-            if case .unlink(let id) = target,
+            if case .associationRemoval(let id) = target,
                snapshot?.associations.contains(where: { $0.association.id == id }) != true { return }
             focusedControl = target; accessibleControl = target
         }
@@ -172,9 +171,20 @@ struct EntitySourceLinksView: View {
         }
     }
 
-    private func removeAssociation(_ edge: SourceEntityAssociationSnapshot, snapshot: SourceEntityLinksSnapshot, token: UUID) async {
-        guard current(token), editable else { return }
+    private func scheduleRemoval(_ edge: SourceEntityAssociationSnapshot, snapshot: SourceEntityLinksSnapshot) {
+        guard current(request), editable, edge.association.entityID == entityID,
+              snapshot.sessionID == model.sessionState.sessionID else { return }
+        let token = request, entity = entityID, source = edge.association.sourceID, session = model.sessionState.sessionID
         busy = true; error = nil
+        Task { await removeAssociation(edge, snapshot: snapshot, token: token, entity: entity, source: source, session: session) }
+    }
+
+    private func removeAssociation(_ edge: SourceEntityAssociationSnapshot, snapshot: SourceEntityLinksSnapshot,
+                                   token: UUID, entity: UUID, source: UUID, session: UUID?) async {
+        guard current(token), entityID == entity, model.sessionState.sessionID == session,
+              snapshot.sessionID == session, edge.association.entityID == entity,
+              edge.association.sourceID == source else { return }
+        guard model.canEditSemanticTarget else { busy = false; return }
         do {
             try await model.unlinkSourceEntity(edge, snapshot: snapshot, isCurrent: { current(token) })
             guard current(token) else { return }
