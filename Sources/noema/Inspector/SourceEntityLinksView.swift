@@ -204,7 +204,7 @@ struct SourceEntityLinksView: View {
         let source = sourceID, session = model.sessionState.sessionID
         Task { @MainActor in
             await Task.yield()
-            guard current(token, source: source, session: session), !busy else { return }
+            guard current(token, source: source, session: session), !busy, relatedEntityID == nil else { return }
             switch target {
             case .associationRemoval(let id), .entity(let id):
                 guard displayed?.associations.contains(where: { $0.association.id == id }) == true else { return }
