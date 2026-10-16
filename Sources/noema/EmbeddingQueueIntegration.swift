@@ -103,6 +103,7 @@ extension AppModel {
     func pauseEmbeddingBackfill(batchID: UUID, for lease: VaultSessionLease) async throws {
         guard let runtime = embeddingBackfillRuntime, runtime.lease == lease,
               sessionManager.accessGate.currentLease == lease else { throw AIWorkFailure.authority }
+        runtime.activationIDs.removeValue(forKey: batchID)
         guard let batch = try await runtime.ledger.embeddingBatch(id: batchID), batch.vaultID == lease.vaultID,
               embeddingBackfillRuntime === runtime, sessionManager.accessGate.currentLease == lease else { throw AIWorkFailure.authority }
         let session = runtime.sessions[batchID]
@@ -115,6 +116,7 @@ extension AppModel {
     func cancelEmbeddingBackfill(batchID: UUID, for lease: VaultSessionLease) async throws {
         guard let runtime = embeddingBackfillRuntime, runtime.lease == lease,
               sessionManager.accessGate.currentLease == lease else { throw AIWorkFailure.authority }
+        runtime.activationIDs.removeValue(forKey: batchID)
         guard let batch = try await runtime.ledger.embeddingBatch(id: batchID), batch.vaultID == lease.vaultID,
               embeddingBackfillRuntime === runtime, sessionManager.accessGate.currentLease == lease else { throw AIWorkFailure.authority }
         let session = runtime.sessions[batchID]

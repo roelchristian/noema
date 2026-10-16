@@ -23,7 +23,12 @@ final class BackfillKeychain: ExternalAIKeychain, Sendable {
 }
 final class BackfillAuthenticator: ExternalAIAuthenticating, Sendable {
     let calls = Mutex(0)
-    func authenticate() async throws { calls.withLock { $0 += 1 } }
+    let beforeAuthentication = Mutex<(@Sendable () async throws -> Void)?>(nil)
+    func authenticate() async throws {
+        calls.withLock { $0 += 1 }
+        let callback = beforeAuthentication.withLock { $0 }
+        try await callback?()
+    }
 }
 actor BackfillTransport: OpenAITransporting {
     private(set) var count = 0
@@ -51,7 +56,7 @@ actor BackfillTransport: OpenAITransporting {
 extension VaultUIIntegrationTests {
 @Suite(.serialized)
 struct EmbeddingBackfillApplicationTests {
-    @MainActor func fixture(pages: Int, sources: Int = 0, cloud: Bool = false) async throws -> (AppModel, URL, UserDefaults, String, BackfillNativeProbe, BackfillAuthenticator, BackfillTransport) {
+    @MainActor func fixture(pages: Int, sources: Int = 0, cloud: Bool = false, sessionNow: @escaping @Sendable () -> Date = { Date() }) async throws -> (AppModel, URL, UserDefaults, String, BackfillNativeProbe, BackfillAuthenticator, BackfillTransport) {
         let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".local/agent-runs/sem-emb-05-app/app-fixtures/\(UUID())")
         let root = base.appendingPathComponent("vault")
@@ -69,7 +74,7 @@ struct EmbeddingBackfillApplicationTests {
         try await broker.store("synthetic-historical-app-key")
         let model = AppModel(aiDefaults: defaults, externalAIServiceFactory: { gate, defaults, recorder in
             let sessions = ExternalAISessionManager(accessGate: gate, credentialBroker: broker,
-                authenticator: authenticator, observeSystemEvents: false)
+                authenticator: authenticator, now: sessionNow, observeSystemEvents: false)
             let grants = ExternalAIVaultGrants(keychain: BackfillKeychain(), credentialBroker: broker, accessGate: gate,
                 revocationDefaults: defaults, authenticator: authenticator)
             let service = ExternalAIService(accessGate: gate, defaults: defaults, activityRecorder: recorder,

@@ -1,8 +1,19 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import ExternalAI
 @testable import VaultCore
 @testable import noema
+
+private actor BackfillAuthenticationSuspension {
+    private(set) var entered = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+        entered = true
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() { continuation?.resume(); continuation = nil }
+}
 
 extension VaultUIIntegrationTests {
 @Suite(.serialized)
@@ -17,6 +28,64 @@ struct EmbeddingBackfillTransitionTests {
         Issue.record("Semantic binding did not select \(modelID)")
         try #require(model.embeddingBackfillRuntime)
         #expect(model.semanticProcessingGeneration?.model.modelID == modelID)
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func historicalSessionExpiryAndRevocationRemainRecoverableAuthorityFailures(_ expire: Bool) async throws {
+        let helper = EmbeddingBackfillApplicationTests()
+        let now = Mutex(Date())
+        let (model, _, defaults, domain, _, _, transport) = try await helper.fixture(pages: 1, cloud: true,
+            sessionNow: { now.withLock { $0 } })
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let lease = try #require(model.sessionManager.accessGate.currentLease)
+        let repository = try #require(model.repository)
+        model.aiProcessingClock = AIProcessingClock(now: { Date() }, sleep: { _ in try await Task.sleep(for: .seconds(60)) })
+        await model.bindAIProcessing(repository: repository, lease: lease)
+        let batchID = try await model.startEmbeddingBackfill(for: lease, scopes: [.page])
+        let session = try #require(model.embeddingBackfillRuntime?.sessions[batchID])
+        try session.validate(lease: lease, generation: session.generation)
+        if expire { now.withLock { $0 = $0.addingTimeInterval(86_400) } }
+        else { model.externalAIService.sessionManager.revoke() }
+        #expect(throws: AIWorkFailure.authority) {
+            try session.validate(lease: lease, generation: session.generation)
+        }
+        #expect(await transport.count == 0)
+        #expect(await model.closeVault())
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func stopDuringHistoricalAuthenticationRetiresPendingActivation(_ cancel: Bool) async throws {
+        let helper = EmbeddingBackfillApplicationTests()
+        let (model, _, defaults, domain, _, authenticator, transport) = try await helper.fixture(pages: 1, cloud: true)
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let lease = try #require(model.sessionManager.accessGate.currentLease)
+        let ledger = try #require(model.aiProcessingLedger)
+        let suspension = BackfillAuthenticationSuspension()
+        authenticator.beforeAuthentication.withLock { $0 = { await suspension.wait() } }
+        let activation = Task { @MainActor in try await model.startEmbeddingBackfill(for: lease, scopes: [.page]) }
+        for _ in 0..<400 {
+            if await suspension.entered { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await suspension.entered)
+        let batch = try #require(try await ledger.embeddingBatches(vaultID: lease.vaultID).first)
+        if cancel { try await model.cancelEmbeddingBackfill(batchID: batch.id, for: lease) }
+        else { try await model.pauseEmbeddingBackfill(batchID: batch.id, for: lease) }
+        await suspension.release()
+        await #expect(throws: (any Error).self) { _ = try await activation.value }
+        #expect(try await ledger.embeddingBatch(id: batch.id)?.state == (cancel ? .cancelled : .paused))
+        #expect(model.embeddingBackfillRuntime?.sessions[batch.id] == nil)
+        #expect(model.embeddingBackfillRuntime?.activationIDs[batch.id] == nil)
+        #expect(try await ledger.snapshotWorkItems(vaultID: lease.vaultID).isEmpty)
+        #expect(await transport.count == 0)
+        if !cancel {
+            // Only a new explicit activation can replace the retired attempt.
+            authenticator.beforeAuthentication.withLock { $0 = nil }
+            try await model.resumeEmbeddingBackfill(batchID: batch.id, for: lease)
+            _ = try await helper.completed(model, batchID: batch.id)
+            #expect(await transport.count == 1)
+        }
+        #expect(await model.closeVault())
     }
 
     @Test @MainActor func cloudSourceOnlyBackfillUsesFreshRequestsAndSkipsCompatibleSuccess() async throws {

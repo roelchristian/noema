@@ -28,6 +28,8 @@ enum EmbeddingBackfillApplicationError: Error, LocalizedError {
     let ledger: SQLiteAIWorkLedger
     let validatePolicy: @Sendable () throws -> Void
     var sessions: [UUID: EmbeddingBackfillSession] = [:]
+    // Stop controls retire an activation even while native authentication is suspended.
+    var activationIDs: [UUID: UUID] = [:]
     var reconciling: Set<UUID> = []
     var reconcileAgain: Set<UUID> = []
     var reoffered: [UUID: Set<UUID>] = [:]
@@ -53,7 +55,9 @@ final class EmbeddingBackfillSession: Sendable {
     }
     func validate(lease: VaultSessionLease, generation: EmbeddingIndexGeneration) throws {
         guard valid.withLock({ $0 }), authority.matches(lease: lease, generation: generation) else { throw AIWorkFailure.authority }
-        try approval?.validate(lease: lease, generation: generation)
+        do { try approval?.validate(lease: lease, generation: generation) }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw AIWorkFailure.authority }
     }
     func invalidate() {
         authority.invalidate(); valid.withLock { $0 = false }
@@ -175,6 +179,15 @@ extension AppModel {
     private func activateEmbeddingBackfill(_ batch: EmbeddingBackfillBatch, runtime: EmbeddingBackfillRuntime,
                                            explicitCloudApproval: Bool) async throws {
         try validateEmbeddingRuntime(runtime)
+        let activationID = UUID()
+        runtime.activationIDs[batch.id] = activationID
+        defer {
+            if runtime.activationIDs[batch.id] == activationID { runtime.activationIDs.removeValue(forKey: batch.id) }
+        }
+        func validateActivation() throws {
+            try validateEmbeddingRuntime(runtime)
+            guard runtime.activationIDs[batch.id] == activationID else { throw CancellationError() }
+        }
         guard let index = semanticIndex, let selected = semanticProcessingGeneration,
               selected.model == batch.generation.model, selected.chunkingVersion == batch.generation.chunkingVersion else {
             throw EmbeddingBackfillApplicationError.incompatible
@@ -197,7 +210,7 @@ extension AppModel {
             guard service.embeddingConfiguration.embeddingDescriptor == generation.model else { throw ExternalAIError.authorizationRevoked }
             // This is the only native-authentication point for historical batches.
             let capability = try await service.sessionManager.authorize(ExternalAIVaultAuthority(lease: lease))
-            try validateEmbeddingRuntime(runtime)
+            try validateActivation()
             guard service.embeddingConfiguration.embeddingDescriptor == generation.model else { throw ExternalAIError.authorizationRevoked }
             let holder = EmbeddingHistoricalApprovalHolder()
             let executor = try service.makeEmbeddingRequestExecutor(lease: lease, generation: generation, approveRequest: { request in
@@ -220,8 +233,7 @@ extension AppModel {
                         try execution.validate(); try policyValidation()
                         try session.validate(lease: lease, generation: generation)
                     })
-                let completed = try await executor.embedWithEvidence(inputs.map(\.text), scope: scope, context: context)
-                return EmbeddingDispatchResult(vectors: completed.result.vectors, validatePublication: { try completed.validatePublication() })
+                return try await executor.embedForProcessing(inputs.map(\.text), scope: scope, context: context)
             }
         } else {
             let provider = try embeddingProviderFactory()
@@ -238,7 +250,15 @@ extension AppModel {
                 return EmbeddingDispatchResult(vectors: vectors, validatePublication: { try context.validate(scope: scope, model: generation.model) })
             }
         }
-        try validateEmbeddingRuntime(runtime)
+        // Failed or overtaken activation must not leave executable authority installed.
+        var activated = false
+        defer {
+            if !activated {
+                session.invalidate()
+                if runtime.sessions[batch.id] === session { runtime.sessions.removeValue(forKey: batch.id) }
+            }
+        }
+        try validateActivation()
         let processor = try EmbeddingWorkProcessor(repository: runtime.repository, index: index, generation: generation,
             lease: lease, publicationAuthority: session.authority, dispatch: dispatch, extractOriginal: Self.embeddingOriginalText,
             validateAuthority: {
@@ -246,9 +266,11 @@ extension AppModel {
             }, batchID: batch.id)
         runtime.sessions[batch.id] = session
         await runtime.coordinator.register(processor)
-        try validateEmbeddingRuntime(runtime)
+        try validateActivation()
         try await runtime.ledger.setEmbeddingBatchState(batchID: batch.id, state: .active)
+        try validateActivation()
         try await reconcileEmbeddingBackfill(batchID: batch.id, runtime: runtime)
+        activated = true
     }
 
     private func validateEmbeddingRuntime(_ runtime: EmbeddingBackfillRuntime) throws {

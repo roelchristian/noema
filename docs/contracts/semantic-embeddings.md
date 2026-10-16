@@ -178,8 +178,13 @@ generation removal retires completion and checkpoint evidence consistently; malf
 fail closed. `SQLiteBlockStore` remains the sole canonical SQL owner.
 
 The processor retains every completed cloud request validator until the guarded COMMIT,
-reuses exact compatible chunks while advancing revision metadata, and revalidates Source
-originals after inference. AppModel explicitly cleans removed entities across generations
+reads reuse candidates through the indexed generation/entity prefix, reuses exact compatible
+chunks while advancing revision metadata, and revalidates Source originals after inference.
+Per-document inference does not decode vectors owned by unrelated documents. The cloud
+processing adapter preserves cancellation, classifies bounded provider/network failures
+as transient scheduler failures, and keeps expired or refused permission blocked for fresh
+authority rather than recording malformed-result failures. Raw request APIs retain their
+ExternalAI error contract; publication evidence still revalidates after network completion. AppModel explicitly cleans removed entities across generations
 and reconciles absent/stale entries on startup without inference. Unavailable semantic
 storage/provider/ledger work leaves canonical saving and lexical search available.
 Compatible generation declarations persist before admission, including a pause before
@@ -258,13 +263,17 @@ changed work; a persisted processor pause also applies to newly admitted jobs an
 survives restart. Queue rows distinguish successful completion, unchanged skips,
 blocked permission, unavailable inputs, failure, interruption and cancellation.
 
-Pause and cancellation record intentional stop state before retiring live request
+Pause and cancellation retire pending activation identities before suspension, including
+activation waiting for native authentication. A retired activation cannot install a session
+or resume dispatch. Stop controls record intentional work state before retiring live request
 authority. Cancellation remains requested until active tasks acknowledge; restart
 finishes an outstanding cancellation without dispatch. Historical resume retains the
 original Page/Source selection and generation, requires fresh cloud disclosure and
 native authority, and never infers consent from persisted intent. Explicit retry is
 limited to eligible failures; it preserves captured membership and cannot revive
-successful or cancelled work. The existing coordinator remains the only scheduler.
+successful or cancelled work. The existing coordinator remains the only scheduler. Concurrent historical admissions
+revalidate the stable job and installed timer after persistence; a stale pause cannot
+suspend a replacement binding.
 
 The work ledger's schema 3 adds only processor pause metadata in its existing
 application-local database. Controls do not delete completed vectors or canonical

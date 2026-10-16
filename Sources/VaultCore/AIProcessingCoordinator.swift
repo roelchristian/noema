@@ -191,7 +191,11 @@ public actor AIProcessingCoordinator {
         guard let latest = inventory[Target(kind: incoming.key.entityKind, id: incoming.key.entityID)],
               historicalRevisionMatches(incoming, current: latest),
               items[incoming.key]?.id == incoming.id else { throw AIWorkFailure.validation }
-        arm(incoming, lease: active)
+        // Persistence suspends: another replay can arm this stable identity, or a
+        // stop/completion can overtake admission. Never install a second timer.
+        guard let admitted = items[incoming.key], admitted.state == .pending,
+              tasks[admitted.id] == nil else { return }
+        arm(admitted, lease: active)
     }
 
     /// Pause/cancel only captured work. Waiting for task acknowledgment keeps callers from
@@ -204,9 +208,11 @@ public actor AIProcessingCoordinator {
     }
     public func pauseProcessor(_ processorID: String) async throws {
         guard let active = lease else { throw AIWorkFailure.authority }
-        try validateActive(active)
+        let identity = lifecycleID
+        try validateActive(active, identity: identity)
         pausedProcessors.insert(processorID)
         try await ledger.setProcessorPaused(vaultID: active.vaultID, processorID: processorID, paused: true)
+        try validateActive(active, identity: identity)
         try await stopWork(batchID: nil, processorID: processorID, cancel: false)
     }
     public func resumeProcessor(_ processorID: String) async throws {
@@ -486,7 +492,10 @@ public actor AIProcessingCoordinator {
                   items[candidate.key].map({ ![.suspended, .cancellationRequested, .cancelled].contains($0.state) }) == true else { return }
             // Unknown errors are terminal, never interpreted as permission to incur another request.
             let failure = (error as? AIWorkFailure) ?? .validation
-            if failure == .transient { try? await retry(candidate, failure: failure, lease: active) }
+            if processor is EmbeddingWorkProcessor, [.authority, .consent].contains(failure) {
+                reason = failure
+                try? await transition(candidate, to: .blocked, failure: failure)
+            } else if failure == .transient { try? await retry(candidate, failure: failure, lease: active) }
             else { failedCount += 1; try? await transition(candidate, to: .failed, failure: failure) }
         }
     }
