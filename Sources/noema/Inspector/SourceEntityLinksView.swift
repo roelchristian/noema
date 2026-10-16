@@ -87,8 +87,7 @@ struct SourceEntityLinksView: View {
         .onChange(of: identity) { invalidate(); offset = 0; if previewSnapshot == nil { Task { await reload(restoringFocus: false) } } }
         .onDisappear { active = false; invalidate() }
         .sheet(isPresented: Binding(get: { relatedEntityID != nil && displayed != nil }, set: { if !$0 { relatedEntityID = nil } }), onDismiss: {
-            if let id = inspectedAssociationID { restoreFocus(.entity(id), token: request) }
-            inspectedAssociationID = nil
+            entitySheetDismissed()
         }) {
             if let relatedEntityID, displayed != nil { AnyView(EntityPropertiesDetail(model: model, entityID: relatedEntityID)) }
         }
@@ -171,6 +170,25 @@ struct SourceEntityLinksView: View {
         .padding(.top, NoemaSpacing.xs)
     }
 
+    private func entitySheetDismissed() {
+        // Child editing may change both associations and the vault revision.
+        // Keep the original return target before reload clears all sheet state.
+        let token = request, source = sourceID, session = model.sessionState.sessionID
+        let inspectedID = inspectedAssociationID
+        inspectedAssociationID = nil
+        guard let inspectedID, previewSnapshot == nil,
+              current(token, source: source, session: session), relatedEntityID == nil else { return }
+        Task { @MainActor in
+            guard current(token, source: source, session: session), relatedEntityID == nil else { return }
+            guard let loadedRequest = await reload(restoringFocus: false) else { return }
+            // A later navigation, refresh or newly opened sheet owns its own focus.
+            guard current(loadedRequest, source: source, session: session), relatedEntityID == nil,
+                  let refreshed = displayed else { return }
+            let retained = refreshed.associations.contains { $0.association.id == inspectedID }
+            restoreFocus(retained ? .entity(inspectedID) : .refresh, token: loadedRequest)
+        }
+    }
+
     private func invalidate() {
         request = UUID(); searchRequest = UUID(); snapshot = nil; choices = []; selectedEntityID = nil
         pendingUnlink = nil; relatedEntityID = nil; inspectedAssociationID = nil; adding = false; query = ""; role = .aboutEntity
@@ -197,21 +215,23 @@ struct SourceEntityLinksView: View {
         }
     }
 
-    private func reload(restoringFocus: Bool = true) async {
-        guard active, !model.isLocked, previewSnapshot == nil else { return }
+    @discardableResult private func reload(restoringFocus: Bool = true) async -> UUID? {
+        guard active, !model.isLocked, previewSnapshot == nil else { return nil }
         let page = offset
         invalidate()
         let token = request, source = sourceID, session = model.sessionState.sessionID
         busy = true
         do {
             let loaded = try await model.loadSourceEntityLinks(sourceID: source, offset: page)
-            guard current(token, source: source, session: session), loaded.sessionID == session else { return }
+            guard current(token, source: source, session: session), loaded.sessionID == session else { return nil }
             snapshot = loaded; busy = false
             if restoringFocus { restoreFocus(.refresh, token: token) }
+            return token
         } catch {
-            guard current(token, source: source, session: session) else { return }
+            guard current(token, source: source, session: session) else { return nil }
             self.error = message(error); busy = false
             restoreFocus(.refresh, token: token)
+            return nil
         }
     }
 
