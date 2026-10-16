@@ -223,13 +223,13 @@ extension AppModel {
                     texts.append(try .init(identity: EmbeddingEntityIdentity(vaultID: lease.vaultID, entityKind: .page, entityID: page.id, revision: revision),
                         title: currentPage.title, aliases: currentPage.aliases, excerpt: lexical.pageExcerpts[page.id] ?? "", rank: position + 1, currentSemanticBlockIDs: tagged))
                 }
-                if requestedScope == .blocks {
-                    for hit in lexical.blocks.prefix(200) where !texts.contains(where: { $0.identity.entityID == hit.pageID }) {
+                if requestedScope == .blocks || requestedScope == .all {
+                    for (position, hit) in lexical.blocks.prefix(200).enumerated() where !texts.contains(where: { $0.identity.entityID == hit.pageID }) {
                         let key = Self.meaningKey(.page, hit.pageID)
                         guard let revision = revisions[key], let page = pageMap[hit.pageID], page.contentHash == revision else { continue }
                         texts.append(try .init(identity: EmbeddingEntityIdentity(vaultID: lease.vaultID, entityKind: .page,
                             entityID: page.id, revision: revision), title: page.title, aliases: page.aliases,
-                            excerpt: hit.preview, rank: texts.count + 1,
+                            excerpt: hit.preview, rank: position + 1,
                             currentSemanticBlockIDs: Set(lexical.blocks.filter { $0.pageID == page.id }.map(\.blockID))))
                     }
                 }
@@ -261,10 +261,20 @@ extension AppModel {
                                 result.blocks.append(hit); result.relevance["block:\(hit.id)"] = item.provenance
                             } else if let hit = lexical.blocks.first(where: { $0.pageID == page.id }) { result.blocks.append(hit) }
                         } else {
-                            result.pages.append(page); result.pageExcerpts[page.id] = excerpts[key] ?? item.excerpt
-                            if let winning = item.passages.first,
-                               case .block(let blockID, _) = SemanticPassageLocator(chunkID: winning.chunk.chunkID, entityKind: .page) {
-                                result.pageBlocks[page.id] = blockID
+                            result.pages.append(page)
+                            // All has one principal per document. A tag-only lexical hit still
+                            // contributes a Page result and retains its current block target.
+                            let blockOnlyHit = requestedScope == .all && !lexical.pages.contains(where: { $0.id == page.id })
+                                ? lexical.blocks.first(where: { $0.pageID == page.id }) : nil
+                            if let hit = blockOnlyHit, BlockDocumentCodec.decode(page.body).block(hit.blockID)?.metadata.semantic != nil {
+                                result.pageExcerpts[page.id] = hit.preview
+                                result.pageBlocks[page.id] = hit.blockID
+                            } else {
+                                result.pageExcerpts[page.id] = excerpts[key] ?? item.excerpt
+                                if let winning = item.passages.first,
+                                   case .block(let blockID, _) = SemanticPassageLocator(chunkID: winning.chunk.chunkID, entityKind: .page) {
+                                    result.pageBlocks[page.id] = blockID
+                                }
                             }
                         }
                     } else if let source = sourceMap[item.identity.entityID] {
