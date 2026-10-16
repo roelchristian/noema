@@ -408,11 +408,17 @@ source or a permanent golden fixture. Reproduction retains commit/fixture proven
 
 ## Native window acceptance
 
-Entity properties (ENT.03), optional templates (ENT.04) and Source links (ENT.05) retain a separate live acceptance gate: keyboard traversal
-and focus restoration across definition/target pickers, inverse editing, delete
-confirmation, refresh errors, rapid entity switching, template type switching and
-add/reorder/remove controls, Source role pickers, confirmed unlinking, bidirectional
-reader navigation, offline and inactive link states, and VoiceOver announcements.
+Entity properties (ENT.03) and optional templates (ENT.04) have an isolated
+[native QA procedure](development.md#native-entity-properties-templates-and-source-links).
+Live synthetic-vault checks cover template keyboard traversal, the 16-entry cap,
+reorder/removal focus, save-status focus, Escape return to Manage templates and
+inspector clearing on lock and vault switch. These checks do not establish the
+complete definition/target picker, inverse-editing, error or rapid-switch matrix.
+VoiceOver was enabled, but its spoken-caption window was unavailable to the
+automation surface; announcements and complete VoiceOver focus acceptance remain
+unverified. Accessibility-tree observations alone do not close that gate.
+Source links (ENT.05) retain pending live acceptance for role pickers, confirmed
+unlinking, bidirectional reader navigation, offline/inactive states and VoiceOver.
 [Inspector integration tests](../Tests/NoemaEditorTests/EntityPropertiesInspectorTests.swift)
 exercise canonical revisions and stale sessions; the opt-in
 [raster fixture](../Tests/NoemaVisualValidationTests/EntityPropertiesLayoutTests.swift)
