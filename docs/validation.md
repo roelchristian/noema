@@ -411,8 +411,8 @@ source or a permanent golden fixture. Reproduction retains commit/fixture proven
 Entity properties (ENT.03) and optional templates (ENT.04) have an isolated
 [native QA procedure](development.md#native-entity-properties-templates-and-source-links).
 Live synthetic-vault checks cover template keyboard traversal, the 16-entry cap,
-reorder/removal focus, save-status focus, Escape return to Manage templates and
-inspector clearing on lock and vault switch. These checks do not establish the
+add/reorder/removal focus, save-status focus, Escape return to both template entry
+points and inspector/library clearing on lock and vault switch. These checks do not establish the
 complete definition/target picker, inverse-editing, error or rapid-switch matrix.
 VoiceOver was enabled, but its spoken-caption window was unavailable to the
 automation surface; announcements and complete VoiceOver focus acceptance remain
