@@ -4,6 +4,7 @@ import Testing
 import VaultCore
 @testable import noema
 
+extension MathProjectionRuntimeTests {
 @Suite(.serialized) @MainActor struct InlineMathRuntimeTests {
     private func equation(_ source: String, text: String) -> RichRun {
         var style = InlineStyle(); style.math = true; style.rawMath = source
@@ -151,4 +152,6 @@ import VaultCore
         #expect(!layout.propertyForGlyph(at: glyph).contains(.controlCharacter))
         #expect(!projection.activate(at: NSPoint(x: frame.midX, y: frame.midY)))
     }
+}
+
 }
