@@ -4,6 +4,17 @@ import Testing
 @testable import noema
 
 struct EntityPropertyTemplatePresentationTests {
+    @Test func queuedTemplateSaveCannotAdoptNewTypeSessionOrReloadRequest() {
+        let session = UUID(), request = UUID()
+        let captured = EntityPropertyTemplateRequestToken(typeKey: "person", sessionID: session, requestID: request)
+        #expect(captured.matches(request: request, typeKey: "person", sessionID: session))
+        #expect(!captured.matches(request: request, typeKey: "creativeWork", sessionID: session))
+        #expect(!captured.matches(request: request, typeKey: "person", sessionID: UUID()))
+        #expect(!captured.matches(request: request, typeKey: "person", sessionID: nil))
+        // Reloading the same type in the same vault still supersedes the queued event.
+        #expect(!captured.matches(request: UUID(), typeKey: "person", sessionID: session))
+    }
+
     @Test func cachedEntityContentIsHiddenImmediatelyWhenSelectionSessionOrLockChanges() {
         let revision = BlockStoreRevision(token: Data("fixture".utf8)), session = UUID()
         let entity = KnowledgeEntitySnapshot(entity: .init(typeKey: "person", label: "Private previous entity"), revision: revision)

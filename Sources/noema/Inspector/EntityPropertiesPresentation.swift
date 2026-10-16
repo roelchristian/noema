@@ -99,6 +99,17 @@ struct EntityPropertyTemplateConfiguration: Sendable {
     let sessionID: UUID?
 }
 
+/// Captures the selection at the button event, before its queued mutation starts.
+struct EntityPropertyTemplateRequestToken: Equatable, Sendable {
+    let typeKey: String
+    let sessionID: UUID?
+    let requestID: UUID
+
+    func matches(request: UUID, typeKey: String, sessionID: UUID?) -> Bool {
+        requestID == request && self.typeKey == typeKey && self.sessionID == sessionID
+    }
+}
+
 enum EntityPropertyTemplatePresentation {
     static let previewLimit = 4
     static func canDisplay(_ configuration: EntityPropertyTemplateConfiguration, typeKey: String, sessionID: UUID?, isLocked: Bool) -> Bool {
