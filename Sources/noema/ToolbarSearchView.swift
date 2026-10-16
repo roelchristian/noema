@@ -12,25 +12,29 @@ struct ToolbarSearchRow: Identifiable, Equatable {
     let symbol: String
     let entryID: UUID
     let blockID: UUID?
+    var relevance: String? = nil
 
     static func preview(_ results: SidebarSearchResults, limit: Int = 8) -> [Self] {
         let groups: [[Self]] = [
             results.pages.prefix(max(0, limit)).map { note in
                 Self(id: "page:\(note.id)", category: .pages, title: note.title,
                      excerpt: results.pageExcerpts[note.id] ?? "", symbol: "doc.text",
-                     entryID: note.id, blockID: nil)
+                     entryID: note.id, blockID: results.pageBlocks[note.id],
+                     relevance: results.relevance["page:\(note.id)"]?.rawValue)
             },
             results.sources.prefix(max(0, limit)).map { source in
                 Self(id: "source:\(source.id)", category: .sources, title: source.title,
                      excerpt: results.sourceExcerpts[source.id] ?? "",
                      symbol: source.metadata.isLinked ? "link" : "tray",
-                     entryID: source.id, blockID: nil)
+                     entryID: source.id, blockID: nil,
+                     relevance: results.relevance["source:\(source.id)"]?.rawValue)
             },
             results.blocks.prefix(max(0, limit)).map { hit in
                 Self(id: "block:\(hit.id)", category: .blocks, title: hit.pageTitle,
                      excerpt: "\(hit.semantic) · \(hit.preview)",
                      symbol: "tag",
-                     entryID: hit.pageID, blockID: hit.blockID)
+                     entryID: hit.pageID, blockID: hit.blockID,
+                     relevance: results.relevance["block:\(hit.id)"]?.rawValue)
             }
         ]
         var chosen = Set<String>()
@@ -60,6 +64,15 @@ struct ToolbarSearchRow: Identifiable, Equatable {
 /// Lock-state flags do not turn Escape into a shortcut. Marked text remains
 /// owned by the input method before the search presentation handles dismissal.
 enum ToolbarSearchKeyboardPolicy {
+    enum SubmitAction: Equatable { case submitMeaning, openResult, none }
+
+    static func submitAction(quickOpen: Bool, retrievalMode: VaultSearchRetrievalMode,
+                             semanticStatus: SemanticSearchStatus, hasDisclosure: Bool) -> SubmitAction {
+        guard !quickOpen, retrievalMode == .meaning else { return .openResult }
+        guard !semanticStatus.isRunning, !hasDisclosure else { return .none }
+        return semanticStatus == .completed ? .openResult : .submitMeaning
+    }
+
     static func canOpenResult(resultsVisible: Bool, status: VaultSearchStatus) -> Bool {
         resultsVisible && status == .results
     }
@@ -192,6 +205,10 @@ struct ToolbarSearchView: View {
                 }
             }
             if resultsVisible {
+                SemanticSearchControls(model: model, announcesStatus: expanded && resultsVisible, onQueryDecision: {
+                    focus.acceptsInputFocus = true
+                    focusRequest += 1
+                })
                 Picker("Search scope", selection: Binding(
                     get: { model.searchScope }, set: { model.setSearchScope($0) }
                 )) {
@@ -296,6 +313,10 @@ struct ToolbarSearchView: View {
                 VStack(alignment: .leading, spacing: NoemaSpacing.xs) {
                     Text(row.title).font(NoemaTypography.interfaceEmphasis).lineLimit(1)
                         .noemaChromeForeground()
+                    if let relevance = row.relevance {
+                        Text(relevance).font(NoemaTypography.metadata)
+                            .noemaChromeForeground(.textSecondary)
+                    }
                     if !row.excerpt.isEmpty {
                         Text(row.excerpt).font(NoemaTypography.metadata).lineLimit(2)
                             .noemaChromeForeground(.textSecondary)
@@ -309,7 +330,7 @@ struct ToolbarSearchView: View {
         }
         .buttonStyle(NoemaChromeButtonStyle(selected: selectedID == row.id, surface: .elevated))
         .id(row.id)
-        .accessibilityLabel("\(row.title), \(row.category.rawValue), \(row.excerpt)")
+        .accessibilityLabel("\(row.title), \(row.category.rawValue), \(row.relevance ?? ""), \(row.excerpt)")
         .accessibilityAddTraits(selectedID == row.id ? [.isSelected] : [])
     }
 
@@ -331,6 +352,21 @@ struct ToolbarSearchView: View {
             resultsVisible = true
             selectedID = ToolbarSearchRow.nextSelection(current: selectedID, rows: rows, offset: command == .up ? -1 : 1)
         case .submit:
+            switch ToolbarSearchKeyboardPolicy.submitAction(
+                quickOpen: model.searchMode == .quickOpen,
+                retrievalMode: model.searchRetrievalMode,
+                semanticStatus: model.semanticSearchStatus,
+                hasDisclosure: model.pendingSemanticQueryDisclosure != nil
+            ) {
+            case .submitMeaning:
+                resultsVisible = true
+                model.submitMeaningSearch()
+                return
+            case .none:
+                resultsVisible = true
+                return
+            case .openResult: break
+            }
             guard ToolbarSearchKeyboardPolicy.canOpenResult(resultsVisible: resultsVisible, status: model.searchStatus) else {
                 resultsVisible = true
                 return
@@ -343,7 +379,7 @@ struct ToolbarSearchView: View {
     private func open(_ row: ToolbarSearchRow) {
         focus.shouldRestore = false
         collapse(restoreFocus: false)
-        model.select(row.entryID, scope: row.category == .sources ? .sources : .wiki, block: row.blockID)
+        model.openSearchResult(entryID: row.entryID, blockID: row.blockID, isSource: row.category == .sources)
     }
 
     private func escape() {
