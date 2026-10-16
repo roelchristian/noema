@@ -68,6 +68,50 @@ until that process stops. Keep failures and review evidence pinned. Record obser
 actions and announcements in the PR or managed evidence; successful building,
 signing or static raster capture does not establish native accessibility acceptance.
 
+### Entity bridge process-crash acceptance
+
+On the integrated ENT04–05 checkout, first build the exact VaultCoreTests graph,
+then run the synthetic process-termination controller:
+
+```sh
+./scripts/test.sh standard --targets VaultCoreTests --skip-update --filter entityBridgeProcessCrashWorker
+python3 scripts/entity-bridge-crash-acceptance.py --run-id entity-bridge-crash-review
+```
+
+The filtered build leaves the opt-in worker disabled; the controller enables it for
+each isolated fixture. It runs the built macOS Swift Testing helper directly, without
+another SwiftPM build. Do not replace that build graph while the controller runs.
+Use a fresh simple run ID; `--case` selects named cases and `--timeout` bounds each
+worker/verifier phase to 10–60 seconds.
+
+The 14 cases cover template save/reorder and Source link/unlink immediately before
+SQLite commit and after an acknowledged mutation; schema 8→9 and 9→10 migrations
+are stopped before SQLite commit, after database commit before manifest publication,
+and after manifest publication. Only the attested, controller-owned worker is killed.
+Owned-group cleanup also stops surviving descendants after a wrapper exits. An
+uncertain cleanup retains `.active` and withholds `.complete` for investigation.
+
+Fixtures, originals, manifests, baseline/expected database images and diagnostics stay
+under `.local/agent-runs/<run-id>/`, protected by `.active` while executing and `.pinned`
+for review. Completed runs receive `.complete`; failures also retain `.failed`. Do not
+remove failure pins or inspect a user vault to reproduce these cases. No application
+session lease or user credentials are serialized.
+
+Each fresh verifier checks an independent intended-state oracle alongside exact image
+recovery: requested template membership/order and revisions, one canonical association
+or explicit removal, operation replay rejection, exact migration schema/capabilities,
+unchanged preservation tables and original bytes. Interrupted manifest publication
+must fail ordinary admission and recover only through the explicit resume API. See the
+[worker assertions](../Tests/VaultCoreTests/EntityBridgeCrashAcceptanceTests.swift).
+
+This establishes process-crash recovery at the named SIGKILL barriers. It does not
+simulate power loss, an OS crash, storage-device failure or filesystem delivery.
+Precommit barriers do not cover every intermediate WAL write; migration publication
+can close/checkpoint SQLite before the manifest barrier. Keep those durability and
+real-device acceptance gaps separate from this procedure.
+
+### Embedding acceptance
+
 Embedding acceptance has two explicit local probes:
 
 ```sh
