@@ -64,6 +64,11 @@ struct SourceEntityLinksPresentationTests {
         #expect(SourceEntityLinksPresentation.sourceStatus(live, availability: nil) == "Original not verified")
         #expect(SourceEntityLinksPresentation.sourceStatus(live, availability: "Offline").contains("Offline"))
         #expect(SourceEntityLinksPresentation.sourceStatus(trash, availability: "Available").contains("Trash"))
+        #expect(SourceEntityLinksPresentation.sourceStatus(trash, availability: nil) == "Source in Trash · Original not verified")
+        #expect(SourceEntityLinksPresentation.sourceStatus(trash, availability: "Offline") == "Source in Trash · Last check: Offline")
+        let unavailable = CanonicalSource(id: source.id, ownership: .unavailable, metadata: source.metadata)
+        let unavailableTrash = CanonicalSourceSnapshot(source: unavailable, revision: revision, trashed: true, trashedAt: Date())
+        #expect(SourceEntityLinksPresentation.sourceStatus(unavailableTrash, availability: "Available") == "Source in Trash · Original unavailable")
     }
 }
 

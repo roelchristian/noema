@@ -28,10 +28,11 @@ enum SourceEntityLinksPresentation {
         (try? snapshot.source.sourceMetadata().title) ?? "Unavailable Source · \(snapshot.source.id.uuidString.prefix(8))"
     }
     static func sourceStatus(_ snapshot: CanonicalSourceSnapshot, availability: String?) -> String {
-        if snapshot.trashed { return "Source in Trash · original preserved" }
-        if snapshot.source.ownership == .unavailable { return "Original unavailable" }
-        if let availability, !availability.isEmpty { return "Last check: \(availability)" }
-        return "Original not verified"
+        let status: String
+        if snapshot.source.ownership == .unavailable { status = "Original unavailable" }
+        else if let availability, !availability.isEmpty { status = "Last check: \(availability)" }
+        else { status = "Original not verified" }
+        return snapshot.trashed ? "Source in Trash · \(status)" : status
     }
     static func eligibleEntities(_ entities: [KnowledgeEntitySnapshot], role: SourceEntityAssociationRole) -> [KnowledgeEntitySnapshot] {
         entities.filter { entity in entity.entity.lifecycle == .live &&
