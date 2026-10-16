@@ -10,6 +10,7 @@ struct EntityPropertiesSnapshot: Sendable {
     let vaultRevision: BlockStoreRevision
     let sessionID: UUID?
     var supportsRelationships = true
+    var template: EntityPropertyTemplateSnapshot? = nil
 }
 
 enum EntityPropertiesPresentation {
@@ -73,5 +74,28 @@ struct EntityPropertiesRequestToken: Equatable, Sendable {
     }
     func matches(request: Self, entityID: UUID, sessionID: UUID?) -> Bool {
         self == request && self.entityID == entityID && self.sessionID == sessionID
+    }
+}
+
+
+struct EntityPropertyTemplateConfiguration: Sendable {
+    let template: EntityPropertyTemplateSnapshot
+    let definitions: [EntityPropertyDefinitionSnapshot]
+    let vaultRevision: BlockStoreRevision
+    let sessionID: UUID?
+}
+
+enum EntityPropertyTemplatePresentation {
+    static let previewLimit = 4
+
+    /// Suggestions never fabricate an assignment. Incoming facts belong to their source.
+    static func suggestions(_ snapshot: EntityPropertiesSnapshot) -> [EntityPropertyDefinitionSnapshot] {
+        let used = Set(snapshot.values.assignments.map(\.definitionID)).union(
+            snapshot.relationships.filter { $0.relationship.sourceID == snapshot.entity.entity.id }.map(\.relationship.definitionID))
+        let definitions = Dictionary(uniqueKeysWithValues: snapshot.definitions.map { ($0.definition.id, $0) })
+        return (snapshot.template?.definitionIDs ?? []).compactMap { id in
+            guard !used.contains(id), let definition = definitions[id], !definition.definition.isRetired else { return nil }
+            return definition
+        }
     }
 }

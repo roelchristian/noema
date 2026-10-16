@@ -4576,10 +4576,14 @@ extension AppModel {
         for id in endpointIDs where !entities.contains(where: { $0.entity.id == id }) {
             entities.append(try await store.loadEntity(id: id))
         }
+        let template: EntityPropertyTemplateSnapshot?
+        do { template = try await store.loadPropertyTemplate(typeKey: entity.entity.typeKey) }
+        catch KnowledgeStoreError.transitionRequired { template = nil }
         guard canOperateOnLoadedContent, !isLocked, sessionState.sessionID == sessionID,
               try await store.canonicalVaultRevision() == vault else { throw KnowledgeStoreError.staleRevision }
         return .init(entity: entity, definitions: definitions, values: values, relationships: relationships,
-                     entities: entities, vaultRevision: vault, sessionID: sessionID, supportsRelationships: supportsRelationships)
+                     entities: entities, vaultRevision: vault, sessionID: sessionID,
+                     supportsRelationships: supportsRelationships, template: template)
     }
 
     /// The UI supplies its selection lifetime check; the store still checks all canonical revisions.
@@ -4634,5 +4638,28 @@ extension AppModel {
             throw VaultError.unavailable("The entity search is no longer current.")
         }
         return values.filter { $0.entity.lifecycle == .live }
+    }
+}
+
+
+extension AppModel {
+    func loadPropertyTemplateConfiguration(typeKey: String) async throws -> EntityPropertyTemplateConfiguration {
+        guard canOperateOnLoadedContent, !isLocked, let repository else { throw VaultError.unavailable("The vault is unavailable.") }
+        let sessionID = sessionState.sessionID, store = repository.sqliteBlockStore
+        let vault = try await store.canonicalVaultRevision()
+        let template = try await store.loadPropertyTemplate(typeKey: typeKey)
+        let definitions = try await store.listPropertyDefinitions(includeRetired: true)
+        guard canOperateOnLoadedContent, !isLocked, sessionState.sessionID == sessionID, !Task.isCancelled,
+              try await store.canonicalVaultRevision() == vault else { throw KnowledgeStoreError.staleRevision }
+        return .init(template: template, definitions: definitions, vaultRevision: vault, sessionID: sessionID)
+    }
+
+    func savePropertyTemplateConfiguration(_ definitionIDs: [UUID], snapshot: EntityPropertyTemplateConfiguration,
+                                           isCurrent: @MainActor () -> Bool) async throws {
+        guard canEditSemanticTarget, !isLocked, let repository, sessionState.sessionID == snapshot.sessionID,
+              isCurrent(), !Task.isCancelled else { throw VaultError.unavailable("This template selection is no longer editable.") }
+        _ = try await repository.sqliteBlockStore.savePropertyTemplate(typeKey: snapshot.template.typeKey,
+            definitionIDs: definitionIDs, expected: snapshot.template.revision,
+            expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
     }
 }
