@@ -371,3 +371,11 @@ SQLite backup includes both tables and admission/archive validation checks their
 foreign keys, registered types, revisions, definition ownership, order and cap.
 See [template tests](../../Tests/VaultCoreTests/EntityPropertyTemplateTests.swift)
 for preservation, rollback, admission, migration and archive scenarios.
+
+The native template manager is reachable from the Knowledge Entities catalogue even
+when empty and from entity property inspectors. Its type picker covers all five
+registered keys. Suggestions initially show four unused active definitions, with
+separate disclosure from existing values/edges; selecting one opens the existing
+property editor without writing a fact. Management uses explicit saves and retains
+retired rows until explicitly removed. Selection/session/request guards discard
+late reads and reject stale saves on type changes, navigation, lock and vault switch.
