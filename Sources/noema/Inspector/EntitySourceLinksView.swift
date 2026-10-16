@@ -14,6 +14,9 @@ struct EntitySourceLinksView: View {
     @State private var busy = false
     @State private var error: String?
     @State private var pendingUnlink: SourceEntityAssociationSnapshot?
+    private enum FocusTarget: Hashable { case refresh, source(UUID), unlink(UUID) }
+    @FocusState private var focusedControl: FocusTarget?
+    @AccessibilityFocusState private var accessibleControl: FocusTarget?
 
     init(model: AppModel, entityID: UUID, previewSnapshot: SourceEntityLinksSnapshot? = nil) {
         self.model = model; self.entityID = entityID; self.previewSnapshot = previewSnapshot
@@ -30,6 +33,9 @@ struct EntitySourceLinksView: View {
                 Spacer()
                 Button { requestPage(snapshot?.offset ?? 0) } label: { Image(systemName: "arrow.clockwise") }
                     .accessibilityLabel("Refresh sources associated with this entity")
+                    .accessibilityHint(error.map { "\($0) Activate to reload associated sources." } ?? "Reload associated sources.")
+                    .focused($focusedControl, equals: .refresh)
+                    .accessibilityFocused($accessibleControl, equals: .refresh)
                     .disabled(busy || model.isLocked || previewSnapshot != nil)
             }
             if busy { ProgressView().controlSize(.small).accessibilityLabel("Loading associated sources") }
@@ -64,10 +70,10 @@ struct EntitySourceLinksView: View {
         }
         .task {
             active = true
-            if previewSnapshot == nil { requestPage(0) }
+            if previewSnapshot == nil { requestPage(0, restoringFocus: false) }
             else { requestedEntityID = entityID; requestedSessionID = model.sessionState.sessionID }
         }
-        .onChange(of: identity) { invalidate(); if previewSnapshot == nil { requestPage(0) } }
+        .onChange(of: identity) { invalidate(); if previewSnapshot == nil { requestPage(0, restoringFocus: false) } }
         .onDisappear { active = false; invalidate() }
         .confirmationDialog("Unlink this Source from the entity?", isPresented: Binding(
             get: { pendingUnlink != nil }, set: { if !$0 { pendingUnlink = nil } }), titleVisibility: .visible) {
@@ -78,7 +84,10 @@ struct EntitySourceLinksView: View {
                 }
                 pendingUnlink = nil
             }
-            Button("Cancel", role: .cancel) { pendingUnlink = nil }
+            Button("Cancel", role: .cancel) {
+                if let edge = pendingUnlink { restoreFocus(.unlink(edge.association.id), token: request) }
+                pendingUnlink = nil
+            }
         } message: {
             Text("The Source, its original and the entity's properties are preserved.")
         }
@@ -93,11 +102,18 @@ struct EntitySourceLinksView: View {
         return VStack(alignment: .leading, spacing: NoemaSpacing.xs) {
             Button(title) {
                 let token = request
+                // The reader is a separate window. Retain this sheet and its
+                // originating control so closing that window can return here.
+                focusedControl = .source(edge.association.id)
+                accessibleControl = .source(edge.association.id)
                 model.openAssociatedSource(edge.association.sourceID, snapshot: snapshot, isCurrent: { current(token) })
             }
             .buttonStyle(.link)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityLabel("Open Source \(title)")
+            .accessibilityHint("Opens a separate Source reader window. Close it to return to this entity.")
+            .focused($focusedControl, equals: .source(edge.association.id))
+            .accessibilityFocused($accessibleControl, equals: .source(edge.association.id))
             .disabled(!navigable)
             if let source {
                 Text(SourceEntityLinksPresentation.sourceStatus(source, availability: availability))
@@ -106,6 +122,8 @@ struct EntitySourceLinksView: View {
             }
             Button("Unlink") { pendingUnlink = edge }
                 .accessibilityLabel("Unlink \(title), \(SourceEntityLinksPresentation.roleLabel(edge.association.role))")
+                .focused($focusedControl, equals: .unlink(edge.association.id))
+                .accessibilityFocused($accessibleControl, equals: .unlink(edge.association.id))
                 .disabled(!editable || source == nil || !snapshot.entities.contains { $0.entity.id == entityID })
         }
     }
@@ -113,6 +131,7 @@ struct EntitySourceLinksView: View {
     private func invalidate() {
         request = UUID(); requestedEntityID = nil; requestedSessionID = nil
         snapshot = nil; pendingUnlink = nil; error = nil; busy = false
+        focusedControl = nil; accessibleControl = nil
     }
 
     private func current(_ token: UUID) -> Bool {
@@ -120,7 +139,17 @@ struct EntitySourceLinksView: View {
             requestedSessionID == model.sessionState.sessionID && !model.isLocked
     }
 
-    private func requestPage(_ offset: Int) {
+    private func restoreFocus(_ target: FocusTarget, token: UUID) {
+        Task { @MainActor in
+            await Task.yield()
+            guard current(token), !busy else { return }
+            if case .unlink(let id) = target,
+               snapshot?.associations.contains(where: { $0.association.id == id }) != true { return }
+            focusedControl = target; accessibleControl = target
+        }
+    }
+
+    private func requestPage(_ offset: Int, restoringFocus: Bool = true) {
         invalidate()
         guard active, !model.isLocked, previewSnapshot == nil else { return }
         let token = request, requestedEntity = entityID, sessionID = model.sessionState.sessionID
@@ -131,12 +160,14 @@ struct EntitySourceLinksView: View {
                 let result = try await model.loadEntitySourceLinks(entityID: requestedEntity, offset: offset)
                 guard current(token), entityID == requestedEntity, model.sessionState.sessionID == sessionID else { return }
                 snapshot = result; busy = false
+                if restoringFocus { restoreFocus(.refresh, token: token) }
             } catch {
                 guard current(token), entityID == requestedEntity, model.sessionState.sessionID == sessionID else { return }
                 if case KnowledgeStoreError.transitionRequired = error {
                     self.error = "Source associations require an explicit vault upgrade. Existing Source and entity data are preserved."
                 } else { self.error = error.localizedDescription }
                 busy = false
+                restoreFocus(.refresh, token: token)
             }
         }
     }
@@ -151,6 +182,7 @@ struct EntitySourceLinksView: View {
         } catch {
             guard current(token) else { return }
             self.error = error.localizedDescription; busy = false
+            restoreFocus(.refresh, token: token)
         }
     }
 }
