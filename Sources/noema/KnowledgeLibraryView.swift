@@ -27,6 +27,7 @@ struct KnowledgeLibraryView<Blocks: View>: View {
     @State private var showingPropertyTemplates = false
     @State private var templateSessionID: UUID?
     @FocusState private var templateEntryFocused: Bool
+    @AccessibilityFocusState(for: .voiceOver) private var templateEntryAccessible: Bool
     init(model: AppModel, query: Binding<String>, selection: Binding<KnowledgeCatalogueSelection?>, @ViewBuilder blocks: () -> Blocks) {
         self.model = model
         self._query = query
@@ -47,6 +48,7 @@ struct KnowledgeLibraryView<Blocks: View>: View {
                     }
                         .disabled(!model.canEditSemanticTarget || model.isLocked)
                         .focused($templateEntryFocused)
+                        .accessibilityFocused($templateEntryAccessible)
                 }
                 Text(model.knowledgeFamily.explanation).font(NoemaTypography.metadata).foregroundStyle(.secondary)
                 if model.knowledgeFamily != .blocks { TextField("Search \(model.knowledgeFamily.rawValue.lowercased())", text: $query) }
@@ -93,13 +95,13 @@ struct KnowledgeLibraryView<Blocks: View>: View {
             templateSessionID = nil
             guard let sessionID, model.sessionState.sessionID == sessionID,
                   !model.isLocked, model.canEditSemanticTarget, model.knowledgeFamily == .entities else { return }
-            templateEntryFocused = true
+            templateEntryFocused = true; templateEntryAccessible = true
         }) { EntityPropertyTemplateManager(model: model, initialTypeKey: "person") }
     }
     private func dismissTemplates() {
         templateSessionID = nil
         showingPropertyTemplates = false
-        templateEntryFocused = false
+        templateEntryFocused = false; templateEntryAccessible = false
     }
     private func row(_ title: String, symbol: String? = nil, subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {

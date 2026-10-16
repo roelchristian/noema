@@ -20,6 +20,8 @@ struct EntityPropertiesView: View {
     @State private var templatePresentationIdentity: String?
     @FocusState private var suggestedInputFocused: Bool
     @FocusState private var manageTemplatesFocused: Bool
+    @AccessibilityFocusState(for: .voiceOver) private var suggestedInputAccessible: Bool
+    @AccessibilityFocusState(for: .voiceOver) private var manageTemplatesAccessible: Bool
     @State private var editorExpanded = false
     @State private var query = ""
     @State private var selectedDefinition: UUID?
@@ -135,6 +137,7 @@ struct EntityPropertiesView: View {
             Button("Manage templates") { templatePresentationIdentity = taskIdentity; managingTemplates = true }
                 .accessibilityLabel("Manage property templates for entity types")
                 .focused($manageTemplatesFocused)
+                .accessibilityFocused($manageTemplatesAccessible)
                 .disabled(!model.canEditSemanticTarget || busy)
             Text("Optional properties · choose one to enter a value.")
                 .font(NoemaTypography.metadata).foregroundStyle(.secondary)
@@ -160,7 +163,7 @@ struct EntityPropertiesView: View {
         Task { @MainActor in
             await reload()
             guard active, !model.isLocked, taskIdentity == identity, displayed != nil else { return }
-            manageTemplatesFocused = true
+            manageTemplatesFocused = true; manageTemplatesAccessible = true
         }
     }
 
@@ -176,7 +179,7 @@ struct EntityPropertiesView: View {
         Task { @MainActor in
             await Task.yield()
             guard current(token), draftRequest == draftID else { return }
-            suggestedInputFocused = true
+            suggestedInputFocused = true; suggestedInputAccessible = true
         }
     }
 
@@ -268,7 +271,7 @@ struct EntityPropertiesView: View {
                             Text("Outside the suggested entity types. You can still add this relationship.").font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    TextField("Search canonical entities", text: $entityQuery).focused($suggestedInputFocused)
+                    TextField("Search canonical entities", text: $entityQuery).focused($suggestedInputFocused).accessibilityFocused($suggestedInputAccessible)
                     Picker("Canonical entity", selection: $otherID) {
                         Text("Choose entity").tag(nil as UUID?)
                         ForEach(entityChoices.filter { $0.entity.lifecycle == .live }, id: \.entity.id) { value in
@@ -281,8 +284,8 @@ struct EntityPropertiesView: View {
                         if let otherID { schedule(.addRelationship(definitionID: definition.id, otherID: otherID, incoming: incoming)) }
                     }.disabled(otherID == nil || definition.isRetired)
                 } else {
-                    if definition.kind == .boolean { Toggle("Value", isOn: $boolean).focused($suggestedInputFocused) }
-                    else { TextField(definition.kind == .date ? "YYYY, YYYY-MM, or YYYY-MM-DD" : "Value", text: $text).focused($suggestedInputFocused) }
+                    if definition.kind == .boolean { Toggle("Value", isOn: $boolean).focused($suggestedInputFocused).accessibilityFocused($suggestedInputAccessible) }
+                    else { TextField(definition.kind == .date ? "YYYY, YYYY-MM, or YYYY-MM-DD" : "Value", text: $text).focused($suggestedInputFocused).accessibilityFocused($suggestedInputAccessible) }
                     Button(editingAssignment == nil ? "Set value" : "Save value") { saveScalar(definition, snapshot: snapshot) }.disabled(definition.isRetired)
                     if editingAssignment != nil { Button("Cancel editing") { editingAssignment = nil; text = "" } }
                 }
@@ -374,9 +377,9 @@ struct EntityPropertiesView: View {
         request = .init(entityID: entityID, sessionID: model.sessionState.sessionID)
         snapshot = nil; entityChoices = []; entitySearchRequest = UUID(); searchingEntities = false
         error = nil; busy = false; pendingRemoval = nil; relatedEntityID = nil; managingTemplates = false
-        templatePresentationIdentity = nil; manageTemplatesFocused = false
+        templatePresentationIdentity = nil; manageTemplatesFocused = false; manageTemplatesAccessible = false
         editingAssignment = nil; selectedDefinition = nil; draftRequest = UUID()
-        expanded = false; suggestionsExpanded = false; editorExpanded = false; suggestedInputFocused = false
+        expanded = false; suggestionsExpanded = false; editorExpanded = false; suggestedInputFocused = false; suggestedInputAccessible = false
         query = ""; entityQuery = ""; text = ""; boolean = false; otherID = nil; incoming = false
         kind = .text; many = false; inverseLabel = ""; definitionLabel = ""; sourceTypeKeys = []; targetTypeKeys = []
     }

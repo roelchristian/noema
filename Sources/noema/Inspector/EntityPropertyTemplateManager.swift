@@ -16,6 +16,7 @@ struct EntityPropertyTemplateManager: View {
     @State private var saved = false
     @State private var focusRequest = UUID()
     @FocusState private var focusedControl: EntityPropertyTemplateFocus?
+    @AccessibilityFocusState(for: .voiceOver) private var accessibleControl: EntityPropertyTemplateFocus?
 
     init(model: AppModel, initialTypeKey: String) {
         self.model = model
@@ -47,6 +48,7 @@ struct EntityPropertyTemplateManager: View {
                     Text(KnowledgeTypePresentation.label(for: type.key)).tag(type.key)
                 }
             }.disabled(busy).focused($focusedControl, equals: .typePicker)
+                .accessibilityFocused($accessibleControl, equals: .typePicker)
             Text("Switching type discards unsaved template changes.").font(.caption).foregroundStyle(.secondary)
             if busy { ProgressView().controlSize(.small).accessibilityLabel("Loading or saving property template") }
             if !model.isLocked, let error { status("Template error: \(error)") }
@@ -68,6 +70,7 @@ struct EntityPropertyTemplateManager: View {
                     }
                 }.disabled(!editable || definitionIDs.count >= EntityPropertyTemplateSnapshot.maximumEntries)
                     .focused($focusedControl, equals: .definitionPicker)
+                    .accessibilityFocused($accessibleControl, equals: .definitionPicker)
                 Button("Add suggestion") {
                     guard editable, let id = selectedDefinitionID,
                           availableDefinitions.contains(where: { $0.definition.id == id }),
@@ -109,9 +112,11 @@ struct EntityPropertyTemplateManager: View {
             Button { move(index, offset: -1) } label: { Image(systemName: "arrow.up") }
                 .accessibilityLabel("Move \(label) earlier").disabled(!editable || index == 0)
                 .focused($focusedControl, equals: .earlier(id))
+                .accessibilityFocused($accessibleControl, equals: .earlier(id))
             Button { move(index, offset: 1) } label: { Image(systemName: "arrow.down") }
                 .accessibilityLabel("Move \(label) later").disabled(!editable || index == definitionIDs.count - 1)
                 .focused($focusedControl, equals: .later(id))
+                .accessibilityFocused($accessibleControl, equals: .later(id))
             Button(role: .destructive) {
                 guard editable else { return }
                 let destination = EntityPropertyTemplateFocus.afterRemoving(id, from: definitionIDs)
@@ -120,6 +125,7 @@ struct EntityPropertyTemplateManager: View {
             } label: { Image(systemName: "minus.circle") }
                 .accessibilityLabel("Remove \(label) suggestion").disabled(!editable)
                 .focused($focusedControl, equals: .remove(id))
+                .accessibilityFocused($accessibleControl, equals: .remove(id))
         }
     }
 
@@ -140,6 +146,7 @@ struct EntityPropertyTemplateManager: View {
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityLabel(message)
             .focusable().focused($focusedControl, equals: .status)
+                .accessibilityFocused($accessibleControl, equals: .status)
     }
 
     /// Restore a surviving native control only while its original selection is current.
@@ -147,17 +154,17 @@ struct EntityPropertyTemplateManager: View {
         let token = request, type = typeKey, sessionID = model.sessionState.sessionID
         let focusID = UUID()
         focusRequest = focusID
-        focusedControl = nil
+        focusedControl = nil; accessibleControl = nil
         Task { @MainActor in
             await Task.yield()
             guard current(token, type: type, sessionID: sessionID), focusRequest == focusID else { return }
-            focusedControl = destination
+            focusedControl = destination; accessibleControl = destination
         }
     }
 
     private func invalidate() {
         request = UUID(); configuration = nil; definitionIDs = []; selectedDefinitionID = nil
-        error = nil; saved = false; busy = false; focusedControl = nil; focusRequest = UUID()
+        error = nil; saved = false; busy = false; focusedControl = nil; accessibleControl = nil; focusRequest = UUID()
     }
 
     private func current(_ token: UUID, type: String, sessionID: UUID?) -> Bool {
