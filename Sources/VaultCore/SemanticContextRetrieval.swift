@@ -33,7 +33,7 @@ public actor SemanticContextRetrieval {
     public init(repository: FileVaultRepository, index: SQLiteEmbeddingIndex,
                 generation: EmbeddingIndexGeneration, lease: VaultSessionLease,
                 extractOriginal: @escaping @Sendable (SourceSummarySnapshot) throws -> String) throws {
-        guard repository.manifest.id == lease.vaultID, generation.vaultID == lease.vaultID,
+        guard repository.sessionLease == lease, repository.manifest.id == lease.vaultID, generation.vaultID == lease.vaultID,
               repository.root.standardizedFileURL == lease.root.standardizedFileURL else {
             throw EmbeddingContractError.authorityDenied
         }
@@ -50,6 +50,7 @@ public actor SemanticContextRetrieval {
             throw EmbeddingContractError.authorityDenied
         }
         try context.validate(scope: context.scope, model: generation.model)
+        try repository.validateAccess(operation: "semanticContext.retrieve")
     }
     private static func key(_ kind: AIEntityKind, _ id: UUID) -> String { kind.rawValue + "/" + id.uuidString }
 
@@ -65,7 +66,9 @@ public actor SemanticContextRetrieval {
         let revisions = Dictionary(uniqueKeysWithValues: inventory.filter { $0.kind != .removed }.map {
             (Self.key($0.entityKind, $0.entityID), $0.revision)
         })
+        let requiresTaggedBlocks = scope == .blocks
         let isCurrent: @Sendable (EmbeddingDocumentCompletion) throws -> Bool = { completion in
+            if requiresTaggedBlocks && taggedBlocks[completion.identity.entityID]?.isEmpty != false { return false }
             guard completion.identity.vaultID == context.lease.vaultID,
                   revisions[Self.key(completion.identity.entityKind, completion.identity.entityID)] == completion.identity.revision else { return false }
             if completion.identity.entityKind == .source {
@@ -87,12 +90,15 @@ public actor SemanticContextRetrieval {
         guard usable else { return [] }
         // Caller supplies its current tagged-block catalog for filtering before top-K; hydration
         // independently verifies actual canonical tags. An absent catalog fails closed.
-        let isPassageEligible: (@Sendable (EmbeddingChunk) throws -> Bool)? = scope == .blocks ? { chunk in
-            guard chunk.identity.entityKind == .page,
-                  let locator = SemanticPassageLocator(chunkID: chunk.chunkID, entityKind: .page),
-                  case .block(let id, _) = locator else { return false }
-            return taggedBlocks[chunk.identity.entityID]?.contains(id) == true
-        } : nil
+        let isPassageEligible: (@Sendable (EmbeddingChunk) throws -> Bool)?
+        if scope == .blocks {
+            isPassageEligible = { @Sendable chunk in
+                guard chunk.identity.entityKind == .page,
+                      let locator = SemanticPassageLocator(chunkID: chunk.chunkID, entityKind: .page),
+                      case .block(let id, _) = locator else { return false }
+                return taggedBlocks[chunk.identity.entityID]?.contains(id) == true
+            }
+        } else { isPassageEligible = nil }
         let candidates = try await index.searchCandidates(query: vector, generation: generation,
             documentLimit: limit, passagesPerDocument: 3,
             kind: kind, isCurrent: isCurrent, isPassageEligible: isPassageEligible, validateQuery: validateQuery)

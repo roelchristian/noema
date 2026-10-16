@@ -163,3 +163,18 @@ private struct ContextRetrievalFixture: Sendable {
     }
     await #expect(throws: EmbeddingContractError.authorityDenied) { try await revokingService.retrieve(vector: f.vector, scope: .sources, context: revoked) }
 }
+
+@Test func semanticContextRequiresExactLeaseModelAndIndependentRepositoryGate() async throws {
+    let f = try await ContextRetrievalFixture.make(), service = try f.service()
+    let (_, page) = try await f.page(); try await f.seed(page)
+    let otherLease = VaultSessionLease(vaultID: f.lease.vaultID, root: f.lease.root, generation: f.lease.generation)
+    let wrongLease = try EmbeddingExecutionContext(lease: otherLease, scope: .query(vaultID: f.lease.vaultID, queryID: UUID()), model: f.generation.model) {}
+    await #expect(throws: EmbeddingContractError.authorityDenied) { try await service.retrieve(vector: f.vector, scope: .all, context: wrongLease) }
+    let otherModel = try EmbeddingModelDescriptor(providerID: "synthetic", modelID: "context", revision: "2",
+        dimensions: 3, maximumInputUTF8Bytes: 2048, maximumBatchSize: 10)
+    let wrongVector = try EmbeddingVector(values: [1,0,0], model: otherModel)
+    await #expect(throws: EmbeddingContractError.incompatibleGeneration) { try await service.retrieve(vector: wrongVector, scope: .all, context: f.context()) }
+    let permissiveContext = try EmbeddingExecutionContext(lease: f.lease, scope: .query(vaultID: f.lease.vaultID, queryID: UUID()), model: f.generation.model) {}
+    f.manager.accessGate.updateState(.closed)
+    await #expect(throws: (any Error).self) { try await service.retrieve(vector: f.vector, scope: .all, context: permissiveContext) }
+}
