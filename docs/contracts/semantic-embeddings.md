@@ -88,7 +88,8 @@ claim an already transmitted request was unbilled.
 Semantic query retrieval must use compatible generations, current live revisions and
 search scope, deduplicate chunks by document and merge lexical results deterministically
 with reciprocal rank fusion while preserving strong title/alias matches. Cloud queries
-require separate query authority, debounce and cancellation. Quick Open remains lexical.
+require separate query authority, explicit submission and cancellation. Typing and scope
+changes never dispatch a cloud query. Quick Open remains lexical.
 
 ## Privacy and implementation gates
 
@@ -282,3 +283,45 @@ content. Completed and cancelled cloud work can have incurred usage; absent prov
 usage/cost evidence stays unknown. Queue behavior tests use injected providers and
 transport. Native accessibility/focus, live-provider behavior, linked-original
 atomicity and actual crash/power-loss acceptance remain outstanding.
+
+## Hybrid retrieval interface (SEM.EMB07)
+
+`SemanticSearchContracts.swift` freezes the shared metadata boundary.
+`SemanticSearchCandidate` describes one completed indexed document and carries its
+exact generation, completion work revision/input fingerprint and bounded
+`SemanticSearchPassage` values (chunk locator, ordinal, content fingerprint and cosine).
+It contains no vector or canonical text and grants no currentness or query authority.
+
+The index retrieval API selects one exact generation, bounds documents and passages
+per document, streams vectors on the owning actor and excludes partial checkpoints.
+It validates the whole document before admitting its passages. Invalid completion
+or vector evidence excludes that document; semantic failure leaves lexical search
+available. Schema 3's existing composite indexes cover generation/document selection;
+new SQL needs the storage author/reviewer procedure before acceptance.
+
+Application composition selects `semanticProcessingGeneration` only when its full
+model, vault and chunker match the live provider. It never chooses a newest UUID or
+compares vectors across generations. No compatible generation means lexical fallback,
+not implicit generation creation or provider substitution. Compatibility and completed
+work do not establish complete current-vault coverage.
+
+Pure ranking receives explicit lexical ordinals and current title/alias evidence,
+plus validated semantic candidates. It aggregates by kind/UUID, uses RRF with k=60
+and equal weights, and protects full normalized exact title/alias matches in Meaning
+mode. Ties use normalized title, kind and UUID; passage ties use ordinal and chunk ID.
+Lexical fallback preserves its supplied FTS order. Semantic Blocks requires current
+canonical block-tag evidence; a Page chunk locator alone does not establish that scope.
+
+The application owns asynchronous canonical revision, Trash, locator and Source
+original checks after bounded retrieval and before presentation. Source completion's
+canonical revision alone cannot establish current original bytes. Reconstruct excerpts
+only from current bounded canonical inputs and omit stale locators. Final publication
+uses existing search revision/completion-ticket and lease checks plus canonical-issued
+revision protection. Linked originals cannot be transactionally coupled to SQLite.
+
+Transient query execution reuses `EmbeddingExecutionContext` with `.query` scope and
+existing native provider or issuer-bound `EmbeddingRequestExecutor`. It retains final
+publication validation through presentation. Cloud query approval is fresh for exact
+input, query identity, lease and model, never inherited from document/history approval.
+Native input is passed unchanged to provider language/byte/word validation. Query text
+and vectors never enter persistent ledgers, activity or diagnostics.
