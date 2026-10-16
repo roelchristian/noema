@@ -13,6 +13,11 @@ struct SourceEntityLinksSnapshot: Sendable {
 }
 
 enum SourceEntityLinksPresentation {
+    static func canDisplayEntitySources(_ snapshot: SourceEntityLinksSnapshot, entityID: UUID,
+        requestedEntityID: UUID?, requestedSessionID: UUID?, sessionID: UUID?, isLocked: Bool) -> Bool {
+        !isLocked && requestedEntityID == entityID && requestedSessionID == sessionID &&
+            snapshot.sessionID == sessionID && snapshot.entities.contains { $0.entity.id == entityID }
+    }
     static func roleLabel(_ role: SourceEntityAssociationRole) -> String {
         switch role {
         case .representsWork: "Represents work"

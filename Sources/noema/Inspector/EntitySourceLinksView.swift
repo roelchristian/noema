@@ -24,6 +24,12 @@ struct EntitySourceLinksView: View {
     }
 
     private var identity: String { "\(entityID):\(String(describing: model.sessionState.sessionID)):\(model.isLocked)" }
+    private var displayed: SourceEntityLinksSnapshot? {
+        guard let snapshot, SourceEntityLinksPresentation.canDisplayEntitySources(snapshot, entityID: entityID,
+            requestedEntityID: requestedEntityID, requestedSessionID: requestedSessionID,
+            sessionID: model.sessionState.sessionID, isLocked: model.isLocked) else { return nil }
+        return snapshot
+    }
     private var editable: Bool { model.canEditSemanticTarget && !model.isLocked && !busy }
 
     var body: some View {
@@ -39,8 +45,9 @@ struct EntitySourceLinksView: View {
                     .disabled(busy || model.isLocked || previewSnapshot != nil)
             }
             if busy { ProgressView().controlSize(.small).accessibilityLabel("Loading associated sources") }
-            if let error { Text(error).font(NoemaTypography.metadata).foregroundStyle(.secondary) }
-            if let snapshot, !model.isLocked, snapshot.sessionID == model.sessionState.sessionID {
+            if !model.isLocked, requestedEntityID == entityID, requestedSessionID == model.sessionState.sessionID,
+               let error { Text(error).font(NoemaTypography.metadata).foregroundStyle(.secondary) }
+            if let snapshot = displayed {
                 if snapshot.associations.isEmpty {
                     Text(snapshot.offset == 0 ? "No sources associated. Link an existing entity from a Source's inspector." : "No more source associations on this page.")
                         .font(NoemaTypography.metadata).foregroundStyle(.secondary)
@@ -78,7 +85,7 @@ struct EntitySourceLinksView: View {
         .confirmationDialog("Unlink this Source from the entity?", isPresented: Binding(
             get: { pendingUnlink != nil }, set: { if !$0 { pendingUnlink = nil } }), titleVisibility: .visible) {
             Button("Unlink Source", role: .destructive) {
-                if let edge = pendingUnlink, let snapshot {
+                if let edge = pendingUnlink, let snapshot = displayed {
                     scheduleRemoval(edge, snapshot: snapshot)
                 }
                 pendingUnlink = nil
