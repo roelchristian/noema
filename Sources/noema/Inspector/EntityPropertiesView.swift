@@ -17,7 +17,9 @@ struct EntityPropertiesView: View {
     @State private var expanded = false
     @State private var suggestionsExpanded = false
     @State private var managingTemplates = false
+    @State private var templatePresentationIdentity: String?
     @FocusState private var suggestedInputFocused: Bool
+    @FocusState private var manageTemplatesFocused: Bool
     @State private var editorExpanded = false
     @State private var query = ""
     @State private var selectedDefinition: UUID?
@@ -98,7 +100,7 @@ struct EntityPropertiesView: View {
             if let relatedEntityID, displayed != nil { AnyView(EntityPropertiesDetail(model: model, entityID: relatedEntityID)) }
         }
         .sheet(isPresented: Binding(get: { managingTemplates && displayed != nil }, set: { managingTemplates = $0 }), onDismiss: {
-            if active, !model.isLocked, previewSnapshot == nil { Task { await reload() } }
+            templateSheetDismissed()
         }) {
             if let snapshot = displayed {
                 EntityPropertyTemplateManager(model: model, initialTypeKey: snapshot.entity.entity.typeKey)
@@ -126,8 +128,9 @@ struct EntityPropertiesView: View {
         VStack(alignment: .leading, spacing: NoemaSpacing.xs) {
             Text("Suggested for this type").font(NoemaTypography.interfaceEmphasis)
                 .fixedSize(horizontal: false, vertical: true)
-            Button("Manage templates") { managingTemplates = true }
+            Button("Manage templates") { templatePresentationIdentity = taskIdentity; managingTemplates = true }
                 .accessibilityLabel("Manage property templates for entity types")
+                .focused($manageTemplatesFocused)
                 .disabled(!model.canEditSemanticTarget || busy)
             Text("Optional properties · choose one to enter a value.")
                 .font(NoemaTypography.metadata).foregroundStyle(.secondary)
@@ -143,6 +146,17 @@ struct EntityPropertiesView: View {
             if definitions.count > EntityPropertyTemplatePresentation.previewLimit {
                 Button(suggestionsExpanded ? "Show fewer suggestions" : "Show more suggestions") { suggestionsExpanded.toggle() }
             }
+        }
+    }
+
+    private func templateSheetDismissed() {
+        guard active, !model.isLocked, previewSnapshot == nil,
+              templatePresentationIdentity == taskIdentity else { return }
+        let identity = taskIdentity
+        Task { @MainActor in
+            await reload()
+            guard active, !model.isLocked, taskIdentity == identity, displayed != nil else { return }
+            manageTemplatesFocused = true
         }
     }
 
@@ -356,6 +370,7 @@ struct EntityPropertiesView: View {
         request = .init(entityID: entityID, sessionID: model.sessionState.sessionID)
         snapshot = nil; entityChoices = []; entitySearchRequest = UUID(); searchingEntities = false
         error = nil; busy = false; pendingRemoval = nil; relatedEntityID = nil; managingTemplates = false
+        templatePresentationIdentity = nil; manageTemplatesFocused = false
         editingAssignment = nil; selectedDefinition = nil; draftRequest = UUID()
         expanded = false; suggestionsExpanded = false; editorExpanded = false; suggestedInputFocused = false
         query = ""; entityQuery = ""; text = ""; boolean = false; otherID = nil; incoming = false

@@ -198,8 +198,9 @@ struct EntityPropertyTemplateManager: View {
 
     private func save(_ ids: [UUID], configuration: EntityPropertyTemplateConfiguration,
                       token: EntityPropertyTemplateRequestToken) async {
-        guard active, !Task.isCancelled, !model.isLocked, model.canEditSemanticTarget,
+        guard active, !Task.isCancelled, !model.isLocked,
               token.matches(request: request, typeKey: typeKey, sessionID: model.sessionState.sessionID) else { return }
+        guard model.canEditSemanticTarget else { busy = false; return }
         do {
             try await model.savePropertyTemplateConfiguration(ids, snapshot: configuration,
                 isCurrent: { current(token.requestID, type: token.typeKey, sessionID: token.sessionID) })
