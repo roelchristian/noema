@@ -28,6 +28,7 @@ struct SourceEntityLinksView: View {
     }
 
     private var identity: String { "\(sourceID):\(String(describing: model.sessionState.sessionID)):\(model.isLocked)" }
+    private var searchIdentity: String { "\(query):\(role.rawValue):\(adding):\(identity)" }
     private var displayed: SourceEntityLinksSnapshot? {
         guard !model.isLocked, let snapshot, snapshot.sessionID == model.sessionState.sessionID,
               snapshot.sources.contains(where: { $0.source.id == sourceID }) else { return nil }
@@ -36,7 +37,7 @@ struct SourceEntityLinksView: View {
     private var editable: Bool { previewSnapshot == nil && displayed != nil && model.canEditSemanticTarget && !busy && !model.isLocked }
     private var sourceTrashed: Bool { displayed?.sources.first(where: { $0.source.id == sourceID })?.trashed != false }
     private var selectable: [KnowledgeEntitySnapshot] {
-        choices.filter { choice in choice.entity.lifecycle == .live && KnowledgeEntityType.initial.contains(where: { $0.key == choice.entity.typeKey }) && (role != .representsWork || choice.entity.typeKey == "creativeWork") }
+        SourceEntityLinksPresentation.eligibleEntities(choices, role: role)
     }
 
     var body: some View {
@@ -74,10 +75,8 @@ struct SourceEntityLinksView: View {
             }
         }
         .task { active = true; if previewSnapshot == nil { await reload() } }
-        .task(id: query + role.rawValue + identity + String(adding)) { if previewSnapshot == nil, adding { await search() } }
+        .onChange(of: searchIdentity) { restartSearch() }
         .onChange(of: identity) { invalidate(); offset = 0; if previewSnapshot == nil { Task { await reload() } } }
-        .onChange(of: query) { selectedEntityID = nil; choices = []; searchRequest = UUID() }
-        .onChange(of: role) { selectedEntityID = nil; choices = []; searchRequest = UUID() }
         .onDisappear { active = false; invalidate() }
         .sheet(isPresented: Binding(get: { relatedEntityID != nil && displayed != nil }, set: { if !$0 { relatedEntityID = nil } })) {
             if let relatedEntityID, displayed != nil { AnyView(EntityPropertiesDetail(model: model, entityID: relatedEntityID)) }
@@ -163,17 +162,27 @@ struct SourceEntityLinksView: View {
         }
     }
 
-    private func search() async {
-        guard active, displayed != nil, !model.isLocked, adding else { return }
-        let token = request, source = sourceID, session = model.sessionState.sessionID, searchID = UUID()
-        let text = query, selectedRole = role
-        searchRequest = searchID; searching = true
+    /// Clear the old selection and allocate its successor before launching work.
+    /// The async entry check prevents a superseded queued task starting a search.
+    private func restartSearch() {
+        selectedEntityID = nil; choices = []; searchRequest = UUID(); searching = false
+        guard previewSnapshot == nil, active, displayed != nil, !model.isLocked, adding else { return }
+        let token = request, source = sourceID, session = model.sessionState.sessionID
+        let searchID = searchRequest, text = query, selectedRole = role
+        searching = true
+        Task { await search(text: text, role: selectedRole, searchID: searchID, token: token, source: source, session: session) }
+    }
+
+    private func search(text: String, role selectedRole: SourceEntityAssociationRole, searchID: UUID, token: UUID, source: UUID, session: UUID?) async {
+        guard current(token, source: source, session: session), searchRequest == searchID,
+              query == text, role == selectedRole, adding else { return }
         do {
             let results = try await model.searchEntityPropertyTargets(query: text)
             guard current(token, source: source, session: session), searchRequest == searchID, query == text, role == selectedRole, adding else { return }
             choices = results; searching = false
         } catch {
-            guard current(token, source: source, session: session), searchRequest == searchID else { return }
+            guard current(token, source: source, session: session), searchRequest == searchID,
+                  query == text, role == selectedRole, adding else { return }
             self.error = message(error); searching = false
         }
     }
