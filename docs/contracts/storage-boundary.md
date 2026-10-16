@@ -1,6 +1,6 @@
 # Canonical storage boundary contract
 
-Canonical persistence supports format 2 with matching schema-6, schema-7, schema-8 or schema-9 declarations. This is
+Canonical persistence supports format 2 with matching schema-6 through schema-10 declarations. This is
 an intentional breaking cutover for development vaults. Format 1 and SQL schemas
 1–5 are unsupported production formats and opening never upgrades or converts them.
 Markdown is deliberate import/export only; Wiki files and source metadata JSON are
@@ -16,9 +16,9 @@ mutation; unknown optional manifest JSON survives known-field edits.
 `SQLiteBlockStore`. Production construction captures an admitted session lease and
 gate. Manifest UUID, database `vault_state`, the declared user_version and required
 capabilities (`canonicalKnowledgeV1`, `canonicalMetadataV1`, `semanticAnnotationsV1`,
-`organisationV1`) must agree before writable admission. Neither file changes authority independently.
+`organisationV1`, plus version-specific property/template/association capabilities) must agree before writable admission. Neither file changes authority independently.
 
-Fresh creation uses an owned empty sibling staging root, direct schema-9 DDL in
+Fresh creation uses an owned empty sibling staging root, direct schema-10 DDL in
 one transaction, integrity/capability validation, checkpoint and close, then synced
 manifest publication and a create-only same-parent directory move. Collisions never
 merge or overwrite. Failed nonempty/unreadable staging remains preservation data;
@@ -29,7 +29,7 @@ owned by `SQLiteVaultLocality` and applies to staging, archive, restore and admi
 | --- | --- |
 | Pages, blocks, metadata and page Trash | SQLiteBlockStore |
 | Source metadata, page-source relationships, source Trash, tombstones and conflicts | SQLiteBlockStore |
-| Entities, aliases, directed relationships, questions, definitions and annotations | SQLiteBlockStore |
+| Entities, aliases, directed relationships, questions, definitions, annotations, property templates and Source–entity associations | SQLiteBlockStore |
 | Favourites, collections, folders and membership | SQLiteBlockStore, as rows in the vault's `blocks.sqlite` |
 | Imported immutable originals and in-vault preservation material | Controlled VaultContentStore bytes with checksum/size receipts |
 | Linked external originals | External owner; read-only |
@@ -92,7 +92,7 @@ externally owned and read-only. Source publication uses adapter-minted receipts,
 F_FULLFSYNC for regular payloads and directory fsync, retained Source Publications
 evidence, and checksum/size revalidation at execution and COMMIT. Unknown sync
 providers fail closed. Physical originals remain retained after logical purge;
-live relationships restrict purge. Imported descriptors cannot change under an
+retained Page and Source–entity relationships restrict Source purge. Imported descriptors cannot change under an
 existing UUID. Conflict disposition checks conflict/target revisions atomically
 and never discards unique preserved payload implicitly.
 
@@ -122,7 +122,7 @@ the older result. Automatic source processing publishes title, summary and any
 previously unset LCC together, with on-device provenance, while retaining existing
 classification. Provider preference changes never regenerate stored artifacts.
 
-Manifest requires explicit supported schemaVersion=6, 7, 8 or 9, blocks.sqlite, localOnly=true and the
+Manifest requires explicit supported schemaVersion=6, 7, 8, 9 or 10, blocks.sqlite, localOnly=true and the
 complete capability set. Missing, contradictory, malformed or unknown required
 features and UUID disagreement reject before writable access. Preservation
 inspection never authorizes saving or reimporting Markdown over canonical records.
@@ -191,7 +191,7 @@ with an independent architectural approval required before implementation.
 | --- | --- |
 | KNOW02 identity/registry | Create independent Person/Place/Concept records; equal labels and aliases remain disambiguated UUIDs; rename retains links; register a future type without reshaping identity storage; unknown required versions/features reject writes. |
 | KNOW02 atomicity/lifecycle | Reopen exact supported properties/unknown optional JSON; stale entity and vault-collection revisions, lease loss and injected precommit failure publish nothing; tombstoning preserves occurrences and relation endpoints; restore retains UUID. |
-| KNOW02 admission | Only matching schema 6/7/8/9 production authority is admitted; mismatch/unsupported capabilities and historical schemas reject before writable access without changing existing bytes. |
+| KNOW02 admission | Only matching schema 6/7/8/9/10 production authority is admitted; mismatch/unsupported capabilities and historical schemas reject before writable access without changing existing bytes. |
 | KNOW03 authority transfer | Migrate existing extension annotations once, preserving UUIDs, opaque fields and stale/deleted state; unresolvable legacy targets remain explicit preservation data; no entity/object is invented from semantic labels, titles or matching text; no second annotation authority. |
 | KNOW03 overlapping/reference states | Independent whole-block, identical, crossing and nested inline annotations coexist; deleting a Question annotation never deletes Person/Place records; anchor resolution and target tombstone/unresolved state are independently queryable. |
 | KNOW03 editing/publication | Verify UTF-16/grapheme boundaries for surrogate pairs, combining marks and joined emoji; exercise edge affinity, split/merge, move/style, replacement, delete, undo/redo and duplication; failed compound edits leave content/anchors at one revision. |
@@ -199,13 +199,13 @@ with an independent architectural approval required before implementation.
 
 ### Implemented semantic ownership and review handoff (KNOW03)
 
-Fresh production staging uses schema 9; admission requires matching supported manifest/database agreement on
+Fresh production staging uses schema 10; admission requires matching supported manifest/database agreement on
 `canonicalKnowledgeV1`, `canonicalMetadataV1`, `semanticAnnotationsV1` and `organisationV1`.
 `VaultStorageProvider` selects the admitted root and lease; `SQLiteBlockStore`
 continues to own the sole canonical connection, statements and transactions.
 Unknown schema/capability declarations reject before connection construction;
 unsupported required registry descriptors, including nested metadata payloads,
-reject before writable schema preparation. All production creation initializes schema 9 directly; historical schemas reject
+reject before writable schema preparation. All production creation initializes schema 10 directly; historical schemas reject
 without conversion.
 
 | Semantic record | Authoritative owner and preservation |
@@ -232,7 +232,7 @@ I/O exception or byte owner is authorized. See
 [admission tests](../../Tests/VaultCoreTests/SemanticAdmissionTests.swift).
 Future changes must repeat the separate author/reviewer procedure above, tracing
 public APIs through lease/root checks and pre-COMMIT validation. Automatic
-historical schema conversion is retired. Production creation is schema 9; archive,
+historical schema conversion is retired. Production creation is schema 10; archive,
 device and crash-durability acceptance requires its own named tests and review.
 
 Favourites, collections and folders are vault-owned rows in `blocks.sqlite`:
@@ -355,7 +355,7 @@ reimport Markdown over DB pages or discard unsupported payloads. NativeVaultArch
 manifest, controlled originals and in-vault preservation files. Unsaved app-local
 RecoveryStore drafts and linked external originals are explicitly excluded. Unsupported
 schemas are rejected without conversion. Restore verifies the indexed manifest's
-checksum and supported schema-6/7/8/9 authority before creating or writing staging;
+checksum and supported schema-6/7/8/9/10 authority before creating or writing staging;
 declared archive database construction also rejects unsupported declarations.
 Capture and restore retain the operation
 lease at every byte and staging SQL boundary, including after suspension; lock
@@ -512,7 +512,7 @@ plaintext after locking. Filesystem, provider and OS access are separate boundar
 
 | Surface and source owner | Location/content | Retention, access and disposal |
 | --- | --- | --- |
-| `FileVaultRepository` / selected stores authoritative content | `vault.json`; format 2 schema-6/7/8/9 `blocks.sqlite` plus SQLite-managed WAL/SHM; controlled imported `Sources/<UUID>/original.*`; titles, bodies, source paths/bookmarks, classifications, summaries, provenance, favourites, collections and folders | Retained across lock/close/switch/relaunch. Admission inspection reads manifest identity before authentication; protected content operations require the selected lease. Canonical edits/deletion use revision-checked SQLite transactions; immutable originals and preservation bytes use conditional adapter operations. |
+| `FileVaultRepository` / selected stores authoritative content | `vault.json`; format 2 schema-6/7/8/9/10 `blocks.sqlite` plus SQLite-managed WAL/SHM; controlled imported `Sources/<UUID>/original.*`; titles, bodies, source paths/bookmarks, classifications, summaries, provenance, favourites, collections and folders | Retained across lock/close/switch/relaunch. Admission inspection reads manifest identity before authentication; protected content operations require the selected lease. Canonical edits/deletion use revision-checked SQLite transactions; immutable originals and preservation bytes use conditional adapter operations. |
 | Repository preservation and retention | `Removed Pages/`, legacy `.Trash`, `Conflicts/`, `Trash Retention.json`; removed content, competing edits, imported originals and timestamps | Conflicts survive until explicit disposition; preserve OS conflict copies before resolving versions. Existing Trash expiry is 15 days, with undated grace and snapshot/error preservation. Linked originals are never deleted. |
 | Repository import staging | `Sources/.import-<UUID>/`; original bytes and metadata before publication | Adapter-owned, lease-checked staging. Failed publication deliberately retains it. Explicit staging cleanup uses exact snapshots; no new age-based deletion policy is implied. |
 | `VaultCreation` | Selected external parent `/.noema-create-<UUID>/`; partial or initialized vault | Same-parent publication refuses an occupied destination. Failure cleanup removes only positively empty owned staging; nonempty or unreadable staging is preserved with its location reported. Published vaults survive subsequent open/authentication failure. No startup sweep is implied. Contents still use the selected adapter. |

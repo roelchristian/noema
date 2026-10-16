@@ -28,6 +28,8 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
     public static let expandedSchemaVersion = 3
     public static let semanticSchemaVersion = 5
     public static let semanticRequiredCapabilities = ["canonicalKnowledgeV1", "canonicalMetadataV1", "semanticAnnotationsV1"]
+    public static let associationSchemaVersion = 10
+    public static let associationRequiredCapabilities = templateRequiredCapabilities + ["sourceEntityAssociationsV1"]
     public static let templateSchemaVersion = 9
     public static let templateRequiredCapabilities = relationshipRequiredCapabilities + ["entityPropertyTemplatesV1"]
     public static let relationshipSchemaVersion = 8
@@ -58,7 +60,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
     init(url: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate,
                 canonicalVaultID: UUID, requiredCapabilities: [String] = organisationRequiredCapabilities, schemaVersion: Int = organisationSchemaVersion,
                 createIfMissing: Bool = false) throws {
-        guard [Self.organisationSchemaVersion, Self.propertySchemaVersion, Self.relationshipSchemaVersion, Self.templateSchemaVersion].contains(schemaVersion), !createIfMissing else { throw VaultError.invalid("Production admission requires an existing schema-6/7/8/9 database.") }
+        guard [Self.organisationSchemaVersion, Self.propertySchemaVersion, Self.relationshipSchemaVersion, Self.templateSchemaVersion, Self.associationSchemaVersion].contains(schemaVersion), !createIfMissing else { throw VaultError.invalid("Production admission requires an existing schema-6/7/8/9/10 database.") }
         try Self.validateCanonicalDeclaration(schemaVersion: schemaVersion, capabilities: requiredCapabilities)
         try accessGate.validate(lease: sessionLease, targetRoot: sessionLease.root, targetVaultID: canonicalVaultID, operation: "blockStore.openCanonical")
         try SQLiteVaultLocality.requireLocalRoot(sessionLease.root)
@@ -101,6 +103,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
         case propertySchemaVersion: expected = propertyRequiredCapabilities
         case relationshipSchemaVersion: expected = relationshipRequiredCapabilities
         case templateSchemaVersion: expected = templateRequiredCapabilities
+        case associationSchemaVersion: expected = associationRequiredCapabilities
         default: throw VaultError.invalid("Unsupported canonical schema declaration.")
         }
         guard capabilities == expected else { throw VaultError.invalid("Unsupported canonical capabilities.") }
@@ -124,7 +127,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
         }
         let version = try readVersion()
         if canonicalVaultID != nil {
-            guard (expectedSchemaVersion == 3 && requiredCapabilities == ["canonicalMetadataV1"]) || (expectedSchemaVersion == 4 && requiredCapabilities == knowledgeRequiredCapabilities) || (expectedSchemaVersion == 5 && requiredCapabilities == semanticRequiredCapabilities) || (expectedSchemaVersion == organisationSchemaVersion && requiredCapabilities == organisationRequiredCapabilities) || (expectedSchemaVersion == propertySchemaVersion && requiredCapabilities == propertyRequiredCapabilities) || (expectedSchemaVersion == relationshipSchemaVersion && requiredCapabilities == relationshipRequiredCapabilities) || (expectedSchemaVersion == templateSchemaVersion && requiredCapabilities == templateRequiredCapabilities) else { throw VaultError.invalid("Unsupported canonical schema/capability declaration.") }
+            guard (expectedSchemaVersion == 3 && requiredCapabilities == ["canonicalMetadataV1"]) || (expectedSchemaVersion == 4 && requiredCapabilities == knowledgeRequiredCapabilities) || (expectedSchemaVersion == 5 && requiredCapabilities == semanticRequiredCapabilities) || (expectedSchemaVersion == organisationSchemaVersion && requiredCapabilities == organisationRequiredCapabilities) || (expectedSchemaVersion == propertySchemaVersion && requiredCapabilities == propertyRequiredCapabilities) || (expectedSchemaVersion == relationshipSchemaVersion && requiredCapabilities == relationshipRequiredCapabilities) || (expectedSchemaVersion == templateSchemaVersion && requiredCapabilities == templateRequiredCapabilities) || (expectedSchemaVersion == associationSchemaVersion && requiredCapabilities == associationRequiredCapabilities) else { throw VaultError.invalid("Unsupported canonical schema/capability declaration.") }
             guard version == 0 || version == expectedSchemaVersion else { throw VaultError.invalid("Canonical authority transition required; existing authority is never upgraded on open.") }
         }
         if canonicalVaultID != nil, version == 0 {
@@ -149,6 +152,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
             if expectedSchemaVersion >= propertySchemaVersion { try validateEntityPropertyTables(db) }
             if expectedSchemaVersion >= relationshipSchemaVersion { try validateEntityRelationshipTables(db) }
             if expectedSchemaVersion >= templateSchemaVersion { try validateEntityPropertyTemplateTables(db) }
+            if expectedSchemaVersion >= associationSchemaVersion { try validateSourceEntityAssociationTables(db) }
         }
         try exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=1000; PRAGMA temp_store=MEMORY;")
         if version == 0 {
@@ -180,6 +184,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
                     if expectedSchemaVersion >= propertySchemaVersion { try exec(expectedSchemaVersion == propertySchemaVersion ? scalarOnlyPropertySchema : entityPropertySchema) }
                     if expectedSchemaVersion >= relationshipSchemaVersion { try exec(entityRelationshipSchema) }
                     if expectedSchemaVersion >= templateSchemaVersion { try exec(entityPropertyTemplateSchema) }
+                    if expectedSchemaVersion >= associationSchemaVersion { try exec(sourceEntityAssociationSchema) }
                     guard sqlite3_step(insert) == SQLITE_DONE else { throw VaultError.storage("Cannot initialize canonical identity.") }
                 }
                 let finalVersion = canonicalVaultID == nil ? schemaVersion : expectedSchemaVersion
@@ -193,6 +198,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
             if expectedSchemaVersion >= propertySchemaVersion { try validateEntityPropertyTables(db) }
             if expectedSchemaVersion >= relationshipSchemaVersion { try validateEntityRelationshipTables(db) }
             if expectedSchemaVersion >= templateSchemaVersion { try validateEntityPropertyTemplateTables(db) }
+            if expectedSchemaVersion >= associationSchemaVersion { try validateSourceEntityAssociationTables(db) }
         }
     }
     private static let pageSchema = """
@@ -851,8 +857,8 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
             return .init(id: id, kind: kind, lastRevision: .init(token: blob(statement, 0)), deletedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 1)), disposition: text(statement, 2))
         }
     }
-    /// Purge is available only for already trashed pages and unavailable sources
-    /// without live relationships. Owned-byte deletion remains outside this API.
+    /// Purge requires a trashed page or Source with no blocking retained links.
+    /// Source originals remain preservation data; this API never deletes their bytes.
     public func purgeCanonicalEntity(id: UUID, kind: CanonicalEntityKind, expected: BlockStoreRevision,
                                      expectedVaultRevision: BlockStoreRevision,
                                      validating publication: (@Sendable () throws -> Void)? = nil) throws {
@@ -875,6 +881,16 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
                 let current = try sourceInTransaction(id: id)
                 guard current.revision == expected else { throw VaultError.conflict("Source revision changed.") }
                 guard current.trashed else { throw VaultError.invalid("Only a trashed source can be purged; original bytes remain preserved.") }
+                let version = try statement("PRAGMA user_version")
+                defer { sqlite3_finalize(version) }
+                guard sqlite3_step(version) == SQLITE_ROW else { throw failure() }
+                if sqlite3_column_int(version, 0) >= Int32(Self.associationSchemaVersion) {
+                    let links = try statement("SELECT 1 FROM source_entity_associations WHERE source_id=? LIMIT 1", [.text(id.uuidString)])
+                    defer { sqlite3_finalize(links) }
+                    let linkStatus = sqlite3_step(links)
+                    if linkStatus == SQLITE_ROW { throw VaultError.invalid("Unlink this Source's knowledge associations before permanently deleting it. Its original bytes remain preserved.") }
+                    guard linkStatus == SQLITE_DONE else { throw failure() }
+                }
             }
             if kind == .page { try deleteOrganisationReferences(pageID: id) } else { try deleteOrganisationSourceReferences(id) }
             try run("INSERT INTO tombstones(entity_id,entity_kind,last_revision,deleted_at,disposition) VALUES(?,?,?,?,?)", [.text(id.uuidString), .text(kind.rawValue), .blob(expected.token), .real(Date().timeIntervalSince1970), .text("purged")])
@@ -944,7 +960,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
             if try isSemanticSchema() {
                 let versionQuery = try statement("PRAGMA user_version"); defer { sqlite3_finalize(versionQuery) }
                 guard sqlite3_step(versionQuery) == SQLITE_ROW else { throw failure() }
-                let capabilities = sqlite3_column_int(versionQuery, 0) == Int32(Self.templateSchemaVersion) ? Self.templateRequiredCapabilities : sqlite3_column_int(versionQuery, 0) == Int32(Self.relationshipSchemaVersion) ? Self.relationshipRequiredCapabilities : sqlite3_column_int(versionQuery, 0) == Int32(Self.propertySchemaVersion) ? Self.propertyRequiredCapabilities : (try isOrganisationSchema() ? Self.organisationRequiredCapabilities : Self.semanticRequiredCapabilities)
+                let capabilities = sqlite3_column_int(versionQuery, 0) == Int32(Self.associationSchemaVersion) ? Self.associationRequiredCapabilities : sqlite3_column_int(versionQuery, 0) == Int32(Self.templateSchemaVersion) ? Self.templateRequiredCapabilities : sqlite3_column_int(versionQuery, 0) == Int32(Self.relationshipSchemaVersion) ? Self.relationshipRequiredCapabilities : sqlite3_column_int(versionQuery, 0) == Int32(Self.propertySchemaVersion) ? Self.propertyRequiredCapabilities : (try isOrganisationSchema() ? Self.organisationRequiredCapabilities : Self.semanticRequiredCapabilities)
                 try Self.validateKnowledgeCapabilities(try db, expected: capabilities)
                 try Self.validateSemanticRegistry(try db)
                 try eachIdentity("knowledge_entities") { _ = try entityInTransaction(id: $0) }
@@ -960,6 +976,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
                 if sqlite3_column_int(versionQuery, 0) >= Int32(Self.propertySchemaVersion) { try validateEntityPropertyRecords() }
                 if sqlite3_column_int(versionQuery, 0) >= Int32(Self.relationshipSchemaVersion) { try validateEntityRelationshipRecords() }
                 if sqlite3_column_int(versionQuery, 0) >= Int32(Self.templateSchemaVersion) { try Self.validateEntityPropertyTemplateTables(try db) }
+                if sqlite3_column_int(versionQuery, 0) >= Int32(Self.associationSchemaVersion) { try Self.validateSourceEntityAssociationTables(try db) }
             }
             try operation?()
         }
@@ -1044,6 +1061,26 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
         }
     }
 
+    /// Explicit schema 9→10 transition; no Source identity or entity facts are changed.
+    public func upgradeSourceEntityAssociationSchema(expectedVaultRevision: BlockStoreRevision) throws -> BlockStoreRevision {
+        try requireKnowledge()
+        return try transaction {
+            try checkedKnowledgeRevision(expectedVaultRevision)
+            let query = try statement("PRAGMA user_version")
+            defer { sqlite3_finalize(query) }
+            guard sqlite3_step(query) == SQLITE_ROW, sqlite3_column_int(query, 0) == Int32(Self.templateSchemaVersion) else { throw KnowledgeStoreError.transitionRequired }
+            try Self.validateKnowledgeCapabilities(try db, expected: Self.templateRequiredCapabilities)
+            try Self.validateEntityPropertyTables(try db)
+            try Self.validateEntityRelationshipTables(try db)
+            try Self.validateEntityPropertyTemplateTables(try db)
+            guard sqlite3_exec(try db, Self.sourceEntityAssociationSchema, nil, nil, nil) == SQLITE_OK else { throw failure() }
+            try run("UPDATE vault_state SET required_capabilities=? WHERE singleton=1", [.blob(try encoder.encode(Self.associationRequiredCapabilities))])
+            try run("PRAGMA user_version=10")
+            try Self.validateSourceEntityAssociationTables(try db)
+            return try advanceVaultRevision()
+        }
+    }
+
     /// Schema 7 remains scalar-only even after the relationship schema is available.
     private static var scalarOnlyPropertySchema: String {
         entityPropertySchema.replacingOccurrences(of: ",'entityReference'", with: "")
@@ -1088,7 +1125,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
         try validate("knowledge.read")
         guard canonicalVaultID != nil else { throw KnowledgeStoreError.transitionRequired }
         let query = try statement("PRAGMA user_version"); defer { sqlite3_finalize(query) }
-        guard sqlite3_step(query) == SQLITE_ROW, [Self.knowledgeSchemaVersion, Self.semanticSchemaVersion, Self.organisationSchemaVersion, Self.propertySchemaVersion, Self.relationshipSchemaVersion, Self.templateSchemaVersion].contains(Int(sqlite3_column_int(query, 0))) else { throw KnowledgeStoreError.transitionRequired }
+        guard sqlite3_step(query) == SQLITE_ROW, [Self.knowledgeSchemaVersion, Self.semanticSchemaVersion, Self.organisationSchemaVersion, Self.propertySchemaVersion, Self.relationshipSchemaVersion, Self.templateSchemaVersion, Self.associationSchemaVersion].contains(Int(sqlite3_column_int(query, 0))) else { throw KnowledgeStoreError.transitionRequired }
     }
     func checkedKnowledgeRevision(_ expected: BlockStoreRevision) throws {
         guard try vaultRevision() == expected else { throw KnowledgeStoreError.staleRevision }
@@ -1308,7 +1345,7 @@ extension SQLiteBlockStore {
         let q = try statement("PRAGMA user_version"); defer { sqlite3_finalize(q) }
         guard sqlite3_step(q) == SQLITE_ROW else { throw failure() }
         let version = sqlite3_column_int(q, 0)
-        return version == Int32(Self.semanticSchemaVersion) || version == Int32(Self.organisationSchemaVersion) || version == Int32(Self.propertySchemaVersion) || version == Int32(Self.relationshipSchemaVersion) || version == Int32(Self.templateSchemaVersion)
+        return version == Int32(Self.semanticSchemaVersion) || version == Int32(Self.organisationSchemaVersion) || version == Int32(Self.propertySchemaVersion) || version == Int32(Self.relationshipSchemaVersion) || version == Int32(Self.templateSchemaVersion) || version == Int32(Self.associationSchemaVersion)
     }
     private func requireSemantic() throws {
         try validate("semantic.access")

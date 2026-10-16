@@ -90,6 +90,10 @@ struct EntityPropertiesView: View {
                     Text("Deleted entity · properties are preserved and read-only.").font(.caption).foregroundStyle(.secondary)
                 }
             } else if !busy && error == nil { Text("Properties unavailable.").font(.caption) }
+            if previewSnapshot == nil {
+                Divider()
+                EntitySourceLinksView(model: model, entityID: entityID).id(entityID)
+            }
         }
         .task { active = true; if let previewSnapshot { snapshot = previewSnapshot } else { await reload() } }
         .task(id: entityQuery) { if previewSnapshot == nil { await searchEntities() } }

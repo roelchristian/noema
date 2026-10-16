@@ -126,6 +126,14 @@ struct PropertiesPanel: View {
                     }
 
                     InspectorSection(
+                        title: "Linked entities",
+                        isExpanded: sectionBinding("Linked entities")
+                    ) {
+                        SourceEntityLinksView(model: model, sourceID: source.id)
+                            .id(source.id)
+                    }
+
+                    InspectorSection(
                         title: "Capture & Origin",
                         isExpanded: sectionBinding("Capture & Origin")
                     ) {

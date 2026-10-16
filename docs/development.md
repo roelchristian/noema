@@ -68,6 +68,50 @@ until that process stops. Keep failures and review evidence pinned. Record obser
 actions and announcements in the PR or managed evidence; successful building,
 signing or static raster capture does not establish native accessibility acceptance.
 
+### Entity bridge process-crash acceptance
+
+On the integrated ENT04–05 checkout, first build the exact VaultCoreTests graph,
+then run the synthetic process-termination controller:
+
+```sh
+./scripts/test.sh standard --targets VaultCoreTests --skip-update --filter entityBridgeProcessCrashWorker
+python3 scripts/entity-bridge-crash-acceptance.py --run-id entity-bridge-crash-review
+```
+
+The filtered build leaves the opt-in worker disabled; the controller enables it for
+each isolated fixture. It runs the built macOS Swift Testing helper directly, without
+another SwiftPM build. Do not replace that build graph while the controller runs.
+Use a fresh simple run ID; `--case` selects named cases and `--timeout` bounds each
+worker/verifier phase to 10–60 seconds.
+
+The 14 cases cover template save/reorder and Source link/unlink immediately before
+SQLite commit and after an acknowledged mutation; schema 8→9 and 9→10 migrations
+are stopped before SQLite commit, after database commit before manifest publication,
+and after manifest publication. Only the attested, controller-owned worker is killed.
+Owned-group cleanup also stops surviving descendants after a wrapper exits. An
+uncertain cleanup retains `.active` and withholds `.complete` for investigation.
+
+Fixtures, originals, manifests, baseline/expected database images and diagnostics stay
+under `.local/agent-runs/<run-id>/`, protected by `.active` while executing and `.pinned`
+for review. Completed runs receive `.complete`; failures also retain `.failed`. Do not
+remove failure pins or inspect a user vault to reproduce these cases. No application
+session lease or user credentials are serialized.
+
+Each fresh verifier checks an independent intended-state oracle alongside exact image
+recovery: requested template membership/order and revisions, one canonical association
+or explicit removal, operation replay rejection, exact migration schema/capabilities,
+unchanged preservation tables and original bytes. Interrupted manifest publication
+must fail ordinary admission and recover only through the explicit resume API. See the
+[worker assertions](../Tests/VaultCoreTests/EntityBridgeCrashAcceptanceTests.swift).
+
+This establishes process-crash recovery at the named SIGKILL barriers. It does not
+simulate power loss, an OS crash, storage-device failure or filesystem delivery.
+Precommit barriers do not cover every intermediate WAL write; migration publication
+can close/checkpoint SQLite before the manifest barrier. Keep those durability and
+real-device acceptance gaps separate from this procedure.
+
+### Embedding acceptance
+
 Embedding acceptance has two explicit local probes:
 
 ```sh
@@ -199,10 +243,10 @@ and auxiliary-window isolation using the [standing matrix](validation.md#native-
 
 ## Core workflow
 
-Create a temporary schema-9 vault for a tour. Keep personal vaults outside this source repository.
+Create a temporary schema-10 vault for a tour. Keep personal vaults outside this source repository.
 
 ### Vaults
-- **Create a vault:** Click **Create a vault** (default name **My Knowledge Vault**) and choose a parent folder such as **iCloud Drive / Noema**. Creation publishes a complete plaintext schema-9 SQLite vault only after confirmation and rejects occupied names. Optionally enable **Require authentication in Noema** before creation: Noema then authenticates before showing the new vault. Cancelling authentication preserves the created folder and its preference for a later **Open Vault** retry. **Encrypted vault** remains unavailable; encryption and recovery-key protection are separate future work.
+- **Create a vault:** Click **Create a vault** (default name **My Knowledge Vault**) and choose a parent folder such as **iCloud Drive / Noema**. Creation publishes a complete plaintext schema-10 SQLite vault only after confirmation and rejects occupied names. Optionally enable **Require authentication in Noema** before creation: Noema then authenticates before showing the new vault. Cancelling authentication preserves the created folder and its preference for a later **Open Vault** retry. **Encrypted vault** remains unavailable; encryption and recovery-key protection are separate future work.
 - **Access authentication:** **Settings → Vault Access** changes the open vault's preference after native macOS authentication. Enabled vaults require a fresh attempt on initial opening, unlocking, reopening after close, or restarting Noema; selecting the same locked folder to restore permission follows the same requirement. Existing vaults default to disabled. The preference is stored locally under the vault UUID and does not travel with the folder to another Mac. This protects casual access through Noema; editable preferences, direct filesystem access and compromised process code remain outside the boundary. Files, indexes, drafts and previews remain plaintext. Native prompt/accessibility acceptance remains [pending](validation.md#native-authentication-device-acceptance).
 - **Vault menu, session locking & notices:** The vault-name menu at the bottom of the sidebar (and the **Vault** menu bar item) groups **Open Vault in Finder**, **Refresh from Files**, **Lock Vault** / **Unlock Vault** (`⌥⌘L`), **Close Vault** (`⇧⌘W`), **Trash** (with item count), recoverable drafts, vault notices, and **Open / Create Vault…**. Locking a vault flushes or journals pending edits, closes open source readers and dismisses the modal Settings sheet (including any nested sheet), detaches the search index and closes canonical SQLite storage, clears loaded notes and sources from memory, and revokes in-app session access until unlocked (application-level access revocation; Markdown or SQLite/WAL and source files remain plaintext until cryptographic vault storage is enabled). Global Settings (`⌘,`) presents as a workspace-modal sheet with sidebar categories (**Personalisation**: Appearance, Reading & Editor; **Intelligence**: Intelligence, OpenAI; **Security**: Vault Access), gating workspace commands while open and remaining accessible while locked. Error banners and vault notices can be dismissed individually or with **Dismiss All** for the current session.
 
@@ -273,7 +317,7 @@ Select text and activate hyperlinks with ordinary clicks while reading. Press **
 
 ```text
 My Vault/
-  vault.json       # format 2; schema 9, UUID and required capabilities
+  vault.json       # format 2; schema 10, UUID and required capabilities
   blocks.sqlite    # canonical pages, blocks, sources, knowledge and annotations
   Sources/         # immutable imported originals
   Conflicts/       # required preservation bytes
@@ -284,7 +328,7 @@ unsaved copy. Search indexes are derived and rebuildable. All files remain plain
 
 ## Local SQLite vault format
 
-Creation initializes schema 9 directly in an owned staging root, verifies identity,
+Creation initializes schema 10 directly in an owned staging root, verifies identity,
 capabilities and integrity, closes the database and publishes create-only. Supported schema-6 vaults require the explicit upgrade/resume API described in the [knowledge contract](contracts/knowledge-model.md#typed-entity-properties-ent01) before typed properties can be used. No historical schema 1–5
 format conversion or Markdown authority remains. Old and future formats reject without
 mutation. Imported originals remain controlled immutable files; linked originals are
