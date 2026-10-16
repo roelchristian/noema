@@ -17,10 +17,15 @@ private struct BridgeCrashState: Codable {
     let manifest: Data
     let original: Data
     let originalPath: String
+    let vaultRevision: BlockStoreRevision
+    let templates: [EntityPropertyTemplateSnapshot]
+    let originalAssociation: SourceEntityAssociationSnapshot?
 }
 
 private struct BridgeDatabaseImage: Codable, Equatable {
     let version: Int
+    let vaultRevision: BlockStoreRevision
+    let requiredCapabilities: [String]
     let schema: [[String]]
     let tables: [String: [[String]]]
 }
@@ -62,7 +67,81 @@ private func bridgeImage(_ root: URL) throws -> BridgeDatabaseImage {
         // Sorting the encoded rows ignores physical row order while retaining every value/type.
         tables[name] = try rows("SELECT * FROM \"\(name)\"").sorted { $0.lexicographicallyPrecedes($1) }
     }
-    return .init(version: version, schema: schema, tables: tables)
+    func bytes(_ encoded: String) throws -> Data {
+        if encoded.hasPrefix("blob:"), let data = Data(base64Encoded: String(encoded.dropFirst(5))) { return data }
+        if encoded.hasPrefix("text:") { return Data(encoded.dropFirst(5).utf8) }
+        throw VaultError.invalid("Crash fixture has invalid admission bytes.")
+    }
+    let admission = try rows("SELECT revision,required_capabilities FROM vault_state WHERE singleton=1")
+    let row = try #require(admission.first)
+    return .init(version: version, vaultRevision: .init(token: try bytes(row[0])),
+        requiredCapabilities: try JSONDecoder().decode([String].self, from: bytes(row[1])), schema: schema, tables: tables)
+}
+
+private func bridgeCapabilities(_ version: Int) throws -> [String] {
+    switch version {
+    case 8: SQLiteBlockStore.relationshipRequiredCapabilities
+    case 9: SQLiteBlockStore.templateRequiredCapabilities
+    case 10: SQLiteBlockStore.associationRequiredCapabilities
+    default: throw VaultError.invalid("Unexpected crash fixture schema.")
+    }
+}
+
+/// Independent intended-delta oracle; the captured post-write image alone is not an oracle.
+private func bridgeAssertDatabaseOutcome(_ state: BridgeCrashState, baseline: BridgeDatabaseImage,
+                                         observed: BridgeDatabaseImage, committed: Bool) throws {
+    let migration = state.action.hasPrefix("migrate")
+    let target = state.originalSchema + (committed && migration ? 1 : 0)
+    let capabilities = try bridgeCapabilities(target)
+    try #require(observed.version == target)
+    try #require(observed.requiredCapabilities == capabilities)
+    try #require(baseline.vaultRevision == state.vaultRevision)
+    try #require((observed.vaultRevision != state.vaultRevision) == committed)
+    if !committed { try #require(observed == baseline); return }
+    var changed: Set<String> = ["vault_state"]
+    switch state.action {
+    case "save", "reorder": changed.formUnion(["entity_property_templates", "entity_property_template_entries", "knowledge_operations"])
+    case "link", "unlink": changed.formUnion(["source_entity_associations", "knowledge_operations"])
+    case "migrate8":
+        try #require(observed.tables["entity_property_templates"] == [])
+        try #require(observed.tables["entity_property_template_entries"] == [])
+    case "migrate9": try #require(observed.tables["source_entity_associations"] == [])
+    default: throw VaultError.invalid("Unexpected crash action.")
+    }
+    for (table, rows) in baseline.tables where !changed.contains(table) {
+        try #require(observed.tables[table] == rows)
+    }
+    if !migration { try #require(observed.schema == baseline.schema) }
+}
+
+private func bridgeAssertOperationOutcome(_ state: BridgeCrashState, store: SQLiteBlockStore, committed: Bool) async throws {
+    if state.originalSchema >= 9 {
+        for before in state.templates {
+            let current = try await store.loadPropertyTemplate(typeKey: before.typeKey)
+            if committed && ["save", "reorder"].contains(state.action) && before.typeKey == "person" {
+                let desired = state.action == "reorder" ? Array(state.definitionIDs.reversed()) : state.definitionIDs
+                try #require(current.definitionIDs == desired)
+                try #require(current.revision != nil && current.revision != before.revision)
+            } else { try #require(current == before) }
+        }
+    } else if committed {
+        for type in KnowledgeEntityType.initial {
+            let template = try await store.loadPropertyTemplate(typeKey: type.key)
+            try #require(template.definitionIDs.isEmpty && template.revision == nil)
+        }
+    }
+    guard committed else { return }
+    if state.action == "link" {
+        let rows = try await store.associationsForSource(id: state.sourceID)
+        let edge = try #require(rows.first)
+        try #require(rows.count == 1 && edge.association.sourceID == state.sourceID && edge.association.entityID == state.entityID && edge.association.role == .representsWork)
+        try #require(!edge.revision.token.isEmpty)
+        try #require(try await store.sourcesForEntity(id: state.entityID) == rows)
+    } else if state.action == "unlink" {
+        _ = try #require(state.originalAssociation)
+        try #require(try await store.associationsForSource(id: state.sourceID).isEmpty)
+        try #require(try await store.sourcesForEntity(id: state.entityID).isEmpty)
+    }
 }
 
 private func bridgeWrite<T: Encodable>(_ value: T, _ file: URL) throws {
@@ -122,7 +201,11 @@ private struct BridgeManifestBarrierStore: VaultContentStore {
     func write(_ data: Data, at path: String, condition: VaultWriteCondition) throws {
         guard path == "vault.json" else { try base.write(data, at: path, condition: condition); return }
         if afterWrite { try base.write(data, at: path, condition: condition) }
-        try bridgeWrite(bridgeImage(directory.appendingPathComponent("Vault")), directory.appendingPathComponent("expected.json"))
+        let state = try JSONDecoder().decode(BridgeCrashState.self, from: Data(contentsOf: directory.appendingPathComponent("state.json")))
+        let baseline = try JSONDecoder().decode(BridgeDatabaseImage.self, from: Data(contentsOf: directory.appendingPathComponent("baseline.json")))
+        let observed = try bridgeImage(directory.appendingPathComponent("Vault"))
+        try bridgeAssertDatabaseOutcome(state, baseline: baseline, observed: observed, committed: true)
+        try bridgeWrite(observed, directory.appendingPathComponent("expected.json"))
         barrier.stop()
     }
     func move(from source: String, to destination: String, expected: VaultContentSnapshot) throws { try base.move(from: source, to: destination, expected: expected) }
@@ -187,10 +270,18 @@ private func bridgeSeed(directory: URL, action: String, phase: String) async thr
     let session = VaultSession(vaultID: vaultID, root: root, generation: 1), gate = VaultAccessGate(initialState: .open(session))
     let repository = try FileVaultRepository.open(root: root, sessionLease: session.lease, accessGate: gate)
     _ = try await repository.create(title: "Preserved page", body: "Existing page body", source: SourceRecord(metadata: metadata, body: String(decoding: bytes, as: UTF8.self)))
-    try await repository.sqliteBlockStore.checkpoint(); try await repository.sqliteBlockStore.close()
+    let finalStore = repository.sqliteBlockStore
+    let vaultRevision = try await finalStore.canonicalVaultRevision()
+    var templates: [EntityPropertyTemplateSnapshot] = []
+    if schema >= 9 {
+        for type in KnowledgeEntityType.initial { templates.append(try await finalStore.loadPropertyTemplate(typeKey: type.key)) }
+    }
+    let association = schema >= 10 ? try await finalStore.associationsForSource(id: metadata.id).first : nil
+    try await finalStore.checkpoint(); try await finalStore.close()
     let state = BridgeCrashState(action: action, phase: phase, vaultID: vaultID, sourceID: metadata.id, entityID: entity.id,
         definitionIDs: definitions, operationID: UUID(), originalSchema: schema, manifest: manifestBytes, original: bytes,
-        originalPath: "Sources/\(metadata.id.uuidString.lowercased())/original.txt")
+        originalPath: "Sources/\(metadata.id.uuidString.lowercased())/original.txt", vaultRevision: vaultRevision,
+        templates: templates, originalAssociation: association)
     try bridgeWrite(state, directory.appendingPathComponent("state.json"))
     try bridgeWrite(bridgeImage(root), directory.appendingPathComponent("baseline.json"))
     return state
@@ -234,6 +325,7 @@ func entityBridgeProcessCrashWorker() async throws {
         let expected = precommit ? baseline : try JSONDecoder().decode(BridgeDatabaseImage.self, from: Data(contentsOf: directory.appendingPathComponent("expected.json")))
         let recovered = try bridgeImage(root)
         try #require(recovered == expected)
+        try bridgeAssertDatabaseOutcome(state, baseline: baseline, observed: recovered, committed: !precommit)
         if !state.action.hasPrefix("migrate") {
             let operationRows = recovered.tables["knowledge_operations"] ?? []
             try #require(operationRows.contains { $0.first == "text:\(state.operationID.uuidString)" } == !precommit)
@@ -258,12 +350,23 @@ func entityBridgeProcessCrashWorker() async throws {
         let originalManifest = try JSONDecoder().decode(VaultManifest.self, from: state.manifest)
         try #require(manifest.unknownFields == originalManifest.unknownFields)
         try #require(manifest.storage?.schemaVersion == expected.version)
+        let capabilities = try bridgeCapabilities(expected.version)
+        try #require(manifest.storage?.requiredCapabilities == capabilities)
         let repository = try FileVaultRepository.open(root: root, sessionLease: session.lease, accessGate: gate), store = repository.sqliteBlockStore
         try await store.validateCanonicalLogicalIntegrity()
+        try await bridgeAssertOperationOutcome(state, store: store, committed: !precommit)
         if !precommit && !state.action.hasPrefix("migrate") {
             // Same operation cannot publish a second mutation after crash/reopen.
             await #expect(throws: (any Error).self) { try await store.checkKnowledgeOperation(state.operationID) }
-            if state.action != "unlink" {
+            if state.action == "unlink" {
+                let original = try #require(state.originalAssociation)
+                let source = try await store.sourceSnapshot(id: state.sourceID), entity = try await store.loadEntity(id: state.entityID)
+                await #expect(throws: (any Error).self) {
+                    try await store.unlinkSourceAssociation(id: original.association.id, expected: original.revision,
+                        expectedSource: source.revision, expectedEntity: entity.revision,
+                        expectedVaultRevision: store.canonicalVaultRevision(), operationID: state.operationID)
+                }
+            } else {
                 await #expect(throws: (any Error).self) { try await bridgeMutate(state, store: store) }
             }
         }
@@ -294,7 +397,11 @@ func entityBridgeProcessCrashWorker() async throws {
     if phase == "precommit" { try await store.installBridgeCrashCommitBarrier(barrier) }
     try await bridgeMutate(state, store: store)
     try #require(phase == "postack")
-    try bridgeWrite(bridgeImage(root), directory.appendingPathComponent("expected.json"))
+    let baseline = try JSONDecoder().decode(BridgeDatabaseImage.self, from: Data(contentsOf: directory.appendingPathComponent("baseline.json")))
+    let observed = try bridgeImage(root)
+    try bridgeAssertDatabaseOutcome(state, baseline: baseline, observed: observed, committed: true)
+    try await bridgeAssertOperationOutcome(state, store: store, committed: true)
+    try bridgeWrite(observed, directory.appendingPathComponent("expected.json"))
     // Deliberately no close/checkpoint between acknowledged mutation and SIGKILL.
     barrier.stop()
 }
