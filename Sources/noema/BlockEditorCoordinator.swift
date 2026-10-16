@@ -731,6 +731,10 @@ extension RichArticleView {
             let offset = view.selectedRange().location - range.location
             var pasted: [EditorBlock] = []
             if let data = pasteboard.data(forType: .rtf), let rich = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil) {
+                // Web selections can carry background colors in RTF. Do not
+                // promote clipboard shading into a persistent editor highlight.
+                let rich = NSMutableAttributedString(attributedString: rich)
+                rich.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: rich.length))
                 let ns = rich.string as NSString; var cursor = 0
                 while cursor < ns.length {
                     let line = ns.lineRange(for: NSRange(location: cursor, length: 0))
