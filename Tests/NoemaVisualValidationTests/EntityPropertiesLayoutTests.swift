@@ -25,7 +25,8 @@ struct EntityPropertiesLayoutTests {
         let relation = try EntityPropertyDefinition(vaultID: vault, label: "Created by", kind: .entityReference,
             presentation: .init(inverseLabel: "Creator of"))
         let count = try EntityPropertyDefinition(vaultID: vault, label: "Edition", kind: .number)
-        let definitions = [title, date, relation, count].map { EntityPropertyDefinitionSnapshot(definition: $0, revision: revision) }
+        let suggested = try ["Language", "Publisher", "Identifier", "Website", "Notes"].map { try EntityPropertyDefinition(vaultID: vault, label: $0, kind: .text) }
+        let definitions = ([title, date, relation, count] + suggested).map { EntityPropertyDefinitionSnapshot(definition: $0, revision: revision) }
         let assignments: [EntityPropertyAssignment] = [
             .init(definitionID: title.id, value: .text("A long descriptive working title that wraps in the narrow inspector")),
             .init(definitionID: date.id, value: .date(try .init(year: 2024, month: 2))),
@@ -35,7 +36,8 @@ struct EntityPropertiesLayoutTests {
         let incomingEdge = EntityPropertyRelationshipSnapshot(relationship: .init(definitionID: relation.id, sourceID: person.id, targetID: entity.id), revision: revision)
         let snapshot = EntityPropertiesSnapshot(entity: .init(entity: entity, revision: revision), definitions: definitions,
             values: .init(entityID: entity.id, assignments: assignments, entityRevision: revision), relationships: [edge, incomingEdge],
-            entities: [entity, person].map { .init(entity: $0, revision: revision) }, vaultRevision: revision, sessionID: nil)
+            entities: [entity, person].map { .init(entity: $0, revision: revision) }, vaultRevision: revision, sessionID: nil,
+            template: .init(typeKey: "creativeWork", definitionIDs: suggested.map(\.id), revision: revision))
         _ = NSApplication.shared
         for width in [280, 340] {
             let model = AppModel()

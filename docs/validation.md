@@ -10,7 +10,7 @@ that a later change has been tested. Rerun the relevant commands for each PR.
 
 ## STOR02B–STOR03 acceptance scope
 
-The production baseline is format 2, directly initialized schema 8 with `entityPropertiesV1` and `entityRelationshipsV1`; supported schemas 6 and 7 remain openable without mutation. Typed properties require the explicit revision-checked 6→7 upgrade; directed properties additionally require 7→8. Interrupted manifest publication requires explicit resume. Schema 5 remains test-only semantic staging. Historical
+The production baseline is format 2, directly initialized schema 9 with `entityPropertiesV1`, `entityRelationshipsV1` and `entityPropertyTemplatesV1`; supported schemas 6, 7 and 8 remain openable without mutation. Typed properties require the explicit revision-checked 6→7 upgrade; directed properties additionally require 7→8, and optional type templates require 8→9. Interrupted manifest publication requires explicit resume. Schema 5 remains test-only semantic staging. Historical
 Markdown/schema-1–5 vaults are intentionally unsupported. The repository demo and its
 content-only checks are retired; canonical fixtures are generated in temporary roots.
 Native archive APIs include committed SQLite and controlled originals/preservation,
@@ -408,9 +408,15 @@ source or a permanent golden fixture. Reproduction retains commit/fixture proven
 
 ## Native window acceptance
 
-ENT.03 entity properties retain a separate live acceptance gate: keyboard traversal
-and focus restoration across definition/target pickers, inverse editing, delete
-confirmation, refresh errors, rapid entity switching, and VoiceOver announcements.
+Entity properties (ENT.03) and optional templates (ENT.04) have an isolated
+[native QA procedure](development.md#native-entity-properties-templates-and-source-links).
+Live synthetic-vault checks cover template keyboard traversal, the 16-entry cap,
+add/reorder/removal focus, save-status focus, Escape return to both template entry
+points and inspector/library clearing on lock and vault switch. These checks do not establish the
+complete definition/target picker, inverse-editing, error or rapid-switch matrix.
+VoiceOver was enabled, but its spoken-caption window was unavailable to the
+automation surface; announcements and complete VoiceOver focus acceptance remain
+unverified. Accessibility-tree observations alone do not close that gate.
 [Inspector integration tests](../Tests/NoemaEditorTests/EntityPropertiesInspectorTests.swift)
 exercise canonical revisions and stale sessions; the opt-in
 [raster fixture](../Tests/NoemaVisualValidationTests/EntityPropertiesLayoutTests.swift)

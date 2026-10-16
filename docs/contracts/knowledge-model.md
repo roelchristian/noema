@@ -207,7 +207,7 @@ KNOW02 creates schema 4 requiring deterministic set
 The nested manifest `storage.schemaVersion`, `PRAGMA user_version`, vault UUID and
 database required-capability set must agree before writable admission. Unknown or
 missing required capabilities and unsupported payload versions deny writes before
-schema changes or publication. Schemas 6, 7 and 8 are admitted in production; schema 7 adds `entityPropertiesV1` and schema 8 adds `entityRelationshipsV1`. Schema 6 keeps the schema-5 semantic tables and adds vault-owned organisation tables under `organisationV1`. Schema 5 is not upgraded on open. Historical schemas reject without mutation.
+schema changes or publication. Schemas 6, 7, 8 and 9 are admitted in production; schema 7 adds `entityPropertiesV1`, schema 8 adds `entityRelationshipsV1` and schema 9 adds `entityPropertyTemplatesV1`. Schema 6 keeps the schema-5 semantic tables and adds vault-owned organisation tables under `organisationV1`. Schema 5 is not upgraded on open. Historical schemas reject without mutation.
 
 Schema 3's singular `vault_state.capability = canonicalMetadataV1` retains its
 meaning. Schema 4 adds an explicitly versioned `required_capabilities` set and
@@ -217,7 +217,7 @@ Capability presence denotes actually implemented preservation/writes, not a prom
 No schema-4 semantic tables or semantic feature activation is assumed by KNOW02;
 KNOW03's new relational authority therefore requires schema 5.
 
-Production initializes fresh schema 8 directly. Schema 6 remains readable/writable through its existing APIs; typed properties require the explicit revision-checked 6→7 upgrade. Opening never upgrades authority. Historical schema 1–5 upgrade routes
+Production initializes fresh schema 9 directly. Schema 6 remains readable/writable through its existing APIs; typed properties require the explicit revision-checked 6→7 upgrade. Opening never upgrades authority. Historical schema 1–5 upgrade routes
 are retired by STOR02B–STOR03; no automatic or explicit historical migration is
 supported. Internal fresh constructors provide test isolation only. Opening never
 reinterprets old Wiki/source files as canonical authority.
@@ -340,3 +340,42 @@ capabilities and revision. Foreign keys remain enabled. Conditional manifest
 publication and explicit `resumeEntityRelationshipsUpgrade` follow the same
 preserved-mismatch protocol as ENT.01. Ordinary open never migrates. Schemas 1–5
 remain unsupported. Page mentions and semantic annotations are not asserted edges.
+
+
+## Type-aware property templates (ENT.04)
+
+Schema 9 adds `entityPropertyTemplatesV1`. `entity_property_templates` retains one
+opaque revision per configured type, including an explicitly saved empty template;
+`entity_property_template_entries` references existing property-definition UUIDs in
+normalized order. Only the five registered entity type keys are supported. Every
+entry is an optional suggestion; no template edit assigns a value, asserts an edge,
+changes an entity revision or creates an entity. Each type permits at most 16
+entries, independently of the number of existing definitions, values and edges.
+
+`loadPropertyTemplate` returns ordered definition IDs and an optional revision
+(nil means never configured). `savePropertyTemplate` atomically replaces the ordered
+selection after checking template/vault revisions and operation identity. Duplicate,
+missing, foreign-vault and newly retired definitions reject without partial writes.
+Retirement preserves stored selections and facts; previously retained retired IDs
+may be reordered or removed but cannot be re-added. Active suggestions resolve the
+same reusable definition UUID, so renames do not detach them. Existing optional
+metadata scopes remain unchanged.
+
+Fresh creation initializes schema 9. Supported older vaults keep their existing APIs;
+normal open never upgrades. Explicit `upgradeEntityPropertyTemplates` performs the
+8→9 transition and conditionally publishes the manifest after the database commit.
+`resumeEntityPropertyTemplatesUpgrade` retries interrupted manifest publication;
+a mismatched declaration rejects ordinary admission. The transition registers any
+missing known type descriptors without creating entities or overwriting descriptors.
+SQLite backup includes both tables and admission/archive validation checks their
+foreign keys, registered types, revisions, definition ownership, order and cap.
+See [template tests](../../Tests/VaultCoreTests/EntityPropertyTemplateTests.swift)
+for preservation, rollback, admission, migration and archive scenarios.
+
+The native template manager is reachable from the Knowledge Entities catalogue even
+when empty and from entity property inspectors. Its type picker covers all five
+registered keys. Suggestions initially show four unused active definitions, with
+separate disclosure from existing values/edges; selecting one opens the existing
+property editor without writing a fact. Management uses explicit saves and retains
+retired rows until explicitly removed. Selection/session/request guards discard
+late reads and reject stale saves on type changes, navigation, lock and vault switch.

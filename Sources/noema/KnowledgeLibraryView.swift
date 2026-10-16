@@ -24,6 +24,10 @@ struct KnowledgeLibraryView<Blocks: View>: View {
     @Binding var query: String
     @Binding var selection: KnowledgeCatalogueSelection?
     let blocks: Blocks
+    @State private var showingPropertyTemplates = false
+    @State private var templateSessionID: UUID?
+    @FocusState private var templateEntryFocused: Bool
+    @AccessibilityFocusState(for: .voiceOver) private var templateEntryAccessible: Bool
     init(model: AppModel, query: Binding<String>, selection: Binding<KnowledgeCatalogueSelection?>, @ViewBuilder blocks: () -> Blocks) {
         self.model = model
         self._query = query
@@ -37,6 +41,15 @@ struct KnowledgeLibraryView<Blocks: View>: View {
                 Picker("Knowledge record family", selection: $model.knowledgeFamily) {
                     ForEach(KnowledgeLibraryFamily.allCases) { family in Text(family.rawValue).tag(family) }
                 }.pickerStyle(.menu)
+                if model.knowledgeFamily == .entities {
+                    Button("Property templates…") {
+                        templateSessionID = model.sessionState.sessionID
+                        showingPropertyTemplates = true
+                    }
+                        .disabled(!model.canEditSemanticTarget || model.isLocked)
+                        .focused($templateEntryFocused)
+                        .accessibilityFocused($templateEntryAccessible)
+                }
                 Text(model.knowledgeFamily.explanation).font(NoemaTypography.metadata).foregroundStyle(.secondary)
                 if model.knowledgeFamily != .blocks { TextField("Search \(model.knowledgeFamily.rawValue.lowercased())", text: $query) }
                 if let error = model.knowledgeCatalogueError { Text(error).font(.caption).foregroundStyle(.secondary) }
@@ -74,6 +87,21 @@ struct KnowledgeLibraryView<Blocks: View>: View {
         .task { await model.refreshKnowledgeCatalogue() }
         .onChange(of: model.knowledgeFamily) { query = ""; Task { await model.refreshKnowledgeCatalogue() } }
         .sheet(item: $selection) { selected in KnowledgeCatalogueDetail(model: model, selection: selected) }
+        .onChange(of: model.sessionState.sessionID) { dismissTemplates() }
+        .onChange(of: model.isLocked) { if model.isLocked { dismissTemplates() } }
+        .onChange(of: model.knowledgeFamily) { if model.knowledgeFamily != .entities { dismissTemplates() } }
+        .sheet(isPresented: $showingPropertyTemplates, onDismiss: {
+            let sessionID = templateSessionID
+            templateSessionID = nil
+            guard let sessionID, model.sessionState.sessionID == sessionID,
+                  !model.isLocked, model.canEditSemanticTarget, model.knowledgeFamily == .entities else { return }
+            templateEntryFocused = true; templateEntryAccessible = true
+        }) { EntityPropertyTemplateManager(model: model, initialTypeKey: "person") }
+    }
+    private func dismissTemplates() {
+        templateSessionID = nil
+        showingPropertyTemplates = false
+        templateEntryFocused = false; templateEntryAccessible = false
     }
     private func row(_ title: String, symbol: String? = nil, subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {

@@ -87,6 +87,10 @@ extension VaultUIIntegrationTests {
             let initial = try await model.loadEntityProperties(entityID: entity.entity.id)
             #expect(initial.values.assignments == [assignment])
             #expect(!initial.supportsRelationships)
+            #expect(initial.template == nil)
+            await #expect(throws: KnowledgeStoreError.transitionRequired) {
+                try await model.loadPropertyTemplateConfiguration(typeKey: "person")
+            }
             #expect(initial.relationships.isEmpty)
             let updated = EntityPropertyAssignment(id: assignment.id, definitionID: definition.id, value: .boolean(true))
             try await model.editEntityProperties(.saveValues([updated]), snapshot: initial, isCurrent: { true })

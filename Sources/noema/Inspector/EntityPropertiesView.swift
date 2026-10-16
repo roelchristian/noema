@@ -15,6 +15,13 @@ struct EntityPropertiesView: View {
     @State private var busy = false
     @State private var error: String?
     @State private var expanded = false
+    @State private var suggestionsExpanded = false
+    @State private var managingTemplates = false
+    @State private var templatePresentationIdentity: String?
+    @FocusState private var suggestedInputFocused: Bool
+    @FocusState private var manageTemplatesFocused: Bool
+    @AccessibilityFocusState(for: .voiceOver) private var suggestedInputAccessible: Bool
+    @AccessibilityFocusState(for: .voiceOver) private var manageTemplatesAccessible: Bool
     @State private var editorExpanded = false
     @State private var query = ""
     @State private var selectedDefinition: UUID?
@@ -39,10 +46,15 @@ struct EntityPropertiesView: View {
         _snapshot = State(initialValue: previewSnapshot)
     }
 
-    private var definition: EntityPropertyDefinition? {
-        snapshot?.definitions.first { $0.definition.id == selectedDefinition }?.definition
+    private var displayed: EntityPropertiesSnapshot? {
+        guard let snapshot, EntityPropertiesPresentation.canDisplay(snapshot, entityID: entityID,
+            sessionID: model.sessionState.sessionID, isLocked: model.isLocked) else { return nil }
+        return snapshot
     }
-    private var editable: Bool { model.canEditSemanticTarget && snapshot?.entity.entity.lifecycle == .live && !busy }
+    private var definition: EntityPropertyDefinition? {
+        displayed?.definitions.first { $0.definition.id == selectedDefinition }?.definition
+    }
+    private var editable: Bool { model.canEditSemanticTarget && displayed?.entity.entity.lifecycle == .live && !busy }
     private var taskIdentity: String { "\(entityID):\(String(describing: model.sessionState.sessionID)):\(model.isLocked)" }
 
     var body: some View {
@@ -51,11 +63,13 @@ struct EntityPropertiesView: View {
                 Text("Entity Properties").font(NoemaTypography.interfaceEmphasis)
                 Spacer()
                 Button { Task { await reload() } } label: { Image(systemName: "arrow.clockwise") }
-                    .help("Refresh entity properties").disabled(busy)
+                    .help("Refresh entity properties").disabled(busy || model.isLocked)
             }
             if busy { ProgressView().controlSize(.small) }
-            if let error { Text(error).font(NoemaTypography.metadata).foregroundStyle(.secondary) }
-            if let snapshot {
+            if !model.isLocked, request.entityID == entityID, request.sessionID == model.sessionState.sessionID, let error {
+                Text(error).font(NoemaTypography.metadata).foregroundStyle(.secondary)
+            }
+            if let snapshot = displayed {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(snapshot.entity.entity.label).font(NoemaTypography.interfaceEmphasis)
                     Text("\(KnowledgeTypePresentation.label(for: snapshot.entity.entity.typeKey)) · \(snapshot.entity.entity.id.uuidString.prefix(8))")
@@ -65,6 +79,7 @@ struct EntityPropertiesView: View {
                 if snapshot.values.assignments.isEmpty && snapshot.relationships.isEmpty {
                     Text("No properties set.").font(NoemaTypography.metadata).foregroundStyle(.secondary)
                 }
+                if snapshot.template != nil { suggestions(snapshot) }
                 DisclosureGroup("Add or edit property", isExpanded: $editorExpanded) {
                     editor(snapshot).disabled(!editable)
                 }
@@ -76,11 +91,22 @@ struct EntityPropertiesView: View {
                 }
             } else if !busy && error == nil { Text("Properties unavailable.").font(.caption) }
         }
-        .task(id: taskIdentity) { active = true; if previewSnapshot == nil { await reload() } }
-        .task(id: entityQuery + taskIdentity) { if previewSnapshot == nil { await searchEntities() } }
-        .onDisappear { active = false; request = .init(entityID: entityID, sessionID: model.sessionState.sessionID) }
-        .sheet(isPresented: Binding(get: { relatedEntityID != nil }, set: { if !$0 { relatedEntityID = nil } })) {
-            if let relatedEntityID { AnyView(EntityPropertiesDetail(model: model, entityID: relatedEntityID)) }
+        .task { active = true; if let previewSnapshot { snapshot = previewSnapshot } else { await reload() } }
+        .task(id: entityQuery) { if previewSnapshot == nil { await searchEntities() } }
+        .onChange(of: taskIdentity) {
+            invalidateSelection()
+            if previewSnapshot == nil { Task { await reload() } }
+        }
+        .onDisappear { active = false; invalidateSelection() }
+        .sheet(isPresented: Binding(get: { relatedEntityID != nil && displayed != nil }, set: { if !$0 { relatedEntityID = nil } })) {
+            if let relatedEntityID, displayed != nil { AnyView(EntityPropertiesDetail(model: model, entityID: relatedEntityID)) }
+        }
+        .sheet(isPresented: Binding(get: { managingTemplates && displayed != nil }, set: { managingTemplates = $0 }), onDismiss: {
+            templateSheetDismissed()
+        }) {
+            if let snapshot = displayed {
+                EntityPropertyTemplateManager(model: model, initialTypeKey: snapshot.entity.entity.typeKey)
+            }
         }
         .onChange(of: entityQuery) { otherID = nil }
         .onChange(of: selectedDefinition) { editingAssignment = nil; text = ""; boolean = false; otherID = nil
@@ -93,9 +119,63 @@ struct EntityPropertiesView: View {
         }
         .confirmationDialog("Remove this property value?", isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }), titleVisibility: .visible) {
             Button("Remove value", role: .destructive) {
-                if let edit = pendingRemoval { Task { await perform(edit) } }; pendingRemoval = nil
+                if let edit = pendingRemoval { schedule(edit) }; pendingRemoval = nil
             }
             Button("Cancel", role: .cancel) { pendingRemoval = nil }
+        }
+    }
+
+    @ViewBuilder private func suggestions(_ snapshot: EntityPropertiesSnapshot) -> some View {
+        let definitions = EntityPropertyTemplatePresentation.suggestions(snapshot)
+        VStack(alignment: .leading, spacing: NoemaSpacing.xs) {
+            Text("Suggested for this type").font(NoemaTypography.interfaceEmphasis)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Manage templates") { templatePresentationIdentity = taskIdentity; managingTemplates = true }
+                .accessibilityLabel("Manage property templates for entity types")
+                .focused($manageTemplatesFocused)
+                .accessibilityFocused($manageTemplatesAccessible)
+                .disabled(!model.canEditSemanticTarget || busy)
+            Text("Optional properties · choose one to enter a value.")
+                .font(NoemaTypography.metadata).foregroundStyle(.secondary)
+            if definitions.isEmpty {
+                Text("No unused suggestions. You can add any property below.")
+                    .font(NoemaTypography.metadata).foregroundStyle(.secondary)
+            }
+            ForEach(Array(definitions.prefix(suggestionsExpanded ? definitions.count : EntityPropertyTemplatePresentation.previewLimit)), id: \.definition.id) { value in
+                Button(value.definition.label) { selectSuggestion(value.definition) }
+                    .accessibilityLabel("Enter \(value.definition.label) property")
+                    .disabled(!editable)
+            }
+            if definitions.count > EntityPropertyTemplatePresentation.previewLimit {
+                Button(suggestionsExpanded ? "Show fewer suggestions" : "Show more suggestions") { suggestionsExpanded.toggle() }
+            }
+        }
+    }
+
+    private func templateSheetDismissed() {
+        guard active, !model.isLocked, previewSnapshot == nil,
+              templatePresentationIdentity == taskIdentity else { return }
+        let identity = taskIdentity
+        Task { @MainActor in
+            await reload()
+            guard active, !model.isLocked, taskIdentity == identity, displayed != nil else { return }
+            manageTemplatesFocused = true; manageTemplatesAccessible = true
+        }
+    }
+
+    private func selectSuggestion(_ definition: EntityPropertyDefinition) {
+        let token = request, draftID = UUID()
+        draftRequest = draftID
+        query = ""; selectedDefinition = definition.id; editorExpanded = true
+        editingAssignment = nil; text = ""; boolean = false; otherID = nil; incoming = false
+        definitionLabel = definition.label
+        inverseLabel = definition.presentation?.inverseLabel ?? ""
+        sourceTypeKeys = Set(definition.presentation?.sourceTypeKeys ?? [])
+        targetTypeKeys = Set(definition.presentation?.targetTypeKeys ?? [])
+        Task { @MainActor in
+            await Task.yield()
+            guard current(token), draftRequest == draftID else { return }
+            suggestedInputFocused = true; suggestedInputAccessible = true
         }
     }
 
@@ -173,7 +253,7 @@ struct EntityPropertiesView: View {
                         var edited = definition
                         edited.label = definitionLabel
                         if definition.kind == .entityReference { edited.presentation = relationshipPresentation }
-                        Task { await perform(.saveDefinition(edited)) }
+                        schedule(.saveDefinition(edited))
                     }
                 }
                 if definition.isRetired { Text("Retired property · existing values may be removed.").font(.caption) }
@@ -187,7 +267,7 @@ struct EntityPropertiesView: View {
                             Text("Outside the suggested entity types. You can still add this relationship.").font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    TextField("Search canonical entities", text: $entityQuery)
+                    TextField("Search canonical entities", text: $entityQuery).focused($suggestedInputFocused).accessibilityFocused($suggestedInputAccessible)
                     Picker("Canonical entity", selection: $otherID) {
                         Text("Choose entity").tag(nil as UUID?)
                         ForEach(entityChoices.filter { $0.entity.lifecycle == .live }, id: \.entity.id) { value in
@@ -197,11 +277,11 @@ struct EntityPropertiesView: View {
                     if searchingEntities { ProgressView().controlSize(.mini) }
                     Text("Searches canonical entities · up to 100 matches").font(.caption).foregroundStyle(.secondary)
                     Button("Add relationship") {
-                        if let otherID { Task { await perform(.addRelationship(definitionID: definition.id, otherID: otherID, incoming: incoming)) } }
+                        if let otherID { schedule(.addRelationship(definitionID: definition.id, otherID: otherID, incoming: incoming)) }
                     }.disabled(otherID == nil || definition.isRetired)
                 } else {
-                    if definition.kind == .boolean { Toggle("Value", isOn: $boolean) }
-                    else { TextField(definition.kind == .date ? "YYYY, YYYY-MM, or YYYY-MM-DD" : "Value", text: $text) }
+                    if definition.kind == .boolean { Toggle("Value", isOn: $boolean).focused($suggestedInputFocused).accessibilityFocused($suggestedInputAccessible) }
+                    else { TextField(definition.kind == .date ? "YYYY, YYYY-MM, or YYYY-MM-DD" : "Value", text: $text).focused($suggestedInputFocused).accessibilityFocused($suggestedInputAccessible) }
                     Button(editingAssignment == nil ? "Set value" : "Save value") { saveScalar(definition, snapshot: snapshot) }.disabled(definition.isRetired)
                     if editingAssignment != nil { Button("Cancel editing") { editingAssignment = nil; text = "" } }
                 }
@@ -210,7 +290,7 @@ struct EntityPropertiesView: View {
                 Picker("New property kind", selection: $kind) { ForEach(EntityPropertyKind.allCases.filter { snapshot.supportsRelationships || $0 != .entityReference }, id: \.self) { Text($0.rawValue).tag($0) } }
                 Toggle("Allow multiple values", isOn: $many)
                 if kind == .entityReference { relationshipMetadata }
-                Button("Create reusable property") { Task { await perform(.createDefinition(label: query, kind: kind, cardinality: many ? .many : .one, presentation: kind == .entityReference ? relationshipPresentation : nil)) } }
+                Button("Create reusable property") { schedule(.createDefinition(label: query, kind: kind, cardinality: many ? .many : .one, presentation: kind == .entityReference ? relationshipPresentation : nil)) }
             }
         }.padding(.top, NoemaSpacing.xs)
     }
@@ -249,10 +329,11 @@ struct EntityPropertiesView: View {
                 if definition.cardinality == .one { assignments.removeAll { $0.definitionID == definition.id } }
                 assignments.append(.init(id: existingID ?? UUID(), definitionID: definition.id, value: value))
             }
-            Task { await perform(.saveValues(assignments)) }
+            schedule(.saveValues(assignments))
         } catch { self.error = error.localizedDescription }
     }
     private func searchEntities() async {
+        guard displayed != nil else { return }
         let queryID = UUID(), token = request
         entitySearchRequest = queryID; searchingEntities = true
         do {
@@ -269,9 +350,10 @@ struct EntityPropertiesView: View {
         } catch { if current(token), entitySearchRequest == queryID { self.error = error.localizedDescription; searchingEntities = false } }
     }
     private func reload() async {
-        let token = EntityPropertiesRequestToken(entityID: entityID, sessionID: model.sessionState.sessionID)
-        request = token; snapshot = nil; error = nil; busy = true
-        editingAssignment = nil; selectedDefinition = nil; expanded = false; pendingRemoval = nil; draftRequest = UUID()
+        invalidateSelection()
+        guard active, !model.isLocked else { return }
+        let token = request
+        busy = true
         do {
             let result = try await model.loadEntityProperties(entityID: entityID)
             guard current(token) else { return }
@@ -287,12 +369,25 @@ struct EntityPropertiesView: View {
             }
         }
     }
+    private func invalidateSelection() {
+        request = .init(entityID: entityID, sessionID: model.sessionState.sessionID)
+        snapshot = nil; entityChoices = []; entitySearchRequest = UUID(); searchingEntities = false
+        error = nil; busy = false; pendingRemoval = nil; relatedEntityID = nil; managingTemplates = false
+        templatePresentationIdentity = nil; manageTemplatesFocused = false; manageTemplatesAccessible = false
+        editingAssignment = nil; selectedDefinition = nil; draftRequest = UUID()
+        expanded = false; suggestionsExpanded = false; editorExpanded = false; suggestedInputFocused = false; suggestedInputAccessible = false
+        query = ""; entityQuery = ""; text = ""; boolean = false; otherID = nil; incoming = false
+        kind = .text; many = false; inverseLabel = ""; definitionLabel = ""; sourceTypeKeys = []; targetTypeKeys = []
+    }
     private func current(_ token: EntityPropertiesRequestToken) -> Bool {
         active && !Task.isCancelled && token.matches(request: request, entityID: entityID, sessionID: model.sessionState.sessionID) && !model.isLocked
     }
-    private func perform(_ edit: EntityPropertyEdit) async {
-        guard let snapshot, !busy else { return }
+    private func schedule(_ edit: EntityPropertyEdit) {
         let token = request
+        Task { await perform(edit, token: token) }
+    }
+    private func perform(_ edit: EntityPropertyEdit, token: EntityPropertiesRequestToken) async {
+        guard current(token), let snapshot = displayed, !busy else { return }
         busy = true; error = nil
         do {
             try await model.editEntityProperties(edit, snapshot: snapshot, isCurrent: { current(token) })

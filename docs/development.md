@@ -43,6 +43,31 @@ validation. `scripts/compile.sh` runs Swift compilation without icon generation,
 app packaging or signing. Inspect each script's help before choosing specialised
 SwiftPM flags. Native accessibility and crash-durability acceptance remain device checks.
 
+### Native entity properties, templates and Source links
+
+Use the separate synthetic QA app for live keyboard, focus and VoiceOver review:
+
+```sh
+./scripts/native-entity-bridge-acceptance.sh --phase 4 --run-id entity-native-04 --skip-update --launch
+# Requires the integrated ENT05 Source-link views:
+./scripts/native-entity-bridge-acceptance.sh --phase 5 --run-id entity-native-05 --skip-update --launch
+```
+
+The opt-in compile graph uses actual editable Noema views with a separate QA entry
+point; it excludes the production `NoemaApp` object and never invokes vault restore.
+Each run builds and signs a unique QA bundle under `.local/agent-runs/<run-id>/`,
+with synthetic vaults, a separate preference suite and app-local state. The live
+controls select all five entity types, open the Knowledge template manager and
+exercise lock, unlock and a second synthetic vault. Phase 5 also seeds preserved
+offline/trashed Sources and enough explicit links for pagination. No user vault is
+selected. Run one SwiftPM build/test graph at a time in a checkout.
+
+Omit `--launch` to build only. `--launch` waits for the QA app to exit before marking
+the run complete; direct later launches reactivate its marker, which must remain
+until that process stops. Keep failures and review evidence pinned. Record observed
+actions and announcements in the PR or managed evidence; successful building,
+signing or static raster capture does not establish native accessibility acceptance.
+
 Embedding acceptance has two explicit local probes:
 
 ```sh
@@ -174,10 +199,10 @@ and auxiliary-window isolation using the [standing matrix](validation.md#native-
 
 ## Core workflow
 
-Create a temporary schema-8 vault for a tour. Keep personal vaults outside this source repository.
+Create a temporary schema-9 vault for a tour. Keep personal vaults outside this source repository.
 
 ### Vaults
-- **Create a vault:** Click **Create a vault** (default name **My Knowledge Vault**) and choose a parent folder such as **iCloud Drive / Noema**. Creation publishes a complete plaintext schema-8 SQLite vault only after confirmation and rejects occupied names. Optionally enable **Require authentication in Noema** before creation: Noema then authenticates before showing the new vault. Cancelling authentication preserves the created folder and its preference for a later **Open Vault** retry. **Encrypted vault** remains unavailable; encryption and recovery-key protection are separate future work.
+- **Create a vault:** Click **Create a vault** (default name **My Knowledge Vault**) and choose a parent folder such as **iCloud Drive / Noema**. Creation publishes a complete plaintext schema-9 SQLite vault only after confirmation and rejects occupied names. Optionally enable **Require authentication in Noema** before creation: Noema then authenticates before showing the new vault. Cancelling authentication preserves the created folder and its preference for a later **Open Vault** retry. **Encrypted vault** remains unavailable; encryption and recovery-key protection are separate future work.
 - **Access authentication:** **Settings → Vault Access** changes the open vault's preference after native macOS authentication. Enabled vaults require a fresh attempt on initial opening, unlocking, reopening after close, or restarting Noema; selecting the same locked folder to restore permission follows the same requirement. Existing vaults default to disabled. The preference is stored locally under the vault UUID and does not travel with the folder to another Mac. This protects casual access through Noema; editable preferences, direct filesystem access and compromised process code remain outside the boundary. Files, indexes, drafts and previews remain plaintext. Native prompt/accessibility acceptance remains [pending](validation.md#native-authentication-device-acceptance).
 - **Vault menu, session locking & notices:** The vault-name menu at the bottom of the sidebar (and the **Vault** menu bar item) groups **Open Vault in Finder**, **Refresh from Files**, **Lock Vault** / **Unlock Vault** (`⌥⌘L`), **Close Vault** (`⇧⌘W`), **Trash** (with item count), recoverable drafts, vault notices, and **Open / Create Vault…**. Locking a vault flushes or journals pending edits, closes open source readers and dismisses the modal Settings sheet (including any nested sheet), detaches the search index and closes canonical SQLite storage, clears loaded notes and sources from memory, and revokes in-app session access until unlocked (application-level access revocation; Markdown or SQLite/WAL and source files remain plaintext until cryptographic vault storage is enabled). Global Settings (`⌘,`) presents as a workspace-modal sheet with sidebar categories (**Personalisation**: Appearance, Reading & Editor; **Intelligence**: Intelligence, OpenAI; **Security**: Vault Access), gating workspace commands while open and remaining accessible while locked. Error banners and vault notices can be dismissed individually or with **Dismiss All** for the current session.
 
@@ -248,7 +273,7 @@ Select text and activate hyperlinks with ordinary clicks while reading. Press **
 
 ```text
 My Vault/
-  vault.json       # format 2; schema 8, UUID and required capabilities
+  vault.json       # format 2; schema 9, UUID and required capabilities
   blocks.sqlite    # canonical pages, blocks, sources, knowledge and annotations
   Sources/         # immutable imported originals
   Conflicts/       # required preservation bytes
@@ -259,7 +284,7 @@ unsaved copy. Search indexes are derived and rebuildable. All files remain plain
 
 ## Local SQLite vault format
 
-Creation initializes schema 8 directly in an owned staging root, verifies identity,
+Creation initializes schema 9 directly in an owned staging root, verifies identity,
 capabilities and integrity, closes the database and publishes create-only. Supported schema-6 vaults require the explicit upgrade/resume API described in the [knowledge contract](contracts/knowledge-model.md#typed-entity-properties-ent01) before typed properties can be used. No historical schema 1–5
 format conversion or Markdown authority remains. Old and future formats reject without
 mutation. Imported originals remain controlled immutable files; linked originals are

@@ -10,10 +10,14 @@ struct EntityPropertiesSnapshot: Sendable {
     let vaultRevision: BlockStoreRevision
     let sessionID: UUID?
     var supportsRelationships = true
+    var template: EntityPropertyTemplateSnapshot? = nil
 }
 
 enum EntityPropertiesPresentation {
     static let previewLimit = 4
+    static func canDisplay(_ snapshot: EntityPropertiesSnapshot, entityID: UUID, sessionID: UUID?, isLocked: Bool) -> Bool {
+        !isLocked && snapshot.entity.entity.id == entityID && snapshot.values.entityID == entityID && snapshot.sessionID == sessionID
+    }
     static func matchingDefinitions(_ definitions: [EntityPropertyDefinitionSnapshot], query: String) -> [EntityPropertyDefinitionSnapshot] {
         let key = EntityPropertyDefinition.normalize(query)
         return definitions.filter { !$0.definition.isRetired && (key.isEmpty || $0.definition.normalizedKey.contains(key)) }
@@ -28,6 +32,17 @@ enum EntityPropertiesPresentation {
         case .date(let date): date.encodedDate
         case .boolean(let flag): flag ? "Yes" : "No"
         }
+    }
+}
+
+enum EntityPropertyTemplateFocus: Hashable {
+    case typePicker, definitionPicker, earlier(UUID), later(UUID), remove(UUID), status
+
+    static func afterRemoving(_ id: UUID, from ids: [UUID]) -> Self {
+        guard let index = ids.firstIndex(of: id) else { return .definitionPicker }
+        let remaining = ids.filter { $0 != id }
+        guard !remaining.isEmpty else { return .definitionPicker }
+        return .remove(remaining[min(index, remaining.count - 1)])
     }
 }
 
@@ -73,5 +88,42 @@ struct EntityPropertiesRequestToken: Equatable, Sendable {
     }
     func matches(request: Self, entityID: UUID, sessionID: UUID?) -> Bool {
         self == request && self.entityID == entityID && self.sessionID == sessionID
+    }
+}
+
+
+struct EntityPropertyTemplateConfiguration: Sendable {
+    let template: EntityPropertyTemplateSnapshot
+    let definitions: [EntityPropertyDefinitionSnapshot]
+    let vaultRevision: BlockStoreRevision
+    let sessionID: UUID?
+}
+
+/// Captures the selection at the button event, before its queued mutation starts.
+struct EntityPropertyTemplateRequestToken: Equatable, Sendable {
+    let typeKey: String
+    let sessionID: UUID?
+    let requestID: UUID
+
+    func matches(request: UUID, typeKey: String, sessionID: UUID?) -> Bool {
+        requestID == request && self.typeKey == typeKey && self.sessionID == sessionID
+    }
+}
+
+enum EntityPropertyTemplatePresentation {
+    static let previewLimit = 4
+    static func canDisplay(_ configuration: EntityPropertyTemplateConfiguration, typeKey: String, sessionID: UUID?, isLocked: Bool) -> Bool {
+        !isLocked && configuration.template.typeKey == typeKey && configuration.sessionID == sessionID
+    }
+
+    /// Suggestions never fabricate an assignment. Incoming facts belong to their source.
+    static func suggestions(_ snapshot: EntityPropertiesSnapshot) -> [EntityPropertyDefinitionSnapshot] {
+        let used = Set(snapshot.values.assignments.map(\.definitionID)).union(
+            snapshot.relationships.filter { $0.relationship.sourceID == snapshot.entity.entity.id }.map(\.relationship.definitionID))
+        let definitions = Dictionary(uniqueKeysWithValues: snapshot.definitions.map { ($0.definition.id, $0) })
+        return (snapshot.template?.definitionIDs ?? []).compactMap { id in
+            guard !used.contains(id), let definition = definitions[id], !definition.definition.isRetired else { return nil }
+            return definition
+        }
     }
 }

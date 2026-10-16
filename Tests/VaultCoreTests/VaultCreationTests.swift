@@ -27,7 +27,7 @@ private func creationParent() throws -> URL {
     let before = try Data(contentsOf: vault.appendingPathComponent("vault.json"))
     let manager = VaultSessionManager()
     let opened = try await manager.openRepository(root: vault)
-    #expect(opened.repository.manifest.storage?.schemaVersion == 8)
+    #expect(opened.repository.manifest.storage?.schemaVersion == SQLiteBlockStore.templateSchemaVersion)
     let page = try await opened.repository.create(title: "Canonical", body: "Persisted")
     #expect(try await opened.repository.scan().notes.first?.id == page.id)
     try await opened.repository.sqliteBlockStore.close()
@@ -87,7 +87,7 @@ private func creationParent() throws -> URL {
     let reportedStaging = URL(fileURLWithPath: String(reportedSuffix[..<pathEnd]))
     #expect(reportedStaging.resolvingSymlinksInPath() == staging.resolvingSymlinksInPath())
     let manifestBytes = try Data(contentsOf: staging.appendingPathComponent("vault.json"))
-    #expect(try FileVaultRepository.inspectManifest(at: staging).storage?.schemaVersion == 8)
+    #expect(try FileVaultRepository.inspectManifest(at: staging).storage?.schemaVersion == SQLiteBlockStore.templateSchemaVersion)
     #expect(try Data(contentsOf: staging.appendingPathComponent("vault.json")) == manifestBytes)
     #expect(try Data(contentsOf: destination.appendingPathComponent("external.txt")) == occupiedBytes)
     #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("vault.json").path))
@@ -132,7 +132,7 @@ func failedInitializationRemovesOnlyEmptyOwnedStaging(preservedContent: Bool) as
         manifest.storage?.schemaVersion = version
         #expect(!manifest.isSupported)
     }
-    manifest.storage?.schemaVersion = 8
+    manifest.storage?.schemaVersion = SQLiteBlockStore.templateSchemaVersion
     manifest.storage?.requiredCapabilities.removeLast()
     #expect(!manifest.isSupported)
     manifest.storage = nil
