@@ -47,6 +47,9 @@ import NoemaBrand
             let menu = NSMenu(), item = NSMenuItem(), appMenu = NSMenu()
             appMenu.addItem(withTitle: "Quit Entity Bridge QA", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
             item.submenu = appMenu; menu.addItem(item); NSApp.mainMenu = menu
+            let fileItem = NSMenuItem(), fileMenu = NSMenu(title: "File")
+            fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+            fileItem.submenu = fileMenu; menu.addItem(fileItem)
             let editItem = NSMenuItem(), editMenu = NSMenu(title: "Edit")
             for (title, action, key) in [("Undo", "undo:", "z"), ("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
                 editMenu.addItem(withTitle: title, action: NSSelectorFromString(action), keyEquivalent: key)
