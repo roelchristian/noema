@@ -417,8 +417,14 @@ complete definition/target picker, inverse-editing, error or rapid-switch matrix
 VoiceOver was enabled, but its spoken-caption window was unavailable to the
 automation surface; announcements and complete VoiceOver focus acceptance remain
 unverified. Accessibility-tree observations alone do not close that gate.
-Source links (ENT.05) retain pending live acceptance for role pickers, confirmed
-unlinking, bidirectional reader navigation, offline/inactive states and VoiceOver.
+Source links (ENT.05) have scoped live checks for existing-Person search/manual
+linking, keyboard unlink confirmation/cancellation in both directions and stable
+Refresh/Unlink focus. Source-to-entity navigation opens the real Source reader;
+closing its titlebar control retains entity detail and adjacent keyboard traversal.
+Reader Cmd-W closing was not established in the QA host. Automatic parent refresh
+after entity-detail dismissal is implemented but lacks a post-fix live rerun.
+The broader role/pagination/offline-linked-file and inactive-state native matrix,
+VoiceOver announcements and device/power-loss durability remain unverified.
 [Inspector integration tests](../Tests/NoemaEditorTests/EntityPropertiesInspectorTests.swift)
 exercise canonical revisions and stale sessions; the opt-in
 [raster fixture](../Tests/NoemaVisualValidationTests/EntityPropertiesLayoutTests.swift)
