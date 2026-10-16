@@ -4,6 +4,46 @@ import Testing
 @testable import noema
 
 struct EntityPropertyTemplatePresentationTests {
+    @Test func cachedEntityContentIsHiddenImmediatelyWhenSelectionSessionOrLockChanges() {
+        let revision = BlockStoreRevision(token: Data("fixture".utf8)), session = UUID()
+        let entity = KnowledgeEntitySnapshot(entity: .init(typeKey: "person", label: "Private previous entity"), revision: revision)
+        var snapshot = EntityPropertiesSnapshot(entity: entity, definitions: [],
+            values: .init(entityID: entity.entity.id, assignments: [], entityRevision: revision),
+            relationships: [], entities: [entity], vaultRevision: revision, sessionID: session)
+        #expect(EntityPropertiesPresentation.canDisplay(snapshot, entityID: entity.entity.id, sessionID: session, isLocked: false))
+        #expect(!EntityPropertiesPresentation.canDisplay(snapshot, entityID: UUID(), sessionID: session, isLocked: false))
+        #expect(!EntityPropertiesPresentation.canDisplay(snapshot, entityID: entity.entity.id, sessionID: UUID(), isLocked: false))
+        #expect(!EntityPropertiesPresentation.canDisplay(snapshot, entityID: entity.entity.id, sessionID: nil, isLocked: false))
+        #expect(!EntityPropertiesPresentation.canDisplay(snapshot, entityID: entity.entity.id, sessionID: session, isLocked: true))
+        // Deliberately mismatched value ownership must never surface another entity's facts.
+        snapshot = .init(entity: entity, definitions: [], values: .init(entityID: UUID(), assignments: [], entityRevision: revision),
+            relationships: [], entities: [entity], vaultRevision: revision, sessionID: session)
+        #expect(!EntityPropertiesPresentation.canDisplay(snapshot, entityID: entity.entity.id, sessionID: session, isLocked: false))
+        let preview = EntityPropertiesSnapshot(entity: entity, definitions: [],
+            values: .init(entityID: entity.entity.id, assignments: [], entityRevision: revision),
+            relationships: [], entities: [entity], vaultRevision: revision, sessionID: nil)
+        #expect(EntityPropertiesPresentation.canDisplay(preview, entityID: entity.entity.id, sessionID: nil, isLocked: false))
+    }
+
+    @Test func removingTemplateRowFocusesNextThenPreviousThenExistingPropertyPicker() {
+        let first = UUID(), middle = UUID(), last = UUID()
+        #expect(EntityPropertyTemplateFocus.afterRemoving(first, from: [first, middle, last]) == .remove(middle))
+        #expect(EntityPropertyTemplateFocus.afterRemoving(middle, from: [first, middle, last]) == .remove(last))
+        #expect(EntityPropertyTemplateFocus.afterRemoving(last, from: [first, middle, last]) == .remove(middle))
+        #expect(EntityPropertyTemplateFocus.afterRemoving(first, from: [first]) == .definitionPicker)
+        #expect(EntityPropertyTemplateFocus.afterRemoving(first, from: []) == .definitionPicker)
+    }
+
+    @Test func templateConfigurationIsHiddenBeforeTypeOrSessionReloadCompletes() {
+        let session = UUID(), revision = BlockStoreRevision(token: Data("fixture".utf8))
+        let configuration = EntityPropertyTemplateConfiguration(template: .init(typeKey: "person", definitionIDs: [], revision: revision),
+            definitions: [], vaultRevision: revision, sessionID: session)
+        #expect(EntityPropertyTemplatePresentation.canDisplay(configuration, typeKey: "person", sessionID: session, isLocked: false))
+        #expect(!EntityPropertyTemplatePresentation.canDisplay(configuration, typeKey: "creativeWork", sessionID: session, isLocked: false))
+        #expect(!EntityPropertyTemplatePresentation.canDisplay(configuration, typeKey: "person", sessionID: UUID(), isLocked: false))
+        #expect(!EntityPropertyTemplatePresentation.canDisplay(configuration, typeKey: "person", sessionID: session, isLocked: true))
+    }
+
     @Test func suggestionsPreserveTemplateOrderAndIgnoreRetiredAndAlreadyAssertedFacts() throws {
         let revision = BlockStoreRevision(token: Data("fixture".utf8)), vault = UUID()
         let entity = KnowledgeEntitySnapshot(entity: .init(typeKey: "person", label: "Person"), revision: revision)
