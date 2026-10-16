@@ -5,6 +5,8 @@ import Testing
 
 /// Projection-only measurements. Synthetic vectors do not measure native inference,
 /// cloud throughput, queue rendering, or a complete large-vault workflow.
+/// Query cursor/fusion measurements live in SemanticRetrievalPerformanceTests;
+/// entity-local reuse timing below must never substitute for retrieval acceptance.
 struct EmbeddingProjectionPerformanceTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["NOEMA_PERFORMANCE_TESTS"] == "1"), .timeLimit(.minutes(5)))
     func benchmarkTenThousandEmbeddingDocumentsAndCancellation() async throws {
