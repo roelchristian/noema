@@ -324,3 +324,40 @@ private func embeddingSearchSafetyMultiPermitRejectsHydrationAssignmentChanges(i
     #expect(completion.chunkCount > 0)
     try await repository.sqliteBlockStore.close()
 }
+
+
+@Test func embeddingSearchSafetyPointCompletionIsBoundedAndRejectsPartialOrRevisionDrift() async throws {
+    let f = try await SearchSafetyFixture.make()
+    try await f.publish()
+    let identity = try EmbeddingEntityIdentity(vaultID: f.session.vaultID, entityKind: .page, entityID: f.pages[0].pageID,
+        revision: f.pages[0].revision.token.base64EncodedString())
+    let value = try #require(try await f.index.searchCompletion(identity: identity, generation: f.generation, validateQuery: {}))
+    #expect(value.identity == identity)
+    try f.sql("UPDATE embedding_chunks SET vector=X'00'")
+    #expect(try await f.index.searchCompletion(identity: identity, generation: f.generation, validateQuery: {}) == value)
+    let stale = try EmbeddingEntityIdentity(vaultID: identity.vaultID, entityKind: .page, entityID: identity.entityID, revision: "other")
+    #expect(try await f.index.searchCompletion(identity: stale, generation: f.generation, validateQuery: {}) == nil)
+    try await f.publish(partial: true)
+    #expect(try await f.index.searchCompletion(identity: identity, generation: f.generation, validateQuery: {}) == nil)
+    try await f.store.close()
+}
+
+@Test func embeddingSearchSafetyPassageScopeFiltersBeforeDocumentTopK() async throws {
+    let f = try await SearchSafetyFixture.make()
+    try await f.publish()
+    let page = f.pages[1]
+    let identity = try EmbeddingEntityIdentity(vaultID: f.session.vaultID, entityKind: .page, entityID: page.pageID,
+        revision: page.revision.token.base64EncodedString())
+    let chunk = try EmbeddingChunk(identity: identity, chunkID: "block/\(page.pageID)/0", ordinal: 0,
+        contentFingerprint: "fingerprint", chunkingVersion: f.generation.chunkingVersion)
+    let record = try EmbeddingRecord(generation: f.generation, chunk: chunk, vector: EmbeddingVector(values: [0.5, 1], model: f.generation.model))
+    let permit = try await f.store.embeddingPublicationPermit(pageID: page.pageID, expected: page.revision)
+    try await f.index.replaceDocument(identity: identity, generation: f.generation, records: [record], permit: permit,
+        authority: f.authority(), completion: .init(identity: identity, workRevision: identity.revision,
+            inputFingerprint: digest(Data((chunk.chunkID + ":" + chunk.contentFingerprint).utf8)), chunkCount: 1), validatePublication: {})
+    let result = try await f.index.searchCandidates(query: EmbeddingVector(values: [1, 0], model: f.generation.model),
+        generation: f.generation, documentLimit: 1, isCurrent: { _ in true },
+        isPassageEligible: { $0.identity.entityID == page.pageID }, validateQuery: {})
+    #expect(result.map(\.identity.entityID) == [page.pageID])
+    try await f.store.close()
+}

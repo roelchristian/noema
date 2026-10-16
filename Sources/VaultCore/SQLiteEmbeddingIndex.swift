@@ -581,6 +581,38 @@ public extension SQLiteEmbeddingIndex {
         } catch { try? Self.execute(db, "ROLLBACK"); throw error }
     }
 
+    /// Bounded point lookup of technical completion metadata. It does not decode vectors
+    /// or certify canonical freshness; callers still hydrate and protect final publication.
+    func searchCompletion(identity: EmbeddingEntityIdentity, generation: EmbeddingIndexGeneration,
+                          validateQuery: @Sendable () throws -> Void) throws -> EmbeddingDocumentCompletion? {
+        func check() throws { try validate(generation); try validateQuery() }
+        try check()
+        guard identity.vaultID == generation.vaultID else { throw EmbeddingContractError.incompatibleGeneration }
+        try Self.execute(db, "BEGIN")
+        do {
+            let rows = try Self.rows(db, "SELECT CASE WHEN length(metadata)<=16384 THEN metadata END FROM embedding_generations WHERE id=?", [Data(generation.id.uuidString.utf8)])
+            guard let metadata = rows.first?.first else { try Self.execute(db, "COMMIT"); try check(); return nil }
+            guard try JSONDecoder().decode(GenerationMetadata.self, from: metadata).value() == generation else { throw EmbeddingContractError.incompatibleGeneration }
+            let sql = "SELECT CASE WHEN length(d.entity_kind)<=128 THEN d.entity_kind END,CASE WHEN length(d.entity_id)<=128 THEN d.entity_id END,d.chunk_count,CASE WHEN length(d.metadata)<=16384 THEN d.metadata END FROM embedding_documents d WHERE generation_id=? AND entity_kind=? AND entity_id=? AND chunk_count>0 AND NOT EXISTS (SELECT 1 FROM embedding_checkpoints p WHERE p.generation_id=d.generation_id AND p.entity_kind=d.entity_kind AND p.entity_id=d.entity_id)"
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw EmbeddingIndexError.unavailable }
+            defer { sqlite3_finalize(statement) }
+            try Self.bindSearchText(statement, 1, generation.id.uuidString)
+            try Self.bindSearchText(statement, 2, identity.entityKind.rawValue)
+            try Self.bindSearchText(statement, 3, identity.entityID.uuidString)
+            try check()
+            let status = sqlite3_step(statement)
+            guard status == SQLITE_ROW || status == SQLITE_DONE else { throw EmbeddingIndexError.unavailable }
+            var result: EmbeddingDocumentCompletion?
+            if status == SQLITE_ROW, let value = try? Self.searchCompletion(statement, generation: generation), value.identity == identity {
+                let counts = try Self.rows(db, "SELECT COUNT(*) FROM embedding_chunks WHERE generation_id=? AND entity_kind=? AND entity_id=?", [Data(generation.id.uuidString.utf8), Data(identity.entityKind.rawValue.utf8), Data(identity.entityID.uuidString.utf8)])
+                if counts.first?.first == Data(String(value.chunkCount).utf8) { result = value }
+            }
+            try check(); try Self.execute(db, "COMMIT"); try check()
+            return result
+        } catch { try? Self.execute(db, "ROLLBACK"); throw error }
+    }
+
     /// Bounded, completed-document retrieval within one exact vector space. Completion is
     /// technical evidence only: callers must revalidate canonical revisions and Source bytes
     /// before presentation. The synchronous predicate must not reenter this actor/connection.
@@ -589,6 +621,7 @@ public extension SQLiteEmbeddingIndex {
                           documentLimit: Int = 20, passagesPerDocument: Int = 3,
                           kind: AIEntityKind? = nil,
                           isCurrent: @Sendable (EmbeddingDocumentCompletion) throws -> Bool,
+                          isPassageEligible: (@Sendable (EmbeddingChunk) throws -> Bool)? = nil,
                           validateQuery: @Sendable () throws -> Void) throws -> [SemanticSearchCandidate] {
         guard query.model == generation.model else { throw EmbeddingContractError.incompatibleGeneration }
         guard (1...1000).contains(documentLimit), (1...10).contains(passagesPerDocument) else {
@@ -630,7 +663,7 @@ public extension SQLiteEmbeddingIndex {
                 guard let completion = try? Self.searchCompletion(documents, generation: generation),
                       completion.chunkCount > 0, try isCurrent(completion) else { continue }
                 let passages = try searchPassages(query: query, generation: generation,
-                    completion: completion, limit: passagesPerDocument, check: check)
+                    completion: completion, limit: passagesPerDocument, isPassageEligible: isPassageEligible, check: check)
                 guard !passages.isEmpty else { continue }
                 best.insert(try SemanticSearchCandidate(generation: generation, completion: completion, passages: passages))
             }
@@ -670,6 +703,7 @@ public extension SQLiteEmbeddingIndex {
 
     private func searchPassages(query: EmbeddingVector, generation: EmbeddingIndexGeneration,
                                 completion: EmbeddingDocumentCompletion, limit: Int,
+                                isPassageEligible: (@Sendable (EmbeddingChunk) throws -> Bool)?,
                                 check: () throws -> Void) throws -> [SemanticSearchPassage] {
         var statement: OpaquePointer?
         // SQL length guards avoid materializing oversized damaged BLOBs in SQLite first.
@@ -693,6 +727,7 @@ public extension SQLiteEmbeddingIndex {
             if status == SQLITE_DONE { break }
             guard status == SQLITE_ROW else { throw EmbeddingIndexError.unavailable }
             count += 1
+            let validated: (EmbeddingChunk, EmbeddingVector)
             do {
                 let chunk = try JSONDecoder().decode(ChunkMetadata.self,
                     from: Self.searchData(statement, 0, maximumBytes: 16_384)).value(vaultID: generation.vaultID)
@@ -707,8 +742,11 @@ public extension SQLiteEmbeddingIndex {
                 fingerprint.update(data: Data((chunk.chunkID + ":" + chunk.contentFingerprint).utf8))
                 let vector = try EmbeddingVector(float32LittleEndian:
                     Self.searchData(statement, 1, maximumBytes: generation.model.dimensions * 4), model: generation.model)
-                best.insert(try SemanticSearchPassage(chunk: chunk, cosineSimilarity: query.cosineSimilarity(to: vector)))
-            } catch { damaged = true }
+                validated = (chunk, vector)
+            } catch { damaged = true; continue }
+            if try isPassageEligible?(validated.0) ?? true {
+                best.insert(try SemanticSearchPassage(chunk: validated.0, cosineSimilarity: query.cosineSimilarity(to: validated.1)))
+            }
         }
         let inputFingerprint = fingerprint.finalize().map { String(format: "%02x", $0) }.joined()
         return !damaged && count == completion.chunkCount && inputFingerprint == completion.inputFingerprint ? best.sorted() : []

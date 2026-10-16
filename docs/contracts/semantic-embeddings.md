@@ -294,6 +294,8 @@ It contains no vector or canonical text and grants no currentness or query autho
 
 The index retrieval API selects one exact generation, bounds documents and passages
 per document, streams vectors on the owning actor and excludes partial checkpoints.
+Scope predicates filter current tagged passages before top-K selection; they never
+excuse malformed metadata or vectors in the rest of a completed document.
 It validates the whole document before admitting its passages. Invalid completion
 or vector evidence excludes that document; semantic failure leaves lexical search
 available. Schema 3's existing composite indexes cover generation/document selection;
@@ -316,15 +318,17 @@ canonical block-tag evidence; a Page chunk locator alone does not establish that
 
 The application owns asynchronous canonical revision, Trash, locator and Source
 original checks after bounded retrieval and before presentation. Source completion's
-canonical revision alone cannot establish current original bytes. Reconstruct excerpts
+canonical revision alone cannot establish current original bytes. New Source completion
+metadata carries the original-byte fingerprint; legacy Source completions without it
+remain ineligible until an explicitly requested rebuild. Reconstruct excerpts
 only from current bounded canonical inputs and omit stale locators. Final publication
 uses existing search revision/completion-ticket and lease checks plus canonical-issued
 revision protection. Query composition retains the exact query publication authority,
 not an unrelated barrier, through synchronous result assignment. Gate-bearing query
-validators run before entering canonical protection. The current single-permit helper
-acquires a nonrecursive authority lock: do not nest it for multiple results using the
-same authority. Multi-document presentation requires a reviewed common-domain check
-of all permits with exactly one authority acquisition before UI integration acceptance.
+validators run before entering canonical protection. The multi-permit publication helper
+checks one admitted vault/database domain and every canonical epoch under one domain
+lock, then acquires the exact query authority once. Its synchronous body only assigns
+results. Do not nest single-permit helpers using the same nonrecursive authority lock.
 Linked originals cannot be transactionally coupled to SQLite.
 
 Transient query execution reuses `EmbeddingExecutionContext` with `.query` scope and
