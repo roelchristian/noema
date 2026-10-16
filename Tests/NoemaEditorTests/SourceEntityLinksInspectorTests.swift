@@ -40,6 +40,12 @@ struct SourceEntityLinksPresentationTests {
             requestedEntityID: old.entity.id, requestedSessionID: session, sessionID: UUID(), isLocked: false))
         #expect(!SourceEntityLinksPresentation.canDisplayEntitySources(snapshot, entityID: old.entity.id,
             requestedEntityID: old.entity.id, requestedSessionID: session, sessionID: session, isLocked: true))
+        let preview = SourceEntityLinksSnapshot(associations: [], sources: [], entities: [old],
+            vaultRevision: revision, sessionID: nil, offset: 0)
+        #expect(SourceEntityLinksPresentation.canDisplayEntitySources(preview, entityID: old.entity.id,
+            requestedEntityID: old.entity.id, requestedSessionID: nil, sessionID: nil, isLocked: false))
+        #expect(!SourceEntityLinksPresentation.canDisplayEntitySources(preview, entityID: old.entity.id,
+            requestedEntityID: nil, requestedSessionID: nil, sessionID: nil, isLocked: false))
     }
     @Test func rolesFilterOnlyExistingTypesAndMetadataNeverImpliesAvailability() throws {
         let revision = BlockStoreRevision(token: Data("fixture".utf8))

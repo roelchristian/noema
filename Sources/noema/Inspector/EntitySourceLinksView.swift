@@ -21,6 +21,8 @@ struct EntitySourceLinksView: View {
     init(model: AppModel, entityID: UUID, previewSnapshot: SourceEntityLinksSnapshot? = nil) {
         self.model = model; self.entityID = entityID; self.previewSnapshot = previewSnapshot
         _snapshot = State(initialValue: previewSnapshot)
+        _requestedEntityID = State(initialValue: previewSnapshot == nil ? nil : entityID)
+        _requestedSessionID = State(initialValue: previewSnapshot?.sessionID)
     }
 
     private var identity: String { "\(entityID):\(String(describing: model.sessionState.sessionID)):\(model.isLocked)" }
