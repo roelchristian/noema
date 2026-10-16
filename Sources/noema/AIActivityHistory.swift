@@ -52,6 +52,8 @@ import VaultCore
         let usage: AIActivityUsage?
         let estimatedCostUSD: Double?
         let requestCount: Int
+        let providerResponseCount: Int?
+        let embeddingUsageCoverage: AIActivityUsageCoverage?
         let contentSizeBytes: Int?
     }
 
@@ -63,7 +65,8 @@ import VaultCore
                 modelID: record.modelID, status: record.status, outcome: record.outcome,
                 failureCode: record.failureCode, durationMilliseconds: record.durationMilliseconds,
                 usage: record.usage, estimatedCostUSD: record.estimatedCostUSD,
-                requestCount: record.requestCount, contentSizeBytes: record.contentSizeBytes)
+                requestCount: record.requestCount, providerResponseCount: record.providerResponseCount,
+                embeddingUsageCoverage: record.embeddingUsageCoverage, contentSizeBytes: record.contentSizeBytes)
         }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -243,7 +246,13 @@ struct AIActivityHistoryView: View {
                 detail("Outcome", label(record.outcome.rawValue))
                 detail("Duration", record.durationMilliseconds.map { String(format: "%.2f s", Double($0) / 1000) } ?? "In progress")
                 detail("API dispatches", "\(record.requestCount)")
-                detail("Input tokens", record.usage?.inputTokens.map(String.init) ?? "Unknown")
+                if let responses = record.providerResponseCount {
+                    detail("Validated embedding responses", "\(responses)")
+                    detail("Reported usage coverage", label(record.embeddingUsageCoverage?.rawValue ?? "unknown"))
+                    Text("Each embedding record describes one provider request, not completion of a document, historical batch or search publication. Tokens cover reported responses; other transmitted attempts may also incur charges.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                detail(record.providerResponseCount == nil ? "Input tokens" : "Reported input tokens", record.usage?.inputTokens.map(String.init) ?? "Unknown")
                 detail("Cached input tokens", record.usage?.cachedInputTokens.map(String.init) ?? "Unknown")
                 detail("Output tokens", record.usage?.outputTokens.map(String.init) ?? "Unknown")
                 detail("Estimated USD", record.estimatedCostUSD.map { String(format: "$%.6f", $0) } ?? (record.provider == .openAI ? "Unknown" : "—"))
@@ -267,7 +276,9 @@ struct AIActivityHistoryView: View {
     }
 
     private func label(_ raw: String) -> String {
-        raw.replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2", options: .regularExpression).capitalized
+        if raw == AIActivityAction.embedHistoricalBatch.rawValue { return "Embed Historical Passage" }
+        if raw == AIActivityAction.embedDocument.rawValue { return "Embed New or Changed Passage" }
+        return raw.replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2", options: .regularExpression).capitalized
     }
 
     @MainActor private func load() async {

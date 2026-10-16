@@ -43,10 +43,16 @@ public struct OpenAIEmbeddingProvider: EmbeddingProvider {
     public let descriptor: EmbeddingModelDescriptor
     private let authorizer: ExternalAIEmbeddingAuthorizer
     private let authorization: ExternalAIEmbeddingAuthorization
+    private let activity: EmbeddingActivityObservation?
 
     public init(authorizer: ExternalAIEmbeddingAuthorizer, authorization: ExternalAIEmbeddingAuthorization) {
         self.authorizer = authorizer; self.authorization = authorization
-        descriptor = authorizer.descriptor
+        descriptor = authorizer.descriptor; activity = nil
+    }
+    init(authorizer: ExternalAIEmbeddingAuthorizer, authorization: ExternalAIEmbeddingAuthorization,
+         activity: EmbeddingActivityObservation) {
+        self.authorizer = authorizer; self.authorization = authorization
+        descriptor = authorizer.descriptor; self.activity = activity
     }
     public func embed(_ inputs: [String], scope: EmbeddingProcessingScope,
                       context: EmbeddingExecutionContext) async throws -> [EmbeddingVector] {
@@ -54,7 +60,7 @@ public struct OpenAIEmbeddingProvider: EmbeddingProvider {
     }
     public func embedWithUsage(_ inputs: [String], scope: EmbeddingProcessingScope,
                                context: EmbeddingExecutionContext) async throws -> OpenAIEmbeddingResult {
-        try await authorizer.performEmbedding(inputs, scope: scope, context: context, authorization: authorization)
+        try await authorizer.performEmbedding(inputs, scope: scope, context: context, authorization: authorization, activity: activity)
     }
     public func validatePublication() throws { try authorizer.validatePublication(authorization) }
 }

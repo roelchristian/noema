@@ -4,7 +4,9 @@ import Foundation
 public enum AIActivityAction: String, Codable, CaseIterable, Hashable, Sendable {
     case summarizePage, summarizeSource, suggestTitle, classifyLCC, processSource
     case createPageFromSource, createPageFromTopic, composePage, validateConnection
+    case embedDocument, embedHistoricalBatch, embedQuery
 }
+public enum AIActivityUsageCoverage: String, Codable, Sendable { case unknown, partial, complete }
 public enum AIActivityProvider: String, Codable, CaseIterable, Hashable, Sendable { case onDevice, openAI }
 public enum AIActivityExecutionMode: String, Codable, CaseIterable, Hashable, Sendable { case automatic, userInvoked }
 public enum AIActivityStatus: String, Codable, CaseIterable, Hashable, Sendable { case running, completed, failed, cancelled, interrupted }
@@ -48,6 +50,13 @@ public struct AIActivityRecord: Codable, Equatable, Identifiable, Sendable {
     public let usage: AIActivityUsage?
     public let estimatedCostUSD: Double?
     public let requestCount: Int
+    /// Nil for historical/non-embedding records whose response count was not observed.
+    public let providerResponseCount: Int?
+    public var embeddingUsageCoverage: AIActivityUsageCoverage? {
+        guard let responses = providerResponseCount else { return nil }
+        guard usage != nil else { return .unknown }
+        return responses > 0 && responses == requestCount ? .complete : .partial
+    }
     public let contentSizeBytes: Int?
     public let outcome: AIActivityOutcome
 
@@ -56,7 +65,7 @@ public struct AIActivityRecord: Codable, Equatable, Identifiable, Sendable {
                 executionMode: AIActivityExecutionMode, provider: AIActivityProvider, modelID: String? = nil,
                 status: AIActivityStatus = .running, failureCode: AIActivityFailureCode? = nil,
                 durationMilliseconds: Int? = nil, usage: AIActivityUsage? = nil, estimatedCostUSD: Double? = nil,
-                requestCount: Int = 0, contentSizeBytes: Int? = nil, outcome: AIActivityOutcome = .notApplicable) {
+                requestCount: Int = 0, contentSizeBytes: Int? = nil, outcome: AIActivityOutcome = .notApplicable, providerResponseCount: Int? = nil) {
         self.id = id; self.startedAt = startedAt; self.finishedAt = finishedAt; self.vaultID = vaultID
         self.target = target; self.action = action; self.executionMode = executionMode; self.provider = provider
         self.modelID = Self.validatedModelID(modelID); self.status = status; self.failureCode = failureCode
@@ -64,6 +73,7 @@ public struct AIActivityRecord: Codable, Equatable, Identifiable, Sendable {
         self.usage = provider == .openAI ? usage.map { AIActivityUsage(inputTokens: $0.inputTokens, outputTokens: $0.outputTokens, cachedInputTokens: $0.cachedInputTokens) } : nil
         self.estimatedCostUSD = provider == .openAI ? estimatedCostUSD.flatMap { $0.isFinite && $0 >= 0 && $0 <= 1_000_000 ? $0 : nil } : nil
         self.requestCount = provider == .openAI ? min(1_000_000, max(0, requestCount)) : 0
+        self.providerResponseCount = provider == .openAI ? providerResponseCount.flatMap { (0...min(1_000_000, max(0, requestCount))).contains($0) ? $0 : nil } : nil
         self.contentSizeBytes = contentSizeBytes.flatMap { (0...1_000_000_000).contains($0) ? $0 : nil }
         self.outcome = outcome
     }
@@ -98,6 +108,7 @@ public enum AIActivityStoreError: Error, Equatable, Sendable { case unavailable,
 public protocol AIActivityStore: Sendable {
     func insert(_ record: AIActivityRecord) async throws
     func recordDispatch(_ id: UUID) async throws
+    func recordProviderResponse(_ id: UUID) async throws
     func recordUsage(_ id: UUID, usage: AIActivityUsage, estimatedCostUSD: Double?) async throws
     func finish(_ id: UUID, at: Date, status: AIActivityStatus, outcome: AIActivityOutcome, failureCode: AIActivityFailureCode?) async throws
     func updateOutcome(_ id: UUID, outcome: AIActivityOutcome) async throws
@@ -107,4 +118,9 @@ public protocol AIActivityStore: Sendable {
     func setRetentionDays(_ days: Int?) async throws
     func prune(before now: Date) async throws
     func clearHistory() async throws
+}
+
+// Older custom history stores remain source-compatible; the SQLite owner implements evidence.
+extension AIActivityStore {
+    public func recordProviderResponse(_ id: UUID) async throws {}
 }

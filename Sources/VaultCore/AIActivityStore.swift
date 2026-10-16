@@ -21,12 +21,13 @@ public actor SQLiteAIActivityStore: AIActivityStore {
             .appendingPathComponent("Noema/Activity/activity.sqlite")
     }
     private let connection: AIActivityConnection
-    private static let columns = "id,started_at,finished_at,vault_id,target_type,target_id,action,execution_mode,provider,model_id,status,failure_code,duration_ms,input_tokens,output_tokens,cached_input_tokens,estimated_cost_usd,request_count,content_size_bytes,outcome"
+    private static let legacyColumns = "id,started_at,finished_at,vault_id,target_type,target_id,action,execution_mode,provider,model_id,status,failure_code,duration_ms,input_tokens,output_tokens,cached_input_tokens,estimated_cost_usd,request_count,content_size_bytes,outcome"
+    private static let columns = legacyColumns + ",response_count"
     private static let activitySchema = """
     (
       id TEXT PRIMARY KEY, started_at REAL NOT NULL, finished_at REAL, vault_id TEXT,
       target_type TEXT CHECK(target_type IN ('page','source')), target_id TEXT,
-      action TEXT NOT NULL CHECK(action IN ('summarizePage','summarizeSource','suggestTitle','classifyLCC','processSource','createPageFromSource','createPageFromTopic','composePage','validateConnection')),
+      action TEXT NOT NULL CHECK(action IN ('summarizePage','summarizeSource','suggestTitle','classifyLCC','processSource','createPageFromSource','createPageFromTopic','composePage','validateConnection','embedDocument','embedHistoricalBatch','embedQuery')),
       execution_mode TEXT NOT NULL CHECK(execution_mode IN ('automatic','userInvoked')),
       provider TEXT NOT NULL CHECK(provider IN ('onDevice','openAI')), model_id TEXT CHECK(length(model_id)<=128),
       status TEXT NOT NULL CHECK(status IN ('running','completed','failed','cancelled','interrupted')),
@@ -36,6 +37,7 @@ public actor SQLiteAIActivityStore: AIActivityStore {
       estimated_cost_usd REAL CHECK(estimated_cost_usd BETWEEN 0 AND 1000000), request_count INTEGER NOT NULL CHECK(request_count BETWEEN 0 AND 1000000),
       content_size_bytes INTEGER CHECK(content_size_bytes BETWEEN 0 AND 1000000000),
       outcome TEXT NOT NULL CHECK(outcome IN ('published','suggested','rejected','notApplicable')),
+      response_count INTEGER CHECK(response_count BETWEEN 0 AND request_count),
       CHECK((target_type IS NULL AND target_id IS NULL) OR (target_type IS NOT NULL AND target_id IS NOT NULL))
     )
     """
@@ -51,14 +53,14 @@ public actor SQLiteAIActivityStore: AIActivityStore {
         let version = sqlite3_column_int(versionStatement, 0)
         sqlite3_finalize(versionStatement)
         guard result == SQLITE_ROW else { throw AIActivityStoreError.unavailable }
-        guard (0...2).contains(version) else { throw AIActivityStoreError.unsupportedSchema }
+        guard (0...3).contains(version) else { throw AIActivityStoreError.unsupportedSchema }
         // SQLite cannot extend a CHECK constraint in place. Rebuild inside the same
         // transaction, copy every metadata column, then recreate indexes after the old
         // table (and its indexes) is dropped. Fresh version-zero databases copy no rows.
-        let migration = version < 2 ? """
+        let migration = version < 3 ? """
         ALTER TABLE activity RENAME TO activity_previous;
         CREATE TABLE activity \(Self.activitySchema);
-        INSERT INTO activity(\(Self.columns)) SELECT \(Self.columns) FROM activity_previous;
+        INSERT INTO activity(\(Self.legacyColumns)) SELECT \(Self.legacyColumns) FROM activity_previous;
         DROP TABLE activity_previous;
         """ : ""
         let sql = """
@@ -73,7 +75,7 @@ public actor SQLiteAIActivityStore: AIActivityStore {
         CREATE INDEX IF NOT EXISTS activity_provider ON activity(provider,started_at DESC);
         CREATE INDEX IF NOT EXISTS activity_status ON activity(status,started_at DESC);
         CREATE TABLE IF NOT EXISTS activity_settings (key TEXT PRIMARY KEY,value INTEGER);
-        PRAGMA user_version=2;
+        PRAGMA user_version=3;
         COMMIT;
         """
         guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { sqlite3_exec(db, "ROLLBACK", nil, nil, nil); throw AIActivityStoreError.unavailable }
@@ -119,16 +121,19 @@ public actor SQLiteAIActivityStore: AIActivityStore {
         guard r.startedAt.timeIntervalSince1970.isFinite, r.finishedAt?.timeIntervalSince1970.isFinite != false else { throw AIActivityStoreError.invalidMetadata }
         let usage = r.provider == .openAI ? r.usage.map { AIActivityUsage(inputTokens: $0.inputTokens, outputTokens: $0.outputTokens, cachedInputTokens: $0.cachedInputTokens) } : nil
         let cost = r.provider == .openAI ? r.estimatedCostUSD.flatMap { $0.isFinite && (0...1_000_000).contains($0) ? $0 : nil } : nil
-        try run("INSERT OR IGNORE INTO activity(\(Self.columns)) VALUES(\(Array(repeating: "?", count: 20).joined(separator: ",")))", [
+        try run("INSERT OR IGNORE INTO activity(\(Self.columns)) VALUES(\(Array(repeating: "?", count: 21).joined(separator: ",")))", [
             r.id.uuidString, String(r.startedAt.timeIntervalSince1970), r.finishedAt.map { String($0.timeIntervalSince1970) }, r.vaultID?.uuidString,
             r.target?.type.rawValue, r.target?.id.uuidString, r.action.rawValue, r.executionMode.rawValue, r.provider.rawValue,
             AIActivityRecord.validatedModelID(r.modelID), r.status.rawValue, r.failureCode?.rawValue, r.durationMilliseconds.map(String.init),
             usage?.inputTokens.map(String.init), usage?.outputTokens.map(String.init), usage?.cachedInputTokens.map(String.init), cost.map { String($0) },
-            String(r.provider == .openAI ? min(1_000_000,max(0,r.requestCount)) : 0), r.contentSizeBytes.flatMap { (0...1_000_000_000).contains($0) ? String($0) : nil }, r.outcome.rawValue
+            String(r.provider == .openAI ? min(1_000_000,max(0,r.requestCount)) : 0), r.contentSizeBytes.flatMap { (0...1_000_000_000).contains($0) ? String($0) : nil }, r.outcome.rawValue, r.providerResponseCount.map(String.init)
         ])
     }
     public func recordDispatch(_ id: UUID) throws {
         try run("UPDATE activity SET request_count=MIN(1000000,request_count+1) WHERE id=? AND status='running' AND provider='openAI'", [id.uuidString])
+    }
+    public func recordProviderResponse(_ id: UUID) async throws {
+        try run("UPDATE activity SET response_count=MIN(request_count,response_count+1) WHERE id=? AND status='running' AND provider='openAI' AND response_count IS NOT NULL", [id.uuidString])
     }
     public func recordUsage(_ id: UUID, usage: AIActivityUsage, estimatedCostUSD: Double?) throws {
         let usage = AIActivityUsage(inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens: usage.cachedInputTokens)
@@ -171,7 +176,7 @@ public actor SQLiteAIActivityStore: AIActivityStore {
         let target: AIActivityTarget?
         if let kind = text(4).flatMap(AIActivityTarget.Kind.init(rawValue:)), let targetID = text(5).flatMap(UUID.init(uuidString:)) { target = AIActivityTarget(type:kind,id:targetID) } else { target = nil }
         let usage = number(13) == nil && number(14) == nil && number(15) == nil ? nil : AIActivityUsage(inputTokens:number(13),outputTokens:number(14),cachedInputTokens:number(15))
-        return AIActivityRecord(id:id,startedAt:start,finishedAt:date(2),vaultID:text(3).flatMap(UUID.init(uuidString:)),target:target,action:action,executionMode:mode,provider:provider,modelID:text(9),status:status,failureCode:text(11).flatMap(AIActivityFailureCode.init(rawValue:)),durationMilliseconds:number(12),usage:usage,estimatedCostUSD:sqlite3_column_type(s,16) == SQLITE_NULL ? nil : sqlite3_column_double(s,16),requestCount:number(17) ?? 0,contentSizeBytes:number(18),outcome:outcome)
+        return AIActivityRecord(id:id,startedAt:start,finishedAt:date(2),vaultID:text(3).flatMap(UUID.init(uuidString:)),target:target,action:action,executionMode:mode,provider:provider,modelID:text(9),status:status,failureCode:text(11).flatMap(AIActivityFailureCode.init(rawValue:)),durationMilliseconds:number(12),usage:usage,estimatedCostUSD:sqlite3_column_type(s,16) == SQLITE_NULL ? nil : sqlite3_column_double(s,16),requestCount:number(17) ?? 0,contentSizeBytes:number(18),outcome:outcome,providerResponseCount:number(20))
     }
     public func count(_ query: AIActivityQuery = .init()) throws -> Int {
         let (filter,values) = filter(query); let s = try statement("SELECT COUNT(*) FROM activity\(filter)",values); defer { sqlite3_finalize(s) }

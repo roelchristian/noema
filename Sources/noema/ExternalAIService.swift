@@ -112,7 +112,7 @@ final class ExternalAIService {
         let authorizer = try embeddingAuthorizerFactory?(lease, embeddingConfiguration) ?? ExternalAIEmbeddingAuthorizer(credentialBroker: credentialBroker,
             sessionManager: sessionManager, accessGate: accessGate, configuration: embeddingConfiguration, allowsAuthentication: false)
         let executor = EmbeddingRequestExecutor(authorizer: authorizer, publicationAuthority: authority,
-            approveRequest: approveRequest)
+            activityRecorder: activityRecorder, approveRequest: approveRequest)
         let registration = registerEmbeddingInvalidator { [weak executor] in executor?.invalidate() }
         didRegisterInvalidator?(registration)
         return executor

@@ -26,10 +26,10 @@ public actor AIActivityRecorder {
     @discardableResult
     public func begin(id: UUID = UUID(), vaultID: UUID? = nil, target: AIActivityTarget? = nil,
                       action: AIActivityAction, executionMode: AIActivityExecutionMode, provider: AIActivityProvider,
-                      modelID: String? = nil, contentSizeBytes: Int? = nil) async -> UUID {
+                      modelID: String? = nil, contentSizeBytes: Int? = nil, providerResponseCount: Int? = nil) async -> UUID {
         do {
             let store = try availableStore(), now = Date()
-            try await store.insert(AIActivityRecord(id:id,startedAt:now,vaultID:vaultID,target:target,action:action,executionMode:executionMode,provider:provider,modelID:modelID,contentSizeBytes:contentSizeBytes))
+            try await store.insert(AIActivityRecord(id:id,startedAt:now,vaultID:vaultID,target:target,action:action,executionMode:executionMode,provider:provider,modelID:modelID,contentSizeBytes:contentSizeBytes,providerResponseCount:providerResponseCount))
             if lastPrune == nil || now.timeIntervalSince(lastPrune!) >= 86400 {
                 lastPrune = now; try await store.prune(before:now)
             }
@@ -38,6 +38,9 @@ public actor AIActivityRecorder {
     }
     public func recordDispatch(_ id: UUID) async {
         do { try await availableStore().recordDispatch(id) } catch { recordingUnavailable = true }
+    }
+    public func recordProviderResponse(_ id: UUID) async {
+        do { try await availableStore().recordProviderResponse(id) } catch { recordingUnavailable = true }
     }
     public func recordUsage(_ id: UUID, usage: AIActivityUsage, estimatedCostUSD: Double? = nil) async {
         do { try await availableStore().recordUsage(id,usage:usage,estimatedCostUSD:estimatedCostUSD) } catch { recordingUnavailable = true }

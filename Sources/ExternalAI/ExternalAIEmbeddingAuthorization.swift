@@ -216,7 +216,8 @@ extension ExternalAIEmbeddingAuthorizer {
 
     func performEmbedding(_ inputs: [String], scope: EmbeddingProcessingScope,
                           context: EmbeddingExecutionContext,
-                          authorization: ExternalAIEmbeddingAuthorization) async throws -> OpenAIEmbeddingResult {
+                          authorization: ExternalAIEmbeddingAuthorization,
+                          activity: EmbeddingActivityObservation? = nil) async throws -> OpenAIEmbeddingResult {
         do {
             try context.validate(scope: scope, model: descriptor)
             guard context.lease == authorization.context.lease else { throw ExternalAIError.staleSession }
@@ -247,7 +248,8 @@ extension ExternalAIEmbeddingAuthorizer {
                     try await sessions.validate(capability)
                     try self.validateSynchronously(authorization, request: request)
                     do {
-                        let response = try await broker.withCredential(version: capability.credentialVersion) { credential in
+                        let requestCount = attempt + 1
+                        let result = try await broker.withCredential(version: capability.credentialVersion) { credential in
                             try self.validateSynchronously(authorization, request: request)
                             var network = URLRequest(url: URL(string: "https://api.openai.com/v1/embeddings")!)
                             network.httpMethod = "POST"; network.httpBody = body
@@ -255,7 +257,7 @@ extension ExternalAIEmbeddingAuthorizer {
                             network.setValue("application/json", forHTTPHeaderField: "Content-Type")
                             network.setValue("application/json", forHTTPHeaderField: "Accept")
                             try credential.authorizeEmbedding(&network)
-                            return try await transport.perform(network, beforeDispatch: { resume in
+                            let response = try await transport.perform(network, beforeDispatch: { resume in
                                 try context.validate(scope: scope, model: self.descriptor)
                                 try gate.withOpenSession(lease: context.lease, operation: "externalAIEmbedding.dispatch") {
                                     try sessions.withValidatedAuthorization(capability) {
@@ -265,11 +267,15 @@ extension ExternalAIEmbeddingAuthorizer {
                                         }
                                     }
                                 }
-                            })
+                            }, didDispatch: { activity?.dispatched() })
+                            try ExternalAIGateway.checkStatus(response.statusCode)
+                            let result = try OpenAIEmbeddingResult.decode(response.body, descriptor: self.descriptor,
+                                count: inputs.count, requestCount: requestCount)
+                            // Preserve validated numeric evidence even when the broker's
+                            // post-response cancellation/credential check discards vectors.
+                            activity?.received(usage: result.usage)
+                            return result
                         }
-                        try ExternalAIGateway.checkStatus(response.statusCode)
-                        let result = try OpenAIEmbeddingResult.decode(response.body, descriptor: self.descriptor, count: inputs.count,
-                            requestCount: attempt + 1)
                         try await sessions.validate(capability)
                         try self.validateSynchronously(authorization, request: request)
                         return result
