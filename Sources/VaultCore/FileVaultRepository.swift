@@ -373,6 +373,73 @@ public actor FileVaultRepository: VaultRepository {
         }
     }
 
+    public static func upgradeEntityPropertyTemplates(
+        root: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate,
+        expectedVaultRevision: BlockStoreRevision,
+        contentStore: (any VaultContentStore)? = nil,
+        storageProvider: VaultStorageProvider = .plaintext
+    ) async throws -> VaultManifest {
+        try await publishEntityPropertyTemplateUpgrade(root: root, sessionLease: sessionLease, accessGate: accessGate,
+            expectedVaultRevision: expectedVaultRevision, contentStore: contentStore, storageProvider: storageProvider)
+    }
+
+    /// Retry only the manifest publication after SQLite committed schema 9. This
+    /// never infers an upgrade on ordinary vault open and never recreates the database.
+    public static func resumeEntityPropertyTemplatesUpgrade(
+        root: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate,
+        contentStore: (any VaultContentStore)? = nil,
+        storageProvider: VaultStorageProvider = .plaintext
+    ) async throws -> VaultManifest {
+        try await publishEntityPropertyTemplateUpgrade(root: root, sessionLease: sessionLease, accessGate: accessGate,
+            expectedVaultRevision: nil, contentStore: contentStore, storageProvider: storageProvider)
+    }
+
+    private static func publishEntityPropertyTemplateUpgrade(
+        root: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate,
+        expectedVaultRevision: BlockStoreRevision?, contentStore: (any VaultContentStore)?,
+        storageProvider: VaultStorageProvider
+    ) async throws -> VaultManifest {
+        try accessGate.validate(lease: sessionLease, targetRoot: root, targetVaultID: sessionLease.vaultID, operation: "entityPropertyTemplates.upgrade")
+        try SQLiteVaultLocality.requireLocalRoot(root)
+        let rawStore = try contentStore ?? storageProvider.makeStore(root: root)
+        let store = GatedVaultContentStore(base: rawStore, root: root, vaultID: sessionLease.vaultID, gate: accessGate, lease: sessionLease)
+        let original = try store.read(at: "vault.json")
+        var manifest = try JSONDecoder().decode(VaultManifest.self, from: original)
+        guard manifest.isSupported, manifest.id == sessionLease.vaultID,
+              manifest.storage?.schemaVersion == SQLiteBlockStore.relationshipSchemaVersion else {
+            throw VaultError.invalid("Explicit entity-property-template upgrade requires a supported schema-8 manifest.")
+        }
+        let databaseURL = root.appendingPathComponent(VaultManifest.sqliteDatabasePath)
+        guard databaseURL.standardizedFileURL.resolvingSymlinksInPath() == databaseURL.standardizedFileURL,
+              FileManager.default.fileExists(atPath: databaseURL.path) else {
+            throw VaultError.invalid("The canonical SQLite database is missing or unsafe.")
+        }
+        let database: SQLiteBlockStore
+        if expectedVaultRevision != nil {
+            database = try storageProvider.makeBlockStore(url: databaseURL, sessionLease: sessionLease, accessGate: accessGate, manifest: manifest)
+        } else {
+            var upgraded = manifest
+            upgraded.storage?.schemaVersion = SQLiteBlockStore.templateSchemaVersion
+            upgraded.storage?.requiredCapabilities = SQLiteBlockStore.templateRequiredCapabilities
+            database = try storageProvider.makeBlockStore(url: databaseURL, sessionLease: sessionLease, accessGate: accessGate, manifest: upgraded)
+        }
+        do {
+            try await database.validateCanonicalLogicalIntegrity()
+            if let expectedVaultRevision { _ = try await database.upgradeEntityPropertyTemplateSchema(expectedVaultRevision: expectedVaultRevision) }
+            try await database.validateCanonicalLogicalIntegrity()
+            try await database.checkpoint()
+            manifest.storage?.schemaVersion = SQLiteBlockStore.templateSchemaVersion
+            manifest.storage?.requiredCapabilities = SQLiteBlockStore.templateRequiredCapabilities
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try store.write(encoder.encode(manifest), at: "vault.json", condition: .replace(expected: original))
+            try await database.close()
+            return manifest
+        } catch {
+            try? await database.close()
+            throw error
+        }
+    }
+
     /// Run after save/recovery quiescence, while the session still has authority.
     public func checkpointPageStorage() async throws {
         try await sqliteBlockStore.checkpoint()

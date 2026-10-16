@@ -178,7 +178,7 @@ extension FileVaultRepository {
             throw VaultError.invalid("Canonical staging requires an empty owned directory.")
         }
         for directory in ["Sources", "Conflicts"] { try store.createDirectory(at: directory) }
-        let database = try storageProvider.makeRelationshipStagingStore(url: root.appendingPathComponent(VaultManifest.sqliteDatabasePath), vaultID: id)
+        let database = try storageProvider.makeTemplateStagingStore(url: root.appendingPathComponent(VaultManifest.sqliteDatabasePath), vaultID: id)
         do {
             _ = try await database.canonicalVaultRevision()
             try await database.checkpoint()

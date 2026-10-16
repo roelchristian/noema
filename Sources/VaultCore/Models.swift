@@ -4,15 +4,15 @@ import CryptoKit
 public enum EntryKind: String, Codable, Sendable { case wiki, source }
 public struct VaultCanonicalStorageDeclaration: Codable, Sendable, Equatable {
     public var mode: String = "sqliteBlocks"
-    public var schemaVersion: Int = 8
+    public var schemaVersion: Int = 9
     public var database: String = "blocks.sqlite"
     public var localOnly: Bool = true
-    public var requiredCapabilities: [String] = SQLiteBlockStore.relationshipRequiredCapabilities
+    public var requiredCapabilities: [String] = SQLiteBlockStore.templateRequiredCapabilities
     public var unknownFields: [String: JSONValue] = [:]
     public init() {}
     public var isSupported: Bool {
         mode == "sqliteBlocks" && database == "blocks.sqlite" && localOnly &&
-        ((schemaVersion == SQLiteBlockStore.organisationSchemaVersion && requiredCapabilities == SQLiteBlockStore.organisationRequiredCapabilities) || (schemaVersion == SQLiteBlockStore.propertySchemaVersion && requiredCapabilities == SQLiteBlockStore.propertyRequiredCapabilities) || (schemaVersion == SQLiteBlockStore.relationshipSchemaVersion && requiredCapabilities == SQLiteBlockStore.relationshipRequiredCapabilities))
+        ((schemaVersion == SQLiteBlockStore.organisationSchemaVersion && requiredCapabilities == SQLiteBlockStore.organisationRequiredCapabilities) || (schemaVersion == SQLiteBlockStore.propertySchemaVersion && requiredCapabilities == SQLiteBlockStore.propertyRequiredCapabilities) || (schemaVersion == SQLiteBlockStore.relationshipSchemaVersion && requiredCapabilities == SQLiteBlockStore.relationshipRequiredCapabilities) || (schemaVersion == SQLiteBlockStore.templateSchemaVersion && requiredCapabilities == SQLiteBlockStore.templateRequiredCapabilities))
     }
     private static let keys: Set<String> = ["mode", "schemaVersion", "database", "localOnly", "requiredCapabilities"]
     public init(from decoder: any Decoder) throws {

@@ -30,7 +30,7 @@ extension FileVaultRepository {
             throw VaultError.invalid("The staging folder changed before initialization.")
         }
         let manifest = VaultManifest()
-        let database = try storageProvider.makeRelationshipStagingStore(
+        let database = try storageProvider.makeTemplateStagingStore(
             url: root.appendingPathComponent(VaultManifest.sqliteDatabasePath), vaultID: manifest.id)
         do {
             try await database.validateIntegrity()
