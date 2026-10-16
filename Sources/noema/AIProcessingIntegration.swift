@@ -25,8 +25,10 @@ private struct AppAIProcessingPolicy: AIProcessingPolicyResolver {
 }
 
 extension AppModel {
-    func bindAIProcessing(repository: FileVaultRepository, lease: VaultSessionLease) async {
-        suspendAIProcessing()
+    func bindAIProcessing(repository: FileVaultRepository, lease: VaultSessionLease, preservingEmbeddingApproval: Bool = false, reconcileSemanticIndex: Bool = true) async {
+        guard sessionManager.accessGate.currentLease == lease, self.repository === repository,
+              repository.sessionLease == lease, repository.manifest.id == lease.vaultID else { return }
+        suspendAIProcessing(preservingEmbeddingApproval: preservingEmbeddingApproval)
         let bindingID = aiProcessingBindingID
         await aiProcessingRetirementTask?.value
         let gate = sessionManager.accessGate
@@ -52,7 +54,9 @@ extension AppModel {
             let ledgerURL = localStorageRoot?.appendingPathComponent("Noema/Processing/work.sqlite") ?? SQLiteAIWorkLedger.defaultURL
             let ledger = try await Task.detached { try SQLiteAIWorkLedger(url: ledgerURL) }.value
             guard aiProcessingBindingID == bindingID, gate.currentLease == lease else { return }
-            let coordinator = AIProcessingCoordinator(ledger: ledger, gate: gate, policy: policy)
+            aiProcessingLedger = ledger
+            let coordinator = AIProcessingCoordinator(ledger: ledger, gate: gate, policy: policy,
+                clock: aiProcessingClock, configuration: aiProcessingConfiguration)
             let (events, continuation) = AsyncStream<AIContentChange>.makeStream()
             // Buffer commits during baseline admission, then consume them in commit order.
             await repository.setAIContentChangeHandler { _ = continuation.yield($0) }
@@ -60,6 +64,30 @@ extension AppModel {
             guard aiProcessingBindingID == bindingID, gate.currentLease == lease else {
                 continuation.finish()
                 return
+            }
+            // Cleanup is explicit: the coordinator intentionally never executes removed jobs.
+            // Projection failures are isolated from canonical saving and all other processors.
+            if let semanticIndex {
+                do {
+                    if reconcileSemanticIndex {
+                        try await semanticIndex.reconcile(current: inventory, validatePublication: {
+                            try gate.validate(lease: lease, targetRoot: lease.root, targetVaultID: lease.vaultID, operation: "embedding.reconcile")
+                        })
+                    }
+                    if let runtimeValidation,
+                       let processor = try await makeEmbeddingProcessor(repository: repository, lease: lease, bindingID: bindingID,
+                           validatePolicy: runtimeValidation) {
+                        await coordinator.register(processor)
+                    }
+                } catch {
+                    if aiProcessingBindingID == bindingID, gate.currentLease == lease {
+                        semanticPublicationAuthority?.invalidate(); semanticPublicationAuthority = nil
+                        semanticIndexIssue = "Semantic indexing unavailable. Editing and lexical search remain available."
+                    }
+                }
+            }
+            guard aiProcessingBindingID == bindingID, gate.currentLease == lease else {
+                continuation.finish(); return
             }
             try await coordinator.bind(lease: lease, inventory: inventory)
             guard aiProcessingBindingID == bindingID, gate.currentLease == lease else {
@@ -69,9 +97,29 @@ extension AppModel {
             }
             aiProcessingFailure = nil
             aiProcessingCoordinator = coordinator
+            if let runtimeValidation {
+                do {
+                    try await restoreEmbeddingBackfills(repository: repository, lease: lease, coordinator: coordinator,
+                        ledger: ledger, inventory: inventory, validatePolicy: runtimeValidation)
+                } catch {
+                    guard aiProcessingBindingID == bindingID, gate.currentLease == lease else { return }
+                    semanticIndexIssue = "Historical indexing needs attention. New and changed content can still be indexed."
+                }
+            }
             aiProcessingEventTask = Task { [weak self] in
                 for await change in events {
                     guard !Task.isCancelled else { break }
+                    if change.kind == .removed, let self, self.aiProcessingBindingID == bindingID,
+                       let semantic = self.semanticIndex {
+                        do {
+                            let canonicalRevision = change.revision.components(separatedBy: ":").first ?? ""
+                            let identity = try EmbeddingEntityIdentity(vaultID: lease.vaultID, entityKind: change.entityKind,
+                                entityID: change.entityID, revision: canonicalRevision)
+                            try await semantic.removeEntity(identity: identity, validatePublication: {
+                                try gate.validate(lease: lease, targetRoot: lease.root, targetVaultID: lease.vaultID, operation: "embedding.remove")
+                            })
+                        } catch { self.semanticIndexIssue = "Semantic cleanup needs a retry. Editing and lexical search remain available." }
+                    }
                     do { try await coordinator.receive(change) }
                     catch {
                         guard let self, self.aiProcessingBindingID == bindingID else { break }
@@ -97,6 +145,14 @@ extension AppModel {
         if descriptor.provider == .onDevice {
             return policy.provider == .onDevice ? .allowed : .blocked(.authority)
         }
+        if descriptor.identifier == EmbeddingWorkProcessor.identifier {
+            guard policy.provider == .openAI else { return .blocked(.authority) }
+            return externalAIService.embeddingDocumentsApproved(for: lease) ? .allowed : .blocked(.consent)
+        }
+        if descriptor.identifier.hasPrefix(EmbeddingWorkProcessor.identifier + ".history.") {
+            guard policy.provider == .openAI else { return .blocked(.authority) }
+            return embeddingHistoricalAuthority(descriptor, lease: lease)
+        }
         guard policy.provider == .openAI, let cloud = snapshot as? any AICloudProcessingSnapshot else { return .blocked(.unsupported) }
         do {
             let request = try cloud.automaticRequest(lease: lease)
@@ -108,10 +164,12 @@ extension AppModel {
         } catch { return .blocked(.consent) }
     }
 
-    func suspendAIProcessing() {
+    func suspendAIProcessing(preservingEmbeddingApproval: Bool = false) {
+        invalidateEmbeddingBackfills()
+        aiProcessingLedger = nil
         semanticPublicationAuthority?.invalidate()
         semanticPublicationAuthority = nil
-        externalAIService.invalidateEmbeddingRequests()
+        externalAIService.invalidateEmbeddingRequests(preservingDocumentApproval: preservingEmbeddingApproval)
         aiProcessingBindingID = UUID()
         aiProcessingEventTask?.cancel()
         aiProcessingEventTask = nil

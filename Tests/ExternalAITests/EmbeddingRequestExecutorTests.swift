@@ -18,7 +18,11 @@ private final class ExecutorKeychain: ExternalAIKeychain, Sendable {
 private actor ExecutorTransport: OpenAITransporting {
     private(set) var requests: [URLRequest] = []
     private let afterDispatch: (@Sendable () -> Void)?
-    init(afterDispatch: (@Sendable () -> Void)? = nil) { self.afterDispatch = afterDispatch }
+    private var statusCode: Int
+    init(afterDispatch: (@Sendable () -> Void)? = nil, statusCode: Int = 200) {
+        self.afterDispatch = afterDispatch; self.statusCode = statusCode
+    }
+    func setStatus(_ value: Int) { statusCode = value }
     func perform(_ request: URLRequest, beforeDispatch: @Sendable (@Sendable () -> Void) throws -> Void,
                  didDispatch: @escaping @Sendable () -> Void) async throws -> OpenAIHTTPResponse {
         let dispatched = Mutex(false)
@@ -30,7 +34,7 @@ private actor ExecutorTransport: OpenAITransporting {
         let body = try JSONSerialization.data(withJSONObject: ["object": "list", "model": "text-embedding-3-small",
             "data": [["object": "embedding", "index": 0, "embedding": Array(repeating: 0.01, count: 1_536)]],
             "usage": ["prompt_tokens": 7, "total_tokens": 7]])
-        return OpenAIHTTPResponse(statusCode: 200, body: body)
+        return OpenAIHTTPResponse(statusCode: statusCode, body: body)
     }
 }
 
@@ -232,4 +236,79 @@ private func embeddingExecutorRevocationAfterFinalValidationRejectsSemanticCommi
     await #expect(throws: (any Error).self) { try await publication.value }
     #expect(try await index.records(generation: generation) == [record])
     try await store.close()
+}
+
+@Test func embeddingProcessingAdapterPreservesTransientProviderFailureAfterBoundedRetry() async throws {
+    let transport = ExecutorTransport(statusCode: 503)
+    let f = try await ExecutorFixture(transport: transport)
+    let scope = EmbeddingProcessingScope.document(try f.entity())
+    let executor = f.executor { try ExternalAIEmbeddingConsent(approvingDocument: $0) }
+    await #expect(throws: AIWorkFailure.transient) {
+        try await executor.embedForProcessing(["committed original paragraph"], scope: scope, context: f.context(scope))
+    }
+    // The provider's bounded exact-request retry stays inside one capability. The scheduler
+    // receives a transient failure rather than a permanent malformed-result diagnosis.
+    #expect(await transport.requests.count == 2)
+    #expect(!Task.isCancelled)
+}
+
+@Test func embeddingProcessingAdapterBlocksExpiredAuthorityAndPreservesPublicationValidation() async throws {
+    let f = try await ExecutorFixture()
+    let scope = EmbeddingProcessingScope.document(try f.entity())
+    let authorizer = ExternalAIEmbeddingAuthorizer(credentialBroker: f.broker, sessionManager: f.sessions,
+        accessGate: f.gate, transport: f.transport, allowsAuthentication: false)
+    let executor = EmbeddingRequestExecutor(authorizer: authorizer, publicationAuthority: f.publicationAuthority,
+        approveRequest: { try ExternalAIEmbeddingConsent(approvingDocument: $0) })
+    _ = try await f.sessions.authorize(ExternalAIVaultAuthority(session: f.session))
+    f.clock.advance()
+    await #expect(throws: AIWorkFailure.authority) {
+        try await executor.embedForProcessing(["committed original paragraph"], scope: scope, context: f.context(scope))
+    }
+    #expect(await f.transport.requests.isEmpty)
+    // Explicit fresh authorization permits a new exact request; background dispatch never
+    // renews authority itself. Completed evidence still rejects expiry before publication.
+    _ = try await f.sessions.authorize(ExternalAIVaultAuthority(session: f.session))
+    let completed = try await executor.embedForProcessing(["committed original paragraph"], scope: scope,
+        context: f.context(scope))
+    try completed.validatePublication()
+    f.clock.advance()
+    #expect(throws: AIWorkFailure.authority) { try completed.validatePublication() }
+    #expect(await f.transport.requests.count == 1)
+}
+
+@Test func embeddingProcessingAdapterKeepsRefusedConsentBlockedWithoutDispatch() async throws {
+    let f = try await ExecutorFixture()
+    let scope = EmbeddingProcessingScope.document(try f.entity())
+    let executor = f.executor { _ in throw ExternalAIError.consentRequired }
+    await #expect(throws: AIWorkFailure.consent) {
+        try await executor.embedForProcessing(["committed original paragraph"], scope: scope, context: f.context(scope))
+    }
+    #expect(await f.transport.requests.isEmpty)
+}
+
+@Test func embeddingProcessingAdapterAllowsExplicitCredentialRecoveryAfterProviderRejection() async throws {
+    let transport = ExecutorTransport(statusCode: 401)
+    let f = try await ExecutorFixture(transport: transport)
+    let scope = EmbeddingProcessingScope.document(try f.entity())
+    let authorizer = ExternalAIEmbeddingAuthorizer(credentialBroker: f.broker, sessionManager: f.sessions,
+        accessGate: f.gate, transport: transport, allowsAuthentication: false)
+    let executor = EmbeddingRequestExecutor(authorizer: authorizer, publicationAuthority: f.publicationAuthority,
+        approveRequest: { try ExternalAIEmbeddingConsent(approvingDocument: $0) })
+    _ = try await f.sessions.authorize(ExternalAIVaultAuthority(session: f.session))
+    await #expect(throws: AIWorkFailure.authority) {
+        try await executor.embedForProcessing(["committed original paragraph"], scope: scope, context: f.context(scope))
+    }
+    #expect(await transport.requests.count == 1) // Settings failures never retry automatically.
+    try await f.broker.store("synthetic-replacement-embedding-key")
+    await transport.setStatus(200)
+    await #expect(throws: AIWorkFailure.authority) {
+        try await executor.embedForProcessing(["committed original paragraph"], scope: scope, context: f.context(scope))
+    }
+    #expect(await transport.requests.count == 1)
+    _ = try await f.sessions.authorize(ExternalAIVaultAuthority(session: f.session))
+    let completed = try await executor.embedForProcessing(["committed original paragraph"], scope: scope,
+        context: f.context(scope))
+    try completed.validatePublication()
+    #expect(completed.vectors.count == 1)
+    #expect(await transport.requests.count == 2)
 }

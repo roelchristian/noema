@@ -398,7 +398,7 @@ remain open under [validation](../validation.md).
 | SQLiteBlockStore | Canonical format 2 page metadata and block records in the selected local vault database. Actor-owned SQLite connections, transactions and SQLite-managed journal/WAL/SHM are the page-storage exception; manifest, conversion backup/publication and source bytes use the selected `VaultContentStore`. Production construction passes the captured gate/lease. Canonical transactions use WAL with synchronous=FULL; temporary SQLite data stays in memory. Save acknowledges only a successful COMMIT, rechecking cancellation and publication authority first. Quiescence checkpoints before lock; a failed checkpoint aborts the transition. Connection retirement uses sqlite3_close after a successful lifecycle transition, including revoked leases. SQLite owns WAL/SHM cleanup and crash recovery; never unlink journals. Explicit backup reserves a new external destination and uses sqlite3_backup, including committed WAL content; failed snapshots are unacknowledged retained output. Reject cloud-backed conversion roots and never treat preserved Markdown as simultaneous page authority. |
 | SQLiteSearchIndex | App-local directory creation, SQLite connection and SQLite-managed WAL/SHM. Derived data is rebuildable; connection ownership remains in the index actor. |
 | SQLiteAIActivityStore | App-local `<Application Support URL>/Noema/Activity/activity.sqlite` directory creation, actor-owned SQLite connection and SQLite-managed WAL/SHM. Metadata-only operation history spans vaults and survives search-index rebuilding. Production construction uses the fixed application-support location; injected URLs are for disposable tests. It never reads or writes canonical vault bytes. |
-| SQLiteAIWorkLedger | App-local `<Application Support URL>/Noema/Processing/work.sqlite` directory creation, actor-owned SQLite and SQLite-managed WAL/SHM. Schema 1 stores bounded typed work metadata and revision checkpoints only. Production uses this fixed application-support location; injected URLs are isolated test seams. It never stores documents, prompts, credentials or runtime authority, and never owns canonical bytes. Reopening recovers interrupted scheduled/running rows for fresh authorization. |
+| SQLiteAIWorkLedger | App-local `<Application Support URL>/Noema/Processing/work.sqlite` directory creation, actor-owned SQLite and SQLite-managed WAL/SHM. Schema 3 stores bounded typed work metadata, revision checkpoints, historical batch/member inventory and processor pause intent only. Production uses this fixed application-support location; injected URLs are isolated test seams. It never stores documents, prompts, credentials or runtime authority, and never owns canonical bytes. Reopening recovers interrupted scheduled/running rows for fresh authorization. |
 | AIActivityExportDestination | Native Save panel selects a new external JSON destination before writing. Resolve existing parent symlinks and compare directory resource identities (including case aliases), rejecting captured/current vault roots and known recovery/activity roots; use `withoutOverwriting` to refuse all existing files and concurrent replacements. No canonical mutation, directory creation or cleanup deletion. Interrupted external writes may leave a partial new export; this is not canonical publication. |
 | Preferences/capabilities | UserDefaults, theme/editor/macro settings and selected-folder bookmarks use OS-managed persistence outside the portable vault. Sidebar recent access uses a versioned UserDefaults key per manifest UUID and stores at most ten typed page/source/block identifiers in MRU order, without titles, excerpts, bodies or paths. AppModel restores identifiers only after vault admission establishes the manifest identity and selected repository, resolves presentation from loaded records, and owns successful-access updates and pruning. Metadata-only source-table focus does not count as content access. Lock/close clears its in-memory history, selection and presentation; unlock/reopen restores only the admitted vault’s bounded history, while preferences remain local plaintext metadata. |
 | Native preview and observation | SourceReader gives Quick Look a disposable app-local snapshot of adapter/checksum-validated imported bytes. It never gives Quick Look an imported canonical URL; linked previews retain external URLs. Reader close, errors and vault switching request snapshot removal. SourcePreviewDirectory confines copies to an application-owned temporary root; a versioned marker and kernel reader lease establish cleanup eligibility. Launch examines at most 128 immediate children and removes only owned, unlocked direct files, without recursive deletion. Filesystem failure or interrupted cleanup can leave copies for later launch attempts; this is not secure deletion. Finder reveal passes URLs to NSWorkspace. These platform services remain outside the adapter. |
@@ -433,9 +433,25 @@ authority synchronously. Completed cloud request evidence retains issuer/session
 registrations through the derived COMMIT; session retirement propagates credential changes.
 Application/service provider/model/credential/consent mutations synchronously retire these
 same authorities before changing state. Construction and exact request approval are distinct;
-no enrichment grant is used. No embedding processor is installed by this prerequisite. No filesystem or SQL-open exception is
-added. External direct SQLite writers and atomic linked-file/SQLite publication remain
+no enrichment grant is used. The incremental processor routes committed Page/Source snapshots through this path;
+AppModel registers it before scheduler binding. Schema-3 semantic document completion
+and separate partial checkpoints are derived metadata committed atomically with vectors.
+Partial metadata preserves full work revision/fingerprint and never claims completion;
+final publication retires it, including for empty documents. Exact schema-1/2 migration
+validates retained vectors/completions without inventing progress. Every per-batch
+checkpoint uses the same canonical permit and authority barrier as final publication.
+Explicit all-generation entity cleanup and metadata-only startup reconciliation remove
+only derived rows. No new filesystem/SQL-open exception or canonical schema is added. External direct SQLite writers and atomic linked-file/SQLite publication remain
 outside the guarantee. Failed canonical transactions conservatively retire permits.
+
+The existing `SQLiteAIWorkLedger` also owns historical batch/member metadata and
+schema-3 processor pause intent on its same application-local connection. It stores exact scope/generation and
+revision inventory plus stable job identities and finite outcomes; it stores no original
+text, keys, consent tokens or transport capabilities. Every metadata read checks SQL-key/
+payload agreement. Batch/member publication is transactional and idempotent; live snapshot
+reads do not reset active jobs. This is technical admission metadata, not a second
+scheduler or canonical authority. Constructor/path routing and byte-I/O exceptions stay
+unchanged; execution remains with `AIProcessingCoordinator` and fresh request authority.
 
 ## Enforcement and review
 
