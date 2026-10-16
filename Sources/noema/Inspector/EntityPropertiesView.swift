@@ -113,13 +113,11 @@ struct EntityPropertiesView: View {
     @ViewBuilder private func suggestions(_ snapshot: EntityPropertiesSnapshot) -> some View {
         let definitions = EntityPropertyTemplatePresentation.suggestions(snapshot)
         VStack(alignment: .leading, spacing: NoemaSpacing.xs) {
-            HStack {
-                Text("Suggested for this type").font(NoemaTypography.interfaceEmphasis)
-                Spacer()
-                Button("Manage templates") { managingTemplates = true }
-                    .accessibilityLabel("Manage property templates for entity types")
-                    .disabled(!model.canEditSemanticTarget || busy)
-            }
+            Text("Suggested for this type").font(NoemaTypography.interfaceEmphasis)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Manage templates") { managingTemplates = true }
+                .accessibilityLabel("Manage property templates for entity types")
+                .disabled(!model.canEditSemanticTarget || busy)
             Text("Optional properties · choose one to enter a value.")
                 .font(NoemaTypography.metadata).foregroundStyle(.secondary)
             if definitions.isEmpty {
