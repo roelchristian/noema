@@ -5,6 +5,12 @@ import Foundation
 // Choose targets while evaluating the manifest, before SwiftPM plans compilation.
 let environment = ProcessInfo.processInfo.environment
 let tier = environment["NOEMA_TEST_TIER"] ?? "extended"
+let entityBridgeNative = environment["NOEMA_ENTITY_BRIDGE_NATIVE"] == "1"
+let entityBridgePhase = environment["NOEMA_ENTITY_BRIDGE_PHASE"] ?? "4"
+if entityBridgeNative {
+    precondition(tier == "compile", "native entity bridge acceptance requires compile tier")
+    precondition(["4", "5"].contains(entityBridgePhase), "entity bridge phase must be 4 or 5")
+}
 let domainTests = ["VaultCoreTests", "NativeAuthenticationTests", "ExternalAITests", "NoemaBrandTests"]
 let functionalTests = domainTests + ["NoemaEditorTests"]
 let requestedTests = (environment["NOEMA_TEST_TARGETS"] ?? "").split(separator: ",").map(String.init)
@@ -56,12 +62,23 @@ let validationTargets: [Target] = selectedTests.map { name in
 }
 let selectedProducts: [Product] = needsApplication
     ? [.executable(name: "noema", targets: ["noema"])] : []
-let allTargets: [Target] = coreTargets + applicationTargets + validationTargets
+let nativeBridgeTargets: [Target] = entityBridgeNative ? [
+    .executableTarget(name: "NoemaEntityBridgeQA", dependencies: ["noema", "VaultCore", "NoemaBrand"],
+        path: "validation/entity-bridge",
+        swiftSettings: entityBridgePhase == "5" ? [.define("ENT05_SOURCE_LINKS")] : [],
+        // SwiftPM imports executable modules but does not link their objects into
+        // another executable. The QA script supplies app objects excluding NoemaApp.
+        linkerSettings: environment["NOEMA_ENTITY_BRIDGE_OBJECTS"].map {
+            [.unsafeFlags(["-Xlinker", "-filelist", "-Xlinker", $0])]
+        } ?? [])
+] : []
+let nativeBridgeProducts: [Product] = entityBridgeNative ? [.executable(name: "NoemaEntityBridgeQA", targets: ["NoemaEntityBridgeQA"])] : []
+let allTargets: [Target] = coreTargets + applicationTargets + validationTargets + nativeBridgeTargets
 
 let package = Package(
     name: "noema",
     platforms: [.macOS("26.0")],
-    products: selectedProducts,
+    products: selectedProducts + nativeBridgeProducts,
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.7.0"),
         .package(url: "https://github.com/jpsim/Yams.git", from: "6.2.2")
