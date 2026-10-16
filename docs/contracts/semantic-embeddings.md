@@ -130,9 +130,12 @@ The request schema follows the [official embeddings API](https://developers.open
 
 OpenAI inputs are conservatively capped at one item and 8,000 UTF-8 bytes. The recorded
 revision identifies the API/input contract; provider aliases do not expose immutable
-weight revisions. Numeric usage is exposed separately from vector validation; activity
-history integration is pending, and requestCount represents logical attempts rather
-than a provider billing guarantee. No live API-key test or cost estimate is claimed.
+weight revisions. Numeric usage is exposed separately from vector validation and
+recorded through the existing activity recorder. Dispatch count observes actual
+transport resumes; validated response count and reported tokens are separate. Retry
+attempts without usage keep coverage partial or unknown, and embedding cost is unknown.
+Each activity row describes an exact passage/query provider request, not document,
+historical-batch or search-publication completion. No live API-key test is claimed.
 
 SEM.EMB04A provides the canonical-owned in-process publication barrier used by the
 embedding processor. Every `SQLiteBlockStore` constructor resolves a shared database
@@ -203,8 +206,9 @@ remain mandatory before reuse, and retained partial rows never certify completio
 final revalidation. Native regression validation requires the explicit serial Extended
 procedure in the [development guide](../development.md#validation-tiers-and-test-discipline)
 because concurrent editor fixtures can reset a shared math renderer. Passing functional
-tests do not establish device/accessibility or crash-durability acceptance. Numeric usage activity remains later integration work; queue presentation must preserve
-unknown usage and cost, and no cancellation implies zero provider usage.
+tests do not establish device/accessibility or crash-durability acceptance. Activity
+and queue presentation preserve unknown usage and cost; cancellation does not imply
+zero provider usage.
 
 ## Explicit historical batch foundations (SEM.EMB05)
 
@@ -337,3 +341,16 @@ publication validation through presentation. Cloud query approval is fresh for e
 input, query identity, lease and model, never inherited from document/history approval.
 Native input is passed unchanged to provider language/byte/word validation. Query text
 and vectors never enter persistent ledgers, activity or diagnostics.
+
+
+Keywords remains the initial toolbar mode. Meaning requires Search/Return submission,
+shows lexical results during inference and exposes separate exact-query OpenAI approval.
+Decline, cancellation and semantic failure retain same-query keyword results. Quick Open
+never embeds. All projects one principal Page/Source per fused identity, including
+Pages discovered only through a tagged-block lexical match; the matching current block
+remains a navigation target. Semantic Blocks scope displays a current tagged block for
+each principal Page. Group ordering is a stable subsequence of fused ranking.
+Navigation rehydrates semantic evidence, checks current revision/original bytes and
+uses a navigation nonce plus existing completion tickets, so a delayed click cannot
+replace a newer selection. Invalid passage evidence falls back to opening the current
+document without claiming precise passage navigation.
