@@ -10,10 +10,14 @@ public struct EmbeddingDocumentCompletion: Sendable, Equatable {
     public let identity: EmbeddingEntityIdentity
     public let workRevision: String
     public let inputFingerprint: String
+    /// SHA256 of actual original bytes for Sources; nil denotes legacy/unavailable evidence.
+    public let originalFingerprint: String?
     public let chunkCount: Int
-    public init(identity: EmbeddingEntityIdentity, workRevision: String, inputFingerprint: String, chunkCount: Int) {
+    public init(identity: EmbeddingEntityIdentity, workRevision: String, inputFingerprint: String,
+                chunkCount: Int, originalFingerprint: String? = nil) {
         self.identity = identity; self.workRevision = workRevision
         self.inputFingerprint = inputFingerprint; self.chunkCount = chunkCount
+        self.originalFingerprint = originalFingerprint
     }
 }
 
@@ -389,6 +393,11 @@ public actor SQLiteEmbeddingIndex: EmbeddingIndexStorage {
     }
 
     private static func validateCompletion(_ value: EmbeddingDocumentCompletion) throws {
+        if let original = value.originalFingerprint {
+            guard original.utf8.count == 64, original.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                throw EmbeddingIndexError.invalidMetadata
+            }
+        }
         guard value.chunkCount >= 0,
               [value.workRevision, value.inputFingerprint].allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.utf8.count <= 512 }) else {
             throw EmbeddingIndexError.invalidMetadata
@@ -495,14 +504,17 @@ private struct CompletionMetadata: Codable {
     let entityKind: AIEntityKind
     let entityID: UUID
     let revision: String, workRevision: String, inputFingerprint: String
+    let originalFingerprint: String?
     let chunkCount: Int
     init(_ value: EmbeddingDocumentCompletion) {
         entityKind = value.identity.entityKind; entityID = value.identity.entityID
         revision = value.identity.revision; workRevision = value.workRevision
         inputFingerprint = value.inputFingerprint; chunkCount = value.chunkCount
+        originalFingerprint = value.originalFingerprint
     }
     func value(vaultID: UUID) throws -> EmbeddingDocumentCompletion {
-        EmbeddingDocumentCompletion(identity: try EmbeddingEntityIdentity(vaultID: vaultID, entityKind: entityKind, entityID: entityID, revision: revision), workRevision: workRevision, inputFingerprint: inputFingerprint, chunkCount: chunkCount)
+        EmbeddingDocumentCompletion(identity: try EmbeddingEntityIdentity(vaultID: vaultID, entityKind: entityKind, entityID: entityID, revision: revision), workRevision: workRevision, inputFingerprint: inputFingerprint, chunkCount: chunkCount,
+            originalFingerprint: originalFingerprint)
     }
 }
 private struct ChunkMetadata: Codable {
@@ -522,6 +534,53 @@ public struct EmbeddingSimilarityMatch: Sendable, Equatable {
 }
 
 public extension SQLiteEmbeddingIndex {
+    /// Cheap preflight only: completion/count evidence may make query execution useful.
+    /// Reads no vector BLOBs and grants neither query authority nor proof of coverage/currentness.
+    /// Full retrieval still validates every chunk/vector/fingerprint before producing evidence.
+    func hasCompletedSearchDocuments(generation: EmbeddingIndexGeneration, kind: AIEntityKind? = nil,
+                                     isCurrent: @Sendable (EmbeddingDocumentCompletion) throws -> Bool,
+                                     validateQuery: @Sendable () throws -> Void) throws -> Bool {
+        func check() throws { try validate(generation); try validateQuery() }
+        try check(); try Self.execute(db, "BEGIN")
+        do {
+            let generationRows = try Self.rows(db,
+                "SELECT CASE WHEN length(metadata)<=16384 THEN metadata END FROM embedding_generations WHERE id=?",
+                [Data(generation.id.uuidString.utf8)])
+            guard let metadata = generationRows.first?.first else {
+                try check(); try Self.execute(db, "COMMIT"); try check()
+                return false
+            }
+            guard try JSONDecoder().decode(GenerationMetadata.self, from: metadata).value() == generation else {
+                throw EmbeddingContractError.incompatibleGeneration
+            }
+            var statement: OpaquePointer?
+            let sql = "SELECT CASE WHEN length(entity_kind)<=128 THEN entity_kind END,CASE WHEN length(entity_id)<=128 THEN entity_id END,chunk_count,CASE WHEN length(metadata)<=16384 THEN metadata END FROM embedding_documents d WHERE generation_id=? AND chunk_count>0 AND NOT EXISTS (SELECT 1 FROM embedding_checkpoints p WHERE p.generation_id=d.generation_id AND p.entity_kind=d.entity_kind AND p.entity_id=d.entity_id)" +
+                (kind == nil ? "" : " AND entity_kind=?") + " ORDER BY entity_kind,entity_id"
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+                throw EmbeddingIndexError.unavailable
+            }
+            defer { sqlite3_finalize(statement) }
+            try Self.bindSearchText(statement, 1, generation.id.uuidString)
+            if let kind { try Self.bindSearchText(statement, 2, kind.rawValue) }
+            var found = false
+            while true {
+                try check()
+                let status = sqlite3_step(statement)
+                if status == SQLITE_DONE { break }
+                guard status == SQLITE_ROW else { throw EmbeddingIndexError.unavailable }
+                guard let completion = try? Self.searchCompletion(statement, generation: generation) else { continue }
+                let counts = try Self.rows(db,
+                    "SELECT COUNT(*) FROM embedding_chunks WHERE generation_id=? AND entity_kind=? AND entity_id=?",
+                    [Data(generation.id.uuidString.utf8), Data(completion.identity.entityKind.rawValue.utf8), Data(completion.identity.entityID.uuidString.utf8)])
+                guard counts.first?.first == Data(String(completion.chunkCount).utf8), try isCurrent(completion) else { continue }
+                try check(); found = true
+                break
+            }
+            try check(); try Self.execute(db, "COMMIT"); try check()
+            return found
+        } catch { try? Self.execute(db, "ROLLBACK"); throw error }
+    }
+
     /// Bounded, completed-document retrieval within one exact vector space. Completion is
     /// technical evidence only: callers must revalidate canonical revisions and Source bytes
     /// before presentation. The synchronous predicate must not reenter this actor/connection.
@@ -553,7 +612,7 @@ public extension SQLiteEmbeddingIndex {
             // Both cursors use the existing generation/kind/entity primary-key prefix.
             // Never use rows(), records(), or completedDocuments() for these unbounded sets.
             var documents: OpaquePointer?
-            let sql = "SELECT CASE WHEN length(entity_kind)<=128 THEN entity_kind END,CASE WHEN length(entity_id)<=128 THEN entity_id END,chunk_count,CASE WHEN length(metadata)<=16384 THEN metadata END FROM embedding_documents WHERE generation_id=?" +
+            let sql = "SELECT CASE WHEN length(entity_kind)<=128 THEN entity_kind END,CASE WHEN length(entity_id)<=128 THEN entity_id END,chunk_count,CASE WHEN length(metadata)<=16384 THEN metadata END FROM embedding_documents d WHERE generation_id=? AND NOT EXISTS (SELECT 1 FROM embedding_checkpoints p WHERE p.generation_id=d.generation_id AND p.entity_kind=d.entity_kind AND p.entity_id=d.entity_id)" +
                 (kind == nil ? "" : " AND entity_kind=?") + " ORDER BY entity_kind,entity_id"
             guard sqlite3_prepare_v2(db, sql, -1, &documents, nil) == SQLITE_OK, let documents else {
                 throw EmbeddingIndexError.unavailable

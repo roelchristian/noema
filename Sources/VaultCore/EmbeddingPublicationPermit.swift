@@ -77,6 +77,28 @@ public final class EmbeddingPublicationPermit: @unchecked Sendable {
         guard domain.epoch == epoch else { throw EmbeddingContractError.authorityDenied }
         return try authority.withPublication(body)
     }
+    /// Atomically guards assignment of evidence from several canonical documents. Every
+    /// permit must belong to one live vault/domain epoch. Empty input grants no publication.
+    /// Lock order remains one canonical domain lock, then one authority lock. The body must
+    /// be short and synchronous, and must not call the gate, await, or reacquire authority.
+    public static func withPublication<T>(permits: [EmbeddingPublicationPermit],
+                                          authority: EmbeddingPublicationAuthority,
+                                          _ body: () throws -> T) throws -> T {
+        try Task.checkCancellation()
+        guard let first = permits.first, let vaultID = first.vaultID, let lease = authority.lease,
+              lease.vaultID == vaultID, authority.generation?.vaultID == vaultID,
+              first.domain === EmbeddingPublicationDomain.shared(for: lease.root.appendingPathComponent(VaultManifest.sqliteDatabasePath)),
+              permits.allSatisfy({ $0.domain === first.domain && $0.vaultID == vaultID }) else {
+            throw EmbeddingContractError.authorityDenied
+        }
+        first.domain.lock.lock(); defer { first.domain.lock.unlock() }
+        try Task.checkCancellation()
+        guard permits.allSatisfy({ $0.epoch == first.domain.epoch }) else {
+            throw EmbeddingContractError.authorityDenied
+        }
+        return try authority.withPublication(body)
+    }
+
     func matches(_ identity: EmbeddingEntityIdentity) -> Bool {
         identity.entityID == entityID && identity.entityKind == kind && identity.vaultID == vaultID &&
             identity.revision == revision.token.base64EncodedString()
