@@ -302,8 +302,10 @@ new SQL needs the storage author/reviewer procedure before acceptance.
 Application composition selects `semanticProcessingGeneration` only when its full
 model, vault and chunker match the live provider. It never chooses a newest UUID or
 compares vectors across generations. No compatible generation means lexical fallback,
-not implicit generation creation or provider substitution. Compatibility and completed
-work do not establish complete current-vault coverage.
+not implicit generation creation or provider substitution. Pre-query eligibility must
+use a lightweight completed-document metadata check; existing materializing completion
+and record readers are not an eligibility probe. Compatibility and completed work do
+not establish complete current-vault coverage.
 
 Pure ranking receives explicit lexical ordinals and current title/alias evidence,
 plus validated semantic candidates. It aggregates by kind/UUID, uses RRF with k=60
@@ -317,7 +319,13 @@ original checks after bounded retrieval and before presentation. Source completi
 canonical revision alone cannot establish current original bytes. Reconstruct excerpts
 only from current bounded canonical inputs and omit stale locators. Final publication
 uses existing search revision/completion-ticket and lease checks plus canonical-issued
-revision protection. Linked originals cannot be transactionally coupled to SQLite.
+revision protection. Query composition retains the exact query publication authority,
+not an unrelated barrier, through synchronous result assignment. Gate-bearing query
+validators run before entering canonical protection. The current single-permit helper
+acquires a nonrecursive authority lock: do not nest it for multiple results using the
+same authority. Multi-document presentation requires a reviewed common-domain check
+of all permits with exactly one authority acquisition before UI integration acceptance.
+Linked originals cannot be transactionally coupled to SQLite.
 
 Transient query execution reuses `EmbeddingExecutionContext` with `.query` scope and
 existing native provider or issuer-bound `EmbeddingRequestExecutor`. It retains final
