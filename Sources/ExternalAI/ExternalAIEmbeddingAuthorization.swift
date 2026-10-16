@@ -307,3 +307,49 @@ private final class EmbeddingRequestCancellation: Sendable {
     }
     func cancel() { state.withLock { $0.cancelled = true; $0.task?.cancel() } }
 }
+
+/// Registration lifetime spans the completed response through conditional storage publication.
+/// It contains no durable authority; releasing it only detaches revocation callbacks.
+final class EmbeddingPublicationLifetime: Sendable {
+    private let unregister: @Sendable () -> Void
+    init(unregister: @escaping @Sendable () -> Void) { self.unregister = unregister }
+    deinit { unregister() }
+}
+
+extension ExternalAIEmbeddingAuthorizer {
+    /// Bridge native-session, credential and issuer revocation to the same short storage
+    /// barrier used at COMMIT. Registration precedes final live-state validation, so
+    /// revocation between response completion and registration cannot escape detection.
+    /// Call outside canonical/publication locks; callbacks only retire the storage barrier.
+    nonisolated func retainPublicationAuthority(for authorization: ExternalAIEmbeddingAuthorization,
+                                                authority: EmbeddingPublicationAuthority) throws -> EmbeddingPublicationLifetime {
+        let sessionRegistration: UUID
+        do {
+            sessionRegistration = try sessions.registerCancellation(for: authorization.capability) {
+                authority.invalidate()
+            }
+        } catch {
+            authority.invalidate()
+            throw sanitized(error)
+        }
+        let epochRegistration = UUID()
+        do {
+            try epoch.withLock {
+                guard $0.valid, $0.id == authorization.epoch, authorization.issuer == issuer else {
+                    throw ExternalAIError.authorizationRevoked
+                }
+                $0.cancellations[epochRegistration] = { authority.invalidate() }
+            }
+            try validatePublication(authorization)
+        } catch {
+            authority.invalidate()
+            sessions.unregisterCancellation(sessionRegistration)
+            _ = epoch.withLock { $0.cancellations.removeValue(forKey: epochRegistration) }
+            throw sanitized(error)
+        }
+        return EmbeddingPublicationLifetime { [self] in
+            sessions.unregisterCancellation(sessionRegistration)
+            _ = epoch.withLock { $0.cancellations.removeValue(forKey: epochRegistration) }
+        }
+    }
+}

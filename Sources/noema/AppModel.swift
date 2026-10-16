@@ -222,6 +222,7 @@ struct AISuggestion: Identifiable, Sendable {
     var rows: [LibraryRow] = []
     var knowledgeFamily: KnowledgeLibraryFamily = .blocks
     var knowledgeCatalogue: KnowledgeCatalogueSnapshot?
+    @ObservationIgnored var entityPropertySearchDidLoad: (@MainActor () async -> Void)?
     var knowledgeCatalogueLoading = false
     var knowledgeCatalogueError: String?
     @ObservationIgnored private var knowledgeCatalogueTicket = UUID()
@@ -645,6 +646,7 @@ struct AISuggestion: Identifiable, Sendable {
     private var sourceCommandPanel: NSOpenPanel?
     var isLifecycleActionInProgress: Bool { lifecycleAction != nil }
     @ObservationIgnored private nonisolated(unsafe) var sessionObservationTask: Task<Void, Never>?
+    @ObservationIgnored var semanticPublicationAuthority: EmbeddingPublicationAuthority?
     @ObservationIgnored var aiProcessingCoordinator: AIProcessingCoordinator?
     @ObservationIgnored var aiProcessingBindingID = UUID()
     @ObservationIgnored var aiProcessingEventTask: Task<Void, Never>?
@@ -1164,6 +1166,8 @@ struct AISuggestion: Identifiable, Sendable {
     func setVaultAIConfiguration(_ configuration: VaultAIConfiguration, for lease: VaultSessionLease) throws {
         guard vaultAIConfiguration(for: lease) != nil else { throw ExternalAIError.staleSession }
         // Commit local intent and revoke all runtime work before fallible Keychain I/O.
+        semanticPublicationAuthority?.invalidate()
+        externalAIService.invalidateEmbeddingRequests()
         try vaultAIConfigurationStore.set(configuration, lease: lease, gate: sessionManager.accessGate)
         suspendAIProcessing()
         if let repository {
@@ -4548,5 +4552,87 @@ extension AppModel {
     func catalogueAnnotationPreview(_ annotation: SemanticAnnotation) async throws -> [SemanticOccurrencePreview] {
         guard canOperateOnLoadedContent, let repository else { throw VaultError.unavailable("The vault is unavailable.") }
         return try await semanticOccurrencePreviews([annotation], store: repository.sqliteBlockStore)
+    }
+}
+
+extension AppModel {
+    func loadEntityProperties(entityID: UUID) async throws -> EntityPropertiesSnapshot {
+        guard canOperateOnLoadedContent, !isLocked, let repository else { throw VaultError.unavailable("The vault is unavailable.") }
+        let sessionID = sessionState.sessionID, store = repository.sqliteBlockStore
+        let vault = try await store.canonicalVaultRevision()
+        let entity = try await store.loadEntity(id: entityID)
+        let definitions = try await store.listPropertyDefinitions(includeRetired: true)
+        let values = try await store.loadPropertyValues(entityID: entityID)
+        let relationships: [EntityPropertyRelationshipSnapshot]
+        var supportsRelationships = true
+        do { relationships = try await store.queryPropertyRelationships(entityID: entityID) }
+        catch KnowledgeStoreError.transitionRequired {
+            // Schema 7 owns scalar properties already; relationship support is an
+            // explicit later upgrade and must not hide those existing values.
+            relationships = []; supportsRelationships = false
+        }
+        var entities = try await store.knowledgeCatalogue().entities
+        let endpointIDs = Set(relationships.flatMap { [$0.relationship.sourceID, $0.relationship.targetID] }).union([entityID])
+        for id in endpointIDs where !entities.contains(where: { $0.entity.id == id }) {
+            entities.append(try await store.loadEntity(id: id))
+        }
+        guard canOperateOnLoadedContent, !isLocked, sessionState.sessionID == sessionID,
+              try await store.canonicalVaultRevision() == vault else { throw KnowledgeStoreError.staleRevision }
+        return .init(entity: entity, definitions: definitions, values: values, relationships: relationships,
+                     entities: entities, vaultRevision: vault, sessionID: sessionID, supportsRelationships: supportsRelationships)
+    }
+
+    /// The UI supplies its selection lifetime check; the store still checks all canonical revisions.
+    func editEntityProperties(_ edit: EntityPropertyEdit, snapshot: EntityPropertiesSnapshot,
+                              isCurrent: @MainActor () -> Bool) async throws {
+        guard canEditSemanticTarget, !isLocked, let repository, snapshot.entity.entity.lifecycle == .live,
+              sessionState.sessionID == snapshot.sessionID, isCurrent(), !Task.isCancelled else {
+            throw VaultError.unavailable("This entity selection is no longer editable.")
+        }
+        let store = repository.sqliteBlockStore
+        switch edit {
+        case .saveValues(let assignments):
+            _ = try await store.savePropertyValues(entityID: snapshot.entity.entity.id, assignments: assignments,
+                expectedEntity: snapshot.values.entityRevision, expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+        case .createDefinition(let label, let kind, let cardinality, let presentation):
+            let key = EntityPropertyDefinition.normalize(label)
+            guard !snapshot.definitions.contains(where: { $0.definition.normalizedKey == key }) else {
+                throw VaultError.invalid("A property with this name already exists. Reuse the existing definition.")
+            }
+            let definition = try EntityPropertyDefinition(vaultID: repository.manifest.id, label: label,
+                kind: kind, cardinality: cardinality, displayOrder: snapshot.definitions.count, presentation: presentation)
+            _ = try await store.savePropertyDefinition(definition, expected: nil, expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+        case .saveDefinition(var definition):
+            guard let previous = snapshot.definitions.first(where: { $0.definition.id == definition.id }) else { throw KnowledgeStoreError.notFound(definition.id) }
+            definition.updatedAt = Date()
+            _ = try await store.savePropertyDefinition(definition, expected: previous.revision, expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+        case .addRelationship(let definitionID, let otherID, let incoming):
+            guard let other = snapshot.entities.first(where: { $0.entity.id == otherID }) else { throw KnowledgeStoreError.notFound(otherID) }
+            _ = try await store.createPropertyRelationship(definitionID: definitionID, entityID: snapshot.entity.entity.id,
+                otherEntityID: otherID, direction: incoming ? .incoming : .outgoing, expectedEntity: snapshot.entity.revision,
+                expectedOther: other.revision, expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+        case .removeRelationship(let edge):
+            guard let source = snapshot.entities.first(where: { $0.entity.id == edge.relationship.sourceID }),
+                  let target = snapshot.entities.first(where: { $0.entity.id == edge.relationship.targetID }) else {
+                throw VaultError.unavailable("A relationship endpoint is unavailable. Refresh before editing.")
+            }
+            _ = try await store.removePropertyRelationship(id: edge.relationship.id, expected: edge.revision,
+                expectedSource: source.revision, expectedTarget: target.revision,
+                expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+        }
+    }
+}
+
+
+extension AppModel {
+    func searchEntityPropertyTargets(query: String) async throws -> [KnowledgeEntitySnapshot] {
+        guard canOperateOnLoadedContent, !isLocked, let repository else { throw VaultError.unavailable("The vault is unavailable.") }
+        let sessionID = sessionState.sessionID
+        let values = try await repository.sqliteBlockStore.searchEntities(query: query, limit: 100)
+        if let entityPropertySearchDidLoad { await entityPropertySearchDidLoad() }
+        guard canOperateOnLoadedContent, !isLocked, sessionState.sessionID == sessionID, !Task.isCancelled else {
+            throw VaultError.unavailable("The entity search is no longer current.")
+        }
+        return values.filter { $0.entity.lifecycle == .live }
     }
 }

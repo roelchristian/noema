@@ -34,6 +34,7 @@ final class ExternalAIService {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let consentSession = OpenAIConsentSession()
     @ObservationIgnored private var consentObservation: UUID?
+    @ObservationIgnored private var embeddingInvalidators: [UUID: @Sendable () -> Void] = [:]
     @ObservationIgnored private var beforeAutomaticProviderAvailability: (@MainActor () async -> Void)?
 
     init(accessGate: VaultAccessGate, defaults: UserDefaults = .standard, activityRecorder: AIActivityRecorder = .shared) {
@@ -76,6 +77,37 @@ final class ExternalAIService {
     deinit {
         if let debugObservation { accessGate.removeSessionInvalidator(debugObservation) }
         if let consentObservation { accessGate.removeSessionInvalidator(consentObservation) }
+    }
+
+    /// Embedding authority is independent of summary grants and is retired before any mutation.
+    @discardableResult
+    func registerEmbeddingInvalidator(_ invalidate: @escaping @Sendable () -> Void) -> UUID {
+        let id = UUID(); embeddingInvalidators[id] = invalidate; return id
+    }
+    func removeEmbeddingInvalidator(_ id: UUID) { embeddingInvalidators.removeValue(forKey: id) }
+    func invalidateEmbeddingRequests() {
+        let handlers = Array(embeddingInvalidators.values)
+        embeddingInvalidators.removeAll()
+        for invalidate in handlers { invalidate() }
+    }
+
+    /// Construction grants no submission permission. The caller supplies an embedding-specific
+    /// explicit request approval flow; enrichment/vault-processing grants are never consulted.
+    func makeEmbeddingRequestExecutor(lease: VaultSessionLease, generation: EmbeddingIndexGeneration,
+        approveRequest: @escaping @Sendable (ExternalAIEmbeddingRequest) async throws -> ExternalAIEmbeddingConsent
+    ) throws -> EmbeddingRequestExecutor {
+        let policy = VaultAIConfigurationStore(defaults: defaults).configuration(for: lease.vaultID)
+        guard policy.enabled, policy.provider == .openAI, accessGate.currentLease == lease,
+              generation.model == embeddingConfiguration.embeddingDescriptor else {
+            throw ExternalAIError.consentRequired
+        }
+        let authority = try EmbeddingPublicationAuthority(accessGate: accessGate, lease: lease, generation: generation)
+        let authorizer = ExternalAIEmbeddingAuthorizer(credentialBroker: credentialBroker,
+            sessionManager: sessionManager, accessGate: accessGate, configuration: embeddingConfiguration)
+        let executor = EmbeddingRequestExecutor(authorizer: authorizer, publicationAuthority: authority,
+            approveRequest: approveRequest)
+        registerEmbeddingInvalidator { [weak executor] in executor?.invalidate() }
+        return executor
     }
 
     var canEnableDebugMode: Bool { _ = debugRefresh; return accessGate.currentState.phase == .open }
@@ -162,6 +194,7 @@ final class ExternalAIService {
 
     func revokeVaultProcessing(for lease: VaultSessionLease) throws {
         guard accessGate.currentLease == lease else { throw ExternalAIError.staleSession }
+        invalidateEmbeddingRequests()
         invalidateVaultGrantStatus()
         try vaultGrants.revoke(for: lease)
     }
@@ -212,6 +245,7 @@ final class ExternalAIService {
     }
 
     func setConsentPolicy(_ policy: OpenAIConsentPolicy) {
+        invalidateEmbeddingRequests()
         guard consentPolicy != policy else { return }
         clearConsentSession()
         policy.persist(in: defaults)
@@ -295,6 +329,7 @@ final class ExternalAIService {
         let selected = try OpenAIEmbeddingConfiguration(modelIdentifier: modelIdentifier)
         guard selected != embeddingConfiguration else { return }
         let encoded = try JSONEncoder().encode(selected)
+        invalidateEmbeddingRequests()
         defaults.set(encoded, forKey: Self.embeddingPreferenceKey)
         embeddingConfiguration = selected
     }
@@ -302,7 +337,7 @@ final class ExternalAIService {
     func refreshStatus() async {
         debugRefresh += 1
         let status = await credentialBroker.status()
-        if status != credentialStatus { invalidateVaultGrantStatus() }
+        if status != credentialStatus { invalidateEmbeddingRequests(); invalidateVaultGrantStatus() }
         credentialStatus = status
         authorizationState = await sessionManager.state
     }
@@ -330,6 +365,7 @@ final class ExternalAIService {
 
     private func applyConfiguration(_ selected: ExternalAIModelConfiguration) {
         guard selected != configuration else { return }
+        invalidateEmbeddingRequests()
         // Revoke first so requests using the old gateway cannot dispatch or publish results.
         vaultGrants.invalidateRuntime()
         sessionManager.revoke()
@@ -344,6 +380,7 @@ final class ExternalAIService {
     /// Entry is transient: the view clears its masked field before invoking this operation.
     /// No entered key is retained in application state, preferences or error text.
     func saveCredential(_ enteredKey: String, thirtyDayPolicy: Bool) async throws {
+        invalidateEmbeddingRequests()
         invalidateVaultGrantStatus()
         sessionManager.revoke(reason: .credentialChanged)
         clearConsentSession()
@@ -355,6 +392,7 @@ final class ExternalAIService {
     }
 
     func removeCredential() async throws {
+        invalidateEmbeddingRequests()
         invalidateVaultGrantStatus()
         sessionManager.revoke(reason: .credentialChanged)
         clearConsentSession()
@@ -370,6 +408,7 @@ final class ExternalAIService {
     }
 
     func revokeAuthorization() {
+        invalidateEmbeddingRequests()
         vaultGrants.invalidateRuntime()
         sessionManager.revoke()
         clearConsentSession()
