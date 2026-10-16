@@ -14,6 +14,8 @@ struct EntityPropertyTemplateManager: View {
     @State private var busy = false
     @State private var error: String?
     @State private var saved = false
+    @State private var focusRequest = UUID()
+    @FocusState private var focusedControl: EntityPropertyTemplateFocus?
 
     init(model: AppModel, initialTypeKey: String) {
         self.model = model
@@ -21,13 +23,18 @@ struct EntityPropertyTemplateManager: View {
     }
 
     private var identity: String { "\(typeKey):\(String(describing: model.sessionState.sessionID)):\(model.isLocked)" }
-    private var editable: Bool { configuration != nil && model.canEditSemanticTarget && !model.isLocked && !busy }
+    private var displayed: EntityPropertyTemplateConfiguration? {
+        guard let configuration, EntityPropertyTemplatePresentation.canDisplay(configuration, typeKey: typeKey,
+            sessionID: model.sessionState.sessionID, isLocked: model.isLocked) else { return nil }
+        return configuration
+    }
+    private var editable: Bool { displayed != nil && model.canEditSemanticTarget && !busy }
     private var hasChanges: Bool {
-        guard let configuration else { return false }
+        guard let configuration = displayed else { return false }
         return definitionIDs != configuration.template.definitionIDs || configuration.template.revision == nil
     }
     private var availableDefinitions: [EntityPropertyDefinitionSnapshot] {
-        configuration?.definitions.filter { !$0.definition.isRetired && !definitionIDs.contains($0.definition.id) } ?? []
+        displayed?.definitions.filter { !$0.definition.isRetired && !definitionIDs.contains($0.definition.id) } ?? []
     }
 
     var body: some View {
@@ -39,11 +46,11 @@ struct EntityPropertyTemplateManager: View {
                 ForEach(KnowledgeEntityType.initial, id: \.key) { type in
                     Text(KnowledgeTypePresentation.label(for: type.key)).tag(type.key)
                 }
-            }.disabled(busy)
+            }.disabled(busy).focused($focusedControl, equals: .typePicker)
             Text("Switching type discards unsaved template changes.").font(.caption).foregroundStyle(.secondary)
             if busy { ProgressView().controlSize(.small).accessibilityLabel("Loading or saving property template") }
-            if let error { Text(error).font(.caption).foregroundStyle(.secondary).accessibilityLabel("Template error: \(error)") }
-            if configuration != nil && !model.isLocked {
+            if !model.isLocked, let error { status("Template error: \(error)") }
+            if displayed != nil {
                 Text("\(definitionIDs.count) of \(EntityPropertyTemplateSnapshot.maximumEntries) suggestions")
                     .font(NoemaTypography.metadata).foregroundStyle(.secondary)
                 ScrollView {
@@ -60,16 +67,18 @@ struct EntityPropertyTemplateManager: View {
                         Text("\(value.definition.label) · \(value.definition.kind.rawValue)").tag(value.definition.id as UUID?)
                     }
                 }.disabled(!editable || definitionIDs.count >= EntityPropertyTemplateSnapshot.maximumEntries)
+                    .focused($focusedControl, equals: .definitionPicker)
                 Button("Add suggestion") {
                     guard editable, let id = selectedDefinitionID,
                           availableDefinitions.contains(where: { $0.definition.id == id }),
                           definitionIDs.count < EntityPropertyTemplateSnapshot.maximumEntries else { return }
                     definitionIDs.append(id); selectedDefinitionID = nil; saved = false
+                    restoreFocus(definitionIDs.count < EntityPropertyTemplateSnapshot.maximumEntries ? .definitionPicker : .typePicker)
                 }.disabled(!editable || selectedDefinitionID == nil || definitionIDs.count >= EntityPropertyTemplateSnapshot.maximumEntries)
                 if availableDefinitions.isEmpty {
                     Text("Create additional reusable properties in the entity property editor.").font(.caption).foregroundStyle(.secondary)
                 }
-                if saved { Text("Template saved.").font(.caption).foregroundStyle(.secondary) }
+                if saved { status("Template saved.") }
             }
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -87,7 +96,7 @@ struct EntityPropertyTemplateManager: View {
     }
 
     private func templateRow(id: UUID, index: Int) -> some View {
-        let definition = configuration?.definitions.first { $0.definition.id == id }?.definition
+        let definition = displayed?.definitions.first { $0.definition.id == id }?.definition
         let label = definition?.label ?? "Unavailable property"
         return HStack {
             VStack(alignment: .leading, spacing: 2) {
@@ -99,24 +108,56 @@ struct EntityPropertyTemplateManager: View {
             Spacer()
             Button { move(index, offset: -1) } label: { Image(systemName: "arrow.up") }
                 .accessibilityLabel("Move \(label) earlier").disabled(!editable || index == 0)
+                .focused($focusedControl, equals: .earlier(id))
             Button { move(index, offset: 1) } label: { Image(systemName: "arrow.down") }
                 .accessibilityLabel("Move \(label) later").disabled(!editable || index == definitionIDs.count - 1)
+                .focused($focusedControl, equals: .later(id))
             Button(role: .destructive) {
                 guard editable else { return }
+                let destination = EntityPropertyTemplateFocus.afterRemoving(id, from: definitionIDs)
                 definitionIDs.removeAll { $0 == id }; saved = false
+                restoreFocus(destination)
             } label: { Image(systemName: "minus.circle") }
                 .accessibilityLabel("Remove \(label) suggestion").disabled(!editable)
+                .focused($focusedControl, equals: .remove(id))
         }
     }
 
     private func move(_ index: Int, offset: Int) {
         guard editable, definitionIDs.indices.contains(index), definitionIDs.indices.contains(index + offset) else { return }
+        let id = definitionIDs[index]
         definitionIDs.swapAt(index, index + offset); saved = false
+        let newIndex = index + offset
+        // Keep the same action until it reaches its disabled boundary; never move
+        // keyboard focus from a reorder action onto the destructive Remove action.
+        if offset < 0, newIndex > 0 { restoreFocus(.earlier(id)) }
+        else if offset > 0, newIndex < definitionIDs.count - 1 { restoreFocus(.later(id)) }
+        else { restoreFocus(.typePicker) }
+    }
+
+    private func status(_ message: String) -> some View {
+        Text(message).font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel(message)
+            .focusable().focused($focusedControl, equals: .status)
+    }
+
+    /// Restore a surviving native control only while its original selection is current.
+    private func restoreFocus(_ destination: EntityPropertyTemplateFocus) {
+        let token = request, type = typeKey, sessionID = model.sessionState.sessionID
+        let focusID = UUID()
+        focusRequest = focusID
+        focusedControl = nil
+        Task { @MainActor in
+            await Task.yield()
+            guard current(token, type: type, sessionID: sessionID), focusRequest == focusID else { return }
+            focusedControl = destination
+        }
     }
 
     private func invalidate() {
         request = UUID(); configuration = nil; definitionIDs = []; selectedDefinitionID = nil
-        error = nil; saved = false; busy = false
+        error = nil; saved = false; busy = false; focusedControl = nil; focusRequest = UUID()
     }
 
     private func current(_ token: UUID, type: String, sessionID: UUID?) -> Bool {
@@ -133,6 +174,7 @@ struct EntityPropertyTemplateManager: View {
             let loaded = try await model.loadPropertyTemplateConfiguration(typeKey: type)
             guard current(token, type: type, sessionID: sessionID) else { return false }
             configuration = loaded; definitionIDs = loaded.template.definitionIDs; busy = false
+            restoreFocus(.typePicker)
             return true
         } catch {
             guard current(token, type: type, sessionID: sessionID) else { return false }
@@ -140,12 +182,13 @@ struct EntityPropertyTemplateManager: View {
                 self.error = "Property templates require an explicit vault upgrade. Existing properties remain available."
             } else { self.error = error.localizedDescription }
             busy = false
+            restoreFocus(.status)
             return false
         }
     }
 
     private func save() async {
-        guard editable, let configuration else { return }
+        guard editable, let configuration = displayed else { return }
         let token = request, type = typeKey, sessionID = model.sessionState.sessionID
         let ids = definitionIDs
         busy = true; error = nil; saved = false
@@ -153,10 +196,10 @@ struct EntityPropertyTemplateManager: View {
             try await model.savePropertyTemplateConfiguration(ids, snapshot: configuration,
                 isCurrent: { current(token, type: type, sessionID: sessionID) })
             guard current(token, type: type, sessionID: sessionID) else { return }
-            if await reload() { saved = true }
+            if await reload() { saved = true; restoreFocus(.status) }
         } catch {
             guard current(token, type: type, sessionID: sessionID) else { return }
-            self.error = error.localizedDescription; busy = false
+            self.error = error.localizedDescription; busy = false; restoreFocus(.status)
         }
     }
 }

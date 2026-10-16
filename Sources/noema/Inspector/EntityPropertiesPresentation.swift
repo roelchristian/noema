@@ -15,6 +15,9 @@ struct EntityPropertiesSnapshot: Sendable {
 
 enum EntityPropertiesPresentation {
     static let previewLimit = 4
+    static func canDisplay(_ snapshot: EntityPropertiesSnapshot, entityID: UUID, sessionID: UUID?, isLocked: Bool) -> Bool {
+        !isLocked && snapshot.entity.entity.id == entityID && snapshot.values.entityID == entityID && snapshot.sessionID == sessionID
+    }
     static func matchingDefinitions(_ definitions: [EntityPropertyDefinitionSnapshot], query: String) -> [EntityPropertyDefinitionSnapshot] {
         let key = EntityPropertyDefinition.normalize(query)
         return definitions.filter { !$0.definition.isRetired && (key.isEmpty || $0.definition.normalizedKey.contains(key)) }
@@ -29,6 +32,17 @@ enum EntityPropertiesPresentation {
         case .date(let date): date.encodedDate
         case .boolean(let flag): flag ? "Yes" : "No"
         }
+    }
+}
+
+enum EntityPropertyTemplateFocus: Hashable {
+    case typePicker, definitionPicker, earlier(UUID), later(UUID), remove(UUID), status
+
+    static func afterRemoving(_ id: UUID, from ids: [UUID]) -> Self {
+        guard let index = ids.firstIndex(of: id) else { return .definitionPicker }
+        let remaining = ids.filter { $0 != id }
+        guard !remaining.isEmpty else { return .definitionPicker }
+        return .remove(remaining[min(index, remaining.count - 1)])
     }
 }
 
@@ -87,6 +101,9 @@ struct EntityPropertyTemplateConfiguration: Sendable {
 
 enum EntityPropertyTemplatePresentation {
     static let previewLimit = 4
+    static func canDisplay(_ configuration: EntityPropertyTemplateConfiguration, typeKey: String, sessionID: UUID?, isLocked: Bool) -> Bool {
+        !isLocked && configuration.template.typeKey == typeKey && configuration.sessionID == sessionID
+    }
 
     /// Suggestions never fabricate an assignment. Incoming facts belong to their source.
     static func suggestions(_ snapshot: EntityPropertiesSnapshot) -> [EntityPropertyDefinitionSnapshot] {

@@ -42,10 +42,15 @@ struct EntityPropertiesView: View {
         _snapshot = State(initialValue: previewSnapshot)
     }
 
-    private var definition: EntityPropertyDefinition? {
-        snapshot?.definitions.first { $0.definition.id == selectedDefinition }?.definition
+    private var displayed: EntityPropertiesSnapshot? {
+        guard let snapshot, EntityPropertiesPresentation.canDisplay(snapshot, entityID: entityID,
+            sessionID: model.sessionState.sessionID, isLocked: model.isLocked) else { return nil }
+        return snapshot
     }
-    private var editable: Bool { model.canEditSemanticTarget && snapshot?.entity.entity.lifecycle == .live && !busy }
+    private var definition: EntityPropertyDefinition? {
+        displayed?.definitions.first { $0.definition.id == selectedDefinition }?.definition
+    }
+    private var editable: Bool { model.canEditSemanticTarget && displayed?.entity.entity.lifecycle == .live && !busy }
     private var taskIdentity: String { "\(entityID):\(String(describing: model.sessionState.sessionID)):\(model.isLocked)" }
 
     var body: some View {
@@ -54,11 +59,13 @@ struct EntityPropertiesView: View {
                 Text("Entity Properties").font(NoemaTypography.interfaceEmphasis)
                 Spacer()
                 Button { Task { await reload() } } label: { Image(systemName: "arrow.clockwise") }
-                    .help("Refresh entity properties").disabled(busy)
+                    .help("Refresh entity properties").disabled(busy || model.isLocked)
             }
             if busy { ProgressView().controlSize(.small) }
-            if let error { Text(error).font(NoemaTypography.metadata).foregroundStyle(.secondary) }
-            if let snapshot {
+            if !model.isLocked, request.entityID == entityID, request.sessionID == model.sessionState.sessionID, let error {
+                Text(error).font(NoemaTypography.metadata).foregroundStyle(.secondary)
+            }
+            if let snapshot = displayed {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(snapshot.entity.entity.label).font(NoemaTypography.interfaceEmphasis)
                     Text("\(KnowledgeTypePresentation.label(for: snapshot.entity.entity.typeKey)) · \(snapshot.entity.entity.id.uuidString.prefix(8))")
@@ -80,16 +87,20 @@ struct EntityPropertiesView: View {
                 }
             } else if !busy && error == nil { Text("Properties unavailable.").font(.caption) }
         }
-        .task(id: taskIdentity) { active = true; if previewSnapshot == nil { await reload() } }
-        .task(id: entityQuery + taskIdentity) { if previewSnapshot == nil { await searchEntities() } }
-        .onDisappear { active = false; request = .init(entityID: entityID, sessionID: model.sessionState.sessionID) }
-        .sheet(isPresented: Binding(get: { relatedEntityID != nil }, set: { if !$0 { relatedEntityID = nil } })) {
-            if let relatedEntityID { AnyView(EntityPropertiesDetail(model: model, entityID: relatedEntityID)) }
-        }
-        .sheet(isPresented: $managingTemplates, onDismiss: {
+        .task { active = true; if let previewSnapshot { snapshot = previewSnapshot } else { await reload() } }
+        .task(id: entityQuery) { if previewSnapshot == nil { await searchEntities() } }
+        .onChange(of: taskIdentity) {
+            invalidateSelection()
             if previewSnapshot == nil { Task { await reload() } }
+        }
+        .onDisappear { active = false; invalidateSelection() }
+        .sheet(isPresented: Binding(get: { relatedEntityID != nil && displayed != nil }, set: { if !$0 { relatedEntityID = nil } })) {
+            if let relatedEntityID, displayed != nil { AnyView(EntityPropertiesDetail(model: model, entityID: relatedEntityID)) }
+        }
+        .sheet(isPresented: Binding(get: { managingTemplates && displayed != nil }, set: { managingTemplates = $0 }), onDismiss: {
+            if active, !model.isLocked, previewSnapshot == nil { Task { await reload() } }
         }) {
-            if let snapshot {
+            if let snapshot = displayed {
                 EntityPropertyTemplateManager(model: model, initialTypeKey: snapshot.entity.entity.typeKey)
             }
         }
@@ -104,7 +115,7 @@ struct EntityPropertiesView: View {
         }
         .confirmationDialog("Remove this property value?", isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }), titleVisibility: .visible) {
             Button("Remove value", role: .destructive) {
-                if let edit = pendingRemoval { Task { await perform(edit) } }; pendingRemoval = nil
+                if let edit = pendingRemoval { schedule(edit) }; pendingRemoval = nil
             }
             Button("Cancel", role: .cancel) { pendingRemoval = nil }
         }
@@ -225,7 +236,7 @@ struct EntityPropertiesView: View {
                         var edited = definition
                         edited.label = definitionLabel
                         if definition.kind == .entityReference { edited.presentation = relationshipPresentation }
-                        Task { await perform(.saveDefinition(edited)) }
+                        schedule(.saveDefinition(edited))
                     }
                 }
                 if definition.isRetired { Text("Retired property · existing values may be removed.").font(.caption) }
@@ -249,7 +260,7 @@ struct EntityPropertiesView: View {
                     if searchingEntities { ProgressView().controlSize(.mini) }
                     Text("Searches canonical entities · up to 100 matches").font(.caption).foregroundStyle(.secondary)
                     Button("Add relationship") {
-                        if let otherID { Task { await perform(.addRelationship(definitionID: definition.id, otherID: otherID, incoming: incoming)) } }
+                        if let otherID { schedule(.addRelationship(definitionID: definition.id, otherID: otherID, incoming: incoming)) }
                     }.disabled(otherID == nil || definition.isRetired)
                 } else {
                     if definition.kind == .boolean { Toggle("Value", isOn: $boolean).focused($suggestedInputFocused) }
@@ -262,7 +273,7 @@ struct EntityPropertiesView: View {
                 Picker("New property kind", selection: $kind) { ForEach(EntityPropertyKind.allCases.filter { snapshot.supportsRelationships || $0 != .entityReference }, id: \.self) { Text($0.rawValue).tag($0) } }
                 Toggle("Allow multiple values", isOn: $many)
                 if kind == .entityReference { relationshipMetadata }
-                Button("Create reusable property") { Task { await perform(.createDefinition(label: query, kind: kind, cardinality: many ? .many : .one, presentation: kind == .entityReference ? relationshipPresentation : nil)) } }
+                Button("Create reusable property") { schedule(.createDefinition(label: query, kind: kind, cardinality: many ? .many : .one, presentation: kind == .entityReference ? relationshipPresentation : nil)) }
             }
         }.padding(.top, NoemaSpacing.xs)
     }
@@ -301,10 +312,11 @@ struct EntityPropertiesView: View {
                 if definition.cardinality == .one { assignments.removeAll { $0.definitionID == definition.id } }
                 assignments.append(.init(id: existingID ?? UUID(), definitionID: definition.id, value: value))
             }
-            Task { await perform(.saveValues(assignments)) }
+            schedule(.saveValues(assignments))
         } catch { self.error = error.localizedDescription }
     }
     private func searchEntities() async {
+        guard displayed != nil else { return }
         let queryID = UUID(), token = request
         entitySearchRequest = queryID; searchingEntities = true
         do {
@@ -321,10 +333,10 @@ struct EntityPropertiesView: View {
         } catch { if current(token), entitySearchRequest == queryID { self.error = error.localizedDescription; searchingEntities = false } }
     }
     private func reload() async {
-        let token = EntityPropertiesRequestToken(entityID: entityID, sessionID: model.sessionState.sessionID)
-        request = token; snapshot = nil; error = nil; busy = true
-        editingAssignment = nil; selectedDefinition = nil; expanded = false; pendingRemoval = nil; draftRequest = UUID()
-        suggestionsExpanded = false; suggestedInputFocused = false
+        invalidateSelection()
+        guard active, !model.isLocked else { return }
+        let token = request
+        busy = true
         do {
             let result = try await model.loadEntityProperties(entityID: entityID)
             guard current(token) else { return }
@@ -340,12 +352,24 @@ struct EntityPropertiesView: View {
             }
         }
     }
+    private func invalidateSelection() {
+        request = .init(entityID: entityID, sessionID: model.sessionState.sessionID)
+        snapshot = nil; entityChoices = []; entitySearchRequest = UUID(); searchingEntities = false
+        error = nil; busy = false; pendingRemoval = nil; relatedEntityID = nil; managingTemplates = false
+        editingAssignment = nil; selectedDefinition = nil; draftRequest = UUID()
+        expanded = false; suggestionsExpanded = false; editorExpanded = false; suggestedInputFocused = false
+        query = ""; entityQuery = ""; text = ""; boolean = false; otherID = nil; incoming = false
+        kind = .text; many = false; inverseLabel = ""; definitionLabel = ""; sourceTypeKeys = []; targetTypeKeys = []
+    }
     private func current(_ token: EntityPropertiesRequestToken) -> Bool {
         active && !Task.isCancelled && token.matches(request: request, entityID: entityID, sessionID: model.sessionState.sessionID) && !model.isLocked
     }
-    private func perform(_ edit: EntityPropertyEdit) async {
-        guard let snapshot, !busy else { return }
+    private func schedule(_ edit: EntityPropertyEdit) {
         let token = request
+        Task { await perform(edit, token: token) }
+    }
+    private func perform(_ edit: EntityPropertyEdit, token: EntityPropertiesRequestToken) async {
+        guard current(token), let snapshot = displayed, !busy else { return }
         busy = true; error = nil
         do {
             try await model.editEntityProperties(edit, snapshot: snapshot, isCurrent: { current(token) })
