@@ -204,4 +204,19 @@ struct SemanticQueryExecutionAdapterTests {
         try await store.close()
     }
 
+    @Test @MainActor func semanticQueryAdapterRejectsWrongChunkerBeforeRegisteringAuthority() async throws {
+        let f = try await QueryAdapterFixture()
+        defer { f.defaults.removePersistentDomain(forName: f.domain) }
+        let generation = try EmbeddingIndexGeneration(vaultID: f.session.vaultID,
+            model: f.generation.model, chunkingVersion: "unsupported-query-chunker")
+        let baseline = f.service.embeddingInvalidatorCount
+        #expect(throws: EmbeddingContractError.incompatibleGeneration) {
+            try SemanticQueryExecutionAdapter.cloud(service: f.service, lease: f.session.lease,
+                generation: generation, accessGate: f.gate, validateCurrentAuthority: {}, approveQuery: { _ in true })
+        }
+        #expect(f.service.embeddingInvalidatorCount == baseline)
+        #expect(f.auth.calls.withLock { $0 } == 0)
+        #expect(await f.transport.calls == 0)
+    }
+
 }
