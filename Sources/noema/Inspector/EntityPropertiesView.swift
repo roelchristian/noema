@@ -15,6 +15,9 @@ struct EntityPropertiesView: View {
     @State private var busy = false
     @State private var error: String?
     @State private var expanded = false
+    @State private var suggestionsExpanded = false
+    @State private var managingTemplates = false
+    @FocusState private var suggestedInputFocused: Bool
     @State private var editorExpanded = false
     @State private var query = ""
     @State private var selectedDefinition: UUID?
@@ -65,6 +68,7 @@ struct EntityPropertiesView: View {
                 if snapshot.values.assignments.isEmpty && snapshot.relationships.isEmpty {
                     Text("No properties set.").font(NoemaTypography.metadata).foregroundStyle(.secondary)
                 }
+                if snapshot.template != nil { suggestions(snapshot) }
                 DisclosureGroup("Add or edit property", isExpanded: $editorExpanded) {
                     editor(snapshot).disabled(!editable)
                 }
@@ -82,6 +86,13 @@ struct EntityPropertiesView: View {
         .sheet(isPresented: Binding(get: { relatedEntityID != nil }, set: { if !$0 { relatedEntityID = nil } })) {
             if let relatedEntityID { AnyView(EntityPropertiesDetail(model: model, entityID: relatedEntityID)) }
         }
+        .sheet(isPresented: $managingTemplates, onDismiss: {
+            if previewSnapshot == nil { Task { await reload() } }
+        }) {
+            if let snapshot {
+                EntityPropertyTemplateManager(model: model, initialTypeKey: snapshot.entity.entity.typeKey)
+            }
+        }
         .onChange(of: entityQuery) { otherID = nil }
         .onChange(of: selectedDefinition) { editingAssignment = nil; text = ""; boolean = false; otherID = nil
             if let definition {
@@ -96,6 +107,49 @@ struct EntityPropertiesView: View {
                 if let edit = pendingRemoval { Task { await perform(edit) } }; pendingRemoval = nil
             }
             Button("Cancel", role: .cancel) { pendingRemoval = nil }
+        }
+    }
+
+    @ViewBuilder private func suggestions(_ snapshot: EntityPropertiesSnapshot) -> some View {
+        let definitions = EntityPropertyTemplatePresentation.suggestions(snapshot)
+        VStack(alignment: .leading, spacing: NoemaSpacing.xs) {
+            HStack {
+                Text("Suggested for this type").font(NoemaTypography.interfaceEmphasis)
+                Spacer()
+                Button("Manage templates") { managingTemplates = true }
+                    .accessibilityLabel("Manage property templates for entity types")
+                    .disabled(!model.canEditSemanticTarget || busy)
+            }
+            Text("Optional properties · choose one to enter a value.")
+                .font(NoemaTypography.metadata).foregroundStyle(.secondary)
+            if definitions.isEmpty {
+                Text("No unused suggestions. You can add any property below.")
+                    .font(NoemaTypography.metadata).foregroundStyle(.secondary)
+            }
+            ForEach(Array(definitions.prefix(suggestionsExpanded ? definitions.count : EntityPropertyTemplatePresentation.previewLimit)), id: \.definition.id) { value in
+                Button(value.definition.label) { selectSuggestion(value.definition) }
+                    .accessibilityLabel("Enter \(value.definition.label) property")
+                    .disabled(!editable)
+            }
+            if definitions.count > EntityPropertyTemplatePresentation.previewLimit {
+                Button(suggestionsExpanded ? "Show fewer suggestions" : "Show more suggestions") { suggestionsExpanded.toggle() }
+            }
+        }
+    }
+
+    private func selectSuggestion(_ definition: EntityPropertyDefinition) {
+        let token = request, draftID = UUID()
+        draftRequest = draftID
+        query = ""; selectedDefinition = definition.id; editorExpanded = true
+        editingAssignment = nil; text = ""; boolean = false; otherID = nil; incoming = false
+        definitionLabel = definition.label
+        inverseLabel = definition.presentation?.inverseLabel ?? ""
+        sourceTypeKeys = Set(definition.presentation?.sourceTypeKeys ?? [])
+        targetTypeKeys = Set(definition.presentation?.targetTypeKeys ?? [])
+        Task { @MainActor in
+            await Task.yield()
+            guard current(token), draftRequest == draftID else { return }
+            suggestedInputFocused = true
         }
     }
 
@@ -187,7 +241,7 @@ struct EntityPropertiesView: View {
                             Text("Outside the suggested entity types. You can still add this relationship.").font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    TextField("Search canonical entities", text: $entityQuery)
+                    TextField("Search canonical entities", text: $entityQuery).focused($suggestedInputFocused)
                     Picker("Canonical entity", selection: $otherID) {
                         Text("Choose entity").tag(nil as UUID?)
                         ForEach(entityChoices.filter { $0.entity.lifecycle == .live }, id: \.entity.id) { value in
@@ -200,8 +254,8 @@ struct EntityPropertiesView: View {
                         if let otherID { Task { await perform(.addRelationship(definitionID: definition.id, otherID: otherID, incoming: incoming)) } }
                     }.disabled(otherID == nil || definition.isRetired)
                 } else {
-                    if definition.kind == .boolean { Toggle("Value", isOn: $boolean) }
-                    else { TextField(definition.kind == .date ? "YYYY, YYYY-MM, or YYYY-MM-DD" : "Value", text: $text) }
+                    if definition.kind == .boolean { Toggle("Value", isOn: $boolean).focused($suggestedInputFocused) }
+                    else { TextField(definition.kind == .date ? "YYYY, YYYY-MM, or YYYY-MM-DD" : "Value", text: $text).focused($suggestedInputFocused) }
                     Button(editingAssignment == nil ? "Set value" : "Save value") { saveScalar(definition, snapshot: snapshot) }.disabled(definition.isRetired)
                     if editingAssignment != nil { Button("Cancel editing") { editingAssignment = nil; text = "" } }
                 }
@@ -272,6 +326,7 @@ struct EntityPropertiesView: View {
         let token = EntityPropertiesRequestToken(entityID: entityID, sessionID: model.sessionState.sessionID)
         request = token; snapshot = nil; error = nil; busy = true
         editingAssignment = nil; selectedDefinition = nil; expanded = false; pendingRemoval = nil; draftRequest = UUID()
+        suggestionsExpanded = false; suggestedInputFocused = false
         do {
             let result = try await model.loadEntityProperties(entityID: entityID)
             guard current(token) else { return }
