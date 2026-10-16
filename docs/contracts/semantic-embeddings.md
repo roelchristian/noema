@@ -354,3 +354,17 @@ Navigation rehydrates semantic evidence, checks current revision/original bytes 
 uses a navigation nonce plus existing completion tickets, so a delayed click cannot
 replace a newer selection. Invalid passage evidence falls back to opening the current
 document without claiming precise passage navigation.
+
+
+`SemanticContextRetrieval` is the read-only provider-neutral boundary for later
+consumers. It accepts an already authorized vector, exact `.query` execution context,
+selected generation and retrieval scope. Repository lease/gate checks are independent
+of the caller's validator. It returns bounded current evidence, title/aliases,
+600-character excerpt, original provenance, ranking/locator metadata and canonical
+permit; it performs no embedding request, scheduling, generative inference or canonical
+write. Semantic Blocks requires a supplied current tag catalog before top-K and verifies
+actual canonical tags during hydration. `validate(evidence:context:)` rechecks exact
+completion metadata, current canonical revision and Source original bytes. Returned
+evidence is an observation, not future publication authority: consumers retain their
+exact query authority and use the final common-domain multi-permit barrier. AI.ENR
+execution and canonical publication remain separate, unimplemented boundaries.
