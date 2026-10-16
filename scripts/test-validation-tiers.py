@@ -11,6 +11,7 @@ import unittest
 REPO = Path(__file__).resolve().parent.parent
 DOMAIN = {"VaultCoreTests", "NativeAuthenticationTests", "ExternalAITests", "NoemaBrandTests"}
 GATES = ("NOEMA_PERFORMANCE_TESTS", "NOEMA_VISUAL_VALIDATION", "NOEMA_FIXTURE_VALIDATION")
+NATIVE_BRIDGE_ENV = ("NOEMA_ENTITY_BRIDGE_NATIVE", "NOEMA_ENTITY_BRIDGE_PHASE", "NOEMA_ENTITY_BRIDGE_OBJECTS")
 
 
 class ValidationTierTests(unittest.TestCase):
@@ -19,21 +20,25 @@ class ValidationTierTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.environment = dict(os.environ)
-        for key in (*GATES, "NOEMA_TEST_TIER", "NOEMA_TEST_TARGETS"):
+        for key in (*GATES, *NATIVE_BRIDGE_ENV, "NOEMA_TEST_TIER", "NOEMA_TEST_TARGETS"):
             self.environment.pop(key, None)
         self.environment["CLANG_MODULE_CACHE_PATH"] = str(REPO / ".build/ModuleCache")
         self.environment["SWIFTPM_MODULECACHE_OVERRIDE"] = str(REPO / ".build/ModuleCache")
 
     def graph(self, **selection):
+        result = self.graph_result(**selection)
+        result.check_returncode()
+        package = json.loads(result.stdout)
+        return package, {target["name"] for target in package["targets"] if target["type"] == "test"}
+
+    def graph_result(self, **selection):
         environment = dict(self.environment, **selection)
-        result = subprocess.run([
+        return subprocess.run([
             "swift", "package", "--disable-sandbox", "--package-path", str(REPO),
             "--scratch-path", str(self.root / "build"), "--cache-path", str(self.root / "cache"),
             "--config-path", str(self.root / "config"), "--security-path", str(self.root / "security"),
             "dump-package",
-        ], env=environment, capture_output=True, text=True, check=True, timeout=60)
-        package = json.loads(result.stdout)
-        return package, {target["name"] for target in package["targets"] if target["type"] == "test"}
+        ], env=environment, capture_output=True, text=True, timeout=60)
 
     def wrapper(self, arguments, **selection):
         bin_directory = self.root / "bin"
@@ -86,6 +91,50 @@ class ValidationTierTests(unittest.TestCase):
         package, tests = self.graph(NOEMA_TEST_TIER="compile")
         self.assertEqual(tests, set())
         self.assertIn("noema", {target["name"] for target in package["targets"]})
+
+    def test_native_bridge_is_absent_from_ordinary_graphs_even_with_phase_and_linker_environment(self):
+        for selection in ({}, {"NOEMA_TEST_TIER": "quick"},
+                          {"NOEMA_TEST_TIER": "standard", "NOEMA_TEST_TARGETS": "VaultCoreTests"},
+                          {"NOEMA_TEST_TIER": "standard", "NOEMA_TEST_TARGETS": "NoemaEditorTests"},
+                          {"NOEMA_TEST_TIER": "extended"}, {"NOEMA_TEST_TIER": "compile"},
+                          {"NOEMA_TEST_TIER": "specialized", "NOEMA_VISUAL_VALIDATION": "1"}):
+            with self.subTest(selection=selection):
+                package, _ = self.graph(**selection, NOEMA_ENTITY_BRIDGE_PHASE="5",
+                                        NOEMA_ENTITY_BRIDGE_OBJECTS=str(self.root / "qa-only.list"))
+                self.assertNotIn("NoemaEntityBridgeQA", {target["name"] for target in package["targets"]})
+                self.assertNotIn("NoemaEntityBridgeQA", {product["name"] for product in package["products"]})
+                self.assertNotIn("-filelist", json.dumps(package))
+                self.assertNotIn("ENT05_SOURCE_LINKS", json.dumps(package))
+
+    def test_native_bridge_requires_explicit_compile_tier_and_valid_phase(self):
+        for selection in ({}, {"NOEMA_TEST_TIER": "quick"}, {"NOEMA_TEST_TIER": "extended"},
+                          {"NOEMA_TEST_TIER": "standard", "NOEMA_TEST_TARGETS": "VaultCoreTests"},
+                          {"NOEMA_TEST_TIER": "specialized", "NOEMA_VISUAL_VALIDATION": "1"},
+                          {"NOEMA_TEST_TIER": "compile", "NOEMA_ENTITY_BRIDGE_PHASE": "6"}):
+            with self.subTest(selection=selection):
+                result = self.graph_result(**selection, NOEMA_ENTITY_BRIDGE_NATIVE="1")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("native entity bridge acceptance requires compile tier" if selection.get("NOEMA_TEST_TIER") != "compile"
+                              else "entity bridge phase must be 4 or 5", result.stderr)
+
+    def test_native_bridge_phase_define_and_object_linker_are_qa_target_only(self):
+        objects = str(self.root / "application-objects.list")
+        for phase in ("4", "5"):
+            with self.subTest(phase=phase):
+                package, tests = self.graph(NOEMA_TEST_TIER="compile", NOEMA_ENTITY_BRIDGE_NATIVE="1",
+                                            NOEMA_ENTITY_BRIDGE_PHASE=phase, NOEMA_ENTITY_BRIDGE_OBJECTS=objects)
+                self.assertEqual(tests, set())
+                targets = {target["name"]: target for target in package["targets"]}
+                self.assertIn("NoemaEntityBridgeQA", targets)
+                self.assertIn("noema", targets)
+                settings = json.dumps(targets["NoemaEntityBridgeQA"].get("settings", []))
+                self.assertIn("-filelist", settings)
+                self.assertIn(objects, settings)
+                self.assertEqual("ENT05_SOURCE_LINKS" in settings, phase == "5")
+                for name, target in targets.items():
+                    if name != "NoemaEntityBridgeQA":
+                        self.assertNotIn("-filelist", json.dumps(target))
+                        self.assertNotIn("ENT05_SOURCE_LINKS", json.dumps(target))
 
     def test_legacy_filter_and_quoted_flags_are_preserved(self):
         result, capture = self.wrapper(["--filter", "a pattern|another", "--skip-update"])

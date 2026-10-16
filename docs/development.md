@@ -43,6 +43,31 @@ validation. `scripts/compile.sh` runs Swift compilation without icon generation,
 app packaging or signing. Inspect each script's help before choosing specialised
 SwiftPM flags. Native accessibility and crash-durability acceptance remain device checks.
 
+### Native entity properties, templates and Source links
+
+Use the separate synthetic QA app for live keyboard, focus and VoiceOver review:
+
+```sh
+./scripts/native-entity-bridge-acceptance.sh --phase 4 --run-id entity-native-04 --skip-update --launch
+# Requires the integrated ENT05 Source-link views:
+./scripts/native-entity-bridge-acceptance.sh --phase 5 --run-id entity-native-05 --skip-update --launch
+```
+
+The opt-in compile graph uses actual editable Noema views with a separate QA entry
+point; it excludes the production `NoemaApp` object and never invokes vault restore.
+Each run builds and signs a unique QA bundle under `.local/agent-runs/<run-id>/`,
+with synthetic vaults, a separate preference suite and app-local state. The live
+controls select all five entity types, open the Knowledge template manager and
+exercise lock, unlock and a second synthetic vault. Phase 5 also seeds preserved
+offline/trashed Sources and enough explicit links for pagination. No user vault is
+selected. Run one SwiftPM build/test graph at a time in a checkout.
+
+Omit `--launch` to build only. `--launch` waits for the QA app to exit before marking
+the run complete; direct later launches reactivate its marker, which must remain
+until that process stops. Keep failures and review evidence pinned. Record observed
+actions and announcements in the PR or managed evidence; successful building,
+signing or static raster capture does not establish native accessibility acceptance.
+
 Embedding acceptance has two explicit local probes:
 
 ```sh
