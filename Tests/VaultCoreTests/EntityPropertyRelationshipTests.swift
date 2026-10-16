@@ -178,3 +178,76 @@ private func relationshipCreate(_ f: RelationshipFixture, definitionID: UUID, en
     #expect(try await reopened.queryPropertyRelationships(entityID: entity.entity.id, direction: .both).isEmpty)
     try await reopened.close()
 }
+
+@Test func entityRelationshipPresentationPersistsAndTypeHintsRemainAdvisory() async throws {
+    let f = try await relationshipFixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+    let original = try await relationshipDefinition(f)
+    #expect(original.definition.presentation == nil)
+    var definition = original.definition
+    definition.presentation = .init(inverseLabel: "Works created", sourceTypeKeys: ["person"], targetTypeKeys: ["place"])
+    let saved = try await f.store.savePropertyDefinition(definition, expected: original.revision, expectedVaultRevision: f.store.canonicalVaultRevision(), operationID: UUID()).value
+    // Both types deliberately disagree with the hints: an explicit assertion is allowed.
+    let edge = try await relationshipCreate(f, definitionID: definition.id)
+    #expect(try await f.store.queryPropertyRelationships(entityID: f.target, direction: .incoming) == [edge])
+    try await f.store.close()
+    let reopened = try VaultStorageProvider.plaintext.makeRelationshipStagingStore(url: f.url, vaultID: f.vaultID, createIfMissing: false)
+    #expect(try await reopened.listPropertyDefinitions() == [saved])
+    #expect(try await reopened.queryPropertyRelationships(entityID: f.target, direction: .incoming) == [edge])
+    try await reopened.close()
+}
+
+@Test func entityRelationshipPresentationPreservesUnknownFieldsAndRollsBackAtomically() async throws {
+    let f = try await relationshipFixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+    let original = try await relationshipDefinition(f)
+    let raw = "{\"unrelatedFuture\":{\"keep\":true},\"entityPropertyPresentation\":{\"\(original.definition.id.uuidString)\":{\"inverseLabel\":\"Works created\",\"future\":{\"retain\":[1,true]}}}}"
+    try relationshipSQL(f.url, "UPDATE vault_state SET extensions=CAST('\(raw)' AS BLOB) WHERE singleton=1")
+    let current = try #require(try await f.store.listPropertyDefinitions().first)
+    var edited = current.definition
+    // Even a caller replacing the known presentation retains future optional data.
+    edited.presentation = .init(inverseLabel: "Created works", targetTypeKeys: ["person"])
+    try relationshipSQL(f.url, "CREATE TRIGGER fail_presentation_operation BEFORE INSERT ON knowledge_operations BEGIN SELECT RAISE(ABORT,'injected presentation failure'); END")
+    let before = try await f.store.canonicalVaultRevision()
+    await #expect(throws: (any Error).self) {
+        try await f.store.savePropertyDefinition(edited, expected: current.revision, expectedVaultRevision: before, operationID: UUID())
+    }
+    #expect(try await f.store.canonicalVaultRevision() == before)
+    #expect(try await f.store.listPropertyDefinitions() == [current])
+    try relationshipSQL(f.url, "DROP TRIGGER fail_presentation_operation")
+    let saved = try await f.store.savePropertyDefinition(edited, expected: current.revision, expectedVaultRevision: before, operationID: UUID()).value
+    #expect(saved.definition.presentation?.inverseLabel == "Created works")
+    #expect(saved.definition.presentation?.unknownFields == current.definition.presentation?.unknownFields)
+    #expect(try relationshipSQL(f.url, "SELECT instr(CAST(extensions AS TEXT),'unrelatedFuture')>0 FROM vault_state") == 1)
+    var scalar = saved.definition; scalar.kind = .text; scalar.presentation = nil
+    await #expect(throws: (any Error).self) {
+        try await f.store.savePropertyDefinition(scalar, expected: saved.revision, expectedVaultRevision: f.store.canonicalVaultRevision(), operationID: UUID())
+    }
+    try await f.store.validateCanonicalLogicalIntegrity()
+    try await f.store.close()
+    let reopened = try VaultStorageProvider.plaintext.makeRelationshipStagingStore(url: f.url, vaultID: f.vaultID, createIfMissing: false)
+    #expect(try await reopened.listPropertyDefinitions() == [saved])
+    try await reopened.close()
+}
+
+@Test func entityRelationshipPresentationSizeLimitRollsBackDefinition() async throws {
+    let f = try await relationshipFixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+    let original = try await relationshipDefinition(f)
+    var definition = original.definition
+    definition.presentation = .init(inverseLabel: String(repeating: "a", count: 262_144))
+    let before = try await f.store.canonicalVaultRevision()
+    await #expect(throws: PersistencePayloadError.limitExceeded) {
+        try await f.store.savePropertyDefinition(definition, expected: original.revision, expectedVaultRevision: before, operationID: UUID())
+    }
+    #expect(try await f.store.listPropertyDefinitions() == [original])
+    #expect(try await f.store.canonicalVaultRevision() == before)
+    // Each optional scope fits individually, but the shared vault bound still applies.
+    let unrelated = String(repeating: "b", count: 160_000)
+    try relationshipSQL(f.url, "UPDATE vault_state SET extensions=CAST('{\"future\":\"\(unrelated)\"}' AS BLOB) WHERE singleton=1")
+    definition.presentation = .init(inverseLabel: String(repeating: "a", count: 150_000))
+    await #expect(throws: PersistencePayloadError.limitExceeded) {
+        try await f.store.savePropertyDefinition(definition, expected: original.revision, expectedVaultRevision: before, operationID: UUID())
+    }
+    #expect(try await f.store.listPropertyDefinitions() == [original])
+    #expect(try await f.store.canonicalVaultRevision() == before)
+    #expect(try relationshipSQL(f.url, "SELECT instr(CAST(extensions AS TEXT),'entityPropertyPresentation') FROM vault_state") == 0)
+    try await f.store.close()
+}

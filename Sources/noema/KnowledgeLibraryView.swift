@@ -109,6 +109,7 @@ struct KnowledgeCatalogueDetail: View {
                     Text(value.entity.lifecycle.rawValue.capitalized).font(.caption).foregroundStyle(.secondary)
                     if let description = value.entity.description { Text(description) }
                     if !value.entity.aliases.isEmpty { Text("Aliases: " + value.entity.aliases.map(\.label).joined(separator: ", ")) }
+                    ScrollView { EntityPropertiesView(model: model, entityID: value.entity.id) }.frame(maxHeight: 300)
                 case .object(let value):
                     if value.object.typeKey == "question" {
                         Text(value.object.questionStatus.rawValue.capitalized)

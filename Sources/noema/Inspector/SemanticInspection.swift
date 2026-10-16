@@ -132,6 +132,7 @@ struct SemanticEntityRow: View {
     @Bindable var model: AppModel
     let group: SemanticEntityGroup
     @State private var editingTarget = false
+    @State private var inspectingProperties = false
     @State private var changingAnnotation: SemanticInspectionRecord?
     @State private var removingAnnotation: SemanticInspectionRecord?
     private var focused: Bool { group.records.contains { $0.id == model.semanticInspectionFocusID } }
@@ -165,6 +166,7 @@ struct SemanticEntityRow: View {
             }.buttonStyle(.plain).disabled(group.navigableRecords.isEmpty)
                 .help("Find this entity in the document")
             Menu {
+                Button("Entity properties…") { inspectingProperties = true }
                 Button("Edit shared target…") { editingTarget = true }
                     .disabled(!group.target.isEditable || !model.canEditSemanticTarget)
                 ForEach(Array(group.records.enumerated()), id: \.element.id) { index, record in
@@ -183,6 +185,11 @@ struct SemanticEntityRow: View {
         .padding(NoemaSpacing.sm)
         .background(focused ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
         .sheet(isPresented: $editingTarget) { SemanticTargetEditor(model: model, target: group.target) }
+        .sheet(isPresented: $inspectingProperties) {
+            if case .entity(let value) = group.target {
+                EntityPropertiesDetail(model: model, entityID: value.entity.id)
+            }
+        }
         .sheet(item: $changingAnnotation) { record in SemanticAssociationPicker(model: model, annotationID: record.id) }
         .confirmationDialog("Remove this association? The shared entity will be kept.", isPresented: Binding(
             get: { removingAnnotation != nil }, set: { if !$0 { removingAnnotation = nil } }

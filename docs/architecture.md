@@ -2,13 +2,16 @@
 
 ## Canonical storage authority (STOR02B–STOR03)
 
-Every newly created vault uses format 2 with a mandatory schema-6 SQLite declaration.
+Every newly created vault uses format 2 with a mandatory schema-8 SQLite declaration.
 `SQLiteBlockStore` owns the sole connection, schema and transactions for pages, blocks,
 page metadata, source metadata/relationships, logical Trash, tombstones, conflicts,
 knowledge entities/aliases/relations, questions/definitions, annotations, favourites,
 collections and folders. Those organisation rows live in the vault's `blocks.sqlite`.
 Manifest, `user_version`, database vault UUID and capabilities must agree before admission.
-Schema 6 is initialized directly. Historical formats and schemas 1–5 are deliberately
+Schema 8 is initialized directly; supported schemas 6 and 7 remain admitted without
+automatic migration. Explicit revision-checked upgrades add typed entity properties
+(6→7) and directed properties (7→8), with conditional manifest publication and an
+explicit resume path after interruption. Historical formats and schemas 1–5 are deliberately
 unsupported; opening them rejects without mutation. Markdown is import/export only.
 
 Imported originals remain immutable, checksum-verified controlled vault bytes through
@@ -109,13 +112,16 @@ requires the focused security/integration checks.
 
 The [knowledge model contract](contracts/knowledge-model.md) and
 [KNOW01 decision](decisions/0002-canonical-knowledge-model.md) govern registered
-Person, Place, Concept and Event identities, independent Question/Definition objects,
+Person, Place, Concept, Event and Creative Work identities, independent Question/Definition objects,
 typed relationships and overlapping block/inline annotations. KNOW02 and KNOW03
 implement these domain APIs in the existing SQLite actor through KnowledgeStore
 and SemanticStore; no additional connection or block-text authority is introduced.
 Schema 3 retains its meaning, schema 4 requires canonicalKnowledgeV1, schema 5
-also requires semanticAnnotationsV1, and schema 6 adds organisationV1 for
-vault-owned favourites, collections and folders. Manifest, database identity and capability
+also requires semanticAnnotationsV1, schema 6 adds organisationV1 for
+vault-owned favourites, collections and folders, schema 7 adds entityPropertiesV1,
+and schema 8 adds entityRelationshipsV1. Reusable typed definitions and scalar
+assignments share the existing SQLite actor; a directed fact has one canonical edge
+with indexed forward and inverse traversal. Manifest, database identity and capability
 checks agree before admission; fresh staging is explicit, with no upgrade on open.
 
 SemanticPageEdit provides verified UTF-16/grapheme-safe editing, structural edits,

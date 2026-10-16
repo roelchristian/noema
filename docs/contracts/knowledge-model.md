@@ -306,8 +306,21 @@ assertion once in `entity_property_relationships`. Stable edge UUIDs identify
 (definition, source entity, target entity); uniqueness rejects duplicate facts.
 Forward and inverse queries return the same canonical snapshot. Incoming editing
 resolves the source/target direction inside the mutation API, never by writing a
-reciprocal row. Labels use the definition's display label and an incoming
-presentation label; custom inverse labels and advisory type restrictions are deferred.
+reciprocal row. Labels use the definition's display label and optional custom inverse
+label, falling back to `Incoming: <label>`. Optional source/target type-key lists
+guide the inspector and show mismatches; they are advisory and never reject an
+explicit assertion. Changing these hints never rewrites existing edges.
+
+Relationship presentation is optional definition-scoped data under the
+`entityPropertyPresentation` UUID map in `vault_state.extensions`, atomically saved
+with the definition and vault revisions by the same SQLite actor. The whole map
+shares the existing 256 KiB optional vault-metadata bound with other extension keys;
+exceeding it rolls back the complete edit. Unknown fields in each presentation and
+unrelated vault extensions survive known-field edits. Scalar definitions reject
+relationship presentation; changing a reference definition to a scalar rejects if
+unknown presentation fields would be lost. Existing schema-8 databases without presentation remain
+valid, and schema 7 continues to treat this namespace as unknown optional data.
+This adds no schema migration, capability, canonical edge copy or I/O exception.
 
 `createPropertyRelationship` checks the definition, both endpoint revisions, vault
 revision and operation UUID in the canonical actor transaction. One/many cardinality

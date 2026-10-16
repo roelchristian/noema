@@ -392,6 +392,14 @@ source or a permanent golden fixture. Reproduction retains commit/fixture proven
 
 ## Native window acceptance
 
+ENT.03 entity properties retain a separate live acceptance gate: keyboard traversal
+and focus restoration across definition/target pickers, inverse editing, delete
+confirmation, refresh errors, rapid entity switching, and VoiceOver announcements.
+[Inspector integration tests](../Tests/NoemaEditorTests/EntityPropertiesInspectorTests.swift)
+exercise canonical revisions and stale sessions; the opt-in
+[raster fixture](../Tests/NoemaVisualValidationTests/EntityPropertiesLayoutTests.swift)
+captures static content with disabled controls, not live editing or accessibility.
+
 [WindowGeometryTests](../Tests/NoemaEditorTests/WindowGeometryTests.swift),
 [WorkspaceCommandTests](../Tests/NoemaEditorTests/WorkspaceCommandTests.swift),
 [WorkspacePaneStateTests](../Tests/NoemaEditorTests/WorkspacePaneStateTests.swift) and

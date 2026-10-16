@@ -2,6 +2,59 @@ import Foundation
 import SQLite3
 
 extension SQLiteBlockStore {
+    private static let propertyPresentationKey = "entityPropertyPresentation"
+
+    private static func propertyPresentations(in extensions: [String: JSONValue]) throws -> [String: JSONValue] {
+        guard let value = extensions[propertyPresentationKey] else { return [:] }
+        guard case .object(let values) = value else { throw VaultError.invalid("Invalid property presentation metadata.") }
+        return values
+    }
+
+    private func vaultOptionalFields() throws -> [String: JSONValue] {
+        let query = try statement("SELECT extensions FROM vault_state WHERE singleton=1")
+        defer { sqlite3_finalize(query) }
+        guard sqlite3_step(query) == SQLITE_ROW else { throw VaultError.invalid("Missing vault metadata.") }
+        let fields = try decoder.decode([String: JSONValue].self, from: blob(query,0))
+        try validateOptionalFields(fields)
+        return fields
+    }
+
+    private func propertyPresentation(id: UUID, values: [String: JSONValue]) throws -> EntityPropertyPresentation? {
+        guard let value = values[id.uuidString] else { return nil }
+        let presentation = try decoder.decode(EntityPropertyPresentation.self, from: encoder.encode(value))
+        try presentation.validate()
+        return presentation
+    }
+
+    private func relationshipPresentations() throws -> [String: JSONValue] {
+        let query = try statement("PRAGMA user_version")
+        defer { sqlite3_finalize(query) }
+        guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
+        guard sqlite3_column_int(query,0) >= 8 else { return [:] }
+        return try Self.propertyPresentations(in: vaultOptionalFields())
+    }
+
+    private func savePropertyPresentation(_ presentation: EntityPropertyPresentation?, id: UUID) throws {
+        var fields = try vaultOptionalFields()
+        var values = try Self.propertyPresentations(in: fields)
+        var presentation = presentation
+        // Known edits cannot discard future optional fields carried by this scope.
+        if let existing = try propertyPresentation(id: id, values: values), !existing.unknownFields.isEmpty {
+            if presentation == nil { presentation = .init() }
+            let merged = existing.unknownFields.merging(presentation?.unknownFields ?? [:]) { _, new in new }
+            presentation?.unknownFields = merged
+        }
+        if let presentation {
+            try presentation.validate()
+            values[id.uuidString] = try decoder.decode(JSONValue.self, from: encoder.encode(presentation))
+        } else { values.removeValue(forKey: id.uuidString) }
+        if values.isEmpty { fields.removeValue(forKey: Self.propertyPresentationKey) }
+        else { fields[Self.propertyPresentationKey] = .object(values) }
+        // The namespace shares the existing 256 KiB optional vault-metadata bound.
+        try validateOptionalFields(fields)
+        try run("UPDATE vault_state SET extensions=? WHERE singleton=1", [.blob(try encoder.encode(fields))])
+    }
+
     static let entityPropertySchema = """
     CREATE TABLE entity_property_definitions (
       id TEXT PRIMARY KEY NOT NULL,
@@ -76,6 +129,7 @@ extension SQLiteBlockStore {
         defer { sqlite3_finalize(schemaVersion) }
         guard sqlite3_step(schemaVersion) == SQLITE_ROW else { throw VaultError.invalid("Missing property version.") }
         let supportsRelationships = sqlite3_column_int(schemaVersion, 0) >= 8
+        var kinds: [String: EntityPropertyKind] = [:]
         try rows("SELECT p.id,p.vault_id,p.label,p.kind,p.cardinality,p.created_at,p.updated_at,p.normalized_key,v.vault_id FROM entity_property_definitions p CROSS JOIN vault_state v WHERE v.singleton=1") { row in
             guard let id = UUID(uuidString: string(row,0)), let vaultID = UUID(uuidString: string(row,1)),
                 string(row,1) == string(row,8), let kind = EntityPropertyKind(rawValue: string(row,3)),
@@ -83,6 +137,19 @@ extension SQLiteBlockStore {
             let value = try EntityPropertyDefinition(id: id, vaultID: vaultID, label: string(row,2), kind: kind, cardinality: cardinality,
                 createdAt: Date(timeIntervalSince1970: sqlite3_column_double(row,5)), updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(row,6)))
             guard value.normalizedKey == string(row,7) else { throw VaultError.invalid("Stored property key mismatch.") }
+            kinds[id.uuidString] = kind
+        }
+        if supportsRelationships {
+            try rows("SELECT extensions FROM vault_state WHERE singleton=1") { row in
+                let data = sqlite3_column_blob(row,0).map { Data(bytes: $0, count: Int(sqlite3_column_bytes(row,0))) } ?? Data()
+                let fields = try JSONDecoder().decode([String: JSONValue].self, from: data)
+                try validateOptionalFields(fields)
+                for (id, raw) in try propertyPresentations(in: fields) {
+                    guard kinds[id] == .entityReference else { throw VaultError.invalid("Property presentation requires a reference definition.") }
+                    let value = try JSONDecoder().decode(EntityPropertyPresentation.self, from: JSONEncoder().encode(raw))
+                    try value.validate()
+                }
+            }
         }
         try rows("SELECT p.id,p.definition_id,p.entity_id,p.kind,p.text_value,p.number_value,p.date_year,p.date_month,p.date_day,p.bool_value,d.kind FROM entity_property_values p LEFT JOIN entity_property_definitions d ON d.id=p.definition_id") { row in
             guard UUID(uuidString: string(row,0)) != nil, UUID(uuidString: string(row,1)) != nil, UUID(uuidString: string(row,2)) != nil,
@@ -128,7 +195,7 @@ extension SQLiteBlockStore {
         }
     }
 
-    func propertyDefinition(id: UUID) throws -> EntityPropertyDefinitionSnapshot {
+    func propertyDefinition(id: UUID, presentations: [String: JSONValue]? = nil) throws -> EntityPropertyDefinitionSnapshot {
         let query = try statement("SELECT vault_id,label,kind,cardinality,display_order,created_at,updated_at,retired,revision,normalized_key FROM entity_property_definitions WHERE id=?", [.text(id.uuidString)])
         defer { sqlite3_finalize(query) }
         let status = sqlite3_step(query)
@@ -138,7 +205,8 @@ extension SQLiteBlockStore {
         let definition = try EntityPropertyDefinition(id: id, vaultID: vaultID, label: text(query,1), kind: kind,
             cardinality: cardinality, displayOrder: Int(sqlite3_column_int64(query,4)),
             createdAt: Date(timeIntervalSince1970: sqlite3_column_double(query,5)),
-            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(query,6)), isRetired: sqlite3_column_int(query,7) != 0)
+            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(query,6)), isRetired: sqlite3_column_int(query,7) != 0,
+            presentation: try propertyPresentation(id: id, values: presentations ?? relationshipPresentations()))
         guard definition.normalizedKey == text(query,9) else { throw VaultError.invalid("Property key mismatch.") }
         return .init(definition: definition, revision: .init(token: blob(query,8)))
     }
@@ -146,13 +214,14 @@ extension SQLiteBlockStore {
     public func listPropertyDefinitions(includeRetired: Bool = false) throws -> [EntityPropertyDefinitionSnapshot] {
         try requireEntityProperties()
         return try readTransaction {
+            let presentations = try relationshipPresentations()
             let query = try statement("SELECT id FROM entity_property_definitions WHERE (?=1 OR retired=0) ORDER BY display_order,normalized_key,id", [.integer(includeRetired ? 1 : 0)])
             defer { sqlite3_finalize(query) }
             var values: [EntityPropertyDefinitionSnapshot] = []
             while true {
                 let status = sqlite3_step(query); if status == SQLITE_DONE { break }
                 guard status == SQLITE_ROW, let id = UUID(uuidString: text(query,0)) else { throw failure() }
-                values.append(try propertyDefinition(id: id))
+                values.append(try propertyDefinition(id: id, presentations: presentations))
             }
             return values
         }
@@ -168,6 +237,10 @@ extension SQLiteBlockStore {
             if let expected {
                 let current = try propertyDefinition(id: definition.id)
                 guard current.revision == expected else { throw KnowledgeStoreError.staleRevision }
+                if definition.kind != .entityReference,
+                   current.definition.presentation?.unknownFields.isEmpty == false {
+                    throw VaultError.invalid("Changing kind would discard unknown relationship presentation.")
+                }
                 definition.createdAt = current.definition.createdAt
             } else {
                 let query = try statement("SELECT 1 FROM entity_property_definitions WHERE id=?", [.text(definition.id.uuidString)])
@@ -181,6 +254,11 @@ extension SQLiteBlockStore {
                 try run("UPDATE entity_property_definitions SET vault_id=?,normalized_key=?,label=?,kind=?,cardinality=?,display_order=?,created_at=?,updated_at=?,retired=?,revision=? WHERE id=?", fields)
             } else {
                 try run("INSERT INTO entity_property_definitions(vault_id,normalized_key,label,kind,cardinality,display_order,created_at,updated_at,retired,revision,id) VALUES(?,?,?,?,?,?,?,?,?,?,?)", fields)
+            }
+            if definition.kind == .entityReference {
+                try savePropertyPresentation(definition.presentation, id: definition.id)
+            } else if try !relationshipPresentations().isEmpty {
+                try savePropertyPresentation(nil, id: definition.id)
             }
             let snapshot = try propertyDefinition(id: definition.id)
             let vault = try recordKnowledgeOperation(snapshot, revision: revision, kind: "propertyDefinition", operationID: operationID)

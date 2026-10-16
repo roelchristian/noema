@@ -79,6 +79,51 @@ public enum EntityPropertyValue: Codable, Equatable, Sendable {
     }
 }
 
+/// Optional relationship presentation. Type keys guide suggestions; they never
+/// prohibit an assertion or change the canonical direction of an edge.
+public struct EntityPropertyPresentation: Codable, Equatable, Sendable {
+    public var inverseLabel: String?
+    public var sourceTypeKeys: [String]
+    public var targetTypeKeys: [String]
+    public var unknownFields: [String: JSONValue] = [:]
+
+    public init(inverseLabel: String? = nil, sourceTypeKeys: [String] = [], targetTypeKeys: [String] = []) {
+        self.inverseLabel = inverseLabel; self.sourceTypeKeys = sourceTypeKeys; self.targetTypeKeys = targetTypeKeys
+    }
+
+    private static let keys: Set<String> = ["inverseLabel", "sourceTypeKeys", "targetTypeKeys"]
+
+    public func validate() throws {
+        if let inverseLabel, EntityPropertyDefinition.normalize(inverseLabel).isEmpty {
+            throw EntityPropertyValidationError.emptyLabel
+        }
+        for keys in [sourceTypeKeys, targetTypeKeys] {
+            guard Set(keys).count == keys.count,
+                  keys.allSatisfy({ !$0.isEmpty && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines) }) else {
+                throw EntityPropertyValidationError.invalidMetadata
+            }
+        }
+        try validateUnknownScope(unknownFields, known: Self.keys)
+        guard try JSONEncoder().encode(self).count <= 262_144 else { throw PersistencePayloadError.limitExceeded }
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: PersistenceCodingKey.self)
+        inverseLabel = try c.decodeIfPresent(String.self, forKey: .init("inverseLabel"))
+        sourceTypeKeys = try c.decodeIfPresent([String].self, forKey: .init("sourceTypeKeys")) ?? []
+        targetTypeKeys = try c.decodeIfPresent([String].self, forKey: .init("targetTypeKeys")) ?? []
+        unknownFields = try decodeUnknownFields(c, known: Self.keys)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: PersistenceCodingKey.self)
+        try c.encodeIfPresent(inverseLabel, forKey: .init("inverseLabel"))
+        try c.encode(sourceTypeKeys, forKey: .init("sourceTypeKeys"))
+        try c.encode(targetTypeKeys, forKey: .init("targetTypeKeys"))
+        try encodeUnknownFields(unknownFields, known: Self.keys, into: &c)
+    }
+}
+
 /// Definitions are reusable within one vault. An absent assignment means unset.
 public struct EntityPropertyDefinition: Codable, Equatable, Sendable, Identifiable {
     public let id: UUID
@@ -90,6 +135,7 @@ public struct EntityPropertyDefinition: Codable, Equatable, Sendable, Identifiab
     public var createdAt: Date
     public var updatedAt: Date
     public var isRetired: Bool
+    public var presentation: EntityPropertyPresentation?
 
     public var normalizedKey: String { Self.normalize(label) }
 
@@ -100,17 +146,27 @@ public struct EntityPropertyDefinition: Codable, Equatable, Sendable, Identifiab
 
     public init(id: UUID = UUID(), vaultID: UUID, label: String, kind: EntityPropertyKind,
                 cardinality: EntityPropertyCardinality = .one, displayOrder: Int = 0,
-                createdAt: Date = Date(), updatedAt: Date? = nil, isRetired: Bool = false) throws {
+                createdAt: Date = Date(), updatedAt: Date? = nil, isRetired: Bool = false,
+                presentation: EntityPropertyPresentation? = nil) throws {
         self.id = id; self.vaultID = vaultID; self.label = label; self.kind = kind
         self.cardinality = cardinality; self.displayOrder = displayOrder
         self.createdAt = createdAt; self.updatedAt = updatedAt ?? createdAt; self.isRetired = isRetired
+        self.presentation = presentation
         try validate()
     }
 
     public func validate() throws {
         guard !normalizedKey.isEmpty else { throw EntityPropertyValidationError.emptyLabel }
+        if let presentation {
+            guard kind == .entityReference else { throw EntityPropertyValidationError.kindMismatch }
+            try presentation.validate()
+        }
         guard createdAt.timeIntervalSince1970.isFinite, updatedAt.timeIntervalSince1970.isFinite,
               updatedAt >= createdAt else { throw EntityPropertyValidationError.invalidMetadata }
+    }
+
+    public func relationshipLabel(direction: KnowledgeRelationDirection) -> String {
+        direction == .incoming ? (presentation?.inverseLabel ?? "Incoming: \(label)") : label
     }
 }
 

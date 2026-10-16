@@ -179,6 +179,23 @@ Automatic title, classification and source processing run locally via Apple Inte
 - **Generated metadata:** Summarize/Regenerate updates summary and verified LCC together in one structured inference. Properties shows classification code, local caption and provenance as read-only metadata. Existing human titles and page bodies are preserved; an unset title can be filled on initial enrichment. **Suggest Title** remains an explicit reviewed proposal. Legacy classifications remain readable until enrichment replaces them; removing a summary preserves classification. Preferences consolidate Content enrichment and Page creation, with legacy summary choices taking precedence over the retired LCC override.
 - **Create pages with AI:** **Create Page with AI** offers an existing source, a topic researched with Bing (up to three readable results), or a URL fetched locally (2 MB, 20 seconds, public destinations only). Both providers produce a title, body, summary and classification together. Review the draft and title before **Publish Page**. Source relationships and verified web references are retained. URL mode can retain the capture as a source at publication; that intact source remains if the subsequent page write fails. No cloud operation starts merely by import or provider selection.
 
+### Knowledge entity properties
+
+In **Knowledge → Knowledge Entities**, open an entity to inspect its reusable typed
+properties. Document entity rows also expose **Entity properties…** in their menu.
+Search for an existing definition or create one with a scalar or entity-reference
+kind and one/many cardinality. Dates accept `YYYY`, `YYYY-MM` or `YYYY-MM-DD` without
+inventing a day or timezone. Empty text, zero and false are values; Remove unsets a
+value while retaining the entity and reusable definition. The initial list shows
+four entries; **Show all** reveals the rest.
+
+Entity pickers search the canonical catalogue (up to 100 matches per query), with
+type and UUID disambiguation. Incoming editing changes the same canonical edge as
+outgoing editing. Reusable relationship definitions can set an incoming label and
+suggested source/target types; those hints remain advisory. Deleted entities keep
+read-only facts. Refresh after a revision conflict before retrying an edit. Native
+keyboard, focus and VoiceOver acceptance still requires device review.
+
 ## Block and math editing
 
 Select text and activate hyperlinks with ordinary clicks while reading. Press **Edit**, choose **Edit Article** in the context menu, or Option-click an unlocked article to start native block editing; edits autosave after 500 ms of inactivity. Document font family and size (`10–32 pt`, default `16 pt` for new preferences) are configurable in **Settings → Reading & Editor**. Existing saved sizes remain selected. Articles and readable Markdown, HTML and plain-text sources share these preferences; unavailable fonts retain their saved choice and use the system face. Headings, paragraph rhythm, code and semantic labels scale together within a centered reading measure capped at 680 pt. Controls, metadata and Quick Look retain native typography. See the [editorial contract](contracts/block-editor.md#editorial-typography).

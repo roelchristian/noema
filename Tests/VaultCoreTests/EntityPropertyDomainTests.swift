@@ -39,3 +39,23 @@ import Testing
         try EntityPropertyDefinition(vaultID: UUID(), label: " \n ", kind: .text)
     }
 }
+
+@Test func entityRelationshipPresentationRetainsFutureFieldsAndValidatesHints() throws {
+    let raw = Data(#"{"inverseLabel":"Works created","sourceTypeKeys":["creativeWork"],"targetTypeKeys":["person"],"future":{"display":true}}"#.utf8)
+    let value = try JSONDecoder().decode(EntityPropertyPresentation.self, from: raw)
+    try value.validate()
+    #expect(value.unknownFields["future"] == .object(["display": .bool(true)]))
+    #expect(try JSONDecoder().decode(EntityPropertyPresentation.self, from: JSONEncoder().encode(value)) == value)
+    let definition = try EntityPropertyDefinition(vaultID: UUID(), label: "Created by", kind: .entityReference, presentation: value)
+    #expect(definition.relationshipLabel(direction: .incoming) == "Works created")
+    #expect(definition.relationshipLabel(direction: .outgoing) == "Created by")
+    #expect(throws: EntityPropertyValidationError.kindMismatch) {
+        try EntityPropertyDefinition(vaultID: UUID(), label: "Text", kind: .text, presentation: value)
+    }
+    #expect(throws: EntityPropertyValidationError.emptyLabel) { try EntityPropertyPresentation(inverseLabel: " \n ").validate() }
+    for keys in [["person", "person"], [""], [" person "]] {
+        #expect(throws: EntityPropertyValidationError.invalidMetadata) { try EntityPropertyPresentation(sourceTypeKeys: keys).validate() }
+    }
+    // Future registry keys are preserved as advisory intent, without inventing a type.
+    try EntityPropertyPresentation(targetTypeKeys: ["futureType"]).validate()
+}
