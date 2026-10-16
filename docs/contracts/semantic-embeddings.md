@@ -199,9 +199,10 @@ Composite-revision Source completions may therefore be conservatively retired on
 this does not authorize regeneration. Partial Source checkpoints with a matching canonical
 revision survive as reuse candidates; fresh original extraction and exact chunk fingerprints
 remain mandatory before reuse, and retained partial rows never certify completion. Linked bytes remain non-atomic with SQLite after
-final revalidation. The recorded native regression failures included shared-renderer fixture interference;
-focused math runtime checks now use one serialized projection lifecycle. No green
-full-suite, device/accessibility or crash-durability claim follows focused acceptance. Numeric usage activity remains later integration work; queue presentation must preserve
+final revalidation. Native regression validation requires the explicit serial Extended
+procedure in the [development guide](../development.md#validation-tiers-and-test-discipline)
+because concurrent editor fixtures can reset a shared math renderer. Passing functional
+tests do not establish device/accessibility or crash-durability acceptance. Numeric usage activity remains later integration work; queue presentation must preserve
 unknown usage and cost, and no cancellation implies zero provider usage.
 
 ## Explicit historical batch foundations (SEM.EMB05)

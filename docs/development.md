@@ -8,7 +8,7 @@ Requires macOS 26+ and Apple's Swift 6 command-line tools. The standing referenc
 ./scripts/build.sh release
 ./scripts/test.sh quick --skip-update
 ./scripts/test.sh standard --targets VaultCoreTests,NativeAuthenticationTests --skip-update
-./scripts/test.sh extended --skip-update
+./scripts/test.sh extended --no-parallel --skip-update
 ./scripts/compile.sh
 python3 scripts/check-storage-boundary.py --selftest
 python3 scripts/check-repository-hygiene.py --selftest
@@ -30,6 +30,12 @@ security/preservation tests when those boundaries change. `extended` runs every
 retained functional target and is required before merging significant integration
 work. Legacy flag-only `test.sh` calls retain full functional coverage. A SwiftPM
 `--filter` narrows execution within the chosen graph; it does not isolate compilation.
+
+Pass `--no-parallel` explicitly for the Extended gate. Native editor fixtures share
+process-wide window and math-renderer state; overlapping fixture teardown can cancel
+another test's render. Swift Testing otherwise runs concurrently even when SwiftPM's
+displayed parallelism default is off. Serial execution retains every functional test
+and assertion; concurrent native-fixture isolation remains a test-harness limitation.
 
 Use `scripts/performance.sh` for opt-in benchmarks, the visual harnesses below for
 full appearance matrices/captures, and `scripts/validate-fixtures.sh` for sample-vault

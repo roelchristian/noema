@@ -162,8 +162,11 @@ The opt-in 10,000-document/1,536-dimension synthetic projection benchmark measur
 read latency, test-process peak RSS and cooperative cancellation. It does not establish
 complete-vault memory/latency, queue rendering, native inference or cloud throughput.
 Activity integration, hybrid search and actual crash/power-loss acceptance remain open.
-Full-suite regression is not established by these scoped checks; the development guide's
-Extended merge requirement remains unchanged.
+The Extended functional gate passes on the reference Mac with explicit serial execution
+(`--no-parallel`); see the [development procedure](development.md#validation-tiers-and-test-discipline).
+Concurrent native editor fixtures still interfere through shared math-renderer teardown;
+serial execution preserves the full functional graph and assertions. This does not
+establish the standing device/provider release acceptance above.
 
 ### Two-Mac acceptance procedure
 
