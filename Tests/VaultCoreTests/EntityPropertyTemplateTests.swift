@@ -225,6 +225,33 @@ private func templateSave(_ f: TemplateFixture, type: String = "person", ids: [U
     try await reopened.close()
 }
 
+@Test func entityTemplateUpgradeRegistersOptionalTypesWithoutCreatingEntitiesOrReplacingDescriptors() async throws {
+    let f = try templateFixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+    try await f.store.close()
+    let oldURL = f.root.appendingPathComponent("legacy-registry.sqlite")
+    let old = try VaultStorageProvider.plaintext.makeRelationshipStagingStore(url: oldURL, vaultID: f.vaultID)
+    try await old.close()
+    // Event and Creative Work were registered lazily in supported older vaults.
+    try templateSQL(oldURL, "DELETE FROM knowledge_entity_types WHERE key IN ('event','creativeWork')")
+    try templateSQL(oldURL, "UPDATE knowledge_entity_types SET descriptor=CAST('{\"futureType\":{\"preserve\":true}}' AS BLOB) WHERE key='person'")
+    let supported = try VaultStorageProvider.plaintext.makeRelationshipStagingStore(url: oldURL, vaultID: f.vaultID, createIfMissing: false)
+    _ = try await supported.upgradeEntityPropertyTemplateSchema(expectedVaultRevision: supported.canonicalVaultRevision())
+    for type in KnowledgeEntityType.initial.map(\.key) {
+        let absent = try await supported.loadPropertyTemplate(typeKey: type)
+        #expect(absent.definitionIDs.isEmpty && absent.revision == nil)
+        let saved = try await supported.savePropertyTemplate(typeKey: type, definitionIDs: [], expected: nil, expectedVaultRevision: supported.canonicalVaultRevision(), operationID: UUID()).value
+        #expect(saved.typeKey == type && saved.revision != nil)
+    }
+    #expect(try templateSQL(oldURL, "SELECT count(*) FROM knowledge_entities") == 0)
+    #expect(try templateSQL(oldURL, "SELECT count(*) FROM knowledge_entity_types WHERE key IN ('person','place','concept','event','creativeWork')") == 5)
+    #expect(try templateSQL(oldURL, "SELECT json_extract(CAST(descriptor AS TEXT),'$.futureType.preserve') FROM knowledge_entity_types WHERE key='person'") == 1)
+    try await supported.close()
+    let reopened = try VaultStorageProvider.plaintext.makeTemplateStagingStore(url: oldURL, vaultID: f.vaultID, createIfMissing: false)
+    #expect(try await reopened.loadPropertyTemplate(typeKey: "creativeWork").revision != nil)
+    #expect(try await reopened.loadPropertyTemplate(typeKey: "event").revision != nil)
+    try await reopened.close()
+}
+
 private struct TemplateManifestFailureStore: VaultContentStore {
     let base: any VaultContentStore
     func createDirectory(at path: String) throws { try base.createDirectory(at: path) }
