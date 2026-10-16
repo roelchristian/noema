@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import SQLite3
 
 public enum EmbeddingIndexError: Error, Sendable { case unavailable, unsupportedSchema, invalidMetadata, unsafeLocation }
@@ -521,6 +522,139 @@ public struct EmbeddingSimilarityMatch: Sendable, Equatable {
 }
 
 public extension SQLiteEmbeddingIndex {
+    /// Bounded, completed-document retrieval within one exact vector space. Completion is
+    /// technical evidence only: callers must revalidate canonical revisions and Source bytes
+    /// before presentation. The synchronous predicate must not reenter this actor/connection.
+    /// Memory is O(documentLimit * passagesPerDocument + dimensions), independent of row count.
+    func searchCandidates(query: EmbeddingVector, generation: EmbeddingIndexGeneration,
+                          documentLimit: Int = 20, passagesPerDocument: Int = 3,
+                          kind: AIEntityKind? = nil,
+                          isCurrent: @Sendable (EmbeddingDocumentCompletion) throws -> Bool,
+                          validateQuery: @Sendable () throws -> Void) throws -> [SemanticSearchCandidate] {
+        guard query.model == generation.model else { throw EmbeddingContractError.incompatibleGeneration }
+        guard (1...1000).contains(documentLimit), (1...10).contains(passagesPerDocument) else {
+            throw EmbeddingContractError.invalidInput
+        }
+        func check() throws { try validate(generation); try validateQuery() }
+        try check()
+        try Self.execute(db, "BEGIN")
+        do {
+            // A primary-key lookup returns at most one bounded metadata value.
+            let generationRows = try Self.rows(db,
+                "SELECT CASE WHEN length(metadata)<=16384 THEN metadata END FROM embedding_generations WHERE id=?",
+                [Data(generation.id.uuidString.utf8)])
+            guard let metadata = generationRows.first?.first else {
+                try check(); try Self.execute(db, "COMMIT"); try check()
+                return []
+            }
+            guard try JSONDecoder().decode(GenerationMetadata.self, from: metadata).value() == generation else {
+                throw EmbeddingContractError.incompatibleGeneration
+            }
+            // Both cursors use the existing generation/kind/entity primary-key prefix.
+            // Never use rows(), records(), or completedDocuments() for these unbounded sets.
+            var documents: OpaquePointer?
+            let sql = "SELECT CASE WHEN length(entity_kind)<=128 THEN entity_kind END,CASE WHEN length(entity_id)<=128 THEN entity_id END,chunk_count,CASE WHEN length(metadata)<=16384 THEN metadata END FROM embedding_documents WHERE generation_id=?" +
+                (kind == nil ? "" : " AND entity_kind=?") + " ORDER BY entity_kind,entity_id"
+            guard sqlite3_prepare_v2(db, sql, -1, &documents, nil) == SQLITE_OK, let documents else {
+                throw EmbeddingIndexError.unavailable
+            }
+            defer { sqlite3_finalize(documents) }
+            try Self.bindSearchText(documents, 1, generation.id.uuidString)
+            if let kind { try Self.bindSearchText(documents, 2, kind.rawValue) }
+            var best = EmbeddingSearchHeap<SemanticSearchCandidate>(capacity: documentLimit, precedes: embeddingCandidatePrecedes)
+            while true {
+                try check()
+                let status = sqlite3_step(documents)
+                if status == SQLITE_DONE { break }
+                guard status == SQLITE_ROW else { throw EmbeddingIndexError.unavailable }
+                // Damaged derived metadata excludes its whole document, not lexical services.
+                guard let completion = try? Self.searchCompletion(documents, generation: generation),
+                      completion.chunkCount > 0, try isCurrent(completion) else { continue }
+                let passages = try searchPassages(query: query, generation: generation,
+                    completion: completion, limit: passagesPerDocument, check: check)
+                guard !passages.isEmpty else { continue }
+                best.insert(try SemanticSearchCandidate(generation: generation, completion: completion, passages: passages))
+            }
+            let results = try best.sorted().filter { candidate in
+                try check()
+                return try isCurrent(candidate.completion)
+            }
+            try check()
+            try Self.execute(db, "COMMIT")
+            try check()
+            return results
+        } catch { try? Self.execute(db, "ROLLBACK"); throw error }
+    }
+
+    private static func bindSearchText(_ statement: OpaquePointer, _ index: Int32, _ value: String) throws {
+        let status = value.withCString { sqlite3_bind_text(statement, index, $0, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self)) }
+        guard status == SQLITE_OK else { throw EmbeddingIndexError.unavailable }
+    }
+
+    private static func searchData(_ statement: OpaquePointer, _ index: Int32, maximumBytes: Int) throws -> Data {
+        let count = Int(sqlite3_column_bytes(statement, index))
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL, count <= maximumBytes,
+              count > 0, let bytes = sqlite3_column_blob(statement, index) else { throw EmbeddingIndexError.invalidMetadata }
+        return Data(bytes: bytes, count: count)
+    }
+
+    private static func searchCompletion(_ statement: OpaquePointer, generation: EmbeddingIndexGeneration) throws -> EmbeddingDocumentCompletion {
+        let completion = try JSONDecoder().decode(CompletionMetadata.self,
+            from: searchData(statement, 3, maximumBytes: 16_384)).value(vaultID: generation.vaultID)
+        try validateCompletion(completion)
+        guard try searchData(statement, 0, maximumBytes: 128) == Data(completion.identity.entityKind.rawValue.utf8),
+              try searchData(statement, 1, maximumBytes: 128) == Data(completion.identity.entityID.uuidString.utf8),
+              sqlite3_column_type(statement, 2) == SQLITE_INTEGER,
+              sqlite3_column_int64(statement, 2) == Int64(completion.chunkCount) else { throw EmbeddingIndexError.invalidMetadata }
+        return completion
+    }
+
+    private func searchPassages(query: EmbeddingVector, generation: EmbeddingIndexGeneration,
+                                completion: EmbeddingDocumentCompletion, limit: Int,
+                                check: () throws -> Void) throws -> [SemanticSearchPassage] {
+        var statement: OpaquePointer?
+        // SQL length guards avoid materializing oversized damaged BLOBs in SQLite first.
+        let sql = "SELECT CASE WHEN length(metadata)<=16384 THEN metadata END,CASE WHEN length(vector)=?4 THEN vector END,CASE WHEN length(entity_kind)<=128 THEN entity_kind END,CASE WHEN length(entity_id)<=128 THEN entity_id END,CASE WHEN length(chunk_id)<=16384 THEN chunk_id END,ordinal FROM embedding_chunks WHERE generation_id=?1 AND entity_kind=?2 AND entity_id=?3 ORDER BY ordinal"
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw EmbeddingIndexError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        try Self.bindSearchText(statement, 1, generation.id.uuidString)
+        try Self.bindSearchText(statement, 2, completion.identity.entityKind.rawValue)
+        try Self.bindSearchText(statement, 3, completion.identity.entityID.uuidString)
+        guard generation.model.dimensions <= Int.max / 4,
+              sqlite3_bind_int64(statement, 4, Int64(generation.model.dimensions * 4)) == SQLITE_OK else {
+            throw EmbeddingContractError.invalidVector
+        }
+        var best = EmbeddingSearchHeap<SemanticSearchPassage>(capacity: limit, precedes: embeddingPassagePrecedes)
+        var count = 0
+        var damaged = false
+        var fingerprint = SHA256()
+        while true {
+            try check()
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE { break }
+            guard status == SQLITE_ROW else { throw EmbeddingIndexError.unavailable }
+            count += 1
+            do {
+                let chunk = try JSONDecoder().decode(ChunkMetadata.self,
+                    from: Self.searchData(statement, 0, maximumBytes: 16_384)).value(vaultID: generation.vaultID)
+                guard chunk.identity == completion.identity,
+                      chunk.chunkingVersion == generation.chunkingVersion,
+                      try Self.searchData(statement, 2, maximumBytes: 128) == Data(chunk.identity.entityKind.rawValue.utf8),
+                      try Self.searchData(statement, 3, maximumBytes: 128) == Data(chunk.identity.entityID.uuidString.utf8),
+                      try Self.searchData(statement, 4, maximumBytes: 16_384) == Data(chunk.chunkID.utf8),
+                      sqlite3_column_type(statement, 5) == SQLITE_INTEGER,
+                      sqlite3_column_int64(statement, 5) == Int64(chunk.ordinal) else { throw EmbeddingIndexError.invalidMetadata }
+                if count > 1 { fingerprint.update(data: Data("\n".utf8)) }
+                fingerprint.update(data: Data((chunk.chunkID + ":" + chunk.contentFingerprint).utf8))
+                let vector = try EmbeddingVector(float32LittleEndian:
+                    Self.searchData(statement, 1, maximumBytes: generation.model.dimensions * 4), model: generation.model)
+                best.insert(try SemanticSearchPassage(chunk: chunk, cosineSimilarity: query.cosineSimilarity(to: vector)))
+            } catch { damaged = true }
+        }
+        let inputFingerprint = fingerprint.finalize().map { String(format: "%02x", $0) }.joined()
+        return !damaged && count == completion.chunkCount && inputFingerprint == completion.inputFingerprint ? best.sorted() : []
+    }
+
     /// Exact chunk retrieval. The caller supplies authoritative revision/availability checks;
     /// this local primitive does not generate query embeddings or grant cloud authority.
     func nearest(query: EmbeddingVector, generation: EmbeddingIndexGeneration, limit: Int = 20,
