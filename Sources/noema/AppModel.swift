@@ -223,6 +223,7 @@ struct AISuggestion: Identifiable, Sendable {
     var knowledgeFamily: KnowledgeLibraryFamily = .blocks
     var knowledgeCatalogue: KnowledgeCatalogueSnapshot?
     @ObservationIgnored var entityPropertySearchDidLoad: (@MainActor () async -> Void)?
+    @ObservationIgnored var sourceEntityLinksDidLoad: (@MainActor () async -> Void)?
     var knowledgeCatalogueLoading = false
     var knowledgeCatalogueError: String?
     @ObservationIgnored private var knowledgeCatalogueTicket = UUID()
@@ -4661,5 +4662,83 @@ extension AppModel {
         _ = try await repository.sqliteBlockStore.savePropertyTemplate(typeKey: snapshot.template.typeKey,
             definitionIDs: definitionIDs, expected: snapshot.template.revision,
             expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+    }
+}
+
+
+extension AppModel {
+    func loadSourceEntityLinks(sourceID: UUID, offset: Int = 0) async throws -> SourceEntityLinksSnapshot {
+        try await loadSourceEntityAssociationContext(sourceID: sourceID, entityID: nil, offset: offset)
+    }
+    func loadEntitySourceLinks(entityID: UUID, offset: Int = 0) async throws -> SourceEntityLinksSnapshot {
+        try await loadSourceEntityAssociationContext(sourceID: nil, entityID: entityID, offset: offset)
+    }
+    private func loadSourceEntityAssociationContext(sourceID: UUID?, entityID: UUID?, offset: Int) async throws -> SourceEntityLinksSnapshot {
+        guard canOperateOnLoadedContent, !isLocked, let repository else { throw VaultError.unavailable("The vault is unavailable.") }
+        let sessionID = sessionState.sessionID, store = repository.sqliteBlockStore
+        let vault = try await store.canonicalVaultRevision()
+        let associations: [SourceEntityAssociationSnapshot]
+        var sources: [CanonicalSourceSnapshot] = [], entities: [KnowledgeEntitySnapshot] = []
+        if let sourceID {
+            sources = [try await store.sourceSnapshot(id: sourceID)]
+            associations = try await store.associationsForSource(id: sourceID, limit: SourceEntityLinksSnapshot.pageSize, offset: offset)
+        } else if let entityID {
+            entities = [try await store.loadEntity(id: entityID)]
+            associations = try await store.sourcesForEntity(id: entityID, limit: SourceEntityLinksSnapshot.pageSize, offset: offset)
+        } else { throw VaultError.invalid("Choose a Source or entity.") }
+        for association in associations {
+            if !sources.contains(where: { $0.source.id == association.association.sourceID }) {
+                sources.append(try await store.sourceSnapshot(id: association.association.sourceID))
+            }
+            if !entities.contains(where: { $0.entity.id == association.association.entityID }) {
+                entities.append(try await store.loadEntity(id: association.association.entityID))
+            }
+        }
+        if let sourceEntityLinksDidLoad { await sourceEntityLinksDidLoad() }
+        guard canOperateOnLoadedContent, !isLocked, sessionState.sessionID == sessionID, !Task.isCancelled else {
+            throw VaultError.unavailable("This Source link selection is no longer current.")
+        }
+        // Source Trash changes its own revision without advancing the collection.
+        // Check endpoint revisions as well as the association collection revision.
+        for source in sources {
+            guard try await store.sourceSnapshot(id: source.source.id).revision == source.revision else { throw KnowledgeStoreError.staleRevision }
+        }
+        for entity in entities {
+            guard try await store.loadEntity(id: entity.entity.id).revision == entity.revision else { throw KnowledgeStoreError.staleRevision }
+        }
+        let finalVault = try await store.canonicalVaultRevision()
+        guard finalVault == vault, canOperateOnLoadedContent, !isLocked,
+              sessionState.sessionID == sessionID, !Task.isCancelled else { throw KnowledgeStoreError.staleRevision }
+        return .init(associations: associations, sources: sources, entities: entities,
+            vaultRevision: vault, sessionID: sessionID, offset: offset)
+    }
+
+    func linkSourceEntity(sourceID: UUID, entity: KnowledgeEntitySnapshot, role: SourceEntityAssociationRole,
+                          snapshot: SourceEntityLinksSnapshot, isCurrent: @MainActor () -> Bool) async throws {
+        guard canEditSemanticTarget, !isLocked, let repository, sessionState.sessionID == snapshot.sessionID,
+              isCurrent(), !Task.isCancelled, let source = snapshot.sources.first(where: { $0.source.id == sourceID }) else {
+            throw VaultError.unavailable("This Source link selection is no longer editable.")
+        }
+        _ = try await repository.sqliteBlockStore.linkSource(sourceID, to: entity.entity.id, role: role,
+            expectedSource: source.revision, expectedEntity: entity.revision,
+            expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+    }
+    func unlinkSourceEntity(_ association: SourceEntityAssociationSnapshot, snapshot: SourceEntityLinksSnapshot,
+                            isCurrent: @MainActor () -> Bool) async throws {
+        guard canEditSemanticTarget, !isLocked, let repository, sessionState.sessionID == snapshot.sessionID,
+              isCurrent(), !Task.isCancelled, snapshot.associations.contains(association),
+              let source = snapshot.sources.first(where: { $0.source.id == association.association.sourceID }),
+              let entity = snapshot.entities.first(where: { $0.entity.id == association.association.entityID }) else {
+            throw VaultError.unavailable("This Source link selection is no longer editable.")
+        }
+        _ = try await repository.sqliteBlockStore.unlinkSourceAssociation(id: association.association.id,
+            expected: association.revision, expectedSource: source.revision, expectedEntity: entity.revision,
+            expectedVaultRevision: snapshot.vaultRevision, operationID: UUID())
+    }
+    func openAssociatedSource(_ sourceID: UUID, snapshot: SourceEntityLinksSnapshot, isCurrent: @MainActor () -> Bool) {
+        guard canOperateOnLoadedContent, !isLocked, sessionState.sessionID == snapshot.sessionID, isCurrent(),
+              snapshot.sources.contains(where: { $0.source.id == sourceID && !$0.trashed }),
+              sources.contains(where: { $0.id == sourceID }) else { return }
+        openSource(sourceID)
     }
 }

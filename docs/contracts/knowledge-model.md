@@ -417,3 +417,12 @@ APIs remain available. Admission/archive validation covers roles, IDs, revisions
 finite timestamps, foreign keys and endpoint type semantics while permitting
 retained inactive endpoints. SQLite backup includes the table automatically.
 See [association tests](../../Tests/VaultCoreTests/SourceEntityAssociationTests.swift).
+
+The Source inspector links existing entities with an explicit role and confirmation
+of the add action; unlinking requires confirmation. Entity properties show grouped
+Source links and open the existing native reader only on an explicit action. Reads
+show retained inactive endpoints and metadata-only availability, never a new claim
+that originals are verified. Both views page bounded results and invalidate state
+on selection, session, lock and vault changes. The facade checks endpoint revisions
+as well as the collection revision: Source Trash can advance only the Source
+revision. No reader, availability request, scan or AI work is started by listing links.

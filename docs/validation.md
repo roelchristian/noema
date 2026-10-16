@@ -392,10 +392,11 @@ source or a permanent golden fixture. Reproduction retains commit/fixture proven
 
 ## Native window acceptance
 
-Entity properties (ENT.03) and optional templates (ENT.04) retain a separate live acceptance gate: keyboard traversal
+Entity properties (ENT.03), optional templates (ENT.04) and Source links (ENT.05) retain a separate live acceptance gate: keyboard traversal
 and focus restoration across definition/target pickers, inverse editing, delete
 confirmation, refresh errors, rapid entity switching, template type switching and
-add/reorder/remove controls, and VoiceOver announcements.
+add/reorder/remove controls, Source role pickers, confirmed unlinking, bidirectional
+reader navigation, offline and inactive link states, and VoiceOver announcements.
 [Inspector integration tests](../Tests/NoemaEditorTests/EntityPropertiesInspectorTests.swift)
 exercise canonical revisions and stale sessions; the opt-in
 [raster fixture](../Tests/NoemaVisualValidationTests/EntityPropertiesLayoutTests.swift)

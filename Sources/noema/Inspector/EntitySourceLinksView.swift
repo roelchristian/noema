@@ -74,7 +74,7 @@ struct EntitySourceLinksView: View {
             Button("Unlink Source", role: .destructive) {
                 if let edge = pendingUnlink, let snapshot {
                     let token = request
-                    Task { await unlink(edge, snapshot: snapshot, token: token) }
+                    Task { await removeAssociation(edge, snapshot: snapshot, token: token) }
                 }
                 pendingUnlink = nil
             }
@@ -141,7 +141,7 @@ struct EntitySourceLinksView: View {
         }
     }
 
-    private func unlink(_ edge: SourceEntityAssociationSnapshot, snapshot: SourceEntityLinksSnapshot, token: UUID) async {
+    private func removeAssociation(_ edge: SourceEntityAssociationSnapshot, snapshot: SourceEntityLinksSnapshot, token: UUID) async {
         guard current(token), editable else { return }
         busy = true; error = nil
         do {

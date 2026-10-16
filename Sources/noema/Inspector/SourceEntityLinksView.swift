@@ -84,7 +84,7 @@ struct SourceEntityLinksView: View {
         .confirmationDialog("Unlink this entity from the Source?", isPresented: Binding(get: { pendingUnlink != nil }, set: { if !$0 { pendingUnlink = nil } }), titleVisibility: .visible) {
             Button("Unlink", role: .destructive) {
                 if let association = pendingUnlink, let snapshot = displayed {
-                    Task { await unlink(association, snapshot: snapshot) }
+                    Task { await removeAssociation(association, snapshot: snapshot) }
                 }
                 pendingUnlink = nil
             }
@@ -203,7 +203,7 @@ struct SourceEntityLinksView: View {
         }
     }
 
-    private func unlink(_ association: SourceEntityAssociationSnapshot, snapshot: SourceEntityLinksSnapshot) async {
+    private func removeAssociation(_ association: SourceEntityAssociationSnapshot, snapshot: SourceEntityLinksSnapshot) async {
         guard editable, association.association.sourceID == sourceID, displayed?.sessionID == snapshot.sessionID else { return }
         let token = request, source = sourceID, session = model.sessionState.sessionID
         busy = true; error = nil
