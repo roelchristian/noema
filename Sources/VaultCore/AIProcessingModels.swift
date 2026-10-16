@@ -33,13 +33,14 @@ public struct AIWorkKey: Codable, Sendable, Hashable {
 }
 
 public enum AIWorkState: String, Codable, Sendable {
-    case pending, scheduled, running, completed, superseded, suspended, retryable, blocked, failed, cancelled
+    case pending, scheduled, running, completed, superseded, suspended, retryable, blocked, failed, cancellationRequested, cancelled
     public func permits(_ next: Self) -> Bool {
         if self == next { return true }
         switch self {
-        case .pending, .scheduled, .retryable: return [.scheduled, .running, .superseded, .suspended, .blocked, .cancelled, .failed].contains(next)
-        case .running: return [.completed, .superseded, .suspended, .retryable, .blocked, .failed, .cancelled].contains(next)
-        case .suspended, .blocked: return [.pending, .superseded, .cancelled].contains(next)
+        case .pending, .scheduled, .retryable: return [.scheduled, .running, .superseded, .suspended, .blocked, .cancellationRequested, .cancelled, .failed].contains(next)
+        case .running: return [.completed, .superseded, .suspended, .retryable, .blocked, .failed, .cancellationRequested, .cancelled].contains(next)
+        case .suspended, .blocked: return [.pending, .superseded, .cancellationRequested, .cancelled].contains(next)
+        case .cancellationRequested: return next == .cancelled
         case .completed, .superseded, .failed, .cancelled: return false
         }
     }
@@ -47,6 +48,11 @@ public enum AIWorkState: String, Codable, Sendable {
 public enum AIWorkFailure: String, Codable, Sendable, Error {
     case authority, consent, unavailable, transient, unsupported, corruptContent, validation, ledger, attemptsExhausted
 }
+public extension AIWorkFailure {
+    /// Explicit retry is limited to conditions that can change without replacing content.
+    var permitsExplicitRetry: Bool { [.transient, .unavailable, .attemptsExhausted, .authority, .consent].contains(self) }
+}
+public enum AIWorkCompletionDisposition: String, Codable, Sendable { case completed, skipped }
 public struct AIWorkItem: Codable, Sendable, Equatable, Identifiable {
     public var id: UUID
     public var key: AIWorkKey
@@ -58,19 +64,35 @@ public struct AIWorkItem: Codable, Sendable, Equatable, Identifiable {
     public var inputFingerprint: String?
     public var failure: AIWorkFailure?
     public var updatedAt: Date
+    public var batchID: UUID?
+    public var completionDisposition: AIWorkCompletionDisposition?
+    /// Conservative metadata: dispatched cloud work may incur usage despite cancellation.
+    public var possibleTransmittedUsage: Bool?
     public init(id: UUID = UUID(), key: AIWorkKey, revision: String, processorVersion: String,
                 state: AIWorkState = .pending, attemptCount: Int = 0, eligibleAt: Date,
-                inputFingerprint: String? = nil, failure: AIWorkFailure? = nil, updatedAt: Date = Date()) {
+                inputFingerprint: String? = nil, failure: AIWorkFailure? = nil, updatedAt: Date = Date(),
+                batchID: UUID? = nil, completionDisposition: AIWorkCompletionDisposition? = nil,
+                possibleTransmittedUsage: Bool? = nil) {
         self.id = id; self.key = key; self.revision = revision; self.processorVersion = processorVersion
         self.state = state; self.attemptCount = attemptCount; self.eligibleAt = eligibleAt
         self.inputFingerprint = inputFingerprint; self.failure = failure; self.updatedAt = updatedAt
+        self.batchID = batchID; self.completionDisposition = completionDisposition
+        self.possibleTransmittedUsage = possibleTransmittedUsage
     }
 }
 public protocol AIWorkLedger: Sendable {
+    func existingWorkItem(key: AIWorkKey) async throws -> AIWorkItem?
+    func pausedProcessors(vaultID: UUID) async throws -> Set<String>
+    func setProcessorPaused(vaultID: UUID, processorID: String, paused: Bool) async throws
     func load(vaultID: UUID) async throws -> [AIWorkItem]
     func save(_ item: AIWorkItem) async throws
     func checkpoint(vaultID: UUID) async throws -> [AIContentChange]?
     func saveCheckpoint(vaultID: UUID, changes: [AIContentChange]) async throws
+}
+public extension AIWorkLedger {
+    func existingWorkItem(key: AIWorkKey) async throws -> AIWorkItem? { nil }
+    func pausedProcessors(vaultID: UUID) async throws -> Set<String> { [] }
+    func setProcessorPaused(vaultID: UUID, processorID: String, paused: Bool) async throws { throw AIWorkLedgerError.unavailable }
 }
 public enum AIProcessingProvider: String, Codable, Sendable { case cloud, onDevice }
 public struct AIProcessorDescriptor: Sendable {
@@ -79,10 +101,14 @@ public struct AIProcessorDescriptor: Sendable {
     public let targets: Set<AIEntityKind>
     public let dependencies: Set<AIContentDimension>
     public let provider: AIProcessingProvider
+    public let recoverOnVersionChange: Bool
+    public let observesCommittedChanges: Bool
     public init(identifier: String, version: String, targets: Set<AIEntityKind>,
-                dependencies: Set<AIContentDimension>, provider: AIProcessingProvider) {
+                dependencies: Set<AIContentDimension>, provider: AIProcessingProvider, recoverOnVersionChange: Bool = true, observesCommittedChanges: Bool = true) {
         self.identifier = identifier; self.version = version; self.targets = targets
         self.dependencies = dependencies; self.provider = provider
+        self.recoverOnVersionChange = recoverOnVersionChange
+        self.observesCommittedChanges = observesCommittedChanges
     }
 }
 /// Snapshot lifetime and protected memory retirement belong to the processor. Never persisted.

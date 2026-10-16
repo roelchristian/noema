@@ -36,6 +36,35 @@ private func publicationPermitDocument(_ text: String) -> BlockDocument {
     BlockDocument(blocks: [EditorBlock(runs: [RichRun(text)])])
 }
 
+@Test func embeddingPublicationPermitRejectsEntityPropertyCommitOnCurrentSchema() async throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent(".local/agent-runs/embedding-property-permit-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data().write(to: root.appendingPathComponent(".active"))
+    defer {
+        try? Data().write(to: root.appendingPathComponent(".complete"))
+        try? FileManager.default.removeItem(at: root.appendingPathComponent(".active"))
+    }
+    let vaultID = UUID()
+    let store = try VaultStorageProvider.plaintext.makeRelationshipStagingStore(
+        url: root.appendingPathComponent("blocks.sqlite"), vaultID: vaultID)
+    let page = try await store.save(publicationPermitDocument("Original page"), pageID: UUID(), condition: .createOnly)
+    let entity = try await store.createEntity(.init(typeKey: "person", label: "Ada"),
+        expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID()).value
+    let definition = try EntityPropertyDefinition(vaultID: vaultID, label: "Occupation", kind: .text, cardinality: .one)
+    _ = try await store.savePropertyDefinition(definition, expected: nil,
+        expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID())
+    let permit = try await store.embeddingPublicationPermit(pageID: page.pageID, expected: page.revision)
+    _ = try await store.savePropertyValues(entityID: entity.entity.id,
+        assignments: [.init(definitionID: definition.id, value: .text("Mathematician"))],
+        expectedEntity: entity.revision, expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID())
+    #expect(throws: EmbeddingContractError.authorityDenied) {
+        try permit.withPublication(authority: EmbeddingPublicationAuthority()) {}
+    }
+    #expect(try await store.load(pageID: page.pageID).revision == page.revision)
+    try await store.close()
+}
+
 @Test func embeddingPublicationPermitRejectsCrossConnectionEditAndRemoval() async throws {
     let root = try publicationPermitRoot()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -144,47 +173,53 @@ private func publicationPermitDocument(_ text: String) -> BlockDocument {
     let second = try SQLiteBlockStore(unguardedTestingURL: url, createIfMissing: false)
     let permit = try await first.embeddingPublicationPermit(pageID: pageID, expected: snapshot.revision)
     let authority = EmbeddingPublicationAuthority()
-    let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+    let entered = DispatchGroup(); entered.enter()
+    let release = DispatchSemaphore(value: 0)
     let revokeAttempt = DispatchSemaphore(value: 0), editAttempt = DispatchSemaphore(value: 0)
-    let order = PublicationBoundaryTrace()
-    let publication = Task.detached {
-        try await publicationBackground {
-        try permit.withPublication(authority: authority) {
-            order.append("publication-enter")
-            entered.signal()
-            guard release.wait(timeout: .now() + 5) == .success else { throw VaultError.invalid("Boundary test release timed out.") }
-            order.append("publication-exit")
-        }
-        }
+    let order = PublicationBoundaryTrace(), attemptsObserved = PublicationBoundaryTrace()
+    let (publication, published) = AsyncThrowingStream<Void, Error>.makeStream()
+    let (revocation, revoked) = AsyncThrowingStream<Void, Error>.makeStream()
+    let (edit, edited) = AsyncThrowingStream<Void, Error>.makeStream()
+    // Install every contender and the release controller synchronously before any
+    // cooperative suspension. A blocked actor executor cannot prevent lock release.
+    DispatchQueue(label: "noema.publication-owner").async {
+        do {
+            try permit.withPublication(authority: authority) {
+                order.append("publication-enter"); entered.leave()
+                guard release.wait(timeout: .now() + 5) == .success else { throw VaultError.invalid("Boundary test release timed out.") }
+                order.append("publication-exit")
+            }
+            published.finish()
+        } catch { published.finish(throwing: error) }
     }
-    #expect(await publicationBoundaryReached(entered))
-    let revocation = Task.detached {
-        try await publicationBackground {
-            revokeAttempt.signal()
-            authority.invalidate()
-            order.append("revocation-complete")
+    DispatchQueue(label: "noema.publication-revoker").async {
+        guard entered.wait(timeout: .now() + 5) == .success else {
+            revoked.finish(throwing: VaultError.invalid("Publication never entered.")); return
         }
+        revokeAttempt.signal()
+        authority.invalidate(); order.append("revocation-complete"); revoked.finish()
     }
-    let edit = Task.detached {
+    DispatchQueue(label: "noema.publication-editor").async {
+        guard entered.wait(timeout: .now() + 5) == .success else {
+            edited.finish(throwing: VaultError.invalid("Publication never entered.")); return
+        }
         editAttempt.signal()
-        _ = try await second.save(publicationPermitDocument("edited"), pageID: pageID, condition: .replace(expected: snapshot.revision))
-        order.append("canonical-commit")
+        Task {
+            do {
+                _ = try await second.save(publicationPermitDocument("edited"), pageID: pageID, condition: .replace(expected: snapshot.revision))
+                order.append("canonical-commit"); edited.finish()
+            } catch { edited.finish(throwing: error) }
+        }
     }
-    // Releasing the lock must not require another cooperative-executor turn while
-    // canonical and authority contenders are deliberately blocked at the barrier.
-    let released = DispatchSemaphore(value: 0)
-    let attemptsObserved = PublicationBoundaryTrace()
     DispatchQueue(label: "noema.publication-release").async {
         if revokeAttempt.wait(timeout: .now() + 5) == .success { attemptsObserved.append("revoke") }
         if editAttempt.wait(timeout: .now() + 5) == .success { attemptsObserved.append("edit") }
         release.signal()
-        released.signal()
     }
-    #expect(await publicationBoundaryReached(released))
+    for try await _ in publication {}
+    for try await _ in revocation {}
+    for try await _ in edit {}
     #expect(attemptsObserved.values == ["revoke", "edit"])
-    try await publication.value
-    try await revocation.value
-    try await edit.value
     let observed = order.values
     #expect(observed.first == "publication-enter")
     #expect(observed.dropFirst().first == "publication-exit")

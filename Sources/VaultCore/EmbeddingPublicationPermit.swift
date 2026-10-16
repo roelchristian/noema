@@ -40,6 +40,10 @@ public final class EmbeddingPublicationAuthority: @unchecked Sendable {
     /// Disposable tests only; never accepted by SQLiteEmbeddingIndex's protected publication API.
     init() { gate = nil; lease = nil; generation = nil }
     deinit { if let registration { gate?.removeSessionInvalidator(registration) } }
+    /// Checks immutable storage routing identity without granting publication authority.
+    public func matches(lease: VaultSessionLease, generation: EmbeddingIndexGeneration) -> Bool {
+        self.lease == lease && self.generation == generation
+    }
     public func invalidate() { lock.lock(); defer { lock.unlock() }; valid = false }
     fileprivate func withPublication<T>(_ body: () throws -> T) throws -> T {
         lock.lock(); defer { lock.unlock() }

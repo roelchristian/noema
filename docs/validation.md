@@ -65,6 +65,10 @@ only in the opt-in `NoemaVisualValidationTests` target. Existing raster matrices
 there as well. These representatives retain source-byte, serialization and selection
 assertions; specialized coverage is still required when changing layout boundaries.
 Benchmarks are physically isolated in the opt-in `NoemaPerformanceTests` target.
+Native display/inline projection fixtures share the serialized `MathProjectionRuntimeTests`
+parent because teardown resets their process-wide typesetter. This prevents one fixture
+from cancelling another's pending render; focused runtime checks do not certify the
+complete functional graph.
 Opt-in fixture capture procedures are in [development](development.md#explicit-visual-validation).
 Live VoiceOver, keyboard focus, OS Reduce Motion/contrast combinations and manual
 window/sidebar/inspector resizing remain outstanding; raster fixtures do not certify
@@ -143,14 +147,26 @@ All items are **pending**; this checklist is a device/provider release gate, not
 
 ### Semantic embedding provider acceptance
 
-Native sentence-model availability, supported-language retrieval quality and full-input
-behavior remain device acceptance gaps; injected backends do not establish them. OpenAI
-transport is tested with synthetic credentials/responses, not a live provider account.
-Its model revision identifies the API/input contract because aliases do not expose an
-immutable weight revision. Usage receipts are available; activity integration, actual
-charges, large-vault memory/latency/cancellation measurements and crash durability are
-unverified. Automatic lifecycle, historical backfill, queue and hybrid-search acceptance
-remain pending under the [embedding contract](contracts/semantic-embeddings.md).
+The opt-in production-provider check establishes English sentence-model availability
+and a small paraphrase-ranking smoke on the reference Mac (revision 1, 512 dimensions).
+It does not establish other languages, broad retrieval quality or all admitted inputs.
+OpenAI transport uses synthetic credentials/responses; no live provider account or
+actual charges are verified. Its model revision identifies the API/input contract
+because aliases do not expose immutable weight revisions.
+
+Incremental lifecycle, explicit historical backfill and persistent queue controls have
+independently reviewed functional acceptance through application/provider/index tests;
+see the [embedding contract](contracts/semantic-embeddings.md). Entity-property commits
+on the current canonical schema also invalidate outstanding embedding publication permits.
+The opt-in 10,000-document/1,536-dimension synthetic projection benchmark measures scoped
+read latency, test-process peak RSS and cooperative cancellation. It does not establish
+complete-vault memory/latency, queue rendering, native inference or cloud throughput.
+Activity integration, hybrid search and actual crash/power-loss acceptance remain open.
+The Extended functional gate passes on the reference Mac with explicit serial execution
+(`--no-parallel`); see the [development procedure](development.md#validation-tiers-and-test-discipline).
+Concurrent native editor fixtures still interfere through shared math-renderer teardown;
+serial execution preserves the full functional graph and assertions. This does not
+establish the standing device/provider release acceptance above.
 
 ### Two-Mac acceptance procedure
 

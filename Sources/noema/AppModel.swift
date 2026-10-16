@@ -647,8 +647,11 @@ struct AISuggestion: Identifiable, Sendable {
     private var sourceCommandPanel: NSOpenPanel?
     var isLifecycleActionInProgress: Bool { lifecycleAction != nil }
     @ObservationIgnored private nonisolated(unsafe) var sessionObservationTask: Task<Void, Never>?
+    @ObservationIgnored var semanticProcessingGeneration: EmbeddingIndexGeneration?
     @ObservationIgnored var semanticPublicationAuthority: EmbeddingPublicationAuthority?
     @ObservationIgnored var aiProcessingCoordinator: AIProcessingCoordinator?
+    @ObservationIgnored var aiProcessingLedger: SQLiteAIWorkLedger?
+    @ObservationIgnored var embeddingBackfillRuntime: EmbeddingBackfillRuntime?
     @ObservationIgnored var aiProcessingBindingID = UUID()
     @ObservationIgnored var aiProcessingEventTask: Task<Void, Never>?
     @ObservationIgnored var aiProcessingRetirementTask: Task<Void, Never>?
@@ -656,7 +659,7 @@ struct AISuggestion: Identifiable, Sendable {
     private var activeSession: VaultSession?
     private var activeLease: VaultSessionLease?
     private(set) var lockedVaultURL: URL?
-    private var repository: FileVaultRepository?
+    private(set) var repository: FileVaultRepository?
     var index: (any SearchIndex)?
     @ObservationIgnored var semanticIndex: SQLiteEmbeddingIndex?
     var semanticIndexIssue: String?
@@ -695,6 +698,9 @@ struct AISuggestion: Identifiable, Sendable {
     var semanticIndexFactory: @Sendable (URL, VaultSessionLease, VaultAccessGate) throws -> SQLiteEmbeddingIndex = { root, lease, gate in
         try SQLiteEmbeddingIndex(applicationSupportRoot: root, lease: lease, accessGate: gate)
     }
+    var embeddingProviderFactory: @Sendable () throws -> any EmbeddingProvider = { try AppleSentenceEmbeddingProvider() }
+    var aiProcessingClock: AIProcessingClock = .continuous
+    var aiProcessingConfiguration = AIProcessingConfiguration()
     var sourceAvailabilityChecker: (@Sendable (SourceRecord, URL, any VaultContentStore) async -> String)?
     var localStorageRoot: URL?
     var persistSecurityScopedBookmark: Bool = true
@@ -736,6 +742,11 @@ struct AISuggestion: Identifiable, Sendable {
         } else if case .open(let session) = initialState {
             self.activeSession = session
             self.vaultName = session.vaultName
+        }
+        externalAIService.embeddingSelectionDidChange = { [weak self] in
+            guard let self, let repository = self.repository,
+                  let lease = self.sessionManager.accessGate.currentLease else { return }
+            Task { await self.bindAIProcessing(repository: repository, lease: lease, preservingEmbeddingApproval: true) }
         }
         startObservingSessionState()
         authenticationObservationTask = Task { @MainActor [weak self, sessionManager] in
@@ -1085,6 +1096,7 @@ struct AISuggestion: Identifiable, Sendable {
         repository = nil
         index = nil
         semanticIndex = nil
+        semanticProcessingGeneration = nil
         semanticIndexIssue = nil
         semanticIndexCompatibility = .unavailable
         recovery = nil
