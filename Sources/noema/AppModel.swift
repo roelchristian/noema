@@ -42,6 +42,9 @@ struct SidebarSearchResults: Sendable {
     var blocks: [SemanticBlockHit] = []
     var pageExcerpts: [UUID: String] = [:]
     var sourceExcerpts: [UUID: String] = [:]
+    var hybridOrder: [String] = []
+    var relevance: [String: HybridSearchProvenance] = [:]
+    var pageBlocks: [UUID: UUID] = [:]
     var isEmpty: Bool { pages.isEmpty && sources.isEmpty && blocks.isEmpty }
 
     static func search(_ query: String, notes: [NoteRecord], sources: [SourceRecord], index: any SearchIndex, semanticBlocks: [SemanticBlockHit]? = nil) async throws -> Self {
@@ -488,6 +491,17 @@ struct AISuggestion: Identifiable, Sendable {
     var searchScope: VaultSearchScope = .all {
         didSet { if searchScope != oldValue { invalidateSearch() } }
     }
+    var searchRetrievalMode: VaultSearchRetrievalMode = .keywords
+    var semanticSearchStatus: SemanticSearchStatus = .idle
+    var pendingSemanticQueryDisclosure: SemanticQueryDisclosure?
+    @ObservationIgnored var meaningTask: Task<Void, Never>?
+    @ObservationIgnored var meaningEpoch: MeaningSearchEpoch?
+    @ObservationIgnored var meaningSubmissionID: UUID?
+    @ObservationIgnored var meaningAdapter: SemanticQueryExecutionAdapter?
+    @ObservationIgnored var meaningApproval: CheckedContinuation<Bool, Never>?
+    @ObservationIgnored var meaningEvidence: [String: MeaningSearchEvidence] = [:]
+    @ObservationIgnored var meaningLexicalFallback: SidebarSearchResults?
+    @ObservationIgnored var beforeMeaningPublication: (@MainActor () async throws -> Void)?
     var searchStatus: VaultSearchStatus = .idle
     var sidebarSearchResults = SidebarSearchResults()
     var visibleSearchResults: SidebarSearchResults { sidebarSearchResults.filtered(to: searchScope) }
@@ -646,7 +660,9 @@ struct AISuggestion: Identifiable, Sendable {
     private var sourceCommandPanel: NSOpenPanel?
     var isLifecycleActionInProgress: Bool { lifecycleAction != nil }
     @ObservationIgnored private nonisolated(unsafe) var sessionObservationTask: Task<Void, Never>?
-    @ObservationIgnored var semanticProcessingGeneration: EmbeddingIndexGeneration?
+    @ObservationIgnored var semanticProcessingGeneration: EmbeddingIndexGeneration? {
+        didSet { if semanticProcessingGeneration != oldValue { retireMeaningSearch() } }
+    }
     @ObservationIgnored var semanticPublicationAuthority: EmbeddingPublicationAuthority?
     @ObservationIgnored var aiProcessingCoordinator: AIProcessingCoordinator?
     @ObservationIgnored var aiProcessingLedger: SQLiteAIWorkLedger?
@@ -666,8 +682,8 @@ struct AISuggestion: Identifiable, Sendable {
     private var recovery: RecoveryStore?
     private var scopeURL: URL?
     private var autosaveTask: Task<Void, Never>?
-    private var queryTask: Task<Void, Never>?
-    private var searchRevision = UUID()
+    var queryTask: Task<Void, Never>?
+    var searchRevision = UUID()
     private var refreshTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
     private var aiSummaryTask: Task<Void, Never>?
@@ -743,6 +759,7 @@ struct AISuggestion: Identifiable, Sendable {
             self.vaultName = session.vaultName
         }
         externalAIService.embeddingSelectionDidChange = { [weak self] in
+            self?.retireMeaningSearch()
             guard let self, let repository = self.repository,
                   let lease = self.sessionManager.accessGate.currentLease else { return }
             Task { await self.bindAIProcessing(repository: repository, lease: lease, preservingEmbeddingApproval: true) }
@@ -853,7 +870,7 @@ struct AISuggestion: Identifiable, Sendable {
         guard case .open(let session) = sessionState else { return false }
         return sessionManager.accessGate.currentState == sessionState && activeLease == session.lease && root != nil && repository != nil
     }
-    private var canOperateOnLoadedContent: Bool {
+    var canOperateOnLoadedContent: Bool {
         isVaultAvailable || (!isLocked && sessionState == .closed && activeSession == nil && (repository != nil || !notes.isEmpty || !sources.isEmpty || currentNote != nil || currentSource != nil))
     }
     var isLocked: Bool {
@@ -1045,6 +1062,7 @@ struct AISuggestion: Identifiable, Sendable {
     }
 
     private func cancelAllAsyncWork() {
+        retireMeaningSearch()
         cancelCloudSummary()
         autosaveTask?.cancel(); autosaveTask = nil
         queryTask?.cancel(); queryTask = nil
@@ -2569,6 +2587,7 @@ struct AISuggestion: Identifiable, Sendable {
         }
     }
     private func invalidateSearch() {
+        retireMeaningSearch()
         searchRevision = UUID()
         queryTask?.cancel(); queryTask = nil
         sidebarSearchResults = SidebarSearchResults()
@@ -2577,7 +2596,7 @@ struct AISuggestion: Identifiable, Sendable {
 
     private func resetSearch() {
         invalidateSearch()
-        searchText = ""; searchMode = .vault; searchScope = .all
+        searchText = ""; searchMode = .vault; searchScope = .all; searchRetrievalMode = .keywords
         sidebarSearchResults = SidebarSearchResults(); searchStatus = .idle
     }
 
@@ -2661,7 +2680,8 @@ struct AISuggestion: Identifiable, Sendable {
             }
         }
     }
-    func updateRows() async {
+    func updateRows(keepingMeaningSubmission: Bool = false) async {
+        if !keepingMeaningSubmission { retireMeaningSearch() }
         guard canOperateOnLoadedContent else { return }
         let query = searchText
         // Each execution supersedes earlier executions, even with identical inputs.

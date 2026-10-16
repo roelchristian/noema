@@ -165,6 +165,7 @@ extension AppModel {
     }
 
     func suspendAIProcessing(preservingEmbeddingApproval: Bool = false) {
+        retireMeaningSearch()
         invalidateEmbeddingBackfills()
         aiProcessingLedger = nil
         semanticPublicationAuthority?.invalidate()
