@@ -97,8 +97,21 @@ public struct EmbeddingWorkProcessor: AIWorkProcessor {
             try validate(context.lease); try context.validate()
             guard vectors.count == batch.count else { throw EmbeddingContractError.invalidVector }
             records += try zip(batch, vectors).map { try EmbeddingRecord(generation: generation, chunk: $0.0.chunk, vector: $0.1) }
+            if records.count < input.inputs.count {
+                // A completed request is durable before another request starts. Partial rows never
+                // claim document completion; a restart reuses only exact compatible fingerprints.
+                try await publish(records, input: input, context: context,
+                                  validators: publicationValidators, completed: false)
+            }
         }
-        records.sort { $0.chunk.ordinal < $1.chunk.ordinal }
+        try await publish(records, input: input, context: context,
+                          validators: publicationValidators, completed: true)
+        return changed.isEmpty ? .skipped : .completed
+    }
+
+    private func publish(_ records: [EmbeddingRecord], input: EmbeddingPreparedInputSnapshot,
+                         context: AIProcessingExecutionContext,
+                         validators: [@Sendable () throws -> Void], completed: Bool) async throws {
         try await repository.validateEmbeddingSnapshot(input)
         try validate(context.lease); try context.validate()
         let permit: EmbeddingPublicationPermit
@@ -109,15 +122,16 @@ public struct EmbeddingWorkProcessor: AIWorkProcessor {
             permit = try await repository.sqliteBlockStore.embeddingPublicationPermit(sourceID: input.identity.entityID, expected: input.canonicalRevision)
         }
         try validate(context.lease); try context.validate()
-        let validators = publicationValidators
-        let completion = EmbeddingDocumentCompletion(identity: input.identity, workRevision: input.revision,
+        let completion = completed ? EmbeddingDocumentCompletion(identity: input.identity, workRevision: input.revision,
+            inputFingerprint: input.inputFingerprint, chunkCount: records.count) : nil
+        let checkpoint = completed ? nil : EmbeddingDocumentCheckpoint(identity: input.identity, workRevision: input.revision,
             inputFingerprint: input.inputFingerprint, chunkCount: records.count)
-        try await index.replaceDocument(identity: input.identity, generation: generation, records: records,
-            permit: permit, authority: publicationAuthority, completion: completion, validatePublication: {
+        try await index.replaceDocument(identity: input.identity, generation: generation,
+            records: records.sorted { $0.chunk.ordinal < $1.chunk.ordinal },
+            permit: permit, authority: publicationAuthority, completion: completion, checkpoint: checkpoint, validatePublication: {
                 try context.validate(); try validateAuthority()
                 for validator in validators { try validator() }
             })
-        return changed.isEmpty ? .skipped : .completed
     }
 
     public func isCurrent(_ item: AIWorkItem, snapshot: any AIWorkSnapshot, lease: VaultSessionLease) async throws -> Bool {

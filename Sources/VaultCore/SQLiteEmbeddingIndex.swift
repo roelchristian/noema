@@ -16,6 +16,21 @@ public struct EmbeddingDocumentCompletion: Sendable, Equatable {
     }
 }
 
+/// Durable partial progress. This is reuse evidence, never a completed-document claim or authority.
+public struct EmbeddingDocumentCheckpoint: Sendable, Equatable {
+    public let identity: EmbeddingEntityIdentity
+    public let workRevision: String
+    public let inputFingerprint: String
+    public let chunkCount: Int
+    public init(identity: EmbeddingEntityIdentity, workRevision: String, inputFingerprint: String, chunkCount: Int) {
+        self.identity = identity; self.workRevision = workRevision
+        self.inputFingerprint = inputFingerprint; self.chunkCount = chunkCount
+    }
+    fileprivate var evidence: EmbeddingDocumentCompletion {
+        .init(identity: identity, workRevision: workRevision, inputFingerprint: inputFingerprint, chunkCount: chunkCount)
+    }
+}
+
 public protocol EmbeddingIndexStorage: Sendable {
     func replaceDocument(identity: EmbeddingEntityIdentity, generation: EmbeddingIndexGeneration, records: [EmbeddingRecord], validatePublication: @Sendable () throws -> Void) async throws
     func records(generation: EmbeddingIndexGeneration) async throws -> [EmbeddingRecord]
@@ -49,6 +64,8 @@ public actor SQLiteEmbeddingIndex: EmbeddingIndexStorage {
 
     private static let documentSchema = "CREATE TABLE embedding_documents(generation_id TEXT NOT NULL, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, chunk_count INTEGER NOT NULL CHECK(chunk_count>=0), metadata BLOB NOT NULL, PRIMARY KEY(generation_id,entity_kind,entity_id))"
 
+    private static let checkpointSchema = "CREATE TABLE embedding_checkpoints(generation_id TEXT NOT NULL, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, chunk_count INTEGER NOT NULL CHECK(chunk_count>=0), metadata BLOB NOT NULL, PRIMARY KEY(generation_id,entity_kind,entity_id))"
+
     public init(applicationSupportRoot: URL, lease: VaultSessionLease, accessGate: VaultAccessGate) throws {
         try accessGate.validate(lease: lease, targetRoot: lease.root, targetVaultID: lease.vaultID, operation: "embedding.index.open")
         let root = applicationSupportRoot.standardizedFileURL.resolvingSymlinksInPath()
@@ -62,38 +79,63 @@ public actor SQLiteEmbeddingIndex: EmbeddingIndexStorage {
         let db = connection.pointer
         sqlite3_busy_timeout(db, 2_000)
         let version = try Self.rows(db, "PRAGMA user_version").first?.first.flatMap { String(data: $0, encoding: .utf8) }.flatMap(Int.init) ?? -1
-        guard version == 0 || version == 1 || version == 2 else { throw EmbeddingIndexError.unsupportedSchema }
+        guard (0...3).contains(version) else { throw EmbeddingIndexError.unsupportedSchema }
         if version == 0 {
             guard try Self.rows(db, "SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").isEmpty else { throw EmbeddingIndexError.unsupportedSchema }
         } else {
             // Reject foreign layouts before enabling WAL or changing any database setting.
             let schema = try Self.rows(db, "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name")
-            let expected = version == 1 ? [Self.chunkSchema, Self.generationSchema] : [Self.chunkSchema, Self.documentSchema, Self.generationSchema]
+            let expected: [String]
+            switch version {
+            case 1: expected = [Self.chunkSchema, Self.generationSchema]
+            case 2: expected = [Self.chunkSchema, Self.documentSchema, Self.generationSchema]
+            default: expected = [Self.checkpointSchema, Self.chunkSchema, Self.documentSchema, Self.generationSchema]
+            }
             guard schema == expected.map({ [Data($0.utf8)] }) else {
                 throw EmbeddingIndexError.unsupportedSchema
             }
         }
         try Self.execute(db, "PRAGMA journal_mode=WAL")
         try Self.execute(db, "PRAGMA synchronous=FULL")
-        if version < 2 {
+        if version < 3 {
             try Self.execute(db, "BEGIN IMMEDIATE")
             do {
                 if version == 0 {
                     try Self.execute(db, Self.generationSchema)
                     try Self.execute(db, Self.chunkSchema)
                 } else {
-                    // Schema-1 has no trustworthy empty/document completion evidence. Validate all
-                    // legacy data before retaining it; never infer completion from vector presence.
+                    // Preserve only validated legacy data; vector presence never creates completion.
                     try Self.validateLegacyRows(db, vaultID: lease.vaultID)
+                    if version == 2 {
+                        let generations = try Self.rows(db, "SELECT metadata FROM embedding_generations").map {
+                            try JSONDecoder().decode(GenerationMetadata.self, from: $0[0]).value()
+                        }
+                        var documentCount = 0
+                        for generation in generations {
+                            documentCount += try Self.readDocumentEvidence(db, generation: generation,
+                                table: "embedding_documents").count
+                        }
+                        guard try Self.rows(db, "SELECT metadata FROM embedding_documents").count == documentCount else {
+                            throw EmbeddingIndexError.invalidMetadata
+                        }
+                    }
                 }
-                try Self.execute(db, Self.documentSchema)
-                try Self.execute(db, "PRAGMA user_version=2")
+                if version < 2 { try Self.execute(db, Self.documentSchema) }
+                try Self.execute(db, Self.checkpointSchema)
+                try Self.execute(db, "PRAGMA user_version=3")
                 try accessGate.validate(lease: lease, targetRoot: lease.root, targetVaultID: lease.vaultID, operation: "embedding.index.open.commit")
                 try Self.execute(db, "COMMIT")
             } catch { try? Self.execute(db, "ROLLBACK"); throw error }
         }
         try accessGate.validate(lease: lease, targetRoot: lease.root, targetVaultID: lease.vaultID, operation: "embedding.index.open.return")
         self.connection = connection; self.lease = lease; self.gate = accessGate
+    }
+
+    /// Retain the selected generation before work admission, including a pause before its first
+    /// vector. This metadata grants no inference, consent, or vector-publication authority.
+    public func declareGeneration(generation: EmbeddingIndexGeneration) throws {
+        try validate(generation)
+        try transaction({}) { try ensure(generation, create: true) }
     }
 
     /// Persisted generations are metadata only; availability does not grant query authority.
@@ -125,15 +167,18 @@ public actor SQLiteEmbeddingIndex: EmbeddingIndexStorage {
     /// Production publication: the store-issued permit and live generation authority span COMMIT.
     /// The supplied validator runs before acquiring publication locks and must revalidate linked
     /// originals and completed provider capabilities. It must not be mistaken for the permit.
+    /// A checkpoint records full work-revision evidence for partial chunks and retires any
+    /// previous completion claim in the same transaction. Only completion marks a document done.
     public func replaceDocument(identity: EmbeddingEntityIdentity, generation: EmbeddingIndexGeneration,
                                 records: [EmbeddingRecord], permit: EmbeddingPublicationPermit,
                                 authority: EmbeddingPublicationAuthority,
                                 completion: EmbeddingDocumentCompletion? = nil,
+                                checkpoint: EmbeddingDocumentCheckpoint? = nil,
                                 validatePublication: @Sendable () throws -> Void) throws {
         guard permit.matches(identity), authority.lease == lease,
               authority.generation == generation else { throw EmbeddingContractError.authorityDenied }
         try replaceDocument(identity: identity, generation: generation, records: records,
-                            validatePublication: validatePublication, protection: (permit, authority), completion: completion)
+                            validatePublication: validatePublication, protection: (permit, authority), completion: completion, checkpoint: checkpoint)
     }
 
     /// Infrastructure primitive retained for existing provider/index tests. Application processors
@@ -145,12 +190,15 @@ public actor SQLiteEmbeddingIndex: EmbeddingIndexStorage {
     private func replaceDocument(identity: EmbeddingEntityIdentity, generation: EmbeddingIndexGeneration,
                                  records: [EmbeddingRecord], validatePublication: @Sendable () throws -> Void,
                                  protection: (EmbeddingPublicationPermit, EmbeddingPublicationAuthority)?,
-                                 completion: EmbeddingDocumentCompletion? = nil) throws {
+                                 completion: EmbeddingDocumentCompletion? = nil,
+                                 checkpoint: EmbeddingDocumentCheckpoint? = nil) throws {
         try validate(generation); try validatePublication()
         guard identity.vaultID == lease.vaultID, records.allSatisfy({ $0.generation == generation && $0.chunk.identity == identity }), Set(records.map(\.chunk.chunkID)).count == records.count, Set(records.map(\.chunk.ordinal)).count == records.count else { throw EmbeddingIndexError.invalidMetadata }
-        if let completion {
-            try Self.validateCompletion(completion)
-            guard completion.identity == identity, completion.chunkCount == records.count else { throw EmbeddingIndexError.invalidMetadata }
+        guard completion == nil || checkpoint == nil else { throw EmbeddingIndexError.invalidMetadata }
+        let evidence = completion ?? checkpoint?.evidence
+        if let evidence {
+            try Self.validateCompletion(evidence)
+            guard evidence.identity == identity, evidence.chunkCount == records.count else { throw EmbeddingIndexError.invalidMetadata }
         }
         try transaction(validatePublication, protection: protection) {
             try ensure(generation, create: true)
@@ -159,11 +207,12 @@ public actor SQLiteEmbeddingIndex: EmbeddingIndexStorage {
                 try generation.validate(chunk: record.chunk, vector: record.vector)
                 try Self.execute(db, "INSERT INTO embedding_chunks VALUES(?,?,?,?,?,?,?)", [Data(generation.id.uuidString.utf8), Data(identity.entityKind.rawValue.utf8), Data(identity.entityID.uuidString.utf8), Data(record.chunk.chunkID.utf8), Data(String(record.chunk.ordinal).utf8), try JSONEncoder().encode(ChunkMetadata(record.chunk)), record.vector.encodedFloat32LittleEndian()], blobIndices: [5, 6])
             }
-            if let completion {
-                try Self.execute(db, "INSERT INTO embedding_documents VALUES(?,?,?,?,?)",
+            if let evidence {
+                let table = completion == nil ? "embedding_checkpoints" : "embedding_documents"
+                try Self.execute(db, "INSERT INTO \(table) VALUES(?,?,?,?,?)",
                     [Data(generation.id.uuidString.utf8), Data(identity.entityKind.rawValue.utf8),
-                     Data(identity.entityID.uuidString.utf8), Data(String(completion.chunkCount).utf8),
-                     try JSONEncoder().encode(CompletionMetadata(completion))], blobIndices: [4])
+                     Data(identity.entityID.uuidString.utf8), Data(String(evidence.chunkCount).utf8),
+                     try JSONEncoder().encode(CompletionMetadata(evidence))], blobIndices: [4])
             }
         }
     }
@@ -206,41 +255,59 @@ public actor SQLiteEmbeddingIndex: EmbeddingIndexStorage {
             try ensure(generation, create: false)
             try Self.execute(db, "DELETE FROM embedding_chunks WHERE generation_id=?", [Data(generation.id.uuidString.utf8)])
             try Self.execute(db, "DELETE FROM embedding_documents WHERE generation_id=?", [Data(generation.id.uuidString.utf8)])
+            try Self.execute(db, "DELETE FROM embedding_checkpoints WHERE generation_id=?", [Data(generation.id.uuidString.utf8)])
             try Self.execute(db, "DELETE FROM embedding_generations WHERE id=?", [Data(generation.id.uuidString.utf8)])
         }
     }
     /// Reads a coherent document/chunk snapshot and rejects damaged completion claims.
     public func completedDocuments(generation: EmbeddingIndexGeneration) throws -> [EmbeddingDocumentCompletion] {
+        try documentEvidence(generation: generation, table: "embedding_documents")
+    }
+
+    public func documentCheckpoints(generation: EmbeddingIndexGeneration) throws -> [EmbeddingDocumentCheckpoint] {
+        try documentEvidence(generation: generation, table: "embedding_checkpoints").map {
+            .init(identity: $0.identity, workRevision: $0.workRevision,
+                  inputFingerprint: $0.inputFingerprint, chunkCount: $0.chunkCount)
+        }
+    }
+
+    private func documentEvidence(generation: EmbeddingIndexGeneration, table: String) throws -> [EmbeddingDocumentCompletion] {
         try validate(generation)
         try Self.execute(db, "BEGIN")
         do {
             try ensure(generation, create: false)
-            let rows = try Self.rows(db, "SELECT entity_kind,entity_id,chunk_count,metadata FROM embedding_documents WHERE generation_id=? ORDER BY entity_kind,entity_id", [Data(generation.id.uuidString.utf8)])
-            if !rows.isEmpty {
-                guard !(try Self.rows(db, "SELECT id FROM embedding_generations WHERE id=?", [Data(generation.id.uuidString.utf8)])).isEmpty else { throw EmbeddingIndexError.invalidMetadata }
-            }
-            let result = try rows.map { row -> EmbeddingDocumentCompletion in
-                let value = try JSONDecoder().decode(CompletionMetadata.self, from: row[3]).value(vaultID: lease.vaultID)
-                try Self.validateCompletion(value)
-                guard row[0] == Data(value.identity.entityKind.rawValue.utf8),
-                      row[1] == Data(value.identity.entityID.uuidString.utf8),
-                      row[2] == Data(String(value.chunkCount).utf8) else { throw EmbeddingIndexError.invalidMetadata }
-                let chunks = try Self.rows(db, "SELECT metadata,vector,entity_kind,entity_id,chunk_id,ordinal FROM embedding_chunks WHERE generation_id=? AND entity_kind=? AND entity_id=?", [Data(generation.id.uuidString.utf8), row[0], row[1]])
-                guard chunks.count == value.chunkCount else { throw EmbeddingIndexError.invalidMetadata }
-                for chunkRow in chunks {
-                    let chunk = try JSONDecoder().decode(ChunkMetadata.self, from: chunkRow[0]).value(vaultID: lease.vaultID)
-                    guard chunk.identity == value.identity,
-                          chunkRow[2] == Data(chunk.identity.entityKind.rawValue.utf8),
-                          chunkRow[3] == Data(chunk.identity.entityID.uuidString.utf8),
-                          chunkRow[4] == Data(chunk.chunkID.utf8),
-                          chunkRow[5] == Data(String(chunk.ordinal).utf8) else { throw EmbeddingIndexError.invalidMetadata }
-                    try generation.validate(chunk: chunk, vector: EmbeddingVector(float32LittleEndian: chunkRow[1], model: generation.model))
-                }
-                return value
-            }
+            let result = try Self.readDocumentEvidence(db, generation: generation, table: table)
             try validate(generation); try Self.execute(db, "COMMIT")
             return result
         } catch { try? Self.execute(db, "ROLLBACK"); throw error }
+    }
+
+    private static func readDocumentEvidence(_ db: OpaquePointer, generation: EmbeddingIndexGeneration,
+                                             table: String) throws -> [EmbeddingDocumentCompletion] {
+        let rows = try Self.rows(db, "SELECT entity_kind,entity_id,chunk_count,metadata FROM \(table) WHERE generation_id=? ORDER BY entity_kind,entity_id", [Data(generation.id.uuidString.utf8)])
+        if !rows.isEmpty {
+            guard !(try Self.rows(db, "SELECT id FROM embedding_generations WHERE id=?", [Data(generation.id.uuidString.utf8)])).isEmpty else { throw EmbeddingIndexError.invalidMetadata }
+        }
+        let result = try rows.map { row -> EmbeddingDocumentCompletion in
+            let value = try JSONDecoder().decode(CompletionMetadata.self, from: row[3]).value(vaultID: generation.vaultID)
+            try Self.validateCompletion(value)
+            guard row[0] == Data(value.identity.entityKind.rawValue.utf8),
+                  row[1] == Data(value.identity.entityID.uuidString.utf8),
+                  row[2] == Data(String(value.chunkCount).utf8) else { throw EmbeddingIndexError.invalidMetadata }
+            let chunks = try Self.rows(db, "SELECT metadata,vector,entity_kind,entity_id,chunk_id,ordinal FROM embedding_chunks WHERE generation_id=? AND entity_kind=? AND entity_id=?", [Data(generation.id.uuidString.utf8), row[0], row[1]])
+            guard chunks.count == value.chunkCount else { throw EmbeddingIndexError.invalidMetadata }
+            for chunkRow in chunks {
+                let chunk = try JSONDecoder().decode(ChunkMetadata.self, from: chunkRow[0]).value(vaultID: generation.vaultID)
+                guard chunk.identity == value.identity,
+                      chunkRow[2] == Data(chunk.identity.entityKind.rawValue.utf8),
+                      chunkRow[3] == Data(chunk.identity.entityID.uuidString.utf8),
+                      chunkRow[4] == Data(chunk.chunkID.utf8),
+                      chunkRow[5] == Data(String(chunk.ordinal).utf8) else { throw EmbeddingIndexError.invalidMetadata }
+                try generation.validate(chunk: chunk, vector: EmbeddingVector(float32LittleEndian: chunkRow[1], model: generation.model))
+            }
+            return value
+        }
+        return result
     }
 
     /// Explicit deletion integration: coordinator removal does not invoke processors.
@@ -248,7 +315,7 @@ public actor SQLiteEmbeddingIndex: EmbeddingIndexStorage {
         guard identity.vaultID == lease.vaultID else { throw EmbeddingIndexError.invalidMetadata }
         try validatePublication()
         try transaction(validatePublication) {
-            for table in ["embedding_chunks", "embedding_documents"] {
+            for table in ["embedding_chunks", "embedding_documents", "embedding_checkpoints"] {
                 try Self.execute(db, "DELETE FROM \(table) WHERE entity_kind=? AND entity_id=?", [Data(identity.entityKind.rawValue.utf8), Data(identity.entityID.uuidString.utf8)])
             }
         }
@@ -275,6 +342,19 @@ public actor SQLiteEmbeddingIndex: EmbeddingIndexStorage {
                 let id = key(completion.identity.entityKind, completion.identity.entityID)
                 checked.insert(id)
                 if revisions[id] != completion.workRevision { obsolete.append((completion.identity, generation)) }
+            }
+            for checkpoint in try documentCheckpoints(generation: generation) {
+                let identity = checkpoint.identity, id = key(identity.entityKind, identity.entityID)
+                checked.insert(id)
+                // Startup inventory cannot certify original bytes. Preserve partial Source rows
+                // as reuse candidates when its canonical revision is current; fresh preparation
+                // must reread originals and match each chunk fingerprint before reusing a vector.
+                // This exception never preserves a completed-document claim.
+                let canonicalSourceOnly = identity.entityKind == .source && revisions[id] == identity.revision &&
+                    checkpoint.workRevision.hasPrefix(identity.revision + ":")
+                if revisions[id] != checkpoint.workRevision && !canonicalSourceOnly {
+                    obsolete.append((identity, generation))
+                }
             }
             for record in try records(generation: generation) {
                 let identity = record.chunk.identity, id = key(identity.entityKind, identity.entityID)
@@ -342,7 +422,9 @@ public actor SQLiteEmbeddingIndex: EmbeddingIndexStorage {
         }
     }
     private func deleteCompletion(_ identity: EmbeddingEntityIdentity, _ generation: EmbeddingIndexGeneration) throws {
-        try Self.execute(db, "DELETE FROM embedding_documents WHERE generation_id=? AND entity_kind=? AND entity_id=?", [Data(generation.id.uuidString.utf8), Data(identity.entityKind.rawValue.utf8), Data(identity.entityID.uuidString.utf8)])
+        for table in ["embedding_documents", "embedding_checkpoints"] {
+            try Self.execute(db, "DELETE FROM \(table) WHERE generation_id=? AND entity_kind=? AND entity_id=?", [Data(generation.id.uuidString.utf8), Data(identity.entityKind.rawValue.utf8), Data(identity.entityID.uuidString.utf8)])
+        }
     }
     private func delete(_ identity: EmbeddingEntityIdentity, _ generation: EmbeddingIndexGeneration) throws {
         try deleteCompletion(identity, generation)

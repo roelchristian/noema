@@ -76,7 +76,7 @@ private func completionInteger(_ url: URL, _ sql: String) throws -> Int {
     let reopened = try SQLiteEmbeddingIndex(applicationSupportRoot: f.support, lease: f.session.lease, accessGate: f.gate)
     #expect(try await reopened.completedDocuments(generation: f.generation) == [completion])
     #expect(try await reopened.records(generation: f.generation).isEmpty)
-    #expect(try completionInteger(f.database, "PRAGMA user_version") == 2)
+    #expect(try completionInteger(f.database, "PRAGMA user_version") == 3)
     try await f.store.close()
 }
 
@@ -168,18 +168,18 @@ private func completionInteger(_ url: URL, _ sql: String) throws -> Int {
     let record = try f.record()
     try await f.index.replaceDocument(identity: f.identity, generation: f.generation, records: [record], validatePublication: {})
     // This is exactly the existing schema-1 fixture: same two tables, rows and vector blobs.
-    try completionSQL(f.database, "DROP TABLE embedding_documents; PRAGMA user_version=1")
+    try completionSQL(f.database, "DROP TABLE embedding_documents; DROP TABLE embedding_checkpoints; PRAGMA user_version=1")
     let reopened = try SQLiteEmbeddingIndex(applicationSupportRoot: f.support, lease: f.session.lease, accessGate: f.gate)
     #expect(try await reopened.records(generation: f.generation) == [record])
     #expect(try await reopened.completedDocuments(generation: f.generation).isEmpty)
-    #expect(try completionInteger(f.database, "PRAGMA user_version") == 2)
+    #expect(try completionInteger(f.database, "PRAGMA user_version") == 3)
     try await f.store.close()
 }
 
 @Test func embeddingCompletionInvalidV1MigrationRollsBackWithoutDroppingEvidence() async throws {
     let f = try await CompletionFixture.make()
     try await f.index.replaceDocument(identity: f.identity, generation: f.generation, records: [f.record()], validatePublication: {})
-    try completionSQL(f.database, "DROP TABLE embedding_documents; PRAGMA user_version=1; UPDATE embedding_chunks SET vector=x'00'")
+    try completionSQL(f.database, "DROP TABLE embedding_documents; DROP TABLE embedding_checkpoints; PRAGMA user_version=1; UPDATE embedding_chunks SET vector=x'00'")
     #expect(throws: (any Error).self) {
         try SQLiteEmbeddingIndex(applicationSupportRoot: f.support, lease: f.session.lease, accessGate: f.gate)
     }
@@ -214,5 +214,31 @@ private func completionInteger(_ url: URL, _ sql: String) throws -> Int {
         entityID: metadata.id, revision: canonical + ":" + digest(Data("other original bytes".utf8)))
     try await f.index.reconcile(current: [independentlyChanged], validatePublication: {})
     #expect(try await f.index.completedDocuments(generation: f.generation).isEmpty)
+    try await f.store.close()
+}
+
+@Test func embeddingCompletionMigratesExactV2PreservingCompletionAndVectors() async throws {
+    let f = try await CompletionFixture.make()
+    let record = try f.record(), completion = f.completion(count: 1)
+    try await f.publish([record], completion: completion)
+    try completionSQL(f.database, "DROP TABLE embedding_checkpoints; PRAGMA user_version=2")
+    let reopened = try SQLiteEmbeddingIndex(applicationSupportRoot: f.support, lease: f.session.lease, accessGate: f.gate)
+    #expect(try await reopened.records(generation: f.generation) == [record])
+    #expect(try await reopened.completedDocuments(generation: f.generation) == [completion])
+    #expect(try await reopened.documentCheckpoints(generation: f.generation).isEmpty)
+    #expect(try completionInteger(f.database, "PRAGMA user_version") == 3)
+    try await f.store.close()
+}
+
+@Test func embeddingCompletionInvalidV2MigrationPreservesFailureEvidence() async throws {
+    let f = try await CompletionFixture.make()
+    try await f.publish([f.record()], completion: f.completion(count: 1))
+    try completionSQL(f.database, "DROP TABLE embedding_checkpoints; PRAGMA user_version=2; UPDATE embedding_documents SET chunk_count=2")
+    #expect(throws: (any Error).self) {
+        try SQLiteEmbeddingIndex(applicationSupportRoot: f.support, lease: f.session.lease, accessGate: f.gate)
+    }
+    #expect(try completionInteger(f.database, "PRAGMA user_version") == 2)
+    #expect(try completionInteger(f.database, "SELECT count(*) FROM sqlite_master WHERE name='embedding_checkpoints'") == 0)
+    #expect(try completionInteger(f.database, "SELECT chunk_count FROM embedding_documents") == 2)
     try await f.store.close()
 }
