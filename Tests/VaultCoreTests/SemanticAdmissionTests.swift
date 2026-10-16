@@ -5,7 +5,7 @@ import Testing
 @Test func semanticFreshAdmissionRejectsUnknownDeclarationsBeforeCreation() async throws {
     var declaration = VaultCanonicalStorageDeclaration()
     #expect(declaration.isSupported)
-    #expect(declaration.schemaVersion == SQLiteBlockStore.organisationSchemaVersion)
+    #expect(declaration.schemaVersion == SQLiteBlockStore.relationshipSchemaVersion)
     declaration.schemaVersion = 5
     declaration.requiredCapabilities = SQLiteBlockStore.semanticRequiredCapabilities
     #expect(!declaration.isSupported)

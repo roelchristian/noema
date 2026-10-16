@@ -287,6 +287,15 @@ import VaultCore
         #expect(intendedRange.location > 0)
         #expect(model.semanticInspectionFocusID == occurrence.id)
         await model.refreshSemanticInspection(pageID: second.id)
+        // Navigation also queues a refresh. Await the latest destination-page
+        // snapshot when that request supersedes the directly awaited query.
+        for _ in 0..<100 {
+            if model.semanticInspectionPageID == second.id,
+               !model.semanticInspectionLoading, !model.semanticInspectionRecords.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.semanticInspectionPageID == second.id)
+        #expect(!model.semanticInspectionLoading)
         let shared = try #require(model.semanticInspectionRecords.first)
         #expect(shared.target.title == "Ada Lovelace")
         #expect(shared.occurrencePreviews.contains { $0.pageTitle == second.title && $0.canNavigate && $0.context == "Ada" })

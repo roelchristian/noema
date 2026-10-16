@@ -7,7 +7,7 @@ enum KnowledgeLibraryFamily: String, CaseIterable, Identifiable {
     var explanation: String {
         switch self {
         case .blocks: "Blocks designated as semantically meaningful. Filter by designation and status."
-        case .entities: "Independently identified people, places, concepts, and events. Occurrences are optional."
+        case .entities: "Independently identified people, places, concepts, events, and creative works. Occurrences are optional."
         case .objects: "Independently stored questions and definitions. These are not blocks or pages."
         case .annotations: "Explicit associations between content locations and canonical referents."
         }
@@ -48,7 +48,7 @@ struct KnowledgeLibraryView<Blocks: View>: View {
                     case .entities:
                         ForEach((model.knowledgeCatalogue?.entities ?? []).filter { matches($0.entity.label + " " + ($0.entity.description ?? "") + " " + $0.entity.aliases.map(\.label).joined(separator: " ")) }, id: \.entity.id) { value in
                             Button { selection = .entity(value) } label: {
-                                row(value.entity.label, symbol: KnowledgeTypePresentation.symbol(for: value.entity.typeKey), subtitle: value.entity.typeKey.capitalized + " · " + value.entity.id.uuidString.prefix(8))
+                                row(value.entity.label, symbol: KnowledgeTypePresentation.symbol(for: value.entity.typeKey), subtitle: KnowledgeTypePresentation.label(for: value.entity.typeKey) + " · " + value.entity.id.uuidString.prefix(8))
                             }.buttonStyle(.plain)
                                 .draggable(model.organisationDragValue(OrganisationDrag.item(.init(kind: .knowledgeEntity, itemID: value.entity.id))))
                         }
@@ -103,12 +103,13 @@ struct KnowledgeCatalogueDetail: View {
         VStack(alignment: .leading, spacing: NoemaSpacing.md) {
             if let target {
                 Text(target.title).font(.headline)
-                Label(target.kind.capitalized, systemImage: KnowledgeTypePresentation.symbol(for: target.kind)).font(.caption).foregroundStyle(.secondary)
+                Label(KnowledgeTypePresentation.label(for: target.kind), systemImage: KnowledgeTypePresentation.symbol(for: target.kind)).font(.caption).foregroundStyle(.secondary)
                 switch target {
                 case .entity(let value):
                     Text(value.entity.lifecycle.rawValue.capitalized).font(.caption).foregroundStyle(.secondary)
                     if let description = value.entity.description { Text(description) }
                     if !value.entity.aliases.isEmpty { Text("Aliases: " + value.entity.aliases.map(\.label).joined(separator: ", ")) }
+                    ScrollView { EntityPropertiesView(model: model, entityID: value.entity.id) }.frame(maxHeight: 300)
                 case .object(let value):
                     if value.object.typeKey == "question" {
                         Text(value.object.questionStatus.rawValue.capitalized)

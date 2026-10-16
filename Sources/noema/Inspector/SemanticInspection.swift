@@ -78,7 +78,7 @@ struct SemanticInspectionSection: View {
                     HStack(spacing: NoemaSpacing.xs) {
                         typeFilter("All", key: "all")
                         ForEach(KnowledgeEntityType.initial, id: \.key) { type in
-                            typeFilter(type.key.capitalized, key: type.key)
+                            typeFilter(KnowledgeTypePresentation.label(for: type.key), key: type.key)
                         }
                     }
                 }.scrollIndicators(.hidden)
@@ -132,6 +132,7 @@ struct SemanticEntityRow: View {
     @Bindable var model: AppModel
     let group: SemanticEntityGroup
     @State private var editingTarget = false
+    @State private var inspectingProperties = false
     @State private var changingAnnotation: SemanticInspectionRecord?
     @State private var removingAnnotation: SemanticInspectionRecord?
     private var focused: Bool { group.records.contains { $0.id == model.semanticInspectionFocusID } }
@@ -155,7 +156,7 @@ struct SemanticEntityRow: View {
                         .background(tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(group.target.title).font(NoemaTypography.interfaceEmphasis).lineLimit(2)
-                        Text(group.target.kind.capitalized).font(NoemaTypography.metadata).foregroundStyle(.secondary)
+                        Text(KnowledgeTypePresentation.label(for: group.target.kind)).font(NoemaTypography.metadata).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 2)
                     Text("\(group.mentionCount) \(group.mentionCount == 1 ? "mention" : "mentions")")
@@ -165,6 +166,7 @@ struct SemanticEntityRow: View {
             }.buttonStyle(.plain).disabled(group.navigableRecords.isEmpty)
                 .help("Find this entity in the document")
             Menu {
+                Button("Entity properties…") { inspectingProperties = true }
                 Button("Edit shared target…") { editingTarget = true }
                     .disabled(!group.target.isEditable || !model.canEditSemanticTarget)
                 ForEach(Array(group.records.enumerated()), id: \.element.id) { index, record in
@@ -183,6 +185,11 @@ struct SemanticEntityRow: View {
         .padding(NoemaSpacing.sm)
         .background(focused ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
         .sheet(isPresented: $editingTarget) { SemanticTargetEditor(model: model, target: group.target) }
+        .sheet(isPresented: $inspectingProperties) {
+            if case .entity(let value) = group.target {
+                EntityPropertiesDetail(model: model, entityID: value.entity.id)
+            }
+        }
         .sheet(item: $changingAnnotation) { record in SemanticAssociationPicker(model: model, annotationID: record.id) }
         .confirmationDialog("Remove this association? The shared entity will be kept.", isPresented: Binding(
             get: { removingAnnotation != nil }, set: { if !$0 { removingAnnotation = nil } }
@@ -247,7 +254,7 @@ struct SemanticInspectionRow: View {
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(record.target.title).font(NoemaTypography.interfaceEmphasis).lineLimit(2)
-                Label(record.target.kind.capitalized, systemImage: KnowledgeTypePresentation.symbol(for: record.target.kind)).font(NoemaTypography.metadata).foregroundStyle(.secondary)
+                Label(KnowledgeTypePresentation.label(for: record.target.kind), systemImage: KnowledgeTypePresentation.symbol(for: record.target.kind)).font(NoemaTypography.metadata).foregroundStyle(.secondary)
             }
         }
         .onAppear { expanded = model.semanticInspectionFocusID == record.id }
@@ -304,7 +311,7 @@ struct SemanticTargetEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: NoemaSpacing.md) {
-            Text("Edit \(target.kind.capitalized)").font(.headline)
+            Text("Edit \(KnowledgeTypePresentation.label(for: target.kind))").font(.headline)
             Text("Changes apply to this shared target wherever it appears.").font(.caption).foregroundStyle(.secondary)
             TextField(target.kind == "question" ? "Question text" : (target.kind == "definition" ? "Defined term" : "Canonical name"), text: $name)
             if target.kind == "question" {

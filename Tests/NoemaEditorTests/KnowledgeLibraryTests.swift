@@ -21,13 +21,18 @@ import Testing
 
 @Test @MainActor func knowledgeTypeIconsAreAvailableAndEventIsAnAnnotationChoice() throws {
     let types = KnowledgeEntityType.initial.map(\.key)
-    #expect(types == ["person", "place", "concept", "event"])
+    #expect(types == ["person", "place", "concept", "event", "creativeWork"])
     let symbols = types.map { KnowledgeTypePresentation.symbol(for: $0) }
     #expect(Set(symbols).count == types.count)
     for symbol in symbols + [KnowledgeTypePresentation.knowledgeSymbol] {
         #expect(NSImage(systemSymbolName: symbol, accessibilityDescription: nil) != nil)
     }
-    let choice = try #require(EditorAnnotationChoice.newEntityChoices.last)
+    let choice = try #require(EditorAnnotationChoice.newEntityChoices.first { $0.title == "Create new event…" })
     #expect(choice.title == "Create new event…")
     #expect(choice.symbol == KnowledgeTypePresentation.symbol(for: "event"))
+}
+
+@Test @MainActor func creativeWorkUsesReadableDisplayLabel() {
+    #expect(KnowledgeTypePresentation.label(for: "creativeWork") == "Creative Work")
+    #expect(EditorAnnotationChoice.newEntityChoices.last?.title == "Create new creative work…")
 }

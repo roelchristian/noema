@@ -22,17 +22,21 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
     private let publicationDomain: EmbeddingPublicationDomain
     private let databaseURL: URL
     private let connection: BlockSQLiteConnection
-    private let encoder: JSONEncoder = { let value = JSONEncoder(); value.outputFormatting = [.sortedKeys]; return value }()
-    private let decoder = JSONDecoder()
+    let encoder: JSONEncoder = { let value = JSONEncoder(); value.outputFormatting = [.sortedKeys]; return value }()
+    let decoder = JSONDecoder()
     public static let schemaVersion = 2
     public static let expandedSchemaVersion = 3
     public static let semanticSchemaVersion = 5
     public static let semanticRequiredCapabilities = ["canonicalKnowledgeV1", "canonicalMetadataV1", "semanticAnnotationsV1"]
+    public static let relationshipSchemaVersion = 8
+    public static let relationshipRequiredCapabilities = propertyRequiredCapabilities + ["entityRelationshipsV1"]
+    public static let propertySchemaVersion = 7
+    public static let propertyRequiredCapabilities = ["canonicalKnowledgeV1", "canonicalMetadataV1", "semanticAnnotationsV1", "organisationV1", "entityPropertiesV1"]
     public static let organisationSchemaVersion = 6
     public static let organisationRequiredCapabilities = ["canonicalKnowledgeV1", "canonicalMetadataV1", "semanticAnnotationsV1", "organisationV1"]
     public static let knowledgeSchemaVersion = 4
     public static let knowledgeRequiredCapabilities = ["canonicalKnowledgeV1", "canonicalMetadataV1"]
-    private let canonicalVaultID: UUID?
+    let canonicalVaultID: UUID?
     private let operationValidation: (@Sendable () throws -> Void)?
 
     /// Disposable page-store tests have no admitted session; no production caller uses this route.
@@ -52,7 +56,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
     init(url: URL, sessionLease: VaultSessionLease, accessGate: VaultAccessGate,
                 canonicalVaultID: UUID, requiredCapabilities: [String] = organisationRequiredCapabilities, schemaVersion: Int = organisationSchemaVersion,
                 createIfMissing: Bool = false) throws {
-        guard schemaVersion == Self.organisationSchemaVersion, !createIfMissing else { throw VaultError.invalid("Production admission requires an existing schema-6 database.") }
+        guard [Self.organisationSchemaVersion, Self.propertySchemaVersion, Self.relationshipSchemaVersion].contains(schemaVersion), !createIfMissing else { throw VaultError.invalid("Production admission requires an existing schema-6/7/8 database.") }
         try Self.validateCanonicalDeclaration(schemaVersion: schemaVersion, capabilities: requiredCapabilities)
         try accessGate.validate(lease: sessionLease, targetRoot: sessionLease.root, targetVaultID: canonicalVaultID, operation: "blockStore.openCanonical")
         try SQLiteVaultLocality.requireLocalRoot(sessionLease.root)
@@ -92,6 +96,8 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
         case knowledgeSchemaVersion: expected = knowledgeRequiredCapabilities
         case semanticSchemaVersion: expected = semanticRequiredCapabilities
         case organisationSchemaVersion: expected = organisationRequiredCapabilities
+        case propertySchemaVersion: expected = propertyRequiredCapabilities
+        case relationshipSchemaVersion: expected = relationshipRequiredCapabilities
         default: throw VaultError.invalid("Unsupported canonical schema declaration.")
         }
         guard capabilities == expected else { throw VaultError.invalid("Unsupported canonical capabilities.") }
@@ -115,7 +121,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
         }
         let version = try readVersion()
         if canonicalVaultID != nil {
-            guard (expectedSchemaVersion == 3 && requiredCapabilities == ["canonicalMetadataV1"]) || (expectedSchemaVersion == 4 && requiredCapabilities == knowledgeRequiredCapabilities) || (expectedSchemaVersion == 5 && requiredCapabilities == semanticRequiredCapabilities) || (expectedSchemaVersion == organisationSchemaVersion && requiredCapabilities == organisationRequiredCapabilities) else { throw VaultError.invalid("Unsupported canonical schema/capability declaration.") }
+            guard (expectedSchemaVersion == 3 && requiredCapabilities == ["canonicalMetadataV1"]) || (expectedSchemaVersion == 4 && requiredCapabilities == knowledgeRequiredCapabilities) || (expectedSchemaVersion == 5 && requiredCapabilities == semanticRequiredCapabilities) || (expectedSchemaVersion == organisationSchemaVersion && requiredCapabilities == organisationRequiredCapabilities) || (expectedSchemaVersion == propertySchemaVersion && requiredCapabilities == propertyRequiredCapabilities) || (expectedSchemaVersion == relationshipSchemaVersion && requiredCapabilities == relationshipRequiredCapabilities) else { throw VaultError.invalid("Unsupported canonical schema/capability declaration.") }
             guard version == 0 || version == expectedSchemaVersion else { throw VaultError.invalid("Canonical authority transition required; existing authority is never upgraded on open.") }
         }
         if canonicalVaultID != nil, version == 0 {
@@ -136,7 +142,9 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
                   sqlite3_column_int(state, 2) == 1 else { throw VaultError.invalid("Canonical identity/capability/payload mismatch.") }
             if expectedSchemaVersion >= 4 { try validateKnowledgeCapabilities(db, expected: requiredCapabilities) }
             if expectedSchemaVersion >= 5 { try validateSemanticRegistry(db) }
-            if expectedSchemaVersion == organisationSchemaVersion { try validateOrganisationTables(db) }
+            if expectedSchemaVersion >= organisationSchemaVersion { try validateOrganisationTables(db) }
+            if expectedSchemaVersion >= propertySchemaVersion { try validateEntityPropertyTables(db) }
+            if expectedSchemaVersion == relationshipSchemaVersion { try validateEntityRelationshipTables(db) }
         }
         try exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=1000; PRAGMA temp_store=MEMORY;")
         if version == 0 {
@@ -164,7 +172,9 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
                         try exec(knowledgeSchema)
                     }
                     if expectedSchemaVersion >= 5 { try exec(semanticSchema) }
-                    if expectedSchemaVersion == organisationSchemaVersion { try exec(organisationSchema) }
+                    if expectedSchemaVersion >= organisationSchemaVersion { try exec(organisationSchema) }
+                    if expectedSchemaVersion >= propertySchemaVersion { try exec(expectedSchemaVersion == propertySchemaVersion ? scalarOnlyPropertySchema : entityPropertySchema) }
+                    if expectedSchemaVersion == relationshipSchemaVersion { try exec(entityRelationshipSchema) }
                     guard sqlite3_step(insert) == SQLITE_DONE else { throw VaultError.storage("Cannot initialize canonical identity.") }
                 }
                 let finalVersion = canonicalVaultID == nil ? schemaVersion : expectedSchemaVersion
@@ -174,7 +184,9 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
         if canonicalVaultID != nil, expectedSchemaVersion >= 4 {
             try validateKnowledgeCapabilities(db, expected: requiredCapabilities)
             if expectedSchemaVersion >= 5 { try validateSemanticRegistry(db) }
-            if expectedSchemaVersion == organisationSchemaVersion { try validateOrganisationTables(db) }
+            if expectedSchemaVersion >= organisationSchemaVersion { try validateOrganisationTables(db) }
+            if expectedSchemaVersion >= propertySchemaVersion { try validateEntityPropertyTables(db) }
+            if expectedSchemaVersion == relationshipSchemaVersion { try validateEntityRelationshipTables(db) }
         }
     }
     private static let pageSchema = """
@@ -233,7 +245,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
     private static let knowledgeSchema = """
     CREATE TABLE knowledge_entity_types(key TEXT PRIMARY KEY, version INTEGER NOT NULL, descriptor BLOB NOT NULL);
     CREATE TABLE knowledge_relation_types(key TEXT PRIMARY KEY, version INTEGER NOT NULL, descriptor BLOB NOT NULL);
-    INSERT INTO knowledge_entity_types VALUES('person',1,'{}'),('place',1,'{}'),('concept',1,'{}'),('event',1,'{}');
+    INSERT INTO knowledge_entity_types VALUES('person',1,'{}'),('place',1,'{}'),('concept',1,'{}'),('event',1,'{}'),('creativeWork',1,'{}');
     INSERT INTO knowledge_relation_types VALUES('relatedTo',1,'{}');
     CREATE TABLE knowledge_entities(id TEXT PRIMARY KEY, type_key TEXT NOT NULL REFERENCES knowledge_entity_types(key), revision BLOB NOT NULL, lifecycle TEXT NOT NULL CHECK(lifecycle IN ('live','tombstoned')), payload BLOB NOT NULL);
     CREATE TABLE knowledge_entity_aliases(id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES knowledge_entities(id) ON DELETE RESTRICT, payload BLOB NOT NULL);
@@ -924,7 +936,9 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
             guard sqlite3_step(extensions) == SQLITE_ROW else { throw VaultError.invalid("Canonical vault state missing.") }
             try validateOptionalFields(decoder.decode([String: JSONValue].self, from: blob(extensions, 0)))
             if try isSemanticSchema() {
-                let capabilities = try isOrganisationSchema() ? Self.organisationRequiredCapabilities : Self.semanticRequiredCapabilities
+                let versionQuery = try statement("PRAGMA user_version"); defer { sqlite3_finalize(versionQuery) }
+                guard sqlite3_step(versionQuery) == SQLITE_ROW else { throw failure() }
+                let capabilities = sqlite3_column_int(versionQuery, 0) == Int32(Self.relationshipSchemaVersion) ? Self.relationshipRequiredCapabilities : sqlite3_column_int(versionQuery, 0) == Int32(Self.propertySchemaVersion) ? Self.propertyRequiredCapabilities : (try isOrganisationSchema() ? Self.organisationRequiredCapabilities : Self.semanticRequiredCapabilities)
                 try Self.validateKnowledgeCapabilities(try db, expected: capabilities)
                 try Self.validateSemanticRegistry(try db)
                 try eachIdentity("knowledge_entities") { _ = try entityInTransaction(id: $0) }
@@ -937,6 +951,8 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
                     try validateAnnotationEvidence(annotation, document: owner?.document, pageRevision: owner?.revision)
                 }
                 if try isOrganisationSchema() { try validateOrganisationRecords() }
+                if sqlite3_column_int(versionQuery, 0) >= Int32(Self.propertySchemaVersion) { try validateEntityPropertyRecords() }
+                if sqlite3_column_int(versionQuery, 0) == Int32(Self.relationshipSchemaVersion) { try validateEntityRelationshipRecords() }
             }
             try operation?()
         }
@@ -980,16 +996,73 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
         output.pointer = nil
     }
 
-    private func requireKnowledge() throws {
+    /// Explicit supported authority transition. Opening a database never migrates it.
+    /// SQLite metadata, DDL and revision commit together; manifest publication is separate.
+    public func upgradeEntityPropertySchema(expectedVaultRevision: BlockStoreRevision) throws -> BlockStoreRevision {
+        try requireKnowledge()
+        return try transaction {
+            try checkedKnowledgeRevision(expectedVaultRevision)
+            let query = try statement("PRAGMA user_version"); defer { sqlite3_finalize(query) }
+            guard sqlite3_step(query) == SQLITE_ROW, sqlite3_column_int(query, 0) == Int32(Self.organisationSchemaVersion) else { throw KnowledgeStoreError.transitionRequired }
+            try Self.validateKnowledgeCapabilities(try db, expected: Self.organisationRequiredCapabilities)
+            guard sqlite3_exec(try db, Self.scalarOnlyPropertySchema, nil, nil, nil) == SQLITE_OK else { throw failure() }
+            try run("UPDATE vault_state SET required_capabilities=? WHERE singleton=1", [.blob(try encoder.encode(Self.propertyRequiredCapabilities))])
+            try run("PRAGMA user_version=7")
+            try Self.validateEntityPropertyTables(try db)
+            return try advanceVaultRevision()
+        }
+    }
+
+    /// Schema 7 remains scalar-only even after the relationship schema is available.
+    private static var scalarOnlyPropertySchema: String {
+        entityPropertySchema.replacingOccurrences(of: ",'entityReference'", with: "")
+    }
+
+    /// Explicit schema-7 transition; all rebuilt property rows and the authority
+    /// declaration commit together. Foreign-key enforcement stays enabled.
+    public func upgradeEntityRelationshipSchema(expectedVaultRevision: BlockStoreRevision) throws -> BlockStoreRevision {
+        try requireKnowledge()
+        return try transaction {
+            try checkedKnowledgeRevision(expectedVaultRevision)
+            let currentVersion: Int32
+            do {
+                let query = try statement("PRAGMA user_version")
+                defer { sqlite3_finalize(query) }
+                guard sqlite3_step(query) == SQLITE_ROW else { throw failure() }
+                currentVersion = sqlite3_column_int(query, 0)
+            }
+            guard currentVersion == Int32(Self.propertySchemaVersion) else { throw KnowledgeStoreError.transitionRequired }
+            try Self.validateKnowledgeCapabilities(try db, expected: Self.propertyRequiredCapabilities)
+            try Self.validateEntityPropertyTables(try db)
+            func exec(_ sql: String) throws {
+                guard sqlite3_exec(try db, sql, nil, nil, nil) == SQLITE_OK else { throw failure() }
+            }
+            try exec("DROP INDEX entity_property_values_definition; DROP TRIGGER entity_property_definition_shape; DROP TRIGGER entity_property_values_validate_insert; DROP TRIGGER entity_property_values_validate_update; DROP TRIGGER entity_property_definition_vault_insert; DROP TRIGGER entity_property_definition_vault_update;")
+            try exec("ALTER TABLE entity_property_values RENAME TO entity_property_values_v7; ALTER TABLE entity_property_definitions RENAME TO entity_property_definitions_v7;")
+            guard let triggerStart = Self.entityPropertySchema.range(of: "CREATE TRIGGER") else { throw VaultError.invalid("Property schema has no validation triggers.") }
+            try exec(String(Self.entityPropertySchema[..<triggerStart.lowerBound]))
+            try exec("INSERT INTO entity_property_definitions SELECT * FROM entity_property_definitions_v7; INSERT INTO entity_property_values SELECT * FROM entity_property_values_v7;")
+            try exec(Self.entityRelationshipSchema)
+            try exec(String(Self.entityPropertySchema[triggerStart.lowerBound...]))
+            try exec("DROP TABLE entity_property_values_v7; DROP TABLE entity_property_definitions_v7;")
+            try run("UPDATE vault_state SET required_capabilities=? WHERE singleton=1", [.blob(try encoder.encode(Self.relationshipRequiredCapabilities))])
+            try run("PRAGMA user_version=8")
+            try Self.validateEntityPropertyTables(try db)
+            try Self.validateEntityRelationshipTables(try db)
+            return try advanceVaultRevision()
+        }
+    }
+
+    func requireKnowledge() throws {
         try validate("knowledge.read")
         guard canonicalVaultID != nil else { throw KnowledgeStoreError.transitionRequired }
         let query = try statement("PRAGMA user_version"); defer { sqlite3_finalize(query) }
-        guard sqlite3_step(query) == SQLITE_ROW, [Self.knowledgeSchemaVersion, Self.semanticSchemaVersion, Self.organisationSchemaVersion].contains(Int(sqlite3_column_int(query, 0))) else { throw KnowledgeStoreError.transitionRequired }
+        guard sqlite3_step(query) == SQLITE_ROW, [Self.knowledgeSchemaVersion, Self.semanticSchemaVersion, Self.organisationSchemaVersion, Self.propertySchemaVersion, Self.relationshipSchemaVersion].contains(Int(sqlite3_column_int(query, 0))) else { throw KnowledgeStoreError.transitionRequired }
     }
-    private func checkedKnowledgeRevision(_ expected: BlockStoreRevision) throws {
+    func checkedKnowledgeRevision(_ expected: BlockStoreRevision) throws {
         guard try vaultRevision() == expected else { throw KnowledgeStoreError.staleRevision }
     }
-    private func entityInTransaction(id: UUID) throws -> KnowledgeEntitySnapshot {
+    func entityInTransaction(id: UUID) throws -> KnowledgeEntitySnapshot {
         let query = try statement("SELECT revision,payload,type_key,lifecycle FROM knowledge_entities WHERE id=?", [.text(id.uuidString)])
         defer { sqlite3_finalize(query) }
         let step = sqlite3_step(query)
@@ -1028,12 +1101,12 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
         }
         return try encoder.encode(fields)
     }
-    private func persistKnowledgeEntity(_ entity: KnowledgeEntity, inserting: Bool) throws -> KnowledgeEntitySnapshot {
+    func persistKnowledgeEntity(_ entity: KnowledgeEntity, inserting: Bool) throws -> KnowledgeEntitySnapshot {
         try entity.validateWritable()
         // Existing schema-5 vaults register this additive supported type only on
         // explicit creation, inside the entity transaction; opening never upgrades.
-        if inserting, entity.typeKey == "event" {
-            try run("INSERT OR IGNORE INTO knowledge_entity_types(key,version,descriptor) VALUES('event',1,'{}')", [])
+        if inserting, ["event", "creativeWork"].contains(entity.typeKey) {
+            try run("INSERT OR IGNORE INTO knowledge_entity_types(key,version,descriptor) VALUES(?,1,'{}')", [.text(entity.typeKey)])
         }
         let revision = BlockStoreRevision(token: Data(UUID().uuidString.utf8))
         var payload = entity; payload.aliases = []
@@ -1046,12 +1119,12 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
         }
         return .init(entity: entity, revision: revision)
     }
-    private func recordKnowledgeOperation<T: Codable>(_ value: T, revision: BlockStoreRevision, kind: String, operationID: UUID) throws -> BlockStoreRevision {
+    func recordKnowledgeOperation<T: Codable>(_ value: T, revision: BlockStoreRevision, kind: String, operationID: UUID) throws -> BlockStoreRevision {
         let revisionVault = try advanceVaultRevision()
         try run("INSERT INTO knowledge_operations(operation_id,result_kind,result_payload,record_revision,vault_revision) VALUES(?,?,?,?,?)", [.text(operationID.uuidString),.text(kind),.blob(try encoder.encode(value)),.blob(revision.token),.blob(revisionVault.token)])
         return revisionVault
     }
-    private func checkKnowledgeOperation(_ operationID: UUID) throws {
+    func checkKnowledgeOperation(_ operationID: UUID) throws {
         let query = try statement("SELECT 1 FROM knowledge_operations WHERE operation_id=?", [.text(operationID.uuidString)]); defer { sqlite3_finalize(query) }
         guard sqlite3_step(query) == SQLITE_DONE, try operationInTransaction(id: operationID) == nil else { throw VaultError.conflict("Operation already committed; inspect its outcome.") }
     }
@@ -1204,7 +1277,7 @@ extension SQLiteBlockStore {
         let q = try statement("PRAGMA user_version"); defer { sqlite3_finalize(q) }
         guard sqlite3_step(q) == SQLITE_ROW else { throw failure() }
         let version = sqlite3_column_int(q, 0)
-        return version == Int32(Self.semanticSchemaVersion) || version == Int32(Self.organisationSchemaVersion)
+        return version == Int32(Self.semanticSchemaVersion) || version == Int32(Self.organisationSchemaVersion) || version == Int32(Self.propertySchemaVersion) || version == Int32(Self.relationshipSchemaVersion)
     }
     private func requireSemantic() throws {
         try validate("semantic.access")
@@ -1370,7 +1443,7 @@ extension SQLiteBlockStore {
     }
     private func persistSemanticProjection(_ document: BlockDocument, pageID: UUID, pageRevision: BlockStoreRevision, previousRevision: BlockStoreRevision?) throws {
         var incoming:Set<UUID>=[]
-        if case .array(let values)=document.extensions?.properties["annotations"] { for raw in values { let i=try decoder.decode(InlineAnnotation.self,from:encoder.encode(raw)); incoming.insert(i.id); let ref=SemanticReferent(identity:i.targetEntity ?? .init(kind:"legacy",id:i.id),disposition: i.targetEntity.map { ["person","place","concept","event","question","definition"].contains($0.kind) ? .live : .unresolved } ?? .unresolved); var a=SemanticAnnotation(id:i.id,location:.inline(pageID:pageID,blockID:i.blockID,target:i.target),referent:ref,designation:i.designation,anchorDisposition:i.disposition,expectedRevision:i.expectedRevision,payload:i.payload,createdAt:i.createdAt,modifiedAt:i.modifiedAt); if case .object(let fields)=raw { a.unknownFields=fields.filter{ !["id","pageID","blockID","designation","targetEntity","payload","createdAt","modifiedAt","expectedRevision","target","disposition"].contains($0.key) } }; if let old = try annotationInTransaction(id:a.id) { guard old.annotation.location.pageID == pageID else { throw KnowledgeStoreError.identityConflict(a.id) }; if old.annotation.referent.identity == a.referent.identity { a.referent = old.annotation.referent }; a.locationUnknownFields = old.annotation.locationUnknownFields }; try persistAnnotation(a,document:document,allowExisting:true) } }
+        if case .array(let values)=document.extensions?.properties["annotations"] { for raw in values { let i=try decoder.decode(InlineAnnotation.self,from:encoder.encode(raw)); incoming.insert(i.id); let ref=SemanticReferent(identity:i.targetEntity ?? .init(kind:"legacy",id:i.id),disposition: i.targetEntity.map { ["person","place","concept","event","creativeWork","question","definition"].contains($0.kind) ? .live : .unresolved } ?? .unresolved); var a=SemanticAnnotation(id:i.id,location:.inline(pageID:pageID,blockID:i.blockID,target:i.target),referent:ref,designation:i.designation,anchorDisposition:i.disposition,expectedRevision:i.expectedRevision,payload:i.payload,createdAt:i.createdAt,modifiedAt:i.modifiedAt); if case .object(let fields)=raw { a.unknownFields=fields.filter{ !["id","pageID","blockID","designation","targetEntity","payload","createdAt","modifiedAt","expectedRevision","target","disposition"].contains($0.key) } }; if let old = try annotationInTransaction(id:a.id) { guard old.annotation.location.pageID == pageID else { throw KnowledgeStoreError.identityConflict(a.id) }; if old.annotation.referent.identity == a.referent.identity { a.referent = old.annotation.referent }; a.locationUnknownFields = old.annotation.locationUnknownFields }; try persistAnnotation(a,document:document,allowExisting:true) } }
         for old in try annotationRows(pageID:pageID) where !incoming.contains(old.annotation.id) { var a=old.annotation; if case .wholeBlock = a.location, a.anchorDisposition == .resolved, let blockID=a.location.blockID, document.block(blockID) != nil { guard a.expectedRevision == (previousRevision?.token ?? Data()) else { throw KnowledgeStoreError.staleRevision }; a.expectedRevision=pageRevision.token }; if case .inline=a.location { a.anchorDisposition = .deleted }; if let b=a.location.blockID, document.block(b) == nil { a.anchorDisposition = .deleted }; try persistAnnotation(a,document:document,allowExisting:true) }
     }
     private func semanticPageObjects(_ pageID: UUID) throws -> [SemanticObjectSnapshot] {
@@ -1458,7 +1531,7 @@ extension SQLiteBlockStore {
         }
     }
     public func occurrences(entityID: UUID) throws -> [SemanticAnnotationSnapshot] {
-        try requireSemantic(); return try readTransaction { _ = try entityInTransaction(id:entityID); return Array(try annotationRows().filter { $0.annotation.referent.identity.id == entityID && ["person","place","concept","event"].contains($0.annotation.referent.identity.kind) }.prefix(1000)) }
+        try requireSemantic(); return try readTransaction { _ = try entityInTransaction(id:entityID); return Array(try annotationRows().filter { $0.annotation.referent.identity.id == entityID && ["person","place","concept","event","creativeWork"].contains($0.annotation.referent.identity.kind) }.prefix(1000)) }
     }
     public func annotations(pageID: UUID, blockID: UUID? = nil) throws -> [SemanticAnnotationSnapshot] {
         try requireSemantic(); return try readTransaction { Array(try annotationRows(pageID:pageID).filter { blockID == nil || $0.annotation.location.blockID == blockID }.prefix(1000)) }

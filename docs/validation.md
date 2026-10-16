@@ -10,8 +10,8 @@ that a later change has been tested. Rerun the relevant commands for each PR.
 
 ## STOR02B–STOR03 acceptance scope
 
-The production baseline is format 2, directly initialized schema 6. Schema 5 remains explicit semantic staging and is not upgraded on open. Historical
-Markdown/schema-1–4 vaults are intentionally unsupported. The repository demo and its
+The production baseline is format 2, directly initialized schema 8 with `entityPropertiesV1` and `entityRelationshipsV1`; supported schemas 6 and 7 remain openable without mutation. Typed properties require the explicit revision-checked 6→7 upgrade; directed properties additionally require 7→8. Interrupted manifest publication requires explicit resume. Schema 5 remains test-only semantic staging. Historical
+Markdown/schema-1–5 vaults are intentionally unsupported. The repository demo and its
 content-only checks are retired; canonical fixtures are generated in temporary roots.
 Native archive APIs include committed SQLite and controlled originals/preservation,
 with RecoveryStore drafts and linked originals explicitly excluded. Independent
@@ -394,6 +394,14 @@ source or a permanent golden fixture. Reproduction retains commit/fixture proven
 
 
 ## Native window acceptance
+
+ENT.03 entity properties retain a separate live acceptance gate: keyboard traversal
+and focus restoration across definition/target pickers, inverse editing, delete
+confirmation, refresh errors, rapid entity switching, and VoiceOver announcements.
+[Inspector integration tests](../Tests/NoemaEditorTests/EntityPropertiesInspectorTests.swift)
+exercise canonical revisions and stale sessions; the opt-in
+[raster fixture](../Tests/NoemaVisualValidationTests/EntityPropertiesLayoutTests.swift)
+captures static content with disabled controls, not live editing or accessibility.
 
 [WindowGeometryTests](../Tests/NoemaEditorTests/WindowGeometryTests.swift),
 [WorkspaceCommandTests](../Tests/NoemaEditorTests/WorkspaceCommandTests.swift),
