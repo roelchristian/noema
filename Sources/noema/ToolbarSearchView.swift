@@ -1,8 +1,8 @@
 import SwiftUI
 import AppKit
 
-/// A small, balanced preview keeps every matching category reachable without
-/// allowing a large Pages group to crowd sources and semantic blocks out.
+/// Keyword previews balance categories. Meaning selects the highest fused document
+/// identities first, then preserves each category as a stable ranked subsequence.
 struct ToolbarSearchRow: Identifiable, Equatable {
     enum Category: String, CaseIterable { case pages = "Pages", sources = "Sources", blocks = "Semantic Blocks" }
     let id: String
@@ -37,6 +37,15 @@ struct ToolbarSearchRow: Identifiable, Equatable {
                      relevance: results.relevance["block:\(hit.id)"]?.rawValue)
             }
         ]
+        if !results.hybridOrder.isEmpty {
+            let rows = groups.flatMap { $0 }
+            let byDocument = Dictionary(rows.map { row in
+                let key = (row.category == .sources ? "source:" : "page:") + row.entryID.uuidString
+                return (key, row)
+            }, uniquingKeysWith: { first, _ in first })
+            let chosen = Set(results.hybridOrder.compactMap { byDocument[$0]?.id }.prefix(max(0, limit)))
+            return groups.flatMap { $0.filter { chosen.contains($0.id) } }
+        }
         var chosen = Set<String>()
         var index = 0
         while chosen.count < max(0, limit) {
