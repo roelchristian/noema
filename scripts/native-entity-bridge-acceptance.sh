@@ -42,7 +42,9 @@ python3 - "$bin" "$run/noema-objects.list" <<'PY'
 from pathlib import Path
 import sys
 objects = sorted((Path(sys.argv[1]) / 'noema.build').glob('*.o'))
-objects = [path for path in objects if path.name != 'noemaApp.swift.o']
+if sum(path.name.casefold() == 'noemaapp.swift.o' for path in objects) != 1:
+    raise SystemExit('Cannot identify the single production app entry object to exclude')
+objects = [path for path in objects if path.name.casefold() != 'noemaapp.swift.o']
 if not objects or not any(path.name == 'AppModel.swift.o' for path in objects):
     raise SystemExit('Cannot locate compiled application view objects')
 Path(sys.argv[2]).write_text(''.join(str(path) + '\n' for path in objects))
