@@ -73,11 +73,18 @@ public struct EmbeddingWorkProcessor: AIWorkProcessor {
     }
 
     public func execute(_ snapshot: any AIWorkSnapshot, context: AIProcessingExecutionContext) async throws -> AIWorkOutcome {
+        do { return try await executePrepared(snapshot, context: context) }
+        catch AIWorkFailure.authority { return .blocked(.authority) }
+        catch AIWorkFailure.consent { return .blocked(.consent) }
+    }
+
+    private func executePrepared(_ snapshot: any AIWorkSnapshot, context: AIProcessingExecutionContext) async throws -> AIWorkOutcome {
         try validate(context.lease); try context.validate()
         guard let prepared = snapshot as? Prepared, prepared.input.model == generation.model,
               prepared.input.identity.vaultID == lease.vaultID else { throw AIWorkFailure.validation }
         let input = prepared.input
-        let previous = try await index.records(generation: generation)
+        let previous = try await index.records(generation: generation,
+            entityKind: input.identity.entityKind, entityID: input.identity.entityID)
         var records = try EmbeddingInputPreparation.reusableRecords(previous, for: input, generation: generation)
         let reused = Set(records.map(\.chunk.chunkID))
         let changed = input.inputs.filter { !reused.contains($0.chunk.chunkID) }

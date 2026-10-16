@@ -66,9 +66,7 @@ extension AppModel {
             dispatch = { inputs, scope, execution in
                 let context = try EmbeddingExecutionContext(lease: execution.lease, scope: scope, model: model,
                     validateCurrentAuthority: { try execution.validate(); try validatePolicy() })
-                let completed = try await executor.embedWithEvidence(inputs.map(\.text), scope: scope, context: context)
-                return EmbeddingDispatchResult(vectors: completed.result.vectors,
-                    validatePublication: { try completed.validatePublication() })
+                return try await executor.embedForProcessing(inputs.map(\.text), scope: scope, context: context)
             }
         }
         semanticPublicationAuthority = authority

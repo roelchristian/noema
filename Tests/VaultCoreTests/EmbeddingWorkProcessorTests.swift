@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Synchronization
 import Testing
 @testable import VaultCore
@@ -103,6 +104,96 @@ private struct EmbeddingProcessorPolicy: AIProcessingPolicyResolver {
 }
 
 @Suite(.timeLimit(.minutes(1))) struct EmbeddingWorkProcessorTests {
+    @Test(arguments: [AIWorkFailure.authority, .consent])
+    func preparePermissionFailurePersistsBlockedCoordinatorWork(_ failure: AIWorkFailure) async throws {
+        let f = try await EmbeddingLifecycleFixture.make()
+        let processor = try EmbeddingWorkProcessor(repository: f.repository, index: f.index,
+            generation: f.generation, lease: f.lease, publicationAuthority: f.authority,
+            dispatch: { _, _, _ in f.calls.increment(); throw AIWorkFailure.validation },
+            extractOriginal: { _ in "" }, validateAuthority: { throw failure })
+        let ledger = EmbeddingProcessorLedger()
+        var configuration = AIProcessingConfiguration()
+        configuration.newPageDelay = 0
+        let coordinator = AIProcessingCoordinator(ledger: ledger, gate: f.manager.accessGate,
+            policy: EmbeddingProcessorPolicy(),
+            clock: .init(now: { Date(timeIntervalSince1970: 1000) }, sleep: { _ in await Task.yield() }),
+            configuration: configuration)
+        await coordinator.register(processor)
+        try await coordinator.bind(lease: f.lease, inventory: [])
+        let page = try await f.repository.create(title: "Permission", body: "The original paragraph explains the history of a beautiful city.")
+        try await coordinator.receive(.init(vaultID: f.lease.vaultID, entityKind: .page,
+            entityID: page.id, revision: page.contentHash, kind: .created))
+        while !(await coordinator.workItems().contains { [.blocked, .failed, .completed, .cancelled].contains($0.state) }) {
+            try Task.checkCancellation(); await Task.yield()
+        }
+        let work = try #require(await ledger.load(vaultID: f.lease.vaultID).first)
+        #expect(work.state == .blocked)
+        #expect(work.failure == failure)
+        #expect(await coordinator.status().failedCount == 0)
+        #expect(f.calls.count == 0)
+        #expect(try await f.index.records(generation: f.generation).isEmpty)
+        #expect(try await f.index.completedDocuments(generation: f.generation).isEmpty)
+        try await coordinator.suspend()
+    }
+
+    @Test(arguments: [AIWorkFailure.authority, .consent])
+    func dispatchPermissionFailureBlocksWithoutCompletingDocument(_ failure: AIWorkFailure) async throws {
+        let f = try await EmbeddingLifecycleFixture.make()
+        let processor = try EmbeddingWorkProcessor(repository: f.repository, index: f.index,
+            generation: f.generation, lease: f.lease, publicationAuthority: f.authority,
+            dispatch: { _, _, _ in throw failure }, extractOriginal: { _ in "" }, validateAuthority: {})
+        let page = try await f.repository.create(title: "Permission", body: "The original paragraph explains the history of a beautiful city.")
+        let snapshot = try await processor.prepare(f.item(processor, id: page.id, revision: page.contentHash), lease: f.lease)
+        guard case .blocked(let reason) = try await processor.execute(snapshot, context: f.context) else {
+            Issue.record("A recoverable permission failure must block the embedding job"); return
+        }
+        #expect(reason == failure)
+        #expect(try await f.index.completedDocuments(generation: f.generation).isEmpty)
+        #expect(try await f.index.records(generation: f.generation).isEmpty)
+        #expect(f.calls.count == 0)
+    }
+
+    @Test(arguments: [AIEntityKind.page, .source])
+    func unrelatedDamagedVectorsDoNotBlockHealthyDocument(_ damagedKind: AIEntityKind) async throws {
+        let f = try await EmbeddingLifecycleFixture.make(), processor = try f.processor()
+        let page = try await f.repository.create(title: "Healthy", body: "The original paragraph explains the history of a beautiful city.")
+        // A Source deliberately shares the healthy Page UUID: reuse must scope by both kind
+        // and entity ID, while a different Page exercises the entity-ID predicate.
+        let damagedIdentity = try EmbeddingEntityIdentity(vaultID: f.lease.vaultID,
+            entityKind: damagedKind, entityID: damagedKind == .source ? page.id : UUID(), revision: "old-revision")
+        let damagedChunk = try EmbeddingChunk(identity: damagedIdentity, chunkID: "damaged", ordinal: 0,
+            contentFingerprint: "damaged", chunkingVersion: EmbeddingChunker.version)
+        let damaged = try EmbeddingRecord(generation: f.generation, chunk: damagedChunk,
+            vector: EmbeddingVector(values: [1, 0, -1], model: f.generation.model))
+        try await f.index.replaceDocument(identity: damagedIdentity, generation: f.generation,
+            records: [damaged], validatePublication: {})
+        let url = f.lease.root.deletingLastPathComponent()
+            .appendingPathComponent("support/KnowledgeVault/\(f.lease.vaultID.uuidString)/semantic.sqlite")
+        var connection: OpaquePointer?
+        #expect(sqlite3_open_v2(url.path, &connection, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK)
+        let db = try #require(connection)
+        defer { sqlite3_close(db) }
+        #expect(sqlite3_exec(db, "UPDATE embedding_chunks SET vector=X''", nil, nil, nil) == SQLITE_OK)
+
+        let snapshot = try await processor.prepare(f.item(processor, id: page.id, revision: page.contentHash), lease: f.lease)
+        guard case .completed = try await processor.execute(snapshot, context: f.context) else {
+            Issue.record("Unrelated vector damage prevented healthy-document completion"); return
+        }
+        #expect(f.calls.count == 1)
+        let healthy = try await f.index.records(generation: f.generation, entityKind: .page, entityID: page.id)
+        #expect(healthy.count == 1)
+        #expect(healthy.first?.chunk.identity.revision == page.contentHash)
+        await #expect(throws: (any Error).self) {
+            try await f.index.records(generation: f.generation,
+                entityKind: damagedKind, entityID: damagedIdentity.entityID)
+        }
+        await #expect(throws: (any Error).self) { try await f.index.records(generation: f.generation) }
+        f.manager.accessGate.updateState(.closed)
+        await #expect(throws: (any Error).self) {
+            try await f.index.records(generation: f.generation, entityKind: .page, entityID: page.id)
+        }
+    }
+
     @Test func nativePageAndSourceCommitThroughProtectedIndex() async throws {
         let f = try await EmbeddingLifecycleFixture.make(), processor = try f.processor()
         let page = try await f.repository.create(title: "Human page", body: "The original paragraph explains the history of this beautiful city.")

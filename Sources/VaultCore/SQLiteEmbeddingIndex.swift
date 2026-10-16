@@ -218,11 +218,29 @@ public actor SQLiteEmbeddingIndex: EmbeddingIndexStorage {
     }
 
     public func records(generation: EmbeddingIndexGeneration) throws -> [EmbeddingRecord] {
+        try readRecords(generation: generation)
+    }
+
+    /// Entity-local reuse reads all of its stored revisions, without loading other documents.
+    /// The composite primary key indexes this generation/kind/entity prefix.
+    public func records(generation: EmbeddingIndexGeneration, entityKind: AIEntityKind,
+                        entityID: UUID) throws -> [EmbeddingRecord] {
+        try readRecords(generation: generation, entity: (entityKind, entityID))
+    }
+
+    private func readRecords(generation: EmbeddingIndexGeneration,
+                             entity: (AIEntityKind, UUID)? = nil) throws -> [EmbeddingRecord] {
         try validate(generation)
         try Self.execute(db, "BEGIN")
         do {
             try ensure(generation, create: false)
-            let rows = try Self.rows(db, "SELECT metadata,vector,entity_kind,entity_id,chunk_id,ordinal FROM embedding_chunks WHERE generation_id=? ORDER BY entity_kind,entity_id,ordinal", [Data(generation.id.uuidString.utf8)])
+            var bindings = [Data(generation.id.uuidString.utf8)]
+            var predicate = "generation_id=?"
+            if let (kind, id) = entity {
+                predicate += " AND entity_kind=? AND entity_id=?"
+                bindings += [Data(kind.rawValue.utf8), Data(id.uuidString.utf8)]
+            }
+            let rows = try Self.rows(db, "SELECT metadata,vector,entity_kind,entity_id,chunk_id,ordinal FROM embedding_chunks WHERE \(predicate) ORDER BY entity_kind,entity_id,ordinal", bindings)
             let records = try rows.map { row -> EmbeddingRecord in
                 guard row.count == 6 else { throw EmbeddingIndexError.invalidMetadata }
                 let chunk = try JSONDecoder().decode(ChunkMetadata.self, from: row[0]).value(vaultID: generation.vaultID)
