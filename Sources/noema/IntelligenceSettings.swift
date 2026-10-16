@@ -101,6 +101,7 @@ struct IntelligenceSettings: View {
                         .disabled(grantBusy)
                     }
                 }
+                EmbeddingQueueIndicator(model: appModel)
                 Button("Index Existing Content…") {
                     grantBusy = true
                     Task { @MainActor in

@@ -35,7 +35,7 @@ public actor SQLiteAIWorkLedger: AIWorkLedger {
         let db = connection.pointer
         sqlite3_busy_timeout(db, 2_000)
         let version = try Self.query(db, "PRAGMA user_version").first.flatMap(Int.init) ?? -1
-        guard version == 0 || version == 1 || version == 2 else { throw AIWorkLedgerError.unsupportedSchema }
+        guard version == 0 || version == 1 || version == 2 || version == 3 else { throw AIWorkLedgerError.unsupportedSchema }
         if version == 0 {
             // Never reinterpret an unrelated, unversioned database as a work ledger.
             let tables = try Self.query(db, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
@@ -57,6 +57,9 @@ public actor SQLiteAIWorkLedger: AIWorkLedger {
           entity_id TEXT NOT NULL, payload TEXT NOT NULL,
           PRIMARY KEY(vault_id,entity_kind,entity_id)
         );
+        CREATE TABLE IF NOT EXISTS ai_processor_controls (
+          vault_id TEXT NOT NULL, processor_id TEXT NOT NULL, PRIMARY KEY(vault_id,processor_id)
+        );
         CREATE TABLE IF NOT EXISTS embedding_batches (
           batch_id TEXT PRIMARY KEY, vault_id TEXT NOT NULL, payload TEXT NOT NULL
         );
@@ -66,12 +69,24 @@ public actor SQLiteAIWorkLedger: AIWorkLedger {
           PRIMARY KEY(batch_id,entity_kind,entity_id)
         );
         CREATE INDEX IF NOT EXISTS embedding_batch_admission ON embedding_batch_members(batch_id,state,entity_kind,entity_id);
-        PRAGMA user_version=2;
+        PRAGMA user_version=3;
         COMMIT;
         """
         guard sqlite3_exec(db, schema, nil, nil, nil) == SQLITE_OK else {
             sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
             throw AIWorkLedgerError.unavailable
+        }
+    }
+
+    public func pausedProcessors(vaultID: UUID) async throws -> Set<String> {
+        Set(try Self.query(db, "SELECT processor_id FROM ai_processor_controls WHERE vault_id=?", [vaultID.uuidString]))
+    }
+    public func setProcessorPaused(vaultID: UUID, processorID: String, paused: Bool) async throws {
+        guard !processorID.isEmpty, processorID.utf8.count <= 256 else { throw AIWorkLedgerError.invalidMetadata }
+        if paused {
+            try Self.execute(db, "INSERT OR IGNORE INTO ai_processor_controls(vault_id,processor_id) VALUES(?,?)", [vaultID.uuidString, processorID])
+        } else {
+            try Self.execute(db, "DELETE FROM ai_processor_controls WHERE vault_id=? AND processor_id=?", [vaultID.uuidString, processorID])
         }
     }
 
@@ -82,10 +97,11 @@ public actor SQLiteAIWorkLedger: AIWorkLedger {
         // A row is not a lease or consent receipt. Interrupted dispatch must obtain
         // a fresh snapshot and authority before replay; attempt counts are retained.
         try transaction {
-            for index in items.indices where items[index].state == .running || items[index].state == .scheduled {
+            for index in items.indices where items[index].state == .running || items[index].state == .scheduled || items[index].state == .cancellationRequested {
                 // Running fingerprints describe an attempted input, not proof of publication.
                 if items[index].state == .running { items[index].inputFingerprint = nil }
-                items[index].state = .pending
+                items[index].state = items[index].state == .cancellationRequested ? .cancelled
+                    : (items[index].batchID == nil ? .pending : .suspended)
                 try save(items[index])
             }
         }
@@ -246,6 +262,42 @@ public actor SQLiteAIWorkLedger: AIWorkLedger {
         if member.state.isTerminal, state != member.state { throw AIWorkLedgerError.invalidMetadata }
         member.state = state; member.failure = failure
         try saveEmbeddingMember(member)
+    }
+
+    /// Call only after coordinator cancellation acknowledgment. Completed, skipped,
+    /// unavailable and failed outcomes remain distinguishable from cancelled work.
+    @discardableResult
+    public func cancelEmbeddingMembers(batchID: UUID) throws -> Int {
+        guard let batch = try embeddingBatch(id: batchID),
+              [.cancellationRequested, .cancelled].contains(batch.state) else { throw AIWorkLedgerError.invalidMetadata }
+        let members = try allEmbeddingBatchMembers(batchID: batchID)
+        var count = 0
+        try transaction {
+            for var member in members where !member.state.isTerminal {
+                member.state = .cancelled; member.failure = nil
+                try saveEmbeddingMember(member); count += 1
+            }
+        }
+        return count
+    }
+
+    /// Explicit retry preserves captured identity/revision and never revives successful or cancelled work.
+    @discardableResult
+    public func retryEmbeddingMembers(batchID: UUID) throws -> Int {
+        guard let batch = try embeddingBatch(id: batchID),
+              ![.cancelled, .cancellationRequested, .completed, .incompatible].contains(batch.state) else {
+            throw AIWorkLedgerError.invalidMetadata
+        }
+        let members = try allEmbeddingBatchMembers(batchID: batchID)
+        var count = 0
+        try transaction {
+            for var member in members where [.blocked, .interrupted, .failed, .unavailable].contains(member.state) {
+                guard member.state == .interrupted || member.failure?.permitsExplicitRetry == true else { continue }
+                member.state = .pending; member.failure = nil
+                try saveEmbeddingMember(member); count += 1
+            }
+        }
+        return count
     }
 
     private func embeddingMember(batchID: UUID, workID: UUID) throws -> EmbeddingBackfillMember? {

@@ -106,3 +106,33 @@ private struct LifecycleProcessor: AIWorkProcessor {
     }
 
 }
+
+extension AIProcessingCoordinatorTests {
+    @Test func pausedIncrementalJobIdentitySurvivesReopenWithoutDispatch() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let ledger = try SQLiteAIWorkLedger(url: directory.appendingPathComponent("work.sqlite"))
+        let session = VaultSession(vaultID: UUID(), root: directory, generation: 1)
+        let processor = LifecycleProcessor()
+        let change = AIContentChange(vaultID: session.vaultID, entityKind: .page, entityID: UUID(), revision: "current")
+        let item = AIWorkItem(key: .init(vaultID: session.vaultID, entityKind: .page, entityID: change.entityID,
+            processorID: processor.descriptor.identifier), revision: change.revision,
+            processorVersion: processor.descriptor.version, state: .suspended, eligibleAt: clock.now())
+        try await ledger.save(item)
+        try await ledger.setProcessorPaused(vaultID: session.vaultID, processorID: processor.descriptor.identifier, paused: true)
+        try await ledger.saveCheckpoint(vaultID: session.vaultID, changes: [change])
+        let reopened = try SQLiteAIWorkLedger(url: directory.appendingPathComponent("work.sqlite"))
+        let coordinator = AIProcessingCoordinator(ledger: reopened, gate: VaultAccessGate(initialState: .open(session)),
+            policy: LifecyclePolicy(), clock: clock)
+        await coordinator.register(processor)
+        try await coordinator.bind(lease: session.lease, inventory: [change])
+        #expect(await coordinator.workItems().first?.id == item.id)
+        #expect(await coordinator.status().pendingCount == 0)
+        #expect(await coordinator.status().runningCount == 0)
+        #expect(try await reopened.pausedProcessors(vaultID: session.vaultID).contains(processor.descriptor.identifier))
+        try await coordinator.resumeProcessor(processor.descriptor.identifier)
+        #expect(await coordinator.workItems().first?.id == item.id)
+        #expect(try await reopened.pausedProcessors(vaultID: session.vaultID).isEmpty)
+        try await coordinator.suspend()
+    }
+}

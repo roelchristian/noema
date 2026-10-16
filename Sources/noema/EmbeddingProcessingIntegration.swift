@@ -40,6 +40,12 @@ extension AppModel {
         // Before first publication, preserve this generation across same-session consent rebinds.
         // Otherwise fresh consent could accidentally supersede already admitted incremental jobs.
         semanticProcessingGeneration = generation
+        // Persist only the vector-space identity before any job admission. Paused
+        // incremental work must reopen with the same generation even before inference.
+        try await index.declareGeneration(generation: generation)
+        guard sessionManager.accessGate.currentLease == lease, aiProcessingBindingID == bindingID,
+              semanticIndex === index, vaultAIConfigurationStore.configuration(for: lease.vaultID) == configuration else { throw CancellationError() }
+        try validatePolicy()
         let authority: EmbeddingPublicationAuthority
         let dispatch: EmbeddingWorkProcessor.Dispatch
         if let native {

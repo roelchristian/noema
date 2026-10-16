@@ -16,7 +16,7 @@ processing uses committed snapshots; cloud incremental processing requires a sep
 session-only new/changed-content disclosure, native authentication and exact-request
 capabilities. Existing enrichment approval never grants embedding permission. No query
 or historical submission follows model/provider selection. AI.ENR is not a dependency.
-Historical admission, persistent queue controls and integrated search remain separate gates.
+Historical admission uses explicitly captured batch membership. Persistent queue controls retain scheduling intent separately from live execution authority; integrated search remains a separate gate.
 
 `blocks.sqlite` remains the sole canonical Page and Source authority. Embeddings
 are disposable, device-local projections. The `SQLiteEmbeddingIndex` actor
@@ -92,7 +92,7 @@ require separate query authority, debounce and cancellation. Quick Open remains 
 
 ## Privacy and implementation gates
 
-The future semantic database is plaintext application-local derived data; session
+The semantic database is plaintext application-local derived data; session
 locking is access control, not encryption. Cloud embedding submits original text and
 may incur usage charges. Model selection alone is neither consent nor a cost estimate.
 No embedding operation may publish titles, summaries, classifications or page bodies.
@@ -133,8 +133,8 @@ weight revisions. Numeric usage is exposed separately from vector validation; ac
 history integration is pending, and requestCount represents logical attempts rather
 than a provider billing guarantee. No live API-key test or cost estimate is claimed.
 
-SEM.EMB04A provides a canonical-owned in-process publication barrier, without installing
-an embedding processor. Every `SQLiteBlockStore` constructor resolves a shared database
+SEM.EMB04A provides the canonical-owned in-process publication barrier used by the
+embedding processor. Every `SQLiteBlockStore` constructor resolves a shared database
 domain; write transactions invalidate its opaque permits before mutation and hold that
 domain through COMMIT/rollback. Issuance verifies Page/Source revision and live lifecycle
 under the same domain. Failed writes and connection retirement conservatively invalidate
@@ -159,20 +159,22 @@ The installed processor uses this barrier: an asynchronous post-commit event or 
 read followed by a separate SQLite COMMIT remains insufficient. Canonical-owned revision permits must synchronize with
 canonical COMMIT and span the derived COMMIT; their constructor/helper routing needs
 independent storage review. Linked source bytes also need current snapshot validation.
-Deletion cleanup must run explicitly across generations, since the coordinator cancels
-removed jobs without executing a processor. Startup reconciliation must remove stale
-projection entries without admitting historical cloud work. SEM.EMB05–08 remain gated
-on that lifecycle implementation, durable consented backfill, queue controls, hybrid
-search, large-vault measurements and standing native/device acceptance.
+Deletion cleanup runs explicitly across generations, since the coordinator cancels
+removed jobs without executing a processor. Startup reconciliation removes stale
+projection entries without admitting historical cloud work. Hybrid search, large-vault
+measurements and standing native/device acceptance remain separate gates.
 
 ## Incremental lifecycle and durable completion (SEM.EMB04)
 
-Schema 2 of the derived semantic database atomically records document completion with
-vector replacement, including empty documents. Metadata contains canonical identity,
+Schema 3 of the derived semantic database atomically records document completion with
+vector replacement, including empty documents. Each successful provider batch first
+publishes a guarded partial checkpoint with full work revision, input fingerprint and
+partial chunk count. Checkpoints permit exact chunk reuse after interruption; they do
+not count as completed documents. Final publication clears the partial checkpoint. Metadata contains canonical identity,
 full work revision (including Source original hash when observed), input fingerprint
-and validated chunk count, never input text or capability. Exact schema-1 migration
-validates and preserves vectors without inventing document completion. Chunk/document/
-generation removal retires completion evidence consistently; malformed counts or identities
+and validated chunk count, never input text or capability. Exact schema-1 and schema-2 migrations
+validate and preserve existing vectors/completions without inventing progress. Chunk/document/
+generation removal retires completion and checkpoint evidence consistently; malformed counts or identities
 fail closed. `SQLiteBlockStore` remains the sole canonical SQL owner.
 
 The processor retains every completed cloud request validator until the guarded COMMIT,
@@ -180,17 +182,22 @@ reuses exact compatible chunks while advancing revision metadata, and revalidate
 originals after inference. AppModel explicitly cleans removed entities across generations
 and reconciles absent/stale entries on startup without inference. Unavailable semantic
 storage/provider/ledger work leaves canonical saving and lexical search available.
-Compatible generations persist across reopen; an unpublished compatible generation stays
-stable across same-session consent rebinds. Version changes cannot revive recorded
+Compatible generation declarations persist before admission, including a pause before
+the first vector. Declaration stores vector-space identity only and grants no inference,
+publication or completion authority; paused job identity survives reopen and fresh
+session consent remains mandatory. An unpublished compatible generation stays stable
+across same-session consent rebinds. Version changes cannot revive recorded
 embedding jobs. Superseded binding callbacks cannot retire the active vault's authority.
 
 Source metadata-only startup inventory cannot certify externally mutable original bytes.
 Composite-revision Source completions may therefore be conservatively retired on reopen;
-this does not authorize regeneration. Linked bytes remain non-atomic with SQLite after
+this does not authorize regeneration. Partial Source checkpoints with a matching canonical
+revision survive as reuse candidates; fresh original extraction and exact chunk fingerprints
+remain mandatory before reuse, and retained partial rows never certify completion. Linked bytes remain non-atomic with SQLite after
 final revalidation. Full native regression still has observed mathematical-rendering
 failures; no green full-suite, unrelatedness, device/accessibility or crash-durability
-claim follows focused embedding acceptance. Numeric usage activity and persistent queue
-presentation remain later integration work; no cancellation implies zero provider usage.
+claim follows focused embedding acceptance. Numeric usage activity remains later integration work; queue presentation must preserve
+unknown usage and cost, and no cancellation implies zero provider usage.
 
 ## Explicit historical batch foundations (SEM.EMB05)
 
@@ -238,6 +245,30 @@ replacement selection survives restart through the ledger. Historical membership
 not absorb later revisions or extend to unselected entity kinds. External original
 mutation still has the linked-file atomicity limitation described above.
 
-SEM.EMB05 functional acceptance is independently verified by the application transition/recovery
-suites and real-provider Source recovery tests. SEM.EMB06 controls/status acceptance remains gated.
-Selecting a provider/model still cannot admit existing content.
+Application transition/recovery suites and Source recovery tests exercise SEM.EMB05
+behavior with injected providers and transport; these do not establish live-provider
+acceptance. Selecting a provider/model still cannot admit existing content.
+
+
+## Persistent queue controls (SEM.EMB06)
+
+The Semantic Indexing queue reads persisted incremental work and historical batch
+membership without invoking recovery or inference. Compact indicators include new and
+changed work; a persisted processor pause also applies to newly admitted jobs and
+survives restart. Queue rows distinguish successful completion, unchanged skips,
+blocked permission, unavailable inputs, failure, interruption and cancellation.
+
+Pause and cancellation record intentional stop state before retiring live request
+authority. Cancellation remains requested until active tasks acknowledge; restart
+finishes an outstanding cancellation without dispatch. Historical resume retains the
+original Page/Source selection and generation, requires fresh cloud disclosure and
+native authority, and never infers consent from persisted intent. Explicit retry is
+limited to eligible failures; it preserves captured membership and cannot revive
+successful or cancelled work. The existing coordinator remains the only scheduler.
+
+The work ledger's schema 3 adds only processor pause metadata in its existing
+application-local database. Controls do not delete completed vectors or canonical
+content. Completed and cancelled cloud work can have incurred usage; absent provider
+usage/cost evidence stays unknown. Queue behavior tests use injected providers and
+transport. Native accessibility/focus, live-provider behavior, linked-original
+atomicity and actual crash/power-loss acceptance remain outstanding.

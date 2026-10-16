@@ -211,3 +211,183 @@ extension EmbeddingBackfillTests {
         }
     }
 }
+
+extension EmbeddingBackfillTests {
+    @Test func persistedPauseAndCancelKeepStableHistoricalIdentityAcrossRestart() async throws {
+        let (directory, ledger, batch) = try fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = VaultSession(vaultID: batch.vaultID, root: directory, generation: 1)
+        let gate = VaultAccessGate(initialState: .open(session))
+        let clock = AIProcessingClock(now: { Date(timeIntervalSince1970: 100) }, sleep: { _ in try await Task.sleep(for: .seconds(3_600)) })
+        let processor = HistoricalAdmissionProcessor(batchID: batch.id, version: batch.generation.id.uuidString)
+        let change = page(batch)
+        try await ledger.createEmbeddingBatch(batch, inventory: [change])
+        let member = try #require(try await ledger.pendingEmbeddingAdmissions(batchID: batch.id).first)
+        let candidate = AIWorkItem(id: member.workID,
+            key: AIWorkKey(vaultID: batch.vaultID, entityKind: .page, entityID: change.entityID,
+                           processorID: processor.descriptor.identifier), revision: change.revision,
+            processorVersion: processor.descriptor.version, eligibleAt: batch.createdAt, batchID: batch.id)
+        let coordinator = AIProcessingCoordinator(ledger: ledger, gate: gate, policy: HistoricalAdmissionPolicy(), clock: clock)
+        await coordinator.register(processor)
+        try await coordinator.bind(lease: session.lease, inventory: [change])
+        try await coordinator.admitHistorical(candidate)
+        try await ledger.setEmbeddingBatchState(batchID: batch.id, state: .paused)
+        try await coordinator.pauseHistorical(batchID: batch.id)
+        #expect(try await ledger.existingWorkItem(key: candidate.key)?.state == .suspended)
+        #expect(try await ledger.existingWorkItem(key: candidate.key)?.attemptCount == 0)
+        let reopened = try SQLiteAIWorkLedger(url: directory.appendingPathComponent("work.sqlite"))
+        #expect(try await reopened.embeddingBatch(id: batch.id)?.state == .paused)
+        #expect(try await reopened.pendingEmbeddingAdmissions(batchID: batch.id).isEmpty)
+        try await ledger.setEmbeddingBatchState(batchID: batch.id, state: .active)
+        try await coordinator.admitHistorical(candidate)
+        try await ledger.setEmbeddingBatchState(batchID: batch.id, state: .cancellationRequested)
+        try await coordinator.cancelHistorical(batchID: batch.id)
+        #expect(try await ledger.embeddingBatch(id: batch.id)?.state == .cancellationRequested)
+        #expect(try await ledger.existingWorkItem(key: candidate.key)?.state == .cancelled)
+        #expect(try await ledger.cancelEmbeddingMembers(batchID: batch.id) == 1)
+        try await ledger.setEmbeddingBatchState(batchID: batch.id, state: .cancelled)
+        try await coordinator.admitHistorical(candidate)
+        #expect(await coordinator.workItems().first?.state == .cancelled)
+        #expect(await coordinator.workItems().first?.id == member.workID)
+    }
+
+    @Test func retryAndCancellationPreserveDistinctDurableOutcomes() async throws {
+        let (directory, ledger, batch) = try fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let inventory = (0..<8).map { _ in page(batch) }
+        try await ledger.createEmbeddingBatch(batch, inventory: inventory)
+        let members = try await ledger.embeddingBatchMembers(batchID: batch.id)
+        let states: [EmbeddingBackfillMemberState] = [.completed, .skipped, .failed, .failed, .unavailable, .blocked, .interrupted, .cancelled]
+        let failures: [AIWorkFailure?] = [nil, nil, .transient, .corruptContent, .unavailable, .consent, .authority, nil]
+        for (index, member) in members.enumerated() {
+            try await ledger.updateEmbeddingMember(batchID: batch.id, workID: member.workID, state: states[index], failure: failures[index])
+        }
+        #expect(try await ledger.retryEmbeddingMembers(batchID: batch.id) == 4)
+        let retried = try await ledger.embeddingBatchMembers(batchID: batch.id)
+        #expect(retried.map(\.workID) == members.map(\.workID))
+        #expect(retried.map(\.state) == [.completed, .skipped, .pending, .failed, .pending, .pending, .pending, .cancelled])
+        try await ledger.setEmbeddingBatchState(batchID: batch.id, state: .cancellationRequested)
+        #expect(try await ledger.cancelEmbeddingMembers(batchID: batch.id) == 4)
+        let cancelled = try await ledger.embeddingBatchMembers(batchID: batch.id)
+        #expect(cancelled.map(\.state) == [.completed, .skipped, .cancelled, .failed, .cancelled, .cancelled, .cancelled, .cancelled])
+        await #expect(throws: AIWorkLedgerError.self) { try await ledger.retryEmbeddingMembers(batchID: batch.id) }
+    }
+
+    @Test func incrementalPauseIntentSurvivesReopenAndIsVaultScoped() async throws {
+        let (directory, ledger, batch) = try fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try await ledger.setProcessorPaused(vaultID: batch.vaultID, processorID: EmbeddingWorkProcessor.identifier, paused: true)
+        let reopened = try SQLiteAIWorkLedger(url: directory.appendingPathComponent("work.sqlite"))
+        #expect(try await reopened.pausedProcessors(vaultID: batch.vaultID) == [EmbeddingWorkProcessor.identifier])
+        #expect(try await reopened.pausedProcessors(vaultID: UUID()).isEmpty)
+        try await reopened.setProcessorPaused(vaultID: batch.vaultID, processorID: EmbeddingWorkProcessor.identifier, paused: false)
+        #expect(try await ledger.pausedProcessors(vaultID: batch.vaultID).isEmpty)
+    }
+}
+
+private actor ControlledBackfillExecution {
+    private var entered = false
+    private var stopped = false
+    private var entryWaiter: CheckedContinuation<Void, Never>?
+    private var stopWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+    func execute() async {
+        entered = true; entryWaiter?.resume(); entryWaiter = nil
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+    func waitForEntry() async {
+        if !entered { await withCheckedContinuation { entryWaiter = $0 } }
+    }
+    func markStopped() { stopped = true; stopWaiter?.resume(); stopWaiter = nil }
+    func waitForStop() async {
+        if !stopped { await withCheckedContinuation { stopWaiter = $0 } }
+    }
+    func release() { releaseWaiter?.resume(); releaseWaiter = nil }
+}
+private struct ControlledBackfillPolicy: AIProcessingPolicyResolver {
+    func authorize(_ descriptor: AIProcessorDescriptor, lease: VaultSessionLease) async -> AIProcessingAuthority { .allowed }
+    func validateExecution(lease: VaultSessionLease) throws {}
+}
+private struct ControlledBackfillProcessor: AIWorkProcessor {
+    let batchID: UUID
+    let version: String
+    let execution: ControlledBackfillExecution
+    var descriptor: AIProcessorDescriptor {
+        .init(identifier: EmbeddingWorkProcessor.identifier + ".history." + batchID.uuidString,
+              version: version, targets: [.page], dependencies: [.body], provider: .cloud,
+              recoverOnVersionChange: false, observesCommittedChanges: false)
+    }
+    func prepare(_ item: AIWorkItem, lease: VaultSessionLease) async throws -> any AIWorkSnapshot {
+        HistoricalAdmissionSnapshot(revision: item.revision)
+    }
+    func execute(_ snapshot: any AIWorkSnapshot, context: AIProcessingExecutionContext) async throws -> AIWorkOutcome {
+        // Emulates a provider that acknowledges cancellation late with an authority error.
+        await execution.execute()
+        throw AIWorkFailure.authority
+    }
+    func isCurrent(_ item: AIWorkItem, snapshot: any AIWorkSnapshot, lease: VaultSessionLease) async throws -> Bool { true }
+}
+extension EmbeddingBackfillTests {
+    @Test(arguments: [false, true])
+    func runningControlsPersistIntentBeforeAuthorityRetirementAndAwaitAcknowledgment(cancel: Bool) async throws {
+        let (directory, ledger, batch) = try fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = VaultSession(vaultID: batch.vaultID, root: directory, generation: 1)
+        let gate = VaultAccessGate(initialState: .open(session))
+        let execution = ControlledBackfillExecution()
+        let processor = ControlledBackfillProcessor(batchID: batch.id, version: batch.generation.id.uuidString, execution: execution)
+        let coordinator = AIProcessingCoordinator(ledger: ledger, gate: gate, policy: ControlledBackfillPolicy(),
+            clock: AIProcessingClock(now: { Date(timeIntervalSince1970: 100) }, sleep: { _ in }))
+        await coordinator.register(processor)
+        let change = page(batch)
+        try await coordinator.bind(lease: session.lease, inventory: [change])
+        let candidate = AIWorkItem(key: .init(vaultID: batch.vaultID, entityKind: .page, entityID: change.entityID,
+            processorID: processor.descriptor.identifier), revision: change.revision,
+            processorVersion: processor.descriptor.version, eligibleAt: batch.createdAt, batchID: batch.id)
+        try await coordinator.admitHistorical(candidate)
+        await execution.waitForEntry()
+        let control = Task {
+            let retired: @Sendable () -> Void = { Task { await execution.markStopped() } }
+            if cancel { try await coordinator.cancelHistorical(batchID: batch.id, retireAuthority: retired) }
+            else { try await coordinator.pauseHistorical(batchID: batch.id, retireAuthority: retired) }
+        }
+        await execution.waitForStop()
+        #expect(await coordinator.workItems().first?.state == (cancel ? .cancellationRequested : .suspended))
+        #expect(await coordinator.workItems().first?.possibleTransmittedUsage == true)
+        await execution.release()
+        try await control.value
+        #expect(try await ledger.existingWorkItem(key: candidate.key)?.state == (cancel ? .cancelled : .suspended))
+        #expect(await coordinator.status().failedCount == 0)
+        #expect(try await ledger.existingWorkItem(key: candidate.key)?.possibleTransmittedUsage == true)
+    }
+}
+
+extension EmbeddingBackfillTests {
+    @Test(arguments: [AIWorkState.blocked, .suspended])
+    func pausingStoppedHistoricalWorkPreservesItsDistinctOutcomeAndRetryCause(state: AIWorkState) async throws {
+        let (directory, ledger, batch) = try fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = VaultSession(vaultID: batch.vaultID, root: directory, generation: 1)
+        let change = page(batch)
+        let processor = HistoricalAdmissionProcessor(batchID: batch.id, version: batch.generation.id.uuidString)
+        let item = AIWorkItem(key: .init(vaultID: batch.vaultID, entityKind: .page, entityID: change.entityID,
+            processorID: processor.descriptor.identifier), revision: change.revision,
+            processorVersion: processor.descriptor.version, state: state, attemptCount: 4,
+            eligibleAt: batch.createdAt, failure: state == .blocked ? .consent : .authority, batchID: batch.id)
+        try await ledger.save(item)
+        let coordinator = AIProcessingCoordinator(ledger: ledger,
+            gate: VaultAccessGate(initialState: .open(session)), policy: HistoricalAdmissionPolicy())
+        await coordinator.register(processor)
+        try await coordinator.bind(lease: session.lease, inventory: [change])
+        try await coordinator.pauseHistorical(batchID: batch.id)
+        let paused = try #require(try await ledger.existingWorkItem(key: item.key))
+        #expect(paused.state == state)
+        #expect(paused.failure == (state == .blocked ? .consent : .authority))
+        #expect(paused.attemptCount == 4)
+        try await coordinator.retryHistorical(paused, admit: false)
+        let retried = try #require(try await ledger.existingWorkItem(key: item.key))
+        #expect(retried.id == item.id)
+        #expect(retried.state == .suspended)
+        #expect(retried.attemptCount == 0)
+    }
+}

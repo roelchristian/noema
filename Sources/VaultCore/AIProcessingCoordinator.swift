@@ -21,6 +21,7 @@ public actor AIProcessingCoordinator {
     private var busy: [AIWorkKey: UUID] = [:]
     private var providerUse: [AIProcessingProvider: Int] = [:]
     private var reason: AIWorkFailure?
+    private var pausedProcessors: Set<String> = []
     private var completedCount = 0
     private var failedCount = 0
     private var lastSuccessfulAt: Date?
@@ -50,6 +51,8 @@ public actor AIProcessingCoordinator {
         try validate(next)
         lease = next; reason = nil; completedCount = 0; failedCount = 0; lastSuccessfulAt = nil
         items = [:]; inventory = [:]
+        pausedProcessors = try await ledger.pausedProcessors(vaultID: next.vaultID)
+        try validateActive(next, identity: bindingID)
         let recovered = try await ledger.load(vaultID: next.vaultID)
         try validateActive(next, identity: bindingID)
         let previous = try await ledger.checkpoint(vaultID: next.vaultID)
@@ -73,7 +76,7 @@ public actor AIProcessingCoordinator {
             // and fresh authority have been resolved. Bind never replays it by itself.
             if item.batchID != nil { items[item.key] = item; continue }
             if [.running, .scheduled, .pending, .retryable, .suspended].contains(item.state) {
-                item.id = UUID()
+                if !pausedProcessors.contains(item.key.processorID) { item.id = UUID() }
                 item.state = .pending
                 item.eligibleAt = max(item.eligibleAt, clock.now().addingTimeInterval(configuration.recoveryDelay))
                 items[item.key] = item
@@ -176,7 +179,7 @@ public actor AIProcessingCoordinator {
             guard prior.id == incoming.id, prior.batchID == batchID,
                   prior.processorVersion == incoming.processorVersion,
                   prior.revision == incoming.revision else { throw AIWorkFailure.validation }
-            if [.completed, .cancelled, .failed, .superseded].contains(prior.state) { items[prior.key] = prior; return }
+            if [.completed, .cancellationRequested, .cancelled, .failed, .superseded].contains(prior.state) { items[prior.key] = prior; return }
             if tasks[prior.id] != nil { return }
             incoming = prior
         }
@@ -189,6 +192,98 @@ public actor AIProcessingCoordinator {
               historicalRevisionMatches(incoming, current: latest),
               items[incoming.key]?.id == incoming.id else { throw AIWorkFailure.validation }
         arm(incoming, lease: active)
+    }
+
+    /// Pause/cancel only captured work. Waiting for task acknowledgment keeps callers from
+    /// presenting cancellation as complete while a provider may still be returning usage.
+    public func pauseHistorical(batchID: UUID, retireAuthority: @Sendable () -> Void = {}) async throws {
+        try await stopWork(batchID: batchID, processorID: nil, cancel: false, retireAuthority: retireAuthority)
+    }
+    public func cancelHistorical(batchID: UUID, retireAuthority: @Sendable () -> Void = {}) async throws {
+        try await stopWork(batchID: batchID, processorID: nil, cancel: true, retireAuthority: retireAuthority)
+    }
+    public func pauseProcessor(_ processorID: String) async throws {
+        guard let active = lease else { throw AIWorkFailure.authority }
+        try validateActive(active)
+        pausedProcessors.insert(processorID)
+        try await ledger.setProcessorPaused(vaultID: active.vaultID, processorID: processorID, paused: true)
+        try await stopWork(batchID: nil, processorID: processorID, cancel: false)
+    }
+    public func resumeProcessor(_ processorID: String) async throws {
+        guard let active = lease else { throw AIWorkFailure.authority }
+        let identity = lifecycleID
+        try validateActive(active, identity: identity)
+        try await ledger.setProcessorPaused(vaultID: active.vaultID, processorID: processorID, paused: false)
+        try validateActive(active, identity: identity)
+        pausedProcessors.remove(processorID)
+        for var item in Array(items.values) where item.batchID == nil && item.key.processorID == processorID
+            && [.suspended, .pending, .scheduled, .retryable].contains(item.state) {
+            guard tasks[item.id] == nil else { continue }
+            item.state = .pending; item.failure = nil; item.eligibleAt = clock.now()
+            item.updatedAt = clock.now(); items[item.key] = item
+            try await persist(item); try validateActive(active, identity: identity)
+            arm(item, lease: active)
+        }
+    }
+    public func cancelProcessorRemaining(_ processorID: String) async throws {
+        try await stopWork(batchID: nil, processorID: processorID, cancel: true)
+    }
+    public func retryEligibleEmbeddingWork(processorID: String) async throws {
+        guard let active = lease else { throw AIWorkFailure.authority }
+        let identity = lifecycleID
+        for var item in Array(items.values) where item.batchID == nil && item.key.processorID == processorID
+            && [.failed, .blocked].contains(item.state) && item.failure?.permitsExplicitRetry == true {
+            try validateActive(active, identity: identity)
+            item.id = UUID(); item.state = .pending; item.attemptCount = 0
+            item.failure = nil; item.inputFingerprint = nil; item.completionDisposition = nil
+            item.eligibleAt = clock.now(); item.updatedAt = clock.now(); items[item.key] = item
+            try await persist(item); try validateActive(active, identity: identity)
+            arm(item, lease: active)
+        }
+    }
+    public func retryHistorical(_ candidate: AIWorkItem, admit: Bool = true) async throws {
+        guard candidate.batchID != nil, let active = lease else { throw AIWorkFailure.authority }
+        let identity = lifecycleID
+        try validateActive(active, identity: identity)
+        let stored = try await ledger.existingWorkItem(key: candidate.key)
+        try validateActive(active, identity: identity)
+        if var prior = items[candidate.key] ?? stored, prior.id == candidate.id,
+           prior.batchID == candidate.batchID, prior.revision == candidate.revision,
+           prior.processorVersion == candidate.processorVersion, [.failed, .blocked, .suspended].contains(prior.state),
+           prior.failure?.permitsExplicitRetry == true {
+            prior.state = .suspended; prior.attemptCount = 0; prior.failure = nil
+            prior.inputFingerprint = nil; prior.completionDisposition = nil
+            prior.updatedAt = clock.now(); items[prior.key] = prior
+            try await persist(prior); try validateActive(active, identity: identity)
+        }
+        if admit { try await admitHistorical(candidate) }
+    }
+    private func stopWork(batchID: UUID?, processorID: String?, cancel: Bool, retireAuthority: @Sendable () -> Void = {}) async throws {
+        guard let active = lease else { throw AIWorkFailure.authority }
+        let identity = lifecycleID
+        try validateActive(active, identity: identity)
+        let selected = items.values.filter {
+            (batchID != nil ? $0.batchID == batchID : $0.batchID == nil && $0.key.processorID == processorID)
+                && ([.pending, .scheduled, .running, .retryable, .blocked, .suspended].contains($0.state)
+                    || (cancel && $0.state == .cancellationRequested))
+        }
+        let waiting = selected.compactMap { tasks[$0.id] }
+        // Set intent synchronously before actor reentrancy or cancellation callbacks.
+        for var item in selected {
+            if cancel || ![.blocked, .suspended].contains(item.state) {
+                item.state = cancel ? .cancellationRequested : .suspended
+                item.failure = nil
+            }
+            item.updatedAt = clock.now(); items[item.key] = item
+            tasks[item.id]?.cancel()
+        }
+        retireAuthority()
+        for item in selected { if let updated = items[item.key] { try await persist(updated) } }
+        for task in waiting { await task.value }
+        if cancel {
+            for item in selected { try await transition(item, to: .cancelled) }
+        }
+        try validateActive(active, identity: identity)
     }
 
     public func suspend(reason suspension: AIWorkFailure = .authority) async throws {
@@ -236,7 +331,7 @@ public actor AIProcessingCoordinator {
     public func status() -> AIProcessingStatus {
         let visible = lease != nil && gate.currentLease == lease
         let activeWork = busy.filter { items[$0.key]?.id == $0.value }.map { $0.key }
-        return AIProcessingStatus(pendingCount: visible ? items.values.filter { [.pending, .scheduled, .retryable].contains($0.state) }.count : 0,
+        return AIProcessingStatus(pendingCount: visible ? items.values.filter { [.pending, .scheduled, .retryable].contains($0.state) && !pausedProcessors.contains($0.key.processorID) }.count : 0,
             runningCount: visible ? busy.count : 0, completedCount: completedCount, failedCount: failedCount,
             activeWork: visible ? activeWork : [], reason: visible ? reason : .authority,
             lastSuccessfulAt: lastSuccessfulAt)
@@ -257,6 +352,7 @@ public actor AIProcessingCoordinator {
         return change.kind == .created ? configuration.newSourceDelay : configuration.updatedSourceDelay
     }
     private func arm(_ item: AIWorkItem, lease active: VaultSessionLease) {
+        guard item.batchID != nil || !pausedProcessors.contains(item.key.processorID) else { return }
         let clock = self.clock
         let taskVersion = UUID()
         taskVersions[item.id] = taskVersion
@@ -341,6 +437,7 @@ public actor AIProcessingCoordinator {
             try policy.validateExecution(lease: active)
             var running = items[candidate.key]!
             running.state = .running
+            if provider == .cloud { running.possibleTransmittedUsage = true }
             // A previous successful fingerprint is preserved across revision changes.
             let alreadyProcessed = candidate.inputFingerprint == snapshot.inputFingerprint
             // Persist only previously successful fingerprints; interrupted/failed attempts
@@ -381,9 +478,12 @@ public actor AIProcessingCoordinator {
             }
         } catch is CancellationError {
             let retired = lease != active || gate.currentLease != active
-            try? await transition(candidate, to: retired ? .suspended : .cancelled)
+            if items[candidate.key].map({ ![.suspended, .cancellationRequested].contains($0.state) }) == true {
+                try? await transition(candidate, to: retired ? .suspended : .cancelled)
+            }
         } catch {
-            guard lease == active, items[candidate.key]?.id == candidate.id else { return }
+            guard lease == active, items[candidate.key]?.id == candidate.id,
+                  items[candidate.key].map({ ![.suspended, .cancellationRequested, .cancelled].contains($0.state) }) == true else { return }
             // Unknown errors are terminal, never interpreted as permission to incur another request.
             let failure = (error as? AIWorkFailure) ?? .validation
             if failure == .transient { try? await retry(candidate, failure: failure, lease: active) }
@@ -401,6 +501,7 @@ public actor AIProcessingCoordinator {
     private func validateCandidate(_ item: AIWorkItem, lease active: VaultSessionLease) throws {
         try Task.checkCancellation(); try validateActive(active)
         guard items[item.key]?.id == item.id,
+              items[item.key].map({ [.pending, .scheduled, .running, .retryable, .completed].contains($0.state) }) == true,
               processors[item.key.processorID]?.descriptor.version == item.processorVersion,
               inventory[Target(kind: item.key.entityKind, id: item.key.entityID)].map({ historicalRevisionMatches(item, current: $0) }) == true,
               inventory[Target(kind: item.key.entityKind, id: item.key.entityID)]?.kind != .removed else { throw CancellationError() }

@@ -1678,6 +1678,9 @@ struct ContentView: View {
                 .help("Return to Library (⌘[)")
                 .accessibilityLabel("Return to Library")
             }
+            ToolbarItem(id: "workspace.embeddingQueue", placement: .primaryAction) {
+                EmbeddingQueueIndicator(model: model)
+            }
             ToolbarItem(id: "workspace.search", placement: .primaryAction) {
                 ToolbarSearchView(model: model, availableWidth: workspaceWidth) {
                     showAllSearchResults = true

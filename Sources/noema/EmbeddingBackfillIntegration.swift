@@ -118,7 +118,13 @@ extension AppModel {
         try validateEmbeddingRuntime(runtime)
         guard let selected = semanticProcessingGeneration else { return }
         for batch in batches where ![.completed, .cancelled, .incompatible].contains(batch.state) {
-            if batch.generation.model != selected.model || batch.generation.chunkingVersion != selected.chunkingVersion {
+            if batch.state == .cancellationRequested {
+                try await coordinator.cancelHistorical(batchID: batch.id)
+                try validateEmbeddingRuntime(runtime)
+                try await reconcileStoppedEmbeddingMembers(batchID: batch.id, runtime: runtime)
+                _ = try await ledger.cancelEmbeddingMembers(batchID: batch.id)
+                try await ledger.setEmbeddingBatchState(batchID: batch.id, state: .cancelled)
+            } else if batch.generation.model != selected.model || batch.generation.chunkingVersion != selected.chunkingVersion {
                 try await ledger.setEmbeddingBatchState(batchID: batch.id, state: .incompatible)
             } else if batch.generation.model.providerID == "openai" {
                 if batch.state == .active { try await ledger.setEmbeddingBatchState(batchID: batch.id, state: .awaitingApproval) }
@@ -160,6 +166,9 @@ extension AppModel {
         }
         try validateEmbeddingRuntime(runtime)
         guard [.active, .awaitingApproval, .paused].contains(batch.state) else { throw EmbeddingBackfillApplicationError.incompatible }
+        if runtime.sessions[batch.id] != nil {
+            try await pauseEmbeddingBackfill(batchID: batch.id, for: lease)
+        }
         try await activateEmbeddingBackfill(batch, runtime: runtime, explicitCloudApproval: true)
     }
 
@@ -300,6 +309,7 @@ extension AppModel {
                     if !durable { failure = .validation }
                 case .failed: state = work.failure == .unavailable ? .unavailable : .failed
                 case .blocked: state = .blocked
+                case .cancellationRequested: break
                 case .cancelled: state = .cancelled
                 case .superseded: state = .superseded
                 case .suspended: state = .interrupted
