@@ -130,7 +130,8 @@ public struct EmbeddingWorkProcessor: AIWorkProcessor {
         }
         try validate(context.lease); try context.validate()
         let completion = completed ? EmbeddingDocumentCompletion(identity: input.identity, workRevision: input.revision,
-            inputFingerprint: input.inputFingerprint, chunkCount: records.count) : nil
+            inputFingerprint: input.inputFingerprint, chunkCount: records.count,
+            originalFingerprint: input.originalFingerprint) : nil
         let checkpoint = completed ? nil : EmbeddingDocumentCheckpoint(identity: input.identity, workRevision: input.revision,
             inputFingerprint: input.inputFingerprint, chunkCount: records.count)
         try await index.replaceDocument(identity: input.identity, generation: generation,

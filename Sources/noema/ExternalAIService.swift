@@ -89,6 +89,7 @@ final class ExternalAIService {
         let id = UUID(); embeddingInvalidators[id] = invalidate; return id
     }
     func removeEmbeddingInvalidator(_ id: UUID) { embeddingInvalidators.removeValue(forKey: id) }
+    var embeddingInvalidatorCount: Int { embeddingInvalidators.count }
     func invalidateEmbeddingRequests(preservingDocumentApproval: Bool = false) {
         if !preservingDocumentApproval { embeddingDocumentGrant?.invalidate(); embeddingDocumentGrant = nil }
         let handlers = Array(embeddingInvalidators.values)
@@ -99,6 +100,7 @@ final class ExternalAIService {
     /// Construction grants no submission permission. The caller supplies an embedding-specific
     /// explicit request approval flow; enrichment/vault-processing grants are never consulted.
     func makeEmbeddingRequestExecutor(lease: VaultSessionLease, generation: EmbeddingIndexGeneration,
+        didRegisterInvalidator: ((UUID) -> Void)? = nil,
         approveRequest: @escaping @Sendable (ExternalAIEmbeddingRequest) async throws -> ExternalAIEmbeddingConsent
     ) throws -> EmbeddingRequestExecutor {
         let policy = VaultAIConfigurationStore(defaults: defaults).configuration(for: lease.vaultID)
@@ -110,8 +112,9 @@ final class ExternalAIService {
         let authorizer = try embeddingAuthorizerFactory?(lease, embeddingConfiguration) ?? ExternalAIEmbeddingAuthorizer(credentialBroker: credentialBroker,
             sessionManager: sessionManager, accessGate: accessGate, configuration: embeddingConfiguration, allowsAuthentication: false)
         let executor = EmbeddingRequestExecutor(authorizer: authorizer, publicationAuthority: authority,
-            approveRequest: approveRequest)
-        registerEmbeddingInvalidator { [weak executor] in executor?.invalidate() }
+            activityRecorder: activityRecorder, approveRequest: approveRequest)
+        let registration = registerEmbeddingInvalidator { [weak executor] in executor?.invalidate() }
+        didRegisterInvalidator?(registration)
         return executor
     }
 

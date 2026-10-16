@@ -147,12 +147,18 @@ All items are **pending**; this checklist is a device/provider release gate, not
 
 ### Semantic embedding provider acceptance
 
-The opt-in production-provider check establishes English sentence-model availability
-and a small paraphrase-ranking smoke on the reference Mac (revision 1, 512 dimensions).
-It does not establish other languages, broad retrieval quality or all admitted inputs.
-OpenAI transport uses synthetic credentials/responses; no live provider account or
-actual charges are verified. Its model revision identifies the API/input contract
-because aliases do not expose immutable weight revisions.
+The opt-in production-provider check establishes installed English sentence-model
+availability on the reference Mac (revision 1, 512 dimensions). The fixed eight-query
+labelled corpus in `SemanticRetrievalQualityTests` includes clinical synonyms, space,
+technical/acronym language, long mixed-topic Pages, multi-passage Sources, ambiguity and
+distractors. Synthetic vectors establish deterministic pipeline correctness (mean
+Recall@3=1, MRR=1, mean nDCG@3≈0.9965). Actual Apple inference measured mean Recall@3
+0.7917, MRR 1 and mean nDCG@3 0.7778, with query inference 7.9–17.7 ms. Misses include
+clinical, space and ambiguous recovery evidence; these small-corpus results do not
+establish broad quality or equivalent behavior across models/languages.
+OpenAI transport uses synthetic credentials/responses; no live provider account,
+small/large-model quality comparison or actual charges are verified. Its model revision
+identifies the API/input contract because aliases do not expose immutable weight revisions.
 
 Incremental lifecycle, explicit historical backfill and persistent queue controls have
 independently reviewed functional acceptance through application/provider/index tests;
@@ -161,12 +167,64 @@ on the current canonical schema also invalidate outstanding embedding publicatio
 The opt-in 10,000-document/1,536-dimension synthetic projection benchmark measures scoped
 read latency, test-process peak RSS and cooperative cancellation. It does not establish
 complete-vault memory/latency, queue rendering, native inference or cloud throughput.
-Activity integration, hybrid search and actual crash/power-loss acceptance remain open.
+Hybrid search and numeric-only embedding activity have application regression coverage;
+full SEM.EMB08 device, performance and durability acceptance remains conditional on the
+gates below. Actual power-loss acceptance remains open.
 The Extended functional gate passes on the reference Mac with explicit serial execution
 (`--no-parallel`); see the [development procedure](development.md#validation-tiers-and-test-discipline).
 Concurrent native editor fixtures still interfere through shared math-renderer teardown;
 serial execution preserves the full functional graph and assertions. This does not
 establish the standing device/provider release acceptance above.
+
+Owned disposable child-process SIGKILL checks cover semantic checkpoint replacement,
+replacement-batch state and queue intent before/after COMMIT, followed by production
+store reopening. Checkpoint publication uses the production guarded path; ledger
+pre-COMMIT boundaries use a fixture-only SQLite connection because no production
+hook exists. These establish bounded WAL/process-termination evidence, not complete
+application activation, physical crash or power-loss acceptance. Actual native English
+inference and Japanese/byte/word-limit rejection were exercised separately.
+Remaining UI/UX execution is deferred at user request. Final release packaging,
+signature verification and live cloud/Keychain acceptance remain unverified.
+
+### Hybrid retrieval performance and release limits
+
+Reference retrieval measurements use Apple M1/8 GiB, optimized SwiftPM, separate fresh
+processes per case and five warm samples. SEM compilers were stopped; unrelated host
+compiler activity remained uncontrolled and was observed during failed cases. Budgets
+were declared before measurement and enforced without relaxation. Full diagnostics,
+including debug stress failures, remain local under the evidence retention policy.
+
+| Documents / passages / dimensions | Warm p50 / p95 | Main-actor maximum gap | Strict outcome |
+| --- | --- | --- | --- |
+| 1,000 / 1,000 / 512 | 135 / 164 ms | 13 ms | Passed |
+| 10,000 / 10,000 / 512 | 1.31 / 1.42 s | 13 ms | Passed |
+| 10,000 / 10,000 / 1,536 | 1.35 / 1.39 s | 18 ms | Passed |
+| 10,000 / 10,000 / 3,072 | 3.53 / 5.57 s | 119 ms | Failed 100 ms scheduling target |
+| 10,000 / 30,000 / 512 | 3.41 / 4.88 s | 109 ms | Failed 100 ms scheduling target |
+| 20,000 / 40,000 / 512 | 6.15 / 13.32 s | 77 ms | Passed |
+
+All cases met their declared retrieval-latency, 64 MiB incremental sampled RSS,
+250 ms cancellation and 50 ms fusion targets. Incremental sampled RSS was 5.5–9.9 MB,
+cancellation 0.6–19.2 ms and fusion p95 1.3–8.3 ms. Sampling can miss peaks; process
+peak includes fixture construction. SQLite block-operation counters and fixture-derived
+decoded-row/byte counts are proxies, not traced SQLite I/O. Exact scanning occupies
+the derived-index actor: the stress case delayed a competing index operation 6.82 s,
+with a 15.92 s cold scan. This is not universal large-vault or queue-responsiveness
+acceptance. A later 20-second no-retrieval scheduling control measured 30 ms maximum
+gap; it cannot explain away failures under earlier host load. Both scheduling failures
+remain unresolved. Further UI/UX and responsiveness test execution is deferred at user request,
+conditional on successful builds; SEM.EMB08 performance acceptance is incomplete.
+
+The separate FTS baseline measured 20-hit p95 below 0.6 ms at 1,000/10,000 rows;
+materializing all 10,000 hits took 87 ms p95 (15 samples). A 616 kB imported Source
+with 8,000 passages took 1.47/1.51 s hydration/chunking/revalidation p50/p95 (five
+samples), below the declared 2 s observation goal. This excludes linked bytes and
+actual rendered-preview latency. Hydrating up to 40 large Source winners and final
+revalidation can add substantial latency beyond the cursor matrix. Search-model
+publication, physical keyboard-to-display
+latency, live VoiceOver, native authentication/Keychain, live OpenAI quality/usage,
+physical power loss and distribution signing/notarization require separate acceptance;
+a passing cursor or simulated lifecycle test cannot certify them.
 
 ### Two-Mac acceptance procedure
 

@@ -257,9 +257,16 @@ filters page/source titles and page aliases. Query publication checks a search
 revision alongside the existing session completion ticket, so superseded queries,
 mode/scope changes, selection, catalog/editor mutations and vault revocation cannot
 publish older results. Mutations invalidate synchronously, before view refresh.
-The 120 ms debounce remains. Library rows and semantic catalogs refresh by catalog,
-editor and scope revisions; row construction runs off the main actor rather than
-rebuilding the library on each query. Toolbar expansion, responder restoration, keyboard
+The 120 ms lexical debounce remains. Keywords is the default; Meaning requires an
+explicit submission and keeps keyword results visible while compatible completed
+passages are retrieved. OpenAI query disclosure is separate from indexing approval;
+typing, scope changes and Quick Open do not dispatch an embedding request. Meaning
+uses bounded actor-owned cosine retrieval, current canonical/original validation and
+equal-weight reciprocal rank fusion with exact title/alias protection. Coverage is
+limited to current completed evidence, never inferred from generation compatibility.
+Query text/vectors remain transient. Library rows and semantic catalogs refresh by
+catalog, editor and scope revisions; row construction runs off the main actor rather
+than rebuilding the library on each query. Toolbar expansion, responder restoration, keyboard
 selection and the anchored results popover belong to `ToolbarSearchView`; compact
 windows place its field inside the popover. The first eight results share a route
 to the explicit full results view. Entry and category refinement preserve the open
@@ -385,7 +392,11 @@ Admission checks and canonical writes are separate synchronous steps. A write al
 
 `AIActivityRecorder` shares one lazy application-level `SQLiteAIActivityStore` across local callers and the OpenAI gateway. The database is independent of vault search indexes. A caller allocates one logical ID, begins immediately before local inference or when capturing a cloud submission, and finalizes after publication or proposal generation. Unified enrichment and reviewed page composition each retain one record. Helper inference calls share that ID; proposal acceptance/dismissal updates its outcome without creating another inference record. Gateway observations carry only bounded dispatch counts and validated optional token usage. Dispatch is observed at actual transport resume; asynchronous persistence runs outside authorization locks and is followed by the existing authority/cancellation checks. Connection validation has its own targetless record.
 
-Schema v2 preserves v1 history and retention settings while adding page composition. The store owns versioned schema initialization, interrupted-operation reconciliation, idempotent finalization, indexed bounded queries and retention. Settings history uses latest-request snapshot ownership to reject delayed reads after clearing, pruning or a newer refresh, and explicit refresh with 50-row pages, with provider/action/status/outcome/date/current-vault filters. Current titles are resolved only from the accessible vault's loaded metadata; stale and inaccessible targets cannot navigate. Metadata export is bounded to 1,000 records. Cost calculation uses an injected versioned catalogue keyed by model and effective dates, including cached input rates; the default unpriced catalogue displays unknown cost rather than inventing charges. See the [activity contract](contracts/external-ai.md#activity-history) and [storage ownership](contracts/storage-boundary.md).
+Schema v3 preserves v1/v2 history and retention settings while adding finite embedding
+actions and nullable validated-response counts. Each embedding record covers one exact
+provider request; completion does not certify document, batch or search publication.
+Dispatches observe transport resumes, while reported tokens cover validated responses.
+Retries with unreported usage remain partial/unknown, and embedding costs are unknown. The store owns versioned schema initialization, interrupted-operation reconciliation, idempotent finalization, indexed bounded queries and retention. Settings history uses latest-request snapshot ownership to reject delayed reads after clearing, pruning or a newer refresh, and explicit refresh with 50-row pages, with provider/action/status/outcome/date/current-vault filters. Current titles are resolved only from the accessible vault's loaded metadata; stale and inaccessible targets cannot navigate. Metadata export is bounded to 1,000 records. Cost calculation uses an injected versioned catalogue keyed by model and effective dates, including cached input rates; the default unpriced catalogue displays unknown cost rather than inventing charges. See the [activity contract](contracts/external-ai.md#activity-history) and [storage ownership](contracts/storage-boundary.md).
 
 ## Shared AI processing lifecycle
 

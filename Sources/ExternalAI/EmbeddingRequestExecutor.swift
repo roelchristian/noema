@@ -30,12 +30,15 @@ public final class EmbeddingRequestExecutor: Sendable {
     private let authorizer: ExternalAIEmbeddingAuthorizer
     public let publicationAuthority: EmbeddingPublicationAuthority
     private let approveRequest: ApproveRequest
+    private let activityRecorder: AIActivityRecorder?
 
     public init(authorizer: ExternalAIEmbeddingAuthorizer,
                 publicationAuthority: EmbeddingPublicationAuthority,
+                activityRecorder: AIActivityRecorder? = nil,
                 approveRequest: @escaping ApproveRequest) {
         self.authorizer = authorizer
         self.publicationAuthority = publicationAuthority
+        self.activityRecorder = activityRecorder
         self.approveRequest = approveRequest
         descriptor = authorizer.descriptor
     }
@@ -53,13 +56,48 @@ public final class EmbeddingRequestExecutor: Sendable {
         try context.validate(scope: scope, model: descriptor)
         let request = try ExternalAIEmbeddingRequest(inputs: inputs, scope: scope, model: descriptor,
             authority: ExternalAIVaultAuthority(lease: context.lease))
-        let consent = try await approveRequest(request)
-        try context.validate(scope: scope, model: descriptor)
-        let capability = try await authorizer.authorize(request, consent: consent, context: context)
-        let provider = OpenAIEmbeddingProvider(authorizer: authorizer, authorization: capability)
-        let result = try await provider.embedWithUsage(inputs, scope: scope, context: context)
-        let lifetime = try authorizer.retainPublicationAuthority(for: capability, authority: publicationAuthority)
-        return CompletedEmbeddingRequest(result: result, provider: provider, publicationLifetime: lifetime)
+        let observation = EmbeddingActivityObservation()
+        let action: AIActivityAction
+        let target: AIActivityTarget?
+        let mode: AIActivityExecutionMode
+        switch scope {
+        case .query:
+            action = .embedQuery; target = nil; mode = .userInvoked
+        case .document(let identity):
+            action = .embedDocument; target = .init(type: identity.entityKind == .page ? .page : .source, id: identity.entityID)
+            mode = .automatic
+        case .historicalBackfill(_, let identity):
+            action = .embedHistoricalBatch; target = .init(type: identity.entityKind == .page ? .page : .source, id: identity.entityID)
+            mode = .userInvoked
+        }
+        _ = await activityRecorder?.begin(id: request.id, vaultID: scope.vaultID, target: target,
+            action: action, executionMode: mode, provider: .openAI, modelID: descriptor.modelID,
+            providerResponseCount: 0)
+        do {
+            try context.validate(scope: scope, model: descriptor)
+            let consent = try await approveRequest(request)
+            try context.validate(scope: scope, model: descriptor)
+            let capability = try await authorizer.authorize(request, consent: consent, context: context)
+            let provider = OpenAIEmbeddingProvider(authorizer: authorizer, authorization: capability, activity: observation)
+            let result = try await provider.embedWithUsage(inputs, scope: scope, context: context)
+            let lifetime = try authorizer.retainPublicationAuthority(for: capability, authority: publicationAuthority)
+            let completed = CompletedEmbeddingRequest(result: result, provider: provider, publicationLifetime: lifetime)
+            await observation.flush(id: request.id, recorder: activityRecorder)
+            try context.validate(scope: scope, model: descriptor)
+            try completed.validatePublication()
+            // No await after final authority validation. This metadata task captures no
+            // provider, credential, context or capability and grants no publication rights.
+            let recorder = activityRecorder, id = request.id
+            Task { await recorder?.finish(id, status: .completed, outcome: .notApplicable) }
+            return completed
+        } catch {
+            await observation.flush(id: request.id, recorder: activityRecorder)
+            let failure = sanitized(error)
+            await activityRecorder?.finish(request.id,
+                status: failure == .cancelled || failure == .authenticationCancelled || Task.isCancelled ? .cancelled : .failed,
+                failureCode: failure.activityFailureCode)
+            throw error
+        }
     }
 
     /// Scheduler adapter: retain exact-request evidence while preserving recoverable provider

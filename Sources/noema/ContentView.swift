@@ -801,8 +801,9 @@ struct ContentView: View {
                         ForEach(results.pages) { note in
                             searchResultRow(title: note.title,
                                             excerpt: results.pageExcerpts[note.id] ?? LibraryRow(note: note).excerpt,
-                                            symbol: "doc.text") {
-                                openSearchResult(note.id, scope: .wiki)
+                                            symbol: "doc.text",
+                                            relevance: results.relevance["page:\(note.id)"]?.rawValue) {
+                                openSearchResult(note.id, scope: .wiki, block: results.pageBlocks[note.id])
                             }
                         }
                     }
@@ -812,7 +813,8 @@ struct ContentView: View {
                         ForEach(results.sources) { source in
                             searchResultRow(title: source.title,
                                             excerpt: results.sourceExcerpts[source.id] ?? "",
-                                            symbol: source.metadata.isLinked ? "link" : "tray") {
+                                            symbol: source.metadata.isLinked ? "link" : "tray",
+                                            relevance: results.relevance["source:\(source.id)"]?.rawValue) {
                                 openSearchResult(source.id, scope: .sources)
                             }
                         }
@@ -823,7 +825,8 @@ struct ContentView: View {
                         ForEach(results.blocks) { hit in
                             searchResultRow(title: hit.pageTitle,
                                             excerpt: "\(hit.semantic.capitalized) · \(hit.preview)",
-                                            symbol: SemanticPresentation.find(hit.semantic)?.symbol ?? "tag") {
+                                            symbol: SemanticPresentation.find(hit.semantic)?.symbol ?? "tag",
+                                            relevance: results.relevance["block:\(hit.id)"]?.rawValue) {
                                 openSearchResult(hit.pageID, scope: .wiki, block: hit.blockID)
                             }
                         }
@@ -834,15 +837,18 @@ struct ContentView: View {
     }
     private func openSearchResult(_ id: UUID, scope: LibraryScope, block: UUID? = nil) {
         showAllSearchResults = false
-        model.select(id, scope: scope, block: block)
+        model.openSearchResult(entryID: id, blockID: block, isSource: scope == .sources)
     }
-    private func searchResultRow(title: String, excerpt: String, symbol: String,
+    private func searchResultRow(title: String, excerpt: String, symbol: String, relevance: String? = nil,
                                  action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(alignment: .top, spacing: NoemaSpacing.sm) {
                 Image(systemName: symbol).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: NoemaSpacing.xs) {
                     Text(title).font(NoemaTypography.interfaceEmphasis).lineLimit(1)
+                    if let relevance {
+                        Text(relevance).font(NoemaTypography.metadata).foregroundStyle(.secondary)
+                    }
                     if !excerpt.isEmpty {
                         Text(excerpt).font(NoemaTypography.metadata).foregroundStyle(.secondary).lineLimit(2)
                     }
@@ -854,7 +860,7 @@ struct ContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(title), \(excerpt)")
+        .accessibilityLabel("\(title), \(relevance ?? ""), \(excerpt)")
         .help(title)
     }
     private func sidebarNavigationRow(_ title: String, symbol: String, scope: LibraryScope) -> some View {
@@ -1237,6 +1243,9 @@ struct ContentView: View {
                     .help("Return to the previously open document or library")
             }
             .padding(.horizontal, NoemaSpacing.lg).padding(.vertical, NoemaSpacing.md)
+            SemanticSearchControls(model: model)
+                .padding(.horizontal, NoemaSpacing.lg)
+                .padding(.bottom, NoemaSpacing.md)
             List { searchResultSections }.listStyle(.inset)
         }
         .foregroundStyle(theme.text(for: .textPrimary, on: .canvas))

@@ -88,7 +88,8 @@ claim an already transmitted request was unbilled.
 Semantic query retrieval must use compatible generations, current live revisions and
 search scope, deduplicate chunks by document and merge lexical results deterministically
 with reciprocal rank fusion while preserving strong title/alias matches. Cloud queries
-require separate query authority, debounce and cancellation. Quick Open remains lexical.
+require separate query authority, explicit submission and cancellation. Typing and scope
+changes never dispatch a cloud query. Quick Open remains lexical.
 
 ## Privacy and implementation gates
 
@@ -129,9 +130,12 @@ The request schema follows the [official embeddings API](https://developers.open
 
 OpenAI inputs are conservatively capped at one item and 8,000 UTF-8 bytes. The recorded
 revision identifies the API/input contract; provider aliases do not expose immutable
-weight revisions. Numeric usage is exposed separately from vector validation; activity
-history integration is pending, and requestCount represents logical attempts rather
-than a provider billing guarantee. No live API-key test or cost estimate is claimed.
+weight revisions. Numeric usage is exposed separately from vector validation and
+recorded through the existing activity recorder. Dispatch count observes actual
+transport resumes; validated response count and reported tokens are separate. Retry
+attempts without usage keep coverage partial or unknown, and embedding cost is unknown.
+Each activity row describes an exact passage/query provider request, not document,
+historical-batch or search-publication completion. No live API-key test is claimed.
 
 SEM.EMB04A provides the canonical-owned in-process publication barrier used by the
 embedding processor. Every `SQLiteBlockStore` constructor resolves a shared database
@@ -202,8 +206,9 @@ remain mandatory before reuse, and retained partial rows never certify completio
 final revalidation. Native regression validation requires the explicit serial Extended
 procedure in the [development guide](../development.md#validation-tiers-and-test-discipline)
 because concurrent editor fixtures can reset a shared math renderer. Passing functional
-tests do not establish device/accessibility or crash-durability acceptance. Numeric usage activity remains later integration work; queue presentation must preserve
-unknown usage and cost, and no cancellation implies zero provider usage.
+tests do not establish device/accessibility or crash-durability acceptance. Activity
+and queue presentation preserve unknown usage and cost; cancellation does not imply
+zero provider usage.
 
 ## Explicit historical batch foundations (SEM.EMB05)
 
@@ -282,3 +287,84 @@ content. Completed and cancelled cloud work can have incurred usage; absent prov
 usage/cost evidence stays unknown. Queue behavior tests use injected providers and
 transport. Native accessibility/focus, live-provider behavior, linked-original
 atomicity and actual crash/power-loss acceptance remain outstanding.
+
+## Hybrid retrieval interface (SEM.EMB07)
+
+`SemanticSearchContracts.swift` freezes the shared metadata boundary.
+`SemanticSearchCandidate` describes one completed indexed document and carries its
+exact generation, completion work revision/input fingerprint and bounded
+`SemanticSearchPassage` values (chunk locator, ordinal, content fingerprint and cosine).
+It contains no vector or canonical text and grants no currentness or query authority.
+
+The index retrieval API selects one exact generation, bounds documents and passages
+per document, streams vectors on the owning actor and excludes partial checkpoints.
+Scope predicates filter current tagged passages before top-K selection; they never
+excuse malformed metadata or vectors in the rest of a completed document.
+It validates the whole document before admitting its passages. Invalid completion
+or vector evidence excludes that document; semantic failure leaves lexical search
+available. Schema 3's existing composite indexes cover generation/document selection;
+new SQL needs the storage author/reviewer procedure before acceptance.
+
+Application composition selects `semanticProcessingGeneration` only when its full
+model, vault and chunker match the live provider. It never chooses a newest UUID or
+compares vectors across generations. No compatible generation means lexical fallback,
+not implicit generation creation or provider substitution. Pre-query eligibility must
+use a lightweight completed-document metadata check; existing materializing completion
+and record readers are not an eligibility probe. Compatibility and completed work do
+not establish complete current-vault coverage.
+
+Pure ranking receives explicit lexical ordinals and current title/alias evidence,
+plus validated semantic candidates. It aggregates by kind/UUID, uses RRF with k=60
+and equal weights, and protects full normalized exact title/alias matches in Meaning
+mode. Ties use normalized title, kind and UUID; passage ties use ordinal and chunk ID.
+Lexical fallback preserves its supplied FTS order. Semantic Blocks requires current
+canonical block-tag evidence; a Page chunk locator alone does not establish that scope.
+
+The application owns asynchronous canonical revision, Trash, locator and Source
+original checks after bounded retrieval and before presentation. Source completion's
+canonical revision alone cannot establish current original bytes. New Source completion
+metadata carries the original-byte fingerprint; legacy Source completions without it
+remain ineligible until an explicitly requested rebuild. Reconstruct excerpts
+only from current bounded canonical inputs and omit stale locators. Final publication
+uses existing search revision/completion-ticket and lease checks plus canonical-issued
+revision protection. Query composition retains the exact query publication authority,
+not an unrelated barrier, through synchronous result assignment. Gate-bearing query
+validators run before entering canonical protection. The multi-permit publication helper
+checks one admitted vault/database domain and every canonical epoch under one domain
+lock, then acquires the exact query authority once. Its synchronous body only assigns
+results. Do not nest single-permit helpers using the same nonrecursive authority lock.
+Linked originals cannot be transactionally coupled to SQLite.
+
+Transient query execution reuses `EmbeddingExecutionContext` with `.query` scope and
+existing native provider or issuer-bound `EmbeddingRequestExecutor`. It retains final
+publication validation through presentation. Cloud query approval is fresh for exact
+input, query identity, lease and model, never inherited from document/history approval.
+Native input is passed unchanged to provider language/byte/word validation. Query text
+and vectors never enter persistent ledgers, activity or diagnostics.
+
+
+Keywords remains the initial toolbar mode. Meaning requires Search/Return submission,
+shows lexical results during inference and exposes separate exact-query OpenAI approval.
+Decline, cancellation and semantic failure retain same-query keyword results. Quick Open
+never embeds. All projects one principal Page/Source per fused identity, including
+Pages discovered only through a tagged-block lexical match; the matching current block
+remains a navigation target. Semantic Blocks scope displays a current tagged block for
+each principal Page. Group ordering is a stable subsequence of fused ranking.
+Navigation rehydrates semantic evidence, checks current revision/original bytes and
+uses a navigation nonce plus existing completion tickets, so a delayed click cannot
+replace a newer selection. Invalid passage evidence falls back to opening the current
+document without claiming precise passage navigation.
+
+
+`SemanticContextRetrieval` is the read-only provider-neutral boundary for later
+consumers. It accepts an already authorized vector, exact `.query` execution context,
+selected generation and retrieval scope. Repository lease/gate checks are independent
+of the caller's validator. It returns bounded current evidence, title/aliases,
+600-character excerpt, original provenance, ranking/locator metadata and canonical
+permit; it performs no embedding request, scheduling, generative inference or canonical
+write. Semantic Blocks requires a supplied current tag catalog before top-K and verifies
+actual canonical tags during hydration. `validate(evidence:context:)` rechecks exact
+completion metadata, current canonical revision and Source original bytes. Returned
+evidence is an observation, not future publication authority: consumers retain their
+exact query authority and use the final common-domain multi-permit barrier. AI.ENR
+execution and canonical publication remain separate, unimplemented boundaries.

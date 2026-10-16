@@ -128,6 +128,29 @@ reports entity-read p50/p95, cooperative cancellation latency and test-process p
 It does not measure native inference, cloud throughput, queue rendering or a complete
 large-vault workflow, and does not define a release performance threshold.
 
+Hybrid retrieval has separate labelled-quality and cursor benchmarks; the projection
+probe above is not a retrieval-performance gate. Use the actual installed native
+model only under its explicit guard:
+
+```sh
+NOEMA_NATIVE_EMBEDDING_ACCEPTANCE=1 ./scripts/test.sh standard --targets VaultCoreTests \
+  --no-parallel -j 1 --disable-automatic-resolution --skip-update \
+  --filter 'productionSentenceEmbeddingLabelledRetrievalQuality|productionSentenceEmbeddingRejectsJapaneseAndOversizedInputWithoutTruncation'
+NOEMA_PERFORMANCE_TESTS=1 NOEMA_ENFORCE_RETRIEVAL_BUDGETS=1 \
+  ./scripts/test.sh specialized -c release --no-parallel -j 1 \
+  --disable-automatic-resolution --skip-update --filter benchmarkSemanticRetrievalOneThousand
+```
+
+Run the other `benchmarkSemanticRetrieval` cases individually in fresh processes after
+compilation, retaining the same strict budgets and five warm samples. The matrix covers
+10,000 documents at 512/1,536/3,072 dimensions, 10,000 three-passage documents and
+20,000 two-passage documents. Keep each vector space separate. Record optimization,
+hardware, host load, cold/warm p50/p95, fusion, cancellation, sampled RSS and main-actor
+heartbeat; block-operation counters and expected decoded bytes are proxies, not traced
+SQLite I/O. Derived-index actor wait is contention evidence, not full queue-control
+or visible UI latency. Retain failures and do not raise budgets after measurement.
+Use a quiet compiler window for reference timings and report any remaining host load.
+
 Each added test must demonstrate a distinct regression risk, boundary condition or
 contract. Extend an existing happy path when it already covers that risk. Reductions
 need evidence of equivalent retained assertions; moving an exhaustive matrix into

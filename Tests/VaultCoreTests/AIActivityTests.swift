@@ -151,7 +151,7 @@ import Testing
         // Migration only reconciles during opening; a newly inserted operation stays running.
         #expect(try await store?.query(.init(action: .composePage)).first?.status == .running)
         try await store?.finish(composed.id, at: now, status: .completed, outcome: .published, failureCode: nil)
-        #expect(try scalar(url, "PRAGMA user_version") == 2)
+        #expect(try scalar(url, "PRAGMA user_version") == 3)
         #expect(try scalar(url, "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('activity_time','activity_vault','activity_target','activity_provider','activity_status')") == 5)
         try await store?.setRetentionDays(30)
         store = nil
@@ -174,7 +174,7 @@ import Testing
         #expect(try scalar(url, "SELECT COUNT(*) FROM sqlite_master WHERE name='activity_previous'") == 0)
         #expect(try scalar(url, "SELECT COUNT(*) FROM sqlite_master WHERE name='activity_time'") == 1)
     }
-    @Test(arguments: [3, 99, -1]) func rejectsUnsupportedSchema(version: Int) throws {
+    @Test(arguments: [4, 99, -1]) func rejectsUnsupportedSchema(version: Int) throws {
         let url = try database(); defer { try? FileManager.default.removeItem(at:url.deletingLastPathComponent()) }
         try sql(url,"PRAGMA user_version=\(version)")
         #expect(throws:AIActivityStoreError.unsupportedSchema) { try SQLiteAIActivityStore(url:url) }

@@ -72,7 +72,7 @@ struct EmbeddingBackfillApplicationTests {
         let probe = BackfillNativeProbe(), authenticator = BackfillAuthenticator(), transport = BackfillTransport()
         let broker = ExternalAICredentialBroker(keychain: BackfillKeychain())
         try await broker.store("synthetic-historical-app-key")
-        let model = AppModel(aiDefaults: defaults, externalAIServiceFactory: { gate, defaults, recorder in
+        let model = AppModel(aiDefaults: defaults, activityRecorder: AIActivityRecorder(store: nil), externalAIServiceFactory: { gate, defaults, recorder in
             let sessions = ExternalAISessionManager(accessGate: gate, credentialBroker: broker,
                 authenticator: authenticator, now: sessionNow, observeSystemEvents: false)
             let grants = ExternalAIVaultGrants(keychain: BackfillKeychain(), credentialBroker: broker, accessGate: gate,

@@ -14,6 +14,10 @@ public struct EmbeddingPreparedInputSnapshot: AIWorkSnapshot, Sendable {
     public let model: EmbeddingModelDescriptor
     public let inputs: [EmbeddingChunkInput]
     public var revision: String { workRevision ?? identity.revision }
+    /// Captured original bytes, independent of extracted text or canonical/work revision.
+    public var originalFingerprint: String? { sourceEvidence?.sourceRevision }
+    /// Current canonical Source metadata captured with the transient original-byte evidence.
+    public var sourceRecord: SourceRecord? { sourceEvidence?.source }
     public var inputFingerprint: String {
         // Include structural identity and ordered fingerprints, including the empty document case.
         digest(Data(inputs.map { $0.chunk.chunkID + ":" + $0.chunk.contentFingerprint }.joined(separator: "\n").utf8))
