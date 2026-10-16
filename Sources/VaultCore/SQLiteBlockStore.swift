@@ -1031,6 +1031,11 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
             try Self.validateKnowledgeCapabilities(try db, expected: Self.relationshipRequiredCapabilities)
             try Self.validateEntityPropertyTables(try db)
             try Self.validateEntityRelationshipTables(try db)
+            // Optional built-in types may not yet have been registered by a schema-8
+            // entity write. Templates must work before any entity exists.
+            for type in KnowledgeEntityType.initial {
+                try run("INSERT OR IGNORE INTO knowledge_entity_types(key,version,descriptor) VALUES(?,1,'{}')", [.text(type.key)])
+            }
             guard sqlite3_exec(try db, Self.entityPropertyTemplateSchema, nil, nil, nil) == SQLITE_OK else { throw failure() }
             try run("UPDATE vault_state SET required_capabilities=? WHERE singleton=1", [.blob(try encoder.encode(Self.templateRequiredCapabilities))])
             try run("PRAGMA user_version=9")

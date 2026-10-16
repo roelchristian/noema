@@ -50,6 +50,9 @@ extension SQLiteBlockStore {
             guard references == expected else { throw VaultError.invalid("Invalid property template foreign keys.") }
         }
         let types = Set(KnowledgeEntityType.initial.map(\.key))
+        var registered = Set<String>()
+        try rows("SELECT key FROM knowledge_entity_types WHERE version=1") { row in registered.insert(string(row, 0)) }
+        guard types.isSubset(of: registered) else { throw VaultError.invalid("Property template entity types are not registered.") }
         try rows("SELECT type_key,revision FROM entity_property_templates") { row in
             guard types.contains(string(row, 0)), sqlite3_column_type(row, 1) == SQLITE_BLOB,
                   sqlite3_column_bytes(row, 1) > 0 else { throw VaultError.invalid("Invalid property template identity or revision.") }
