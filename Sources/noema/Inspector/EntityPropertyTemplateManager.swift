@@ -84,7 +84,7 @@ struct EntityPropertyTemplateManager: View {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Reload") { Task { await reload() } }.disabled(busy || model.isLocked)
-                Button("Save template") { Task { await save() } }
+                Button("Save template") { scheduleSave() }
                     .keyboardShortcut(.defaultAction).disabled(!editable || !hasChanges)
             }
         }
@@ -187,18 +187,26 @@ struct EntityPropertyTemplateManager: View {
         }
     }
 
-    private func save() async {
+    private func scheduleSave() {
         guard editable, let configuration = displayed else { return }
-        let token = request, type = typeKey, sessionID = model.sessionState.sessionID
+        let token = EntityPropertyTemplateRequestToken(typeKey: typeKey,
+            sessionID: model.sessionState.sessionID, requestID: request)
         let ids = definitionIDs
         busy = true; error = nil; saved = false
+        Task { await save(ids, configuration: configuration, token: token) }
+    }
+
+    private func save(_ ids: [UUID], configuration: EntityPropertyTemplateConfiguration,
+                      token: EntityPropertyTemplateRequestToken) async {
+        guard active, !Task.isCancelled, !model.isLocked, model.canEditSemanticTarget,
+              token.matches(request: request, typeKey: typeKey, sessionID: model.sessionState.sessionID) else { return }
         do {
             try await model.savePropertyTemplateConfiguration(ids, snapshot: configuration,
-                isCurrent: { current(token, type: type, sessionID: sessionID) })
-            guard current(token, type: type, sessionID: sessionID) else { return }
+                isCurrent: { current(token.requestID, type: token.typeKey, sessionID: token.sessionID) })
+            guard current(token.requestID, type: token.typeKey, sessionID: token.sessionID) else { return }
             if await reload() { saved = true; restoreFocus(.status) }
         } catch {
-            guard current(token, type: type, sessionID: sessionID) else { return }
+            guard current(token.requestID, type: token.typeKey, sessionID: token.sessionID) else { return }
             self.error = error.localizedDescription; busy = false; restoreFocus(.status)
         }
     }
