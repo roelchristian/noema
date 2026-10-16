@@ -4,6 +4,11 @@ import Testing
 import VaultCore
 @testable import noema
 
+// Both native projection suites reset the process-wide typesetter during teardown.
+// One shared suite prevents one fixture from cancelling another fixture's render.
+@Suite(.serialized) struct MathProjectionRuntimeTests {}
+
+extension MathProjectionRuntimeTests {
 /// Uses an in-memory document and a hosted native editor; never opens a vault.
 @Suite(.serialized) @MainActor struct DisplayMathRuntimeTests {
     private let projectionAttribute = NSAttributedString.Key("noema.displayMathOriginalPresentation")
@@ -262,5 +267,7 @@ import VaultCore
         #expect(BlockTextStorage.capture(storage, previous: document) == document)
         #expect(view.undoManager?.canUndo == false)
     }
+
+}
 
 }

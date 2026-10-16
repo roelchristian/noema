@@ -61,4 +61,32 @@ public final class EmbeddingRequestExecutor: Sendable {
         let lifetime = try authorizer.retainPublicationAuthority(for: capability, authority: publicationAuthority)
         return CompletedEmbeddingRequest(result: result, provider: provider, publicationLifetime: lifetime)
     }
+
+    /// Scheduler adapter: retain exact-request evidence while preserving recoverable provider
+    /// failures. The raw request API above continues to expose ExternalAI's own error contract.
+    public func embedForProcessing(_ inputs: [String], scope: EmbeddingProcessingScope,
+                                   context: EmbeddingExecutionContext) async throws -> EmbeddingDispatchResult {
+        do {
+            let completed = try await embedWithEvidence(inputs, scope: scope, context: context)
+            return EmbeddingDispatchResult(vectors: completed.result.vectors, validatePublication: {
+                do { try completed.validatePublication() }
+                catch { throw Self.processingError(error) }
+            })
+        } catch { throw Self.processingError(error) }
+    }
+
+    private static func processingError(_ error: any Error) -> any Error {
+        if error is CancellationError || Task.isCancelled { return CancellationError() }
+        guard let failure = error as? ExternalAIError else { return error }
+        switch failure {
+        case .cancelled, .authenticationCancelled, .staleContent: return CancellationError()
+        case .networkUnavailable, .timedOut, .rateLimited, .providerUnavailable: return AIWorkFailure.transient
+        case .credentialMissing, .credentialMalformed, .credentialUnavailable, .credentialExpired,
+             .authenticationFailed, .authorizationRequired, .authorizationExpired, .authorizationRevoked,
+             .vaultUnavailable, .staleSession, .providerRejected: return AIWorkFailure.authority
+        case .consentRequired: return AIWorkFailure.consent
+        case .unsupportedAction, .emptyContent, .payloadTooLarge: return AIWorkFailure.unsupported
+        default: return AIWorkFailure.validation
+        }
+    }
 }

@@ -103,6 +103,7 @@ public actor ExternalAIEmbeddingAuthorizer {
         var cancellations: [UUID: @Sendable () -> Void] = [:]
     }
     private nonisolated let epoch = Mutex(EpochState())
+    private let allowsAuthentication: Bool
     private let sessions: ExternalAISessionManager
     private let broker: ExternalAICredentialBroker
     private let gate: VaultAccessGate
@@ -111,7 +112,8 @@ public actor ExternalAIEmbeddingAuthorizer {
     private var usedRequests = Set<UUID>()
 
     public init(credentialBroker: ExternalAICredentialBroker, sessionManager: ExternalAISessionManager,
-                accessGate: VaultAccessGate, configuration: OpenAIEmbeddingConfiguration = .default) {
+                accessGate: VaultAccessGate, configuration: OpenAIEmbeddingConfiguration = .default, allowsAuthentication: Bool = true) {
+        self.allowsAuthentication = allowsAuthentication
         broker = credentialBroker; sessions = sessionManager; gate = accessGate
         descriptor = configuration.embeddingDescriptor
         transport = OpenAITransport()
@@ -119,7 +121,8 @@ public actor ExternalAIEmbeddingAuthorizer {
 
     init(credentialBroker: ExternalAICredentialBroker, sessionManager: ExternalAISessionManager,
          accessGate: VaultAccessGate, configuration: OpenAIEmbeddingConfiguration = .default,
-         transport: any OpenAITransporting) {
+         transport: any OpenAITransporting, allowsAuthentication: Bool = true) {
+        self.allowsAuthentication = allowsAuthentication
         broker = credentialBroker; sessions = sessionManager; gate = accessGate
         descriptor = configuration.embeddingDescriptor; self.transport = transport
     }
@@ -155,7 +158,7 @@ public actor ExternalAIEmbeddingAuthorizer {
             guard $0.valid else { throw ExternalAIError.authorizationRevoked }
             return $0.id
         }
-        let capability = try await sessions.authorize(request.authority)
+        let capability = try await sessions.authorize(request.authority, allowAuthentication: allowsAuthentication)
         try await sessions.validate(capability)
         try context.validate(scope: request.scope, model: descriptor)
         guard epoch.withLock({ $0.id }) == startedEpoch else { throw ExternalAIError.authorizationRevoked }

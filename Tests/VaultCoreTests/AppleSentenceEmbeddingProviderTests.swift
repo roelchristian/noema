@@ -3,6 +3,26 @@ import Synchronization
 import Testing
 @testable import VaultCore
 
+/// Explicit local-model acceptance; ordinary domain runs retain injected backends.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["NOEMA_NATIVE_EMBEDDING_ACCEPTANCE"] == "1"))
+func productionSentenceEmbeddingEnglishAvailabilityAndRetrievalSmoke() async throws {
+    let provider = try AppleSentenceEmbeddingProvider(languageCode: "en")
+    let (scope, context) = try sentenceContext(provider)
+    let inputs = [
+        "A doctor treats patients at a hospital and provides medical care.",
+        "A gardener grows roses and tomatoes in a sunny garden.",
+        "Astronauts travel in spacecraft to explore the moon and distant planets.",
+        "A physician gives patients medical treatment in a clinic."
+    ]
+    let vectors = try await provider.embed(inputs, scope: scope, context: context)
+    #expect(vectors.count == inputs.count)
+    let query = try #require(vectors.last)
+    let scores = try vectors.dropLast().map { try query.cosineSimilarity(to: $0) }
+    #expect(scores[0] > scores[1] && scores[0] > scores[2])
+    #expect(vectors.allSatisfy { $0.values.count == provider.descriptor.dimensions })
+    print("NATIVE_EMBEDDING_ACCEPTANCE language=en revision=\(provider.descriptor.revision) dimensions=\(provider.descriptor.dimensions) cosine=\(scores)")
+}
+
 private final class SentenceTestBackend: AppleSentenceEmbeddingBackend {
     let languageCode: String
     let revision: Int
