@@ -36,6 +36,35 @@ private func publicationPermitDocument(_ text: String) -> BlockDocument {
     BlockDocument(blocks: [EditorBlock(runs: [RichRun(text)])])
 }
 
+@Test func embeddingPublicationPermitRejectsEntityPropertyCommitOnCurrentSchema() async throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent(".local/agent-runs/embedding-property-permit-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data().write(to: root.appendingPathComponent(".active"))
+    defer {
+        try? Data().write(to: root.appendingPathComponent(".complete"))
+        try? FileManager.default.removeItem(at: root.appendingPathComponent(".active"))
+    }
+    let vaultID = UUID()
+    let store = try VaultStorageProvider.plaintext.makeRelationshipStagingStore(
+        url: root.appendingPathComponent("blocks.sqlite"), vaultID: vaultID)
+    let page = try await store.save(publicationPermitDocument("Original page"), pageID: UUID(), condition: .createOnly)
+    let entity = try await store.createEntity(.init(typeKey: "person", label: "Ada"),
+        expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID()).value
+    let definition = try EntityPropertyDefinition(vaultID: vaultID, label: "Occupation", kind: .text, cardinality: .one)
+    _ = try await store.savePropertyDefinition(definition, expected: nil,
+        expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID())
+    let permit = try await store.embeddingPublicationPermit(pageID: page.pageID, expected: page.revision)
+    _ = try await store.savePropertyValues(entityID: entity.entity.id,
+        assignments: [.init(definitionID: definition.id, value: .text("Mathematician"))],
+        expectedEntity: entity.revision, expectedVaultRevision: store.canonicalVaultRevision(), operationID: UUID())
+    #expect(throws: EmbeddingContractError.authorityDenied) {
+        try permit.withPublication(authority: EmbeddingPublicationAuthority()) {}
+    }
+    #expect(try await store.load(pageID: page.pageID).revision == page.revision)
+    try await store.close()
+}
+
 @Test func embeddingPublicationPermitRejectsCrossConnectionEditAndRemoval() async throws {
     let root = try publicationPermitRoot()
     defer { try? FileManager.default.removeItem(at: root) }

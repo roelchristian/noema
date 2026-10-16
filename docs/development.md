@@ -37,6 +37,22 @@ validation. `scripts/compile.sh` runs Swift compilation without icon generation,
 app packaging or signing. Inspect each script's help before choosing specialised
 SwiftPM flags. Native accessibility and crash-durability acceptance remain device checks.
 
+Embedding acceptance has two explicit local probes:
+
+```sh
+NOEMA_NATIVE_EMBEDDING_ACCEPTANCE=1 ./scripts/test.sh standard --targets VaultCoreTests \
+  --disable-automatic-resolution --skip-update --filter productionSentenceEmbeddingEnglish
+NOEMA_PERFORMANCE_TESTS=1 ./scripts/test.sh specialized \
+  --disable-automatic-resolution --skip-update --filter benchmarkTenThousandEmbeddingDocumentsAndCancellation
+```
+
+The first uses the actual installed English sentence model and synthetic text; unavailable
+models fail the opt-in check. It does not establish other languages or broad retrieval
+quality. The second retains a managed synthetic 10,000-document/1,536-dimension projection,
+reports entity-read p50/p95, cooperative cancellation latency and test-process peak RSS.
+It does not measure native inference, cloud throughput, queue rendering or a complete
+large-vault workflow, and does not define a release performance threshold.
+
 Each added test must demonstrate a distinct regression risk, boundary condition or
 contract. Extend an existing happy path when it already covers that risk. Reductions
 need evidence of equivalent retained assertions; moving an exhaustive matrix into
