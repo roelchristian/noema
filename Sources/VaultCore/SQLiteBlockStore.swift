@@ -857,8 +857,8 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
             return .init(id: id, kind: kind, lastRevision: .init(token: blob(statement, 0)), deletedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 1)), disposition: text(statement, 2))
         }
     }
-    /// Purge is available only for already trashed pages and unavailable sources
-    /// without live relationships. Owned-byte deletion remains outside this API.
+    /// Purge requires a trashed page or Source with no blocking retained links.
+    /// Source originals remain preservation data; this API never deletes their bytes.
     public func purgeCanonicalEntity(id: UUID, kind: CanonicalEntityKind, expected: BlockStoreRevision,
                                      expectedVaultRevision: BlockStoreRevision,
                                      validating publication: (@Sendable () throws -> Void)? = nil) throws {

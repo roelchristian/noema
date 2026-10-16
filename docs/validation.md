@@ -10,7 +10,7 @@ that a later change has been tested. Rerun the relevant commands for each PR.
 
 ## STOR02B–STOR03 acceptance scope
 
-The production baseline is format 2, directly initialized schema 9 with `entityPropertiesV1`, `entityRelationshipsV1` and `entityPropertyTemplatesV1`; supported schemas 6, 7 and 8 remain openable without mutation. Typed properties require the explicit revision-checked 6→7 upgrade; directed properties additionally require 7→8, and optional type templates require 8→9. Interrupted manifest publication requires explicit resume. Schema 5 remains test-only semantic staging. Historical
+The production baseline is format 2, directly initialized schema 10 with `entityPropertiesV1`, `entityRelationshipsV1`, `entityPropertyTemplatesV1` and `sourceEntityAssociationsV1`; supported schemas 6, 7, 8 and 9 remain openable without mutation. Typed properties require the explicit revision-checked 6→7 upgrade; directed properties additionally require 7→8, and optional type templates require 8→9 and Source–entity associations require 9→10. Interrupted manifest publication requires explicit resume. Schema 5 remains test-only semantic staging. Historical
 Markdown/schema-1–5 vaults are intentionally unsupported. The repository demo and its
 content-only checks are retired; canonical fixtures are generated in temporary roots.
 Native archive APIs include committed SQLite and controlled originals/preservation,

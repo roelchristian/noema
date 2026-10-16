@@ -27,6 +27,12 @@ Filesystem evidence detects ordinary changes; it is not cryptographic proof. The
 
 Cold AppModel refresh publishes metadata before full materialization. Populated sessions keep complete records until a scan commits. Selection refreshes its preview only when selected content changes, and clears sensitive inspector/preview state when content is unavailable or removed. AI page creation carries a materialized source through the existing stale-body comparison. Cold LCC and naming actions materialize/reconcile complete records instead of replacing loaded content with placeholders.
 
+Source–entity associations use separate canonical rows. Loading or editing them
+reads Source identity/metadata without materializing originals, checking availability
+or changing Source content revisions, cache evidence or AI/search/embedding inputs.
+Offline linked originals do not prevent manual associations. Trash retains links;
+purge requires explicit unlinking. See the [association contract](knowledge-model.md#explicit-sourceentity-associations-ent05).
+
 ## Search reconciliation and rebuild
 
 Source index revisions include metadata plus an extracted-text fingerprint, fixing changed linked content. Scans compute fingerprints once and reuse them. A metadata-only batch can retain an unchanged indexed record when the repository supplies a matching content revision. `sourcesRequiringContent(in:)` identifies missing/changed content, including all sources for a new index. Reconciliation refuses to overwrite source entries with `notLoaded` placeholders and removes unavailable source content from the index.

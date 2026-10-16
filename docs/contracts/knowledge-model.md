@@ -207,7 +207,7 @@ KNOW02 creates schema 4 requiring deterministic set
 The nested manifest `storage.schemaVersion`, `PRAGMA user_version`, vault UUID and
 database required-capability set must agree before writable admission. Unknown or
 missing required capabilities and unsupported payload versions deny writes before
-schema changes or publication. Schemas 6, 7, 8 and 9 are admitted in production; schema 7 adds `entityPropertiesV1`, schema 8 adds `entityRelationshipsV1` and schema 9 adds `entityPropertyTemplatesV1`. Schema 6 keeps the schema-5 semantic tables and adds vault-owned organisation tables under `organisationV1`. Schema 5 is not upgraded on open. Historical schemas reject without mutation.
+schema changes or publication. Schemas 6, 7, 8, 9 and 10 are admitted in production; schema 7 adds `entityPropertiesV1`, schema 8 adds `entityRelationshipsV1`, schema 9 adds `entityPropertyTemplatesV1` and schema 10 adds `sourceEntityAssociationsV1`. Schema 6 keeps the schema-5 semantic tables and adds vault-owned organisation tables under `organisationV1`. Schema 5 is not upgraded on open. Historical schemas reject without mutation.
 
 Schema 3's singular `vault_state.capability = canonicalMetadataV1` retains its
 meaning. Schema 4 adds an explicitly versioned `required_capabilities` set and
@@ -217,7 +217,7 @@ Capability presence denotes actually implemented preservation/writes, not a prom
 No schema-4 semantic tables or semantic feature activation is assumed by KNOW02;
 KNOW03's new relational authority therefore requires schema 5.
 
-Production initializes fresh schema 9 directly. Schema 6 remains readable/writable through its existing APIs; typed properties require the explicit revision-checked 6→7 upgrade. Opening never upgrades authority. Historical schema 1–5 upgrade routes
+Production initializes fresh schema 10 directly. Schema 6 remains readable/writable through its existing APIs; typed properties require the explicit revision-checked 6→7 upgrade. Opening never upgrades authority. Historical schema 1–5 upgrade routes
 are retired by STOR02B–STOR03; no automatic or explicit historical migration is
 supported. Internal fresh constructors provide test isolation only. Opening never
 reinterprets old Wiki/source files as canonical authority.
@@ -361,7 +361,7 @@ may be reordered or removed but cannot be re-added. Active suggestions resolve t
 same reusable definition UUID, so renames do not detach them. Existing optional
 metadata scopes remain unchanged.
 
-Fresh creation initializes schema 9. Supported older vaults keep their existing APIs;
+Template authority begins at schema 9. Supported older vaults keep their existing APIs;
 normal open never upgrades. Explicit `upgradeEntityPropertyTemplates` performs the
 8→9 transition and conditionally publishes the manifest after the database commit.
 `resumeEntityPropertyTemplatesUpgrade` retries interrupted manifest publication;
@@ -379,3 +379,41 @@ separate disclosure from existing values/edges; selecting one opens the existing
 property editor without writing a fact. Management uses explicit saves and retains
 retired rows until explicitly removed. Selection/session/request guards discard
 late reads and reject stale saves on type changes, navigation, lock and vault switch.
+
+
+## Explicit Source–entity associations (ENT.05)
+
+A Source identifies preserved or linked evidence; a Knowledge Entity identifies a
+thing. Their UUIDs and lifecycles remain independent. Schema 10 introduces
+`sourceEntityAssociationsV1` and one canonical `source_entity_associations` row per
+explicit assertion, with a stable UUID/revision/time, Source/entity RESTRICT foreign
+keys and uniqueness of `(sourceID, entityID, role)`. `representsWork` targets only
+the registered `creativeWork` type; `aboutEntity` accepts all five registered types.
+Many Sources may identify one work, and one Source may represent several works or
+concern several subjects. No inverse entity edge, automatic inference, new type,
+Source replacement or Page conversion is created.
+
+`linkSource` checks Source, entity and vault revisions plus operation identity in
+the existing admitted SQLite actor transaction. It requires a nontrashed Source
+and a live registered entity, validates the role and rejects duplicates. Explicit
+`unlinkSourceAssociation` checks association and endpoint revisions and returns the
+removed snapshot. It may remove retained links to inactive endpoints. Neither
+operation changes endpoint content revisions, metadata, originals, bookmarks,
+checksums, Source publication receipts, Page links or search/AI/embedding scheduling.
+
+Both query directions return the same association identity in deterministic
+creation-time/UUID order, with bounded limit/offset pagination. Pages can shift
+under concurrent edits; reload after mutation. Consumers resolve endpoint lifecycle
+and metadata through existing canonical snapshots without original-byte reads.
+An association never means that original bytes are currently verified or available.
+Source Trash/restore and entity tombstoning retain links. Source purge rejects any
+retained association with an explicit unlink path before mutation; it never cascades
+links or deletes preserved original bytes.
+
+Fresh creation initializes schema 10. `upgradeSourceEntityAssociations` explicitly
+moves supported schema 9 to 10; interrupted conditional manifest publication requires
+`resumeSourceEntityAssociationsUpgrade`. Opening never upgrades and older supported
+APIs remain available. Admission/archive validation covers roles, IDs, revisions,
+finite timestamps, foreign keys and endpoint type semantics while permitting
+retained inactive endpoints. SQLite backup includes the table automatically.
+See [association tests](../../Tests/VaultCoreTests/SourceEntityAssociationTests.swift).

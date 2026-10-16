@@ -79,7 +79,7 @@ struct StorageProviderTests {
         #expect(selected[1].0 == root)
         #expect(selected[0].1.operations.withLock { $0.contains("write vault.json") })
         #expect(selected[1].1.operations.withLock { $0.contains("read vault.json") })
-        #expect(repo.manifest.storage?.schemaVersion == SQLiteBlockStore.templateSchemaVersion)
+        #expect(repo.manifest.storage?.schemaVersion == SQLiteBlockStore.associationSchemaVersion)
         #expect(try await repo.scan().notes.isEmpty)
         try await repo.sqliteBlockStore.close()
     }
