@@ -136,7 +136,10 @@ struct EntityPropertyTemplateManager: View {
             return true
         } catch {
             guard current(token, type: type, sessionID: sessionID) else { return false }
-            self.error = error.localizedDescription; busy = false
+            if case KnowledgeStoreError.transitionRequired = error {
+                self.error = "Property templates require an explicit vault upgrade. Existing properties remain available."
+            } else { self.error = error.localizedDescription }
+            busy = false
             return false
         }
     }
