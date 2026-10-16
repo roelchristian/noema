@@ -4,6 +4,7 @@ import VaultCore
 
 extension AppModel {
     func retireMeaningSearch() {
+        meaningNavigationID = UUID()
         if !sidebarSearchResults.hybridOrder.isEmpty {
             sidebarSearchResults = meaningLexicalFallback.flatMap { $0.query == searchText ? $0 : nil } ?? SidebarSearchResults()
             searchStatus = sidebarSearchResults.query == searchText && isSearching ? .results : .idle
@@ -96,9 +97,20 @@ extension AppModel {
                 let revisions = Dictionary(inventory.filter { $0.kind != .removed }.map {
                     (Self.meaningKey($0.entityKind, $0.entityID), $0.revision)
                 }, uniquingKeysWith: { first, _ in first })
+                let capturedNotes = notes
+                let taggedBlocks: [UUID: Set<UUID>]
+                if requestedScope == .blocks {
+                    taggedBlocks = await Task.detached {
+                        Dictionary(capturedNotes.filter { revisions[Self.meaningKey(.page, $0.id)] == $0.contentHash }.map { note in
+                            (note.id, Set(BlockDocumentCodec.decode(note.body).flattened.filter { $0.metadata.semantic != nil }.map(\.id)))
+                        }, uniquingKeysWith: { first, _ in first })
+                    }.value
+                    try current()
+                } else { taggedBlocks = [:] }
                 let eligible: @Sendable (EmbeddingDocumentCompletion) throws -> Bool = { completion in
                     revisions[Self.meaningKey(completion.identity.entityKind, completion.identity.entityID)] == completion.identity.revision
                         && (completion.identity.entityKind == .page || completion.originalFingerprint != nil)
+                        && (requestedScope != .blocks || taggedBlocks[completion.identity.entityID]?.isEmpty == false)
                 }
                 let kind: AIEntityKind? = requestedScope == .sources ? .source : requestedScope == .all ? nil : .page
                 guard try await index.hasCompletedSearchDocuments(generation: selected, kind: kind,
@@ -132,9 +144,16 @@ extension AppModel {
                 semanticSearchStatus = .searching
                 let completed = try await adapter.execute(query: query)
                 try current(); try completed.validatePublication()
+                let passageFilter: (@Sendable (EmbeddingChunk) throws -> Bool)?
+                if requestedScope == .blocks {
+                    passageFilter = { @Sendable chunk in
+                        guard case .block(let blockID, _) = SemanticPassageLocator(chunkID: chunk.chunkID, entityKind: chunk.identity.entityKind) else { return false }
+                        return taggedBlocks[chunk.identity.entityID]?.contains(blockID) == true
+                    }
+                } else { passageFilter = nil }
                 let candidates = try await index.searchCandidates(query: completed.vector, generation: selected,
                     documentLimit: 40, passagesPerDocument: 3, kind: kind,
-                    isCurrent: eligible, validateQuery: validate)
+                    isCurrent: eligible, isPassageEligible: passageFilter, validateQuery: validate)
                 try current(); try completed.validatePublication()
                 let lexical = sidebarSearchResults
                 meaningLexicalFallback = lexical
@@ -314,22 +333,36 @@ extension AppModel {
         return "The semantic service could not complete this query."
     }
 
-    func openSearchResult(entryID: UUID, blockID: UUID?, isSource: Bool) {
+    @discardableResult
+    func openSearchResult(entryID: UUID, blockID: UUID?, isSource: Bool) -> Task<Void, Never>? {
+        let navigation = UUID()
+        meaningNavigationID = navigation
+        let ticket = issueCompletionTicket(kind: .search, targetID: entryID, capturedText: searchText)
         let key = Self.meaningKey(isSource ? .source : .page, entryID)
         guard let evidence = meaningEvidence[key] else {
             select(entryID, scope: isSource ? .sources : .wiki, block: blockID, previewSource: isSource)
-            return
+            return nil
         }
-        Task {
+        return Task {
             guard let repository, let lease = sessionManager.accessGate.currentLease else { return }
+            @MainActor func currentNavigation() throws {
+                guard meaningNavigationID == navigation, self.repository === repository,
+                      sessionManager.accessGate.currentLease == lease,
+                      semanticProcessingGeneration == evidence.generation,
+                      isCompletionValid(ticket, currentText: searchText, operation: "meaningNavigation") else { throw CancellationError() }
+            }
             do {
+                try await beforeMeaningNavigation?(entryID)
+                try currentNavigation()
                 let snapshot = try await Self.hydrateMeaningEvidence(evidence, repository: repository)
+                try currentNavigation()
                 try await repository.validateEmbeddingSnapshot(snapshot)
+                try currentNavigation()
                 let authority = try EmbeddingPublicationAuthority(accessGate: sessionManager.accessGate, lease: lease, generation: evidence.generation)
                 let permit = isSource
                     ? try await repository.sqliteBlockStore.embeddingPublicationPermit(sourceID: entryID, expected: evidence.canonicalRevision)
                     : try await repository.sqliteBlockStore.embeddingPublicationPermit(pageID: entryID, expected: evidence.canonicalRevision)
-                guard self.repository === repository, sessionManager.accessGate.currentLease == lease else { return }
+                try currentNavigation()
                 // Validate before handing navigation to its existing completion-ticket path.
                 try permit.withPublication(authority: authority) {}
                 select(entryID, scope: isSource ? .sources : .wiki, previewSource: isSource)
@@ -343,7 +376,7 @@ extension AppModel {
                 }
             } catch {
                 // A stale passage never drives precise navigation. The current document is still openable.
-                guard self.repository === repository, sessionManager.accessGate.currentLease == lease else { return }
+                guard (try? currentNavigation()) != nil else { return }
                 select(entryID, scope: isSource ? .sources : .wiki, previewSource: isSource)
             }
         }

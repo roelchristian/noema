@@ -502,6 +502,8 @@ struct AISuggestion: Identifiable, Sendable {
     @ObservationIgnored var meaningEvidence: [String: MeaningSearchEvidence] = [:]
     @ObservationIgnored var meaningLexicalFallback: SidebarSearchResults?
     @ObservationIgnored var beforeMeaningPublication: (@MainActor () async throws -> Void)?
+    @ObservationIgnored var beforeMeaningNavigation: (@MainActor (UUID) async throws -> Void)?
+    @ObservationIgnored var meaningNavigationID = UUID()
     var searchStatus: VaultSearchStatus = .idle
     var sidebarSearchResults = SidebarSearchResults()
     var visibleSearchResults: SidebarSearchResults { sidebarSearchResults.filtered(to: searchScope) }
@@ -2804,6 +2806,7 @@ struct AISuggestion: Identifiable, Sendable {
         }
     }
     func select(_ id: UUID?, scope targetScope: LibraryScope? = nil, block blockID: UUID? = nil, previewSource: Bool = false) {
+        meaningNavigationID = UUID()
         guard canInteractWithWorkspace, canOperateOnLoadedContent else { return }
         if let id, id == currentNote?.id {
             selectedSidebarRecentItemID = nil

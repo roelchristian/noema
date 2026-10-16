@@ -257,9 +257,16 @@ filters page/source titles and page aliases. Query publication checks a search
 revision alongside the existing session completion ticket, so superseded queries,
 mode/scope changes, selection, catalog/editor mutations and vault revocation cannot
 publish older results. Mutations invalidate synchronously, before view refresh.
-The 120 ms debounce remains. Library rows and semantic catalogs refresh by catalog,
-editor and scope revisions; row construction runs off the main actor rather than
-rebuilding the library on each query. Toolbar expansion, responder restoration, keyboard
+The 120 ms lexical debounce remains. Keywords is the default; Meaning requires an
+explicit submission and keeps keyword results visible while compatible completed
+passages are retrieved. OpenAI query disclosure is separate from indexing approval;
+typing, scope changes and Quick Open do not dispatch an embedding request. Meaning
+uses bounded actor-owned cosine retrieval, current canonical/original validation and
+equal-weight reciprocal rank fusion with exact title/alias protection. Coverage is
+limited to current completed evidence, never inferred from generation compatibility.
+Query text/vectors remain transient. Library rows and semantic catalogs refresh by
+catalog, editor and scope revisions; row construction runs off the main actor rather
+than rebuilding the library on each query. Toolbar expansion, responder restoration, keyboard
 selection and the anchored results popover belong to `ToolbarSearchView`; compact
 windows place its field inside the popover. The first eight results share a route
 to the explicit full results view. Entry and category refinement preserve the open
