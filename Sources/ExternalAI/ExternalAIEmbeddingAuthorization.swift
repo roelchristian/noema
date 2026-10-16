@@ -103,6 +103,7 @@ public actor ExternalAIEmbeddingAuthorizer {
         var cancellations: [UUID: @Sendable () -> Void] = [:]
     }
     private nonisolated let epoch = Mutex(EpochState())
+    private let allowsAuthentication: Bool
     private let sessions: ExternalAISessionManager
     private let broker: ExternalAICredentialBroker
     private let gate: VaultAccessGate
@@ -111,7 +112,8 @@ public actor ExternalAIEmbeddingAuthorizer {
     private var usedRequests = Set<UUID>()
 
     public init(credentialBroker: ExternalAICredentialBroker, sessionManager: ExternalAISessionManager,
-                accessGate: VaultAccessGate, configuration: OpenAIEmbeddingConfiguration = .default) {
+                accessGate: VaultAccessGate, configuration: OpenAIEmbeddingConfiguration = .default, allowsAuthentication: Bool = true) {
+        self.allowsAuthentication = allowsAuthentication
         broker = credentialBroker; sessions = sessionManager; gate = accessGate
         descriptor = configuration.embeddingDescriptor
         transport = OpenAITransport()
@@ -119,7 +121,8 @@ public actor ExternalAIEmbeddingAuthorizer {
 
     init(credentialBroker: ExternalAICredentialBroker, sessionManager: ExternalAISessionManager,
          accessGate: VaultAccessGate, configuration: OpenAIEmbeddingConfiguration = .default,
-         transport: any OpenAITransporting) {
+         transport: any OpenAITransporting, allowsAuthentication: Bool = true) {
+        self.allowsAuthentication = allowsAuthentication
         broker = credentialBroker; sessions = sessionManager; gate = accessGate
         descriptor = configuration.embeddingDescriptor; self.transport = transport
     }
@@ -155,7 +158,7 @@ public actor ExternalAIEmbeddingAuthorizer {
             guard $0.valid else { throw ExternalAIError.authorizationRevoked }
             return $0.id
         }
-        let capability = try await sessions.authorize(request.authority)
+        let capability = try await sessions.authorize(request.authority, allowAuthentication: allowsAuthentication)
         try await sessions.validate(capability)
         try context.validate(scope: request.scope, model: descriptor)
         guard epoch.withLock({ $0.id }) == startedEpoch else { throw ExternalAIError.authorizationRevoked }
@@ -306,4 +309,50 @@ private final class EmbeddingRequestCancellation: Sendable {
         state.withLock { if $0.cancelled { task.cancel() } else { $0.task = task } }
     }
     func cancel() { state.withLock { $0.cancelled = true; $0.task?.cancel() } }
+}
+
+/// Registration lifetime spans the completed response through conditional storage publication.
+/// It contains no durable authority; releasing it only detaches revocation callbacks.
+final class EmbeddingPublicationLifetime: Sendable {
+    private let unregister: @Sendable () -> Void
+    init(unregister: @escaping @Sendable () -> Void) { self.unregister = unregister }
+    deinit { unregister() }
+}
+
+extension ExternalAIEmbeddingAuthorizer {
+    /// Bridge native-session, credential and issuer revocation to the same short storage
+    /// barrier used at COMMIT. Registration precedes final live-state validation, so
+    /// revocation between response completion and registration cannot escape detection.
+    /// Call outside canonical/publication locks; callbacks only retire the storage barrier.
+    nonisolated func retainPublicationAuthority(for authorization: ExternalAIEmbeddingAuthorization,
+                                                authority: EmbeddingPublicationAuthority) throws -> EmbeddingPublicationLifetime {
+        let sessionRegistration: UUID
+        do {
+            sessionRegistration = try sessions.registerCancellation(for: authorization.capability) {
+                authority.invalidate()
+            }
+        } catch {
+            authority.invalidate()
+            throw sanitized(error)
+        }
+        let epochRegistration = UUID()
+        do {
+            try epoch.withLock {
+                guard $0.valid, $0.id == authorization.epoch, authorization.issuer == issuer else {
+                    throw ExternalAIError.authorizationRevoked
+                }
+                $0.cancellations[epochRegistration] = { authority.invalidate() }
+            }
+            try validatePublication(authorization)
+        } catch {
+            authority.invalidate()
+            sessions.unregisterCancellation(sessionRegistration)
+            _ = epoch.withLock { $0.cancellations.removeValue(forKey: epochRegistration) }
+            throw sanitized(error)
+        }
+        return EmbeddingPublicationLifetime { [self] in
+            sessions.unregisterCancellation(sessionRegistration)
+            _ = epoch.withLock { $0.cancellations.removeValue(forKey: epochRegistration) }
+        }
+    }
 }

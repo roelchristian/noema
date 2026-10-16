@@ -19,6 +19,7 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
     public nonisolated let mode = BlockStorageMode.sqliteBlocks
     public nonisolated let sessionLease: VaultSessionLease?
     public nonisolated let accessGate: VaultAccessGate?
+    private let publicationDomain: EmbeddingPublicationDomain
     private let databaseURL: URL
     private let connection: BlockSQLiteConnection
     private let encoder: JSONEncoder = { let value = JSONEncoder(); value.outputFormatting = [.sortedKeys]; return value }()
@@ -39,8 +40,12 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
     init(unguardedTestingURL url: URL, createIfMissing: Bool = true) throws {
         canonicalVaultID = nil; operationValidation = nil
         sessionLease = nil; accessGate = nil
+        publicationDomain = .shared(for: url)
         databaseURL = url.standardizedFileURL.resolvingSymlinksInPath()
         connection = try BlockSQLiteConnection(url: url, createIfMissing: createIfMissing)
+        publicationDomain.lock.lock()
+        defer { publicationDomain.lock.unlock() }
+        publicationDomain.invalidate()
         try Self.prepare(connection, initializeIfNeeded: createIfMissing)
     }
     /// Expanded authority is opt-in and cannot reinterpret an existing page-only DB.
@@ -55,8 +60,12 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
         guard url.standardizedFileURL.resolvingSymlinksInPath().path.hasPrefix(root), sessionLease.vaultID == canonicalVaultID else { throw VaultError.invalid("Canonical database identity/root mismatch.") }
         operationValidation = nil
         self.canonicalVaultID = canonicalVaultID; self.sessionLease = sessionLease; self.accessGate = accessGate
+        publicationDomain = .shared(for: url)
         databaseURL = url.standardizedFileURL.resolvingSymlinksInPath()
         connection = try BlockSQLiteConnection(url: url, createIfMissing: createIfMissing)
+        publicationDomain.lock.lock()
+        defer { publicationDomain.lock.unlock() }
+        publicationDomain.invalidate()
         try Self.prepare(connection, initializeIfNeeded: createIfMissing, canonicalVaultID: canonicalVaultID, requiredCapabilities: requiredCapabilities, expectedSchemaVersion: schemaVersion)
     }
     /// Only explicit staging/test construction may initialize expanded authority.
@@ -67,8 +76,12 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
         operationValidation = operation
         try Self.validateCanonicalDeclaration(schemaVersion: schemaVersion, capabilities: requiredCapabilities)
         canonicalVaultID = vaultID; sessionLease = nil; accessGate = nil
+        publicationDomain = .shared(for: url)
         databaseURL = url.standardizedFileURL.resolvingSymlinksInPath()
         connection = try BlockSQLiteConnection(url: url, createIfMissing: createIfMissing)
+        publicationDomain.lock.lock()
+        defer { publicationDomain.lock.unlock() }
+        publicationDomain.invalidate()
         try Self.prepare(connection, initializeIfNeeded: createIfMissing, canonicalVaultID: vaultID, requiredCapabilities: requiredCapabilities, expectedSchemaVersion: schemaVersion, validating: operation)
         try operation?()
     }
@@ -284,6 +297,10 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
         guard sqlite3_step(statement) == SQLITE_DONE else { throw failure() }
     }
     func transaction<T>(validating publication: (@Sendable () throws -> Void)? = nil, _ operation: () throws -> T) throws -> T {
+        publicationDomain.lock.lock()
+        defer { publicationDomain.lock.unlock() }
+        // Failed writes also retire permits conservatively; canonical rollback remains unchanged.
+        publicationDomain.invalidate()
         try Task.checkCancellation()
         try validate("blockStore.write"); try run("BEGIN IMMEDIATE")
         do {
@@ -339,6 +356,29 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
             }
         }
         walk(document.blocks, parent: nil); return result
+    }
+    /// Issuance and every canonical write share the same database publication domain.
+    public func embeddingPublicationPermit(pageID: UUID, expected: BlockStoreRevision) throws -> EmbeddingPublicationPermit {
+        publicationDomain.lock.lock(); defer { publicationDomain.lock.unlock() }
+        return try readTransaction {
+            let snapshot = try loadDocument(pageID: pageID)
+            let row = try statement("SELECT trashed FROM pages WHERE id=?", [.text(pageID.uuidString)])
+            defer { sqlite3_finalize(row) }
+            guard snapshot.revision == expected, sqlite3_step(row) == SQLITE_ROW,
+                  sqlite3_column_int(row, 0) == 0 else { throw EmbeddingContractError.authorityDenied }
+            return EmbeddingPublicationPermit(domain: publicationDomain, entityID: pageID,
+                revision: expected, kind: .page, vaultID: canonicalVaultID)
+        }
+    }
+    public func embeddingPublicationPermit(sourceID: UUID, expected: BlockStoreRevision) throws -> EmbeddingPublicationPermit {
+        publicationDomain.lock.lock(); defer { publicationDomain.lock.unlock() }
+        return try readTransaction {
+            let snapshot = try sourceInTransaction(id: sourceID)
+            guard snapshot.revision == expected, !snapshot.trashed,
+                  snapshot.source.ownership != .unavailable else { throw EmbeddingContractError.authorityDenied }
+            return EmbeddingPublicationPermit(domain: publicationDomain, entityID: sourceID,
+                revision: expected, kind: .source, vaultID: canonicalVaultID)
+        }
     }
     public func load(pageID: UUID) throws -> BlockStoreSnapshot {
         try readTransaction { try loadDocument(pageID: pageID) }
@@ -1150,6 +1190,9 @@ public actor SQLiteBlockStore: BlockStore, KnowledgeStore, SemanticStore, Organi
     /// Resource retirement remains permitted after the session lease is revoked.
     /// SQLite owns journal cleanup; callers must never unlink WAL/SHM themselves.
     public func close() throws {
+        publicationDomain.lock.lock()
+        defer { publicationDomain.lock.unlock() }
+        publicationDomain.invalidate()
         guard let pointer = connection.pointer else { return }
         guard sqlite3_close(pointer) == SQLITE_OK else { throw failure() }
         connection.pointer = nil

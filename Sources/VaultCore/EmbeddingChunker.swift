@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 
 /// Transient provider input. Only `chunk` belongs in the derived index; text is never persisted here.
 public struct EmbeddingChunkInput: Sendable, Equatable {
@@ -8,7 +9,7 @@ public struct EmbeddingChunkInput: Sendable, Equatable {
 
 /// Pure chunking of a caller-supplied committed snapshot. This type never reads canonical storage.
 public enum EmbeddingChunker {
-    public static let version = "block-source-v1"
+    public static let version = "block-source-v2"
 
     public static func page(_ document: BlockDocument, identity: EmbeddingEntityIdentity,
                             model: EmbeddingModelDescriptor) throws -> [EmbeddingChunkInput] {
@@ -18,7 +19,7 @@ public enum EmbeddingChunker {
             for block in blocks {
                 // An AI-derived parent excludes its complete subtree, even if children lack a marker.
                 guard block.metadata.extra["aiGenerated"] != "true" else { continue }
-                for (part, text) in try split(block.text, limit: model.maximumInputUTF8Bytes).enumerated() {
+                for (part, text) in try split(block.text, model: model).enumerated() {
                     pieces.append(("block/\(block.id.uuidString)/\(part)", text))
                 }
                 try visit(block.children)
@@ -43,7 +44,7 @@ public enum EmbeddingChunker {
         if !lines.isEmpty { paragraphs.append(lines.joined(separator: "\n")) }
         var pieces: [(String, String)] = []
         for (paragraph, text) in paragraphs.enumerated() {
-            for (part, segment) in try split(text, limit: model.maximumInputUTF8Bytes).enumerated() {
+            for (part, segment) in try split(text, model: model).enumerated() {
                 pieces.append(("paragraph/\(paragraph)/\(part)", segment))
             }
         }
@@ -60,7 +61,8 @@ public enum EmbeddingChunker {
 
     /// Respect UTF-8 provider bounds without splitting grapheme clusters. Oversized individual
     /// graphemes fail explicitly rather than silently deleting or altering original content.
-    private static func split(_ text: String, limit: Int) throws -> [String] {
+    private static func split(_ text: String, model: EmbeddingModelDescriptor) throws -> [String] {
+        let limit = model.maximumInputUTF8Bytes
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
         let characters = Array(text)
         let sizes = characters.map { String($0).utf8.count }
@@ -75,6 +77,24 @@ public enum EmbeddingChunker {
                 if characters[end - 1].isWhitespace && bytes >= limit / 2 { boundary = end }
             }
             if end < characters.count, let boundary { end = boundary }
+            // Native sentence embeddings impose an independent tokenizer bound. A byte-only
+            // split can exceed it for short words, so shorten at the first excluded token.
+            if let language = EmbeddingInputPreparation.nativeLanguage(model) {
+                let candidate = String(characters[start..<end])
+                let tokenizer = NLTokenizer(unit: .word)
+                tokenizer.setLanguage(NLLanguage(rawValue: language))
+                tokenizer.string = candidate
+                var words = 0, cutoff: String.Index?
+                tokenizer.enumerateTokens(in: candidate.startIndex..<candidate.endIndex) { range, _ in
+                    words += 1
+                    if words > 128 { cutoff = range.lowerBound; return false }
+                    return true
+                }
+                if let cutoff {
+                    end = start + candidate.distance(from: candidate.startIndex, to: cutoff)
+                }
+            }
+            guard end > start else { throw EmbeddingContractError.invalidInput }
             let segment = String(characters[start..<end])
             if !segment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { results.append(segment) }
             guard end < characters.count else { break }

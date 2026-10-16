@@ -149,8 +149,11 @@ transport is tested with synthetic credentials/responses, not a live provider ac
 Its model revision identifies the API/input contract because aliases do not expose an
 immutable weight revision. Usage receipts are available; activity integration, actual
 charges, large-vault memory/latency/cancellation measurements and crash durability are
-unverified. Automatic lifecycle, historical backfill, queue and hybrid-search acceptance
-remain pending under the [embedding contract](contracts/semantic-embeddings.md).
+unverified. Incremental lifecycle and explicit historical backfill have independently reviewed
+functional acceptance through real application/provider/index integration tests. The focused
+embedding graph passes 153 tests in 16 suites. Full regression remains failing and is not a
+release acceptance claim; queue controls and hybrid search remain pending under the
+[embedding contract](contracts/semantic-embeddings.md).
 
 ### Two-Mac acceptance procedure
 

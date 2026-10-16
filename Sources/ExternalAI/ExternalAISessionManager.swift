@@ -64,7 +64,7 @@ public actor ExternalAISessionManager {
 
     public var state: ExternalAISessionState { registry.currentState() }
 
-    public func authorize(_ authority: ExternalAIVaultAuthority) async throws -> ExternalAICapability {
+    public func authorize(_ authority: ExternalAIVaultAuthority, allowAuthentication: Bool = true) async throws -> ExternalAICapability {
         try Task.checkCancellation()
         // Register before reading the credential version, closing replacement/removal races.
         if credentialObservation == nil {
@@ -81,6 +81,9 @@ public actor ExternalAISessionManager {
             try registry.validate(capability, activity: false)
             return capability
         }
+
+        // Background embedding dispatch cannot turn an expired approval into a new prompt.
+        guard allowAuthentication else { throw ExternalAIError.authorizationRevoked }
 
         let pending: (epoch: UInt64, authority: ExternalAIVaultAuthority,
                       version: UUID, task: Task<Void, Error>)

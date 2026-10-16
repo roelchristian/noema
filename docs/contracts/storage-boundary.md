@@ -423,6 +423,34 @@ is permitted. Author and independent reviewer traced the new two exceptional cal
 to this owner; focused rollback, lease, reopen and generation tests provide code
 evidence, while production routing and crash-durability acceptance remain outstanding.
 
+The SEM.EMB04A permit path preserves these SQL owners and storage locations. Canonical
+constructors, transactions and close share a normalized-database publication domain;
+only `SQLiteBlockStore` issues revision/lifecycle permits. The protected index overload
+checks permit entity/revision/vault and authority lease/full generation before its
+actor-owned transaction. The final synchronous derived COMMIT holds domain then authority,
+with all gate/provider validators outside those locks. Session revocation invalidates
+authority synchronously. Completed cloud request evidence retains issuer/session retirement
+registrations through the derived COMMIT; session retirement propagates credential changes.
+Application/service provider/model/credential/consent mutations synchronously retire these
+same authorities before changing state. Construction and exact request approval are distinct;
+no enrichment grant is used. The incremental processor routes committed Page/Source snapshots through this path;
+AppModel registers it before scheduler binding. Schema-2 semantic document completion
+is derived metadata committed atomically with vectors, including empty documents.
+Migration from exactly validated schema 1 preserves vectors without inventing completion.
+Explicit all-generation entity cleanup and metadata-only startup reconciliation remove
+only derived rows. No new filesystem/SQL-open exceptions or canonical schema is added. No filesystem or SQL-open exception is
+added. External direct SQLite writers and atomic linked-file/SQLite publication remain
+outside the guarantee. Failed canonical transactions conservatively retire permits.
+
+The existing `SQLiteAIWorkLedger` also owns additive schema-2 historical batch/member
+metadata on its same application-local connection. It stores exact scope/generation and
+revision inventory plus stable job identities and finite outcomes; it stores no original
+text, keys, consent tokens or transport capabilities. Every metadata read checks SQL-key/
+payload agreement. Batch/member publication is transactional and idempotent; live snapshot
+reads do not reset active jobs. This is technical admission metadata, not a second
+scheduler or canonical authority. Constructor/path routing and byte-I/O exceptions stay
+unchanged; execution remains with `AIProcessingCoordinator` and fresh request authority.
+
 ## Enforcement and review
 
 `python3 scripts/check-storage-boundary.py --selftest` checks every Swift file under Sources for known Foundation byte reads/writes, filesystem mutations, stream/handle creation, SQLite opens, generic coordinatedRead calls and URL-based PDF/Quick Look access. It also reviews initializer references, handle byte methods/references, additional Foundation content/replacement/link and file-attribute mutations, qualified Darwin/Glibc byte and mutation APIs, and recognizable unqualified POSIX calls. Foundation directory creation is identified by its `withIntermediateDirectories` argument so protocol directory operations remain permitted. Runtime plaintext adapter references (including type aliases and metatypes) are confined to its implementation and `VaultStorageProvider`. Test and build wrappers run the guard before Swift compilation. `scripts/storage-io-exceptions.json` records exact normalized statements, occurrence counts and ownership reasons; new or removed exceptional calls fail. Only the plaintext adapter is exempt from the byte-I/O scan. There is no automatic baseline update command.

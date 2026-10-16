@@ -10,9 +10,13 @@ AppModel constructs the semantic projection beside FTS during admitted open/unlo
 semantic failures leave canonical editing and lexical search available.
 
 Both native sentence embeddings and a restricted OpenAI request adapter implement the
-common provider interface. No embedding processor, historical admission, queue UI or
-integrated semantic search is registered yet. Selection alone never starts inference.
-AI.ENR is not a dependency.
+provider path. `EmbeddingWorkProcessor` registers before coordinator binding for the
+selected backend. Initial inventory is a baseline, not historical admission. Native
+processing uses committed snapshots; cloud incremental processing requires a separate
+session-only new/changed-content disclosure, native authentication and exact-request
+capabilities. Existing enrichment approval never grants embedding permission. No query
+or historical submission follows model/provider selection. AI.ENR is not a dependency.
+Historical admission, persistent queue controls and integrated search remain separate gates.
 
 `blocks.sqlite` remains the sole canonical Page and Source authority. Embeddings
 are disposable, device-local projections. The `SQLiteEmbeddingIndex` actor
@@ -73,7 +77,7 @@ Revocation, locking, switching, cancellation and model changes reject stale work
 No fallback to a different provider is allowed.
 
 The existing `AIProcessingCoordinator` and `SQLiteAIWorkLedger` remain the only work
-scheduler and durable retry ledger. A future embedding processor must register before
+scheduler and durable retry ledger. The embedding processor registers before
 binding, consume post-commit events, exclude AI publications and preserve the first
 inventory baseline rule. Saving canonical content must succeed independently of
 embedding work. When indexes are integrated, a preference change must invalidate compatibility;
@@ -129,9 +133,30 @@ weight revisions. Numeric usage is exposed separately from vector validation; ac
 history integration is pending, and requestCount represents logical attempts rather
 than a provider billing guarantee. No live API-key test or cost estimate is claimed.
 
-SEM.EMB04 must close the canonical/derived publication race before installing a
-processor: an asynchronous post-commit event or revision read followed by a separate
-SQLite COMMIT is insufficient. Canonical-owned revision permits must synchronize with
+SEM.EMB04A provides a canonical-owned in-process publication barrier, without installing
+an embedding processor. Every `SQLiteBlockStore` constructor resolves a shared database
+domain; write transactions invalidate its opaque permits before mutation and hold that
+domain through COMMIT/rollback. Issuance verifies Page/Source revision and live lifecycle
+under the same domain. Failed writes and connection retirement conservatively invalidate
+permits too. `EmbeddingPublicationAuthority` binds an exact generation and admitted lease;
+synchronous session invalidation retires it. The permit-bearing index replacement holds
+canonical-domain then authority locks through derived COMMIT. Neither lock spans an await
+or invokes the access gate. Gate invalidation can wait for that short synchronous commit.
+Provider/model/credential/consent changes synchronously retire that same authority through
+`ExternalAIService` mutation paths and application policy retirement. Stale vault callbacks
+reject before touching the active vault's authority. `EmbeddingRequestExecutor` requires an
+embedding-specific exact-request approval callback and exposes completed request evidence,
+without a vectors-only provider conformance. Evidence retains issuer/session cancellation
+registrations through the final index actor hop; session credential retirement propagates to
+the same storage barrier even after network completion. Each input request consumes fresh
+consent and a fresh capability, including each selected historical chunk. This adapter never
+creates document, historical or query approval, and is used by the registered incremental processor only after distinct document approval. The older predicate-only index primitive is
+insufficient for processor publication. Arbitrary external SQLite writers are outside
+this in-process protocol. Linked-original revalidation detects observed file changes,
+but cannot make an externally mutable file atomic with SQLite publication.
+
+The installed processor uses this barrier: an asynchronous post-commit event or revision
+read followed by a separate SQLite COMMIT remains insufficient. Canonical-owned revision permits must synchronize with
 canonical COMMIT and span the derived COMMIT; their constructor/helper routing needs
 independent storage review. Linked source bytes also need current snapshot validation.
 Deletion cleanup must run explicitly across generations, since the coordinator cancels
@@ -139,3 +164,80 @@ removed jobs without executing a processor. Startup reconciliation must remove s
 projection entries without admitting historical cloud work. SEM.EMB05–08 remain gated
 on that lifecycle implementation, durable consented backfill, queue controls, hybrid
 search, large-vault measurements and standing native/device acceptance.
+
+## Incremental lifecycle and durable completion (SEM.EMB04)
+
+Schema 2 of the derived semantic database atomically records document completion with
+vector replacement, including empty documents. Metadata contains canonical identity,
+full work revision (including Source original hash when observed), input fingerprint
+and validated chunk count, never input text or capability. Exact schema-1 migration
+validates and preserves vectors without inventing document completion. Chunk/document/
+generation removal retires completion evidence consistently; malformed counts or identities
+fail closed. `SQLiteBlockStore` remains the sole canonical SQL owner.
+
+The processor retains every completed cloud request validator until the guarded COMMIT,
+reuses exact compatible chunks while advancing revision metadata, and revalidates Source
+originals after inference. AppModel explicitly cleans removed entities across generations
+and reconciles absent/stale entries on startup without inference. Unavailable semantic
+storage/provider/ledger work leaves canonical saving and lexical search available.
+Compatible generations persist across reopen; an unpublished compatible generation stays
+stable across same-session consent rebinds. Version changes cannot revive recorded
+embedding jobs. Superseded binding callbacks cannot retire the active vault's authority.
+
+Source metadata-only startup inventory cannot certify externally mutable original bytes.
+Composite-revision Source completions may therefore be conservatively retired on reopen;
+this does not authorize regeneration. Linked bytes remain non-atomic with SQLite after
+final revalidation. Full native regression still has observed mathematical-rendering
+failures; no green full-suite, unrelatedness, device/accessibility or crash-durability
+claim follows focused embedding acceptance. Numeric usage activity and persistent queue
+presentation remain later integration work; no cancellation implies zero provider usage.
+
+## Explicit historical batch foundations (SEM.EMB05)
+
+`SQLiteAIWorkLedger` schema 2 stores batch UUID, vault, exact selected Page/Source
+scopes, complete generation/model, admission state and metadata-only inventory members.
+Each member has a stable coordinator job UUID. Exact replay preserves control intent;
+row/payload identity disagreement and false completion reject. Schema-1 work payloads
+remain readable; optional batch/disposition fields add no text, secret or capability.
+Live progress reads use non-mutating snapshots, not interrupted-work recovery reads.
+
+`AIProcessingCoordinator.admitHistorical` is the sole historical scheduling entry point.
+It persists fixed member IDs before arming work, preserves attempt counts, rejects
+terminal revival and never routes a batch through a generic reprocess event. Registered
+historical processors ignore ordinary commit admission. Recovered historical rows do
+not arm automatically; global authority changes suspend them without silently resuming.
+Pause/cancel intent and a stored batch choice remain metadata, not execution authority.
+
+`EmbeddingHistoricalBatchApproval` is transient, native-session/capability-bound and
+limited to one vault, batch, complete generation and exact Page/Source selection. It
+rejects document/query substitution, stale native authority and mismatched publication
+barriers. Each chunk still obtains fresh exact-request consent and transport authority.
+Batch invalidation retires that batch's barrier rather than an incremental processor's
+or another batch's authority. Restart cannot reconstruct approval or prompt silently.
+
+The application historical controller persists metadata-only membership before native
+approval or bounded admission. It registers one historical processor per batch and
+uses durable coordinator-write notifications only to reconcile metadata and admit the
+next bounded group; inference, concurrency, delays and retries remain coordinator-owned.
+Recovered on-device intent may resume under a fresh lease/policy barrier. Recovered
+OpenAI intent remains awaiting explicit batch disclosure and fresh native authority;
+background recovery never authenticates or reconstructs approval from stored rows.
+Current Vault offers exact Page/Source selection and a separate cloud acknowledgement,
+plus an explicit resume disclosure with immutable batch scopes. Decline and Not Now
+admit no history. Metadata counts cannot establish provider token usage or charges.
+
+Replacement generations retain earlier vectors separately. A rebuild switches the
+selected processing generation only after every captured selected member has durable
+completed or skipped metadata. Failed or unfinished captured batches do not activate a
+replacement. Activation selects a vector space; selected scopes and captured revisions
+can provide only partial current-vault coverage. An edit after the final inventory
+snapshot may leave an older-revision completion or a missing document, never a fabricated
+completion for the new revision. Future semantic queries must validate each document's
+current canonical revision and never treat active-generation selection as coverage. Completed
+replacement selection survives restart through the ledger. Historical membership does
+not absorb later revisions or extend to unselected entity kinds. External original
+mutation still has the linked-file atomicity limitation described above.
+
+SEM.EMB05 functional acceptance is independently verified by the application transition/recovery
+suites and real-provider Source recovery tests. SEM.EMB06 controls/status acceptance remains gated.
+Selecting a provider/model still cannot admit existing content.

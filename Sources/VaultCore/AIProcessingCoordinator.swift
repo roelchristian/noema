@@ -16,6 +16,7 @@ public actor AIProcessingCoordinator {
     private var items: [AIWorkKey: AIWorkItem] = [:]
     private var inventory: [Target: AIContentChange] = [:]
     private var tasks: [UUID: Task<Void, Never>] = [:]
+    private var taskVersions: [UUID: UUID] = [:]
     private var invalidators: [UUID: UUID] = [:]
     private var busy: [AIWorkKey: UUID] = [:]
     private var providerUse: [AIProcessingProvider: Int] = [:]
@@ -23,6 +24,13 @@ public actor AIProcessingCoordinator {
     private var completedCount = 0
     private var failedCount = 0
     private var lastSuccessfulAt: Date?
+    private var workChangeHandler: (@Sendable (AIWorkItem) async -> Void)?
+
+    /// Best-effort notification after durable writes. Consumers reread persisted state;
+    /// this observer does not schedule inference or grant execution authority.
+    public func setWorkChangeHandler(_ handler: (@Sendable (AIWorkItem) async -> Void)?) {
+        workChangeHandler = handler
+    }
 
     public init(ledger: any AIWorkLedger, gate: VaultAccessGate,
                 policy: any AIProcessingPolicyResolver, clock: AIProcessingClock = .continuous,
@@ -53,12 +61,17 @@ public actor AIProcessingCoordinator {
                   change.kind != .removed,
                   let processor = processors[item.key.processorID] else { continue }
             if processor.descriptor.version != item.processorVersion {
+                // Version selection is not renewed permission to submit recorded historical work.
+                guard processor.descriptor.recoverOnVersionChange else { continue }
                 // Only ledger-known targets are invalidated; never enrich a historical baseline.
                 item = AIWorkItem(key: item.key, revision: change.revision,
                     processorVersion: processor.descriptor.version,
                     eligibleAt: clock.now().addingTimeInterval(configuration.recoveryDelay),
                     updatedAt: clock.now())
             } else if change.revision != item.revision { continue }
+            // Historical work needs explicit batch admission after current control intent
+            // and fresh authority have been resolved. Bind never replays it by itself.
+            if item.batchID != nil { items[item.key] = item; continue }
             if [.running, .scheduled, .pending, .retryable, .suspended].contains(item.state) {
                 item.id = UUID()
                 item.state = .pending
@@ -107,7 +120,8 @@ public actor AIProcessingCoordinator {
             }
         }
         if change.kind != .removed {
-            for processor in Array(processors.values) where processor.isEligible(change) || unfinished.contains(processor.descriptor.identifier) {
+            for processor in Array(processors.values) where processor.descriptor.observesCommittedChanges
+                && (processor.isEligible(change) || unfinished.contains(processor.descriptor.identifier)) {
                 let descriptor = processor.descriptor
                 let key = AIWorkKey(vaultID: change.vaultID, entityKind: change.entityKind,
                                     entityID: change.entityID, processorID: descriptor.identifier)
@@ -135,6 +149,48 @@ public actor AIProcessingCoordinator {
         }
     }
 
+    /// Explicit historical admission uses the existing scheduler and fixed durable member ID.
+    /// A batch row is not authority: processors/policy still revalidate at dispatch/publication.
+    public func admitHistorical(_ candidate: AIWorkItem) async throws {
+        guard let active = lease, let batchID = candidate.batchID,
+              active.vaultID == candidate.key.vaultID,
+              let processor = processors[candidate.key.processorID],
+              !processor.descriptor.observesCommittedChanges,
+              candidate.processorVersion == processor.descriptor.version,
+              candidate.key.processorID == EmbeddingWorkProcessor.identifier + ".history." + batchID.uuidString,
+              processor.descriptor.targets.contains(candidate.key.entityKind),
+              let current = inventory[Target(kind: candidate.key.entityKind, id: candidate.key.entityID)],
+              current.kind != .removed else { throw AIWorkFailure.authority }
+        let admissionID = lifecycleID
+        try validateActive(active, identity: admissionID)
+        var incoming = candidate
+        if current.revision != incoming.revision {
+            guard incoming.key.entityKind == .source else { throw AIWorkFailure.validation }
+            if current.revision.hasPrefix(incoming.revision + ":") { incoming.revision = current.revision }
+            else { guard historicalRevisionMatches(incoming, current: current) else { throw AIWorkFailure.validation } }
+        }
+        let persisted = try await ledger.existingWorkItem(key: incoming.key)
+        try validateActive(active, identity: admissionID)
+        let prior = items[incoming.key] ?? persisted
+        if let prior {
+            guard prior.id == incoming.id, prior.batchID == batchID,
+                  prior.processorVersion == incoming.processorVersion,
+                  prior.revision == incoming.revision else { throw AIWorkFailure.validation }
+            if [.completed, .cancelled, .failed, .superseded].contains(prior.state) { items[prior.key] = prior; return }
+            if tasks[prior.id] != nil { return }
+            incoming = prior
+        }
+        incoming.state = .pending; incoming.failure = nil
+        incoming.eligibleAt = clock.now(); incoming.updatedAt = clock.now()
+        items[incoming.key] = incoming
+        try await persist(incoming)
+        try validateActive(active, identity: admissionID)
+        guard let latest = inventory[Target(kind: incoming.key.entityKind, id: incoming.key.entityID)],
+              historicalRevisionMatches(incoming, current: latest),
+              items[incoming.key]?.id == incoming.id else { throw AIWorkFailure.validation }
+        arm(incoming, lease: active)
+    }
+
     public func suspend(reason suspension: AIWorkFailure = .authority) async throws {
         try await retire(reason: suspension, identity: UUID())
     }
@@ -153,8 +209,19 @@ public actor AIProcessingCoordinator {
         guard let active = lease else { return }
         let authorityID = lifecycleID
         try validateActive(active, identity: authorityID)
+        // Historical intent remains recoverable after revocation. Set suspension before
+        // task cancellation so its catch cannot reinterpret revocation as user cancellation.
+        var suspendedHistory: [AIWorkItem] = []
+        for var item in Array(items.values) where item.batchID != nil
+            && [.pending, .scheduled, .running, .retryable].contains(item.state) {
+            item.state = .suspended; item.failure = .authority; item.updatedAt = clock.now()
+            items[item.key] = item; suspendedHistory.append(item)
+        }
         for task in tasks.values { task.cancel() }
-        for old in Array(items.values) where [.blocked, .suspended, .pending, .scheduled, .running, .retryable].contains(old.state) {
+        for item in suspendedHistory {
+            try await persist(item); try validateActive(active, identity: authorityID)
+        }
+        for old in Array(items.values) where old.batchID == nil && [.blocked, .suspended, .pending, .scheduled, .running, .retryable].contains(old.state) {
             var item = old
             item.id = UUID(); item.state = .pending; item.failure = nil
             item.eligibleAt = clock.now(); item.updatedAt = clock.now()
@@ -191,18 +258,22 @@ public actor AIProcessingCoordinator {
     }
     private func arm(_ item: AIWorkItem, lease active: VaultSessionLease) {
         let clock = self.clock
+        let taskVersion = UUID()
+        taskVersions[item.id] = taskVersion
         let task = Task { [weak self] in
             do {
                 try await clock.sleep(max(0, item.eligibleAt.timeIntervalSince(clock.now())))
                 try Task.checkCancellation()
-                await self?.run(item, lease: active)
-            } catch { await self?.discardTask(item.id) }
+                await self?.run(item, lease: active, taskVersion: taskVersion)
+            } catch { await self?.discardTask(item.id, version: taskVersion) }
         }
         tasks[item.id] = task
         if let old = invalidators.removeValue(forKey: item.id) { gate.removeSessionInvalidator(old) }
         invalidators[item.id] = gate.registerSessionInvalidator(lease: active, invalidate: { task.cancel() })
     }
-    private func discardTask(_ id: UUID) {
+    private func discardTask(_ id: UUID, version: UUID? = nil) {
+        guard version == nil || taskVersions[id] == version else { return }
+        taskVersions.removeValue(forKey: id)
         tasks.removeValue(forKey: id)
         if let token = invalidators.removeValue(forKey: id) { gate.removeSessionInvalidator(token) }
     }
@@ -211,7 +282,13 @@ public actor AIProcessingCoordinator {
         while true {
             try await ledger.save(value)
             // An injected ledger may suspend and let newer state overtake this write.
-            guard let latest = items[candidate.key], latest != value else { return }
+            guard let latest = items[candidate.key], latest != value else {
+                if let handler = workChangeHandler {
+                    let persisted = value
+                    Task { await handler(persisted) }
+                }
+                return
+            }
             value = latest
         }
     }
@@ -222,9 +299,9 @@ public actor AIProcessingCoordinator {
         try await persist(item)
     }
 
-    private func run(_ candidate: AIWorkItem, lease active: VaultSessionLease) async {
+    private func run(_ candidate: AIWorkItem, lease active: VaultSessionLease, taskVersion: UUID) async {
         guard lease == active, items[candidate.key]?.id == candidate.id,
-              let processor = processors[candidate.key.processorID] else { discardTask(candidate.id); return }
+              let processor = processors[candidate.key.processorID] else { discardTask(candidate.id, version: taskVersion); return }
         let completionTicket = gate.issueCompletionTicket(kind: .aiProcessing, lease: active,
             token: candidate.id, targetID: candidate.key.entityID)
         let provider = processor.descriptor.provider
@@ -235,7 +312,7 @@ public actor AIProcessingCoordinator {
         busy[candidate.key] = candidate.id; providerUse[provider, default: 0] += 1
         defer {
             busy.removeValue(forKey: candidate.key); providerUse[provider, default: 0] -= 1
-            discardTask(candidate.id)
+            discardTask(candidate.id, version: taskVersion)
         }
         do {
             try validateActive(active); try Task.checkCancellation()
@@ -291,7 +368,9 @@ public actor AIProcessingCoordinator {
             switch outcome {
             case .completed, .skipped:
                 if var item = items[candidate.key], item.id == candidate.id {
-                    item.inputFingerprint = snapshot.inputFingerprint; items[item.key] = item
+                    item.inputFingerprint = snapshot.inputFingerprint
+                    switch outcome { case .skipped: item.completionDisposition = .skipped; default: item.completionDisposition = .completed }
+                    items[item.key] = item
                 }
                 try await transition(candidate, to: .completed)
                 try validateCandidate(candidate, lease: active)
@@ -311,11 +390,19 @@ public actor AIProcessingCoordinator {
             else { failedCount += 1; try? await transition(candidate, to: .failed, failure: failure) }
         }
     }
+    /// Metadata-only reopen can omit the previously observed original digest. Retain
+    /// that exact evidence: the real Source processor checks the digest before inference
+    /// and again at publication. This does not bless a ledger hash as current content.
+    private func historicalRevisionMatches(_ item: AIWorkItem, current: AIContentChange) -> Bool {
+        current.revision == item.revision || (item.batchID != nil && item.key.entityKind == .source
+            && item.revision.hasPrefix(current.revision + ":"))
+    }
+
     private func validateCandidate(_ item: AIWorkItem, lease active: VaultSessionLease) throws {
         try Task.checkCancellation(); try validateActive(active)
         guard items[item.key]?.id == item.id,
               processors[item.key.processorID]?.descriptor.version == item.processorVersion,
-              inventory[Target(kind: item.key.entityKind, id: item.key.entityID)]?.revision == item.revision,
+              inventory[Target(kind: item.key.entityKind, id: item.key.entityID)].map({ historicalRevisionMatches(item, current: $0) }) == true,
               inventory[Target(kind: item.key.entityKind, id: item.key.entityID)]?.kind != .removed else { throw CancellationError() }
     }
     private func retry(_ candidate: AIWorkItem, failure: AIWorkFailure, lease active: VaultSessionLease) async throws {
@@ -326,7 +413,7 @@ public actor AIProcessingCoordinator {
         guard item.attemptCount < configuration.maximumAttempts else {
             failedCount += 1; try await transition(candidate, to: .failed, failure: .attemptsExhausted); return
         }
-        item.id = UUID()
+        if item.batchID == nil { item.id = UUID() }
         item.state = .retryable; item.failure = failure
         item.eligibleAt = clock.now().addingTimeInterval(min(configuration.maximumRetryDelay,
             configuration.initialRetryDelay * pow(2, Double(max(0, item.attemptCount - 1)))))
